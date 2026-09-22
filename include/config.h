@@ -1,0 +1,14 @@
+#pragma once
+
+constexpr double DEFAULT_LAT = 55.9297;
+constexpr double DEFAULT_LON = -4.4664;
+constexpr const char *DEFAULT_LABEL = "Erskine, UK";
+constexpr int DEFAULT_RADIUS_NM = 25;
+
+constexpr uint32_t POLL_INTERVAL_MS = 10000;
+constexpr uint32_t FORGET_AFTER_MS = 120000;
+
+constexpr int CLIMB_THRESHOLD_FPM = 150;
+constexpr int DESCEND_THRESHOLD_FPM = -150;
+
+constexpr const char *ADSB_API_URL_FMT = "https://api.adsb.lol/v2/point/%.4f/%.4f/%d";
