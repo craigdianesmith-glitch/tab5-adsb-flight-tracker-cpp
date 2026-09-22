@@ -6,6 +6,7 @@
 
 #include "adsb_client.h"
 #include "config.h"
+#include "detail_screen.h"
 #include "display.h"
 #include "location_screen.h"
 #include "secrets.h"
@@ -13,7 +14,7 @@
 
 namespace {
 
-enum class Screen { MAIN, LOCATION };
+enum class Screen { MAIN, LOCATION, DETAIL };
 Screen g_screen = Screen::MAIN;
 
 SemaphoreHandle_t g_dataMutex;
@@ -32,8 +33,9 @@ bool g_baseline = true;
 int g_rotation = 3;
 constexpr float ROTATION_THRESHOLD = 0.5f;
 
-// Must match the location button geometry drawn in display.cpp.
+// Must match the geometry drawn in display.cpp.
 constexpr int LOC_BTN_X = 600, LOC_BTN_Y = 6, LOC_BTN_W = 664, LOC_BTN_H = 52;
+constexpr int TABLE_X = 8, TABLE_Y = 122, TABLE_W = 1264, ROW_HEIGHT = 52;
 
 void pollTask(void *) {
     for (;;) {
@@ -112,6 +114,35 @@ void handleMainTouch(int x, int y) {
         locationScreenReset();
         g_screen = Screen::LOCATION;
         locationScreenDraw();
+        return;
+    }
+
+    if (x >= TABLE_X && x < TABLE_X + TABLE_W && y >= TABLE_Y) {
+        int row = (y - TABLE_Y) / ROW_HEIGHT;
+        Aircraft tapped;
+        bool found = false;
+        if (xSemaphoreTake(g_dataMutex, portMAX_DELAY) == pdTRUE) {
+            if (row >= 0 && row < (int)g_latestAircraft.size()) {
+                tapped = g_latestAircraft[row];
+                found = true;
+            }
+            xSemaphoreGive(g_dataMutex);
+        }
+        if (found) {
+            detailScreenSet(tapped);
+            g_screen = Screen::DETAIL;
+            detailScreenDraw();
+        }
+    }
+}
+
+void handleDetailTouch(int x, int y) {
+    if (detailScreenHandleTouch(x, y)) {
+        g_screen = Screen::MAIN;
+        if (xSemaphoreTake(g_dataMutex, portMAX_DELAY) == pdTRUE) {
+            g_dataReady = true;  // force a redraw of the main screen with current data
+            xSemaphoreGive(g_dataMutex);
+        }
     }
 }
 
@@ -180,8 +211,10 @@ void loop() {
         if (t.wasClicked()) {
             if (g_screen == Screen::MAIN) {
                 handleMainTouch(t.x, t.y);
-            } else {
+            } else if (g_screen == Screen::LOCATION) {
                 handleLocationTouch(t.x, t.y);
+            } else {
+                handleDetailTouch(t.x, t.y);
             }
         }
     }

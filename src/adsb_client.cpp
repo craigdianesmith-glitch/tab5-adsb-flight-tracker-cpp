@@ -22,7 +22,6 @@ bool fetchAircraft(double lat, double lon, int radiusNm, std::vector<Aircraft> &
     char url[160];
     snprintf(url, sizeof(url), ADSB_API_URL_FMT, lat, lon, radiusNm);
 
-    Serial.printf("[adsb] GET %s\n", url);
     WiFiClientSecure client;
     client.setInsecure();  // no CA bundle managed for this hobby project
     HTTPClient http;
@@ -40,11 +39,10 @@ bool fetchAircraft(double lat, double lon, int radiusNm, std::vector<Aircraft> &
     int code = http.GET();
     String payload = http.getString();
     http.end();
-    Serial.printf("[adsb] status=%d body=%s\n", code, payload.c_str());
     if (code != 200) {
+        Serial.printf("[adsb] status=%d body=%s\n", code, payload.c_str());
         return false;
     }
-    Serial.printf("[adsb] payload length=%d\n", payload.length());
 
     JsonDocument doc;
     DeserializationError jerr = deserializeJson(doc, payload);
@@ -90,23 +88,41 @@ bool fetchAircraft(double lat, double lon, int radiusNm, std::vector<Aircraft> &
         if (!ac["lat"].isNull() && !ac["lon"].isNull()) {
             a.hasDist = true;
             a.distNm = haversineNm(lat, lon, ac["lat"].as<double>(), ac["lon"].as<double>());
+            a.hasPos = true;
+            a.lat = ac["lat"].as<float>();
+            a.lon = ac["lon"].as<float>();
         } else {
             a.hasDist = false;
             a.distNm = 0;
+            a.hasPos = false;
         }
+
+        a.reg = ac["r"].isNull() ? "" : String((const char *)ac["r"]);
+        a.squawk = ac["squawk"].isNull() ? "" : String((const char *)ac["squawk"]);
+        a.category = ac["category"].isNull() ? "" : String((const char *)ac["category"]);
+
+        if (!ac["track"].isNull()) {
+            a.hasTrack = true;
+            a.track = ac["track"].as<float>();
+        } else {
+            a.hasTrack = false;
+        }
+
+        if (!ac["alt_geom"].isNull()) {
+            a.hasAltGeom = true;
+            a.altGeom = ac["alt_geom"].as<int>();
+        } else {
+            a.hasAltGeom = false;
+        }
+
+        a.hasVertRate = !ac["baro_rate"].isNull() || !ac["geom_rate"].isNull();
+        a.vertRate = ac["baro_rate"].isNull() ? ac["geom_rate"] | 0.0f : ac["baro_rate"].as<float>();
 
         if (onGround) {
             float gs = ac["gs"] | -1.0f;
             a.status = (gs > 2) ? "TAXI" : "GROUND";
         } else {
-            float rate;
-            if (!ac["baro_rate"].isNull()) {
-                rate = ac["baro_rate"].as<float>();
-            } else if (!ac["geom_rate"].isNull()) {
-                rate = ac["geom_rate"].as<float>();
-            } else {
-                rate = 0.0f;
-            }
+            float rate = a.vertRate;
             if (rate >= CLIMB_THRESHOLD_FPM) {
                 a.status = "CLIMB";
             } else if (rate <= DESCEND_THRESHOLD_FPM) {

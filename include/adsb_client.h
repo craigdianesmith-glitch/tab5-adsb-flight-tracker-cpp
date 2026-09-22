@@ -12,6 +12,19 @@ struct Aircraft {
     bool hasDist;
     float distNm;
     String status;  // CLIMB / DESCEND / LEVEL / TAXI / GROUND
+
+    // Extra detail-view fields - not shown in the main table row.
+    String reg;
+    String squawk;
+    String category;
+    bool hasTrack;
+    float track;      // degrees, ground track ("heading")
+    bool hasVertRate;
+    float vertRate;   // ft/min, signed
+    bool hasAltGeom;
+    int altGeom;       // ft
+    bool hasPos;
+    float lat, lon;    // aircraft's own position
 };
 
 // Fetches aircraft near (lat, lon) within radiusNm. Returns false (out left
