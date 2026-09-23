@@ -74,6 +74,9 @@ bool fetchAircraft(double lat, double lon, int radiusNm, std::vector<Aircraft> &
         cs.trim();
         a.callsign = cs.length() ? cs : a.hex;
         a.type = (const char *)(ac["t"] | "----");
+        // adsb.lol only emits dbFlags for aircraft it has flagged; bit 0 is
+        // the military one (bits 1/2/3 are interesting/PIA/LADD).
+        a.military = ((ac["dbFlags"] | 0) & 1) != 0;
 
         if (onGround) {
             a.altStr = "GND";

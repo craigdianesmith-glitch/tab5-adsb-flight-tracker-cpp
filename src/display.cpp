@@ -26,6 +26,9 @@ constexpr int MAX_CACHE_ROWS = 16;  // generous upper bound on any screen size w
 uint16_t colorBg, colorWhite, colorHeaderBg, colorHeaderText, colorButtonBg, colorBorder, colorGrey, colorNew;
 
 constexpr int ICON_SIZE = 18;
+
+// Settings cog, centred in the gap between the title and the location button.
+constexpr int COG_X = 452, COG_Y = 6, COG_SIZE = 52;
 int colX[NUM_COLS];
 
 // Render cache: what's currently on screen, so a redraw only touches cells
@@ -53,6 +56,28 @@ void drawStatusIcon(int cx, int cy, const String &status, uint16_t color) {
     } else if (status == "GROUND") {
         canvas.drawRect(cx - half, cy - half, ICON_SIZE, ICON_SIZE, color);
     }
+}
+
+// Drawn rather than a bitmap, for the same reason as the status icons: the
+// geometry is exact at any size and there are no pixel arrays to eyeball.
+void drawGear(int cx, int cy, int r, uint16_t color) {
+    auto &canvas = screen::canvas();
+    constexpr int TEETH = 8;
+    const float ri = r * 0.90f;   // tooth root, just inside the rim
+    const float ro = r * 1.32f;   // tooth tip
+    for (int i = 0; i < TEETH; i++) {
+        float a = (float)i * 2.0f * (float)PI / TEETH;
+        float root = 0.26f;       // half-angle at the root
+        float tip = 0.15f;        // narrower at the tip, so the teeth taper
+        int x1 = cx + (int)lroundf(ri * cosf(a - root)), y1 = cy + (int)lroundf(ri * sinf(a - root));
+        int x2 = cx + (int)lroundf(ro * cosf(a - tip)), y2 = cy + (int)lroundf(ro * sinf(a - tip));
+        int x3 = cx + (int)lroundf(ro * cosf(a + tip)), y3 = cy + (int)lroundf(ro * sinf(a + tip));
+        int x4 = cx + (int)lroundf(ri * cosf(a + root)), y4 = cy + (int)lroundf(ri * sinf(a + root));
+        canvas.fillTriangle(x1, y1, x2, y2, x3, y3, color);
+        canvas.fillTriangle(x1, y1, x3, y3, x4, y4, color);
+    }
+    canvas.fillCircle(cx, cy, r, color);
+    canvas.fillCircle(cx, cy, (int)lroundf(r * 0.40f), colorBg);
 }
 
 void drawCell(int r, int c, const String &value, uint16_t color) {
@@ -106,6 +131,18 @@ void displayInit() {
     }
 }
 
+int displayMaxRows() {
+    int rows = (screen::canvas().height() - TABLE_Y - 8) / ROW_HEIGHT;
+    if (rows > MAX_CACHE_ROWS) {
+        rows = MAX_CACHE_ROWS;
+    }
+    return rows < 0 ? 0 : rows;
+}
+
+bool displayHitCog(int x, int y) {
+    return x >= COG_X && x < COG_X + COG_SIZE && y >= COG_Y && y < COG_Y + COG_SIZE;
+}
+
 void displayInvalidate() {
     // Another screen has been drawing on the shared canvas, so nothing cached
     // here is on it any more. Clearing g_headerDrawn makes the next render
@@ -123,7 +160,6 @@ void displayInvalidate() {
 void displayRenderAircraft(const std::vector<Aircraft> &aircraft, const String &locationLabel,
                             const std::vector<uint8_t> &isNew) {
     auto &canvas = screen::canvas();
-    int screenH = canvas.height();
 
     if (!g_headerDrawn) {
         screen::clear(colorBg);
@@ -132,6 +168,8 @@ void displayRenderAircraft(const std::vector<Aircraft> &aircraft, const String &
         canvas.setTextSize(3);
         canvas.setTextDatum(TL_DATUM);
         canvas.drawString("ADSB Flight Display", 16, 10);
+
+        drawGear(COG_X + COG_SIZE / 2, COG_Y + COG_SIZE / 2, COG_SIZE / 2 - 6, colorGrey);
 
         int x = TABLE_X;
         for (int i = 0; i < NUM_COLS; i++) {
@@ -164,10 +202,7 @@ void displayRenderAircraft(const std::vector<Aircraft> &aircraft, const String &
         g_lastLabel = locationLabel;
     }
 
-    int maxRows = (screenH - TABLE_Y - 8) / ROW_HEIGHT;
-    if (maxRows > MAX_CACHE_ROWS) {
-        maxRows = MAX_CACHE_ROWS;
-    }
+    int maxRows = displayMaxRows();
 
     if (aircraft.empty()) {
         if (!g_lastWasEmpty) {

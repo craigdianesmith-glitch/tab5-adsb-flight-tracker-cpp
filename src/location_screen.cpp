@@ -4,6 +4,7 @@
 #include <vector>
 
 #include "geocode.h"
+#include "keyboard.h"
 #include "screen.h"
 
 namespace {
@@ -17,14 +18,6 @@ constexpr int STATUS_X = 16, STATUS_Y = 126, STATUS_W = 700, STATUS_H = 24;
 constexpr int LIST_X = 16, LIST_Y = 156, LIST_W = 1248, ROW_H = 42, MAX_RESULT_ROWS = 5;
 constexpr int SET_BTN_X = 16, SET_BTN_Y = LIST_Y + MAX_RESULT_ROWS * ROW_H + 16, SET_BTN_W = 280, SET_BTN_H = 50;
 
-constexpr int GRID_X = 16, GRID_Y = 440, CELL_W = 124, CELL_H = 62, GRID_COLS = 10, GRID_ROWS = 4;
-
-const char *KEY_GRID[GRID_ROWS][GRID_COLS] = {
-    {"Q", "W", "E", "R", "T", "Y", "U", "I", "O", "P"},
-    {"", "A", "S", "D", "F", "G", "H", "J", "K", "L"},
-    {"", "Z", "X", "C", "V", "B", "N", "M", "BKSP", "BKSP"},
-    {"SPACE", "SPACE", "SPACE", "SPACE", "SPACE", "SPACE", "SPACE", "SEARCH", "SEARCH", "SEARCH"},
-};
 
 String g_query;
 std::vector<GeoResult> g_results;
@@ -71,25 +64,7 @@ void drawChrome() {
     canvas.setTextDatum(MC_DATUM);
     canvas.drawString("Search", SEARCH_BTN_X + SEARCH_BTN_W / 2, SEARCH_BTN_Y + SEARCH_BTN_H / 2);
 
-    // Keyboard - draw merged rects for the multi-cell keys (BKSP/SPACE/SEARCH)
-    // rather than repeating per cell, using the known fixed layout.
-    auto drawKey = [&](int col0, int row, int colspan, const char *label) {
-        int x = GRID_X + col0 * CELL_W;
-        int y = GRID_Y + row * CELL_H;
-        int w = colspan * CELL_W - 6;
-        int h = CELL_H - 6;
-        canvas.fillRoundRect(x, y, w, h, 4, colorKeyBg);
-        canvas.setTextColor(colorWhite);
-        canvas.setTextSize(2);
-        canvas.setTextDatum(MC_DATUM);
-        canvas.drawString(label, x + w / 2, y + h / 2);
-    };
-    for (int c = 0; c < 10; c++) drawKey(c, 0, 1, KEY_GRID[0][c]);
-    for (int c = 1; c < 10; c++) drawKey(c, 1, 1, KEY_GRID[1][c]);
-    for (int c = 1; c < 8; c++) drawKey(c, 2, 1, KEY_GRID[2][c]);
-    drawKey(8, 2, 2, "BKSP");
-    drawKey(0, 3, 7, "SPACE");
-    drawKey(7, 3, 3, "SEARCH");
+    keyboard::draw();
 }
 
 void drawQuery() {
@@ -162,6 +137,7 @@ void doSearch() {
 }  // namespace
 
 void locationScreenReset() {
+    keyboard::reset();
     g_query = "";
     g_results.clear();
     g_selected = -1;
@@ -202,28 +178,19 @@ LocationAction locationScreenHandleTouch(int x, int y, double &outLat, double &o
         }
         return LocationAction::NONE;
     }
-    if (y >= GRID_Y && y < GRID_Y + GRID_ROWS * CELL_H && x >= GRID_X && x < GRID_X + GRID_COLS * CELL_W) {
-        int col = (x - GRID_X) / CELL_W;
-        int row = (y - GRID_Y) / CELL_H;
-        const char *key = KEY_GRID[row][col];
-        if (key[0] == '\0') {
-            return LocationAction::NONE;  // unused cell
-        }
-        if (strcmp(key, "SPACE") == 0) {
-            g_query += " ";
-        } else if (strcmp(key, "BKSP") == 0) {
-            if (g_query.length()) g_query.remove(g_query.length() - 1);
-        } else if (strcmp(key, "SEARCH") == 0) {
-            doSearch();
-            drawResults();
-            screen::flush();
-            return LocationAction::NONE;
-        } else {
-            g_query += key;
-        }
+    switch (keyboard::handleTouch(x, y, g_query, 48)) {
+    case keyboard::Result::EDITED:
         // Only the text box changed - repaint and push just that.
         drawQuery();
         screen::flush();
+        break;
+    case keyboard::Result::SUBMIT:
+        doSearch();
+        drawResults();
+        screen::flush();
+        break;
+    case keyboard::Result::NONE:
+        break;
     }
     return LocationAction::NONE;
 }

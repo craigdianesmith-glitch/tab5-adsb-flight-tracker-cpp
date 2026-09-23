@@ -11,7 +11,8 @@ struct Aircraft {
     String speedStr;
     bool hasDist;
     float distNm;
-    String status;  // CLIMB / DESCEND / LEVEL / TAXI / GROUND
+    String status;   // CLIMB / DESCEND / LEVEL / TAXI / GROUND
+    bool military;   // adsb.lol's dbFlags bit 0
 
     // Extra detail-view fields - not shown in the main table row.
     String reg;

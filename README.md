@@ -32,6 +32,16 @@ pip install platformio
 - **Speaker startup**: `M5.begin()` configures the Tab5's ES8388 codec and enables its amp, but stops short of starting the I2S output - nothing is audible until `M5.Speaker.begin()` is called as well (see `src/sound.cpp`).
 - **Rotated framebuffer**: the panel is physically 720x1280 portrait, so in the landscape orientation this app runs at, every horizontal line of the UI is a *column* in memory. LovyanGFX's rotated `pushSprite` can't memcpy in that case and walks the image pixel by pixel - a full-screen push measures **650ms** on this device. `src/screen.cpp` hands the rotation to the ESP32-P4's PPA (its 2D graphics accelerator) instead; see below.
 
+## Settings
+
+The cog in the header opens a settings screen holding:
+
+- **Traffic filter** - civilian or military, as an either/or choice rather than two independent switches. Military aircraft are the ones adsb.lol sets bit 0 of `dbFlags` on.
+- **Range** - a slider whose ceiling follows the filter above it: 60nm for civil traffic, 150nm for military, since military traffic is worth watching further out. Switching to civil with the slider up high clamps it back down.
+- **WiFi** - scans for networks and connects to one, so the device can move between networks without a reflash. Credentials are saved to NVS and win over the ones compiled in from `secrets.h`, which stay as the fallback for a device that's never had WiFi set on-screen.
+
+Filters, range and WiFi credentials all persist across reboots alongside the chosen location. Changing any of them refetches immediately rather than waiting out the rest of the poll interval.
+
 ## Sound
 
 A two-note rise once the firmware is up, and a short blip whenever an aircraft that wasn't there before appears in the table - one blip per poll however many arrived, and never on the first poll after a start or a location change, where every aircraft is new by definition. `SOUND_ENABLED` and `SOUND_VOLUME` in `include/config.h` turn it off or change the level.
@@ -51,6 +61,8 @@ Measured on hardware (`-DRENDER_PROFILE` in `platformio.ini` logs the per-flush 
 
 Two details worth knowing if you touch `screen.cpp`: the PPA's RGB565 byte order is the opposite of the one LovyanGFX uses for this panel (hence `byte_swap` on every blit, and the pre-swapped fill colour, both checked against what LovyanGFX itself reads back), and the canvas has to be flushed out of the CPU cache before the PPA's DMA can see it.
 
+The poll task also trims each result set to the number of rows that actually fit (eleven at this size), nearest first - a 60nm radius over a busy area returns well over a hundred aircraft, and carrying the other ninety through two vector copies per refresh bought nothing. Trimming there rather than at draw time also keeps "new arrival" meaning a new *row*, rather than beeping at every aircraft that enters the radius unseen.
+
 Rendering also still does per-cell diffing, so a refresh where nothing changed costs nothing at all, and the three screens share the one canvas rather than holding 1.8MB each.
 
 ## Layout
@@ -58,7 +70,10 @@ Rendering also still does per-cell diffing, so a refresh where nothing changed c
 - `src/main.cpp` - setup/loop, WiFi, the background poll task, screen state, touch dispatch
 - `src/screen.cpp` - the shared canvas, dirty-region tracking and the PPA-accelerated push to the panel
 - `src/display.cpp` - main table rendering, with per-cell diffing so only changed cells are repainted
-- `src/location_screen.cpp` - location search screen: text entry, on-screen keyboard, results list
+- `src/location_screen.cpp` - location search screen: text entry and results list
+- `src/settings_screen.cpp` - the cog screen: traffic filters and the range slider
+- `src/wifi_screen.cpp` - network scan, passphrase entry and connection
+- `src/keyboard.cpp` - the on-screen keyboard shared by the location and WiFi screens
 - `src/adsb_client.cpp` - adsb.lol polling and aircraft parsing
 - `src/geocode.cpp` - Open-Meteo location search
 - `src/settings.cpp` - persists the chosen location via ESP32 `Preferences` (NVS)

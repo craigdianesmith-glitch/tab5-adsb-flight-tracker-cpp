@@ -1,6 +1,7 @@
 #include <M5Unified.h>
 #include <WiFi.h>
 #include <esp32-hal-hosted.h>
+#include <algorithm>
 #include <map>
 #include <vector>
 
@@ -12,11 +13,13 @@
 #include "screen.h"
 #include "secrets.h"
 #include "settings.h"
+#include "settings_screen.h"
 #include "sound.h"
+#include "wifi_screen.h"
 
 namespace {
 
-enum class Screen { MAIN, LOCATION, DETAIL };
+enum class Screen { MAIN, LOCATION, DETAIL, SETTINGS, WIFI };
 Screen g_screen = Screen::MAIN;
 
 SemaphoreHandle_t g_dataMutex;
@@ -27,7 +30,12 @@ bool g_newFlightPending = false;  // set by pollTask, consumed by loop() to beep
 
 double g_lat, g_lon;
 String g_label;
-bool g_locationChanged = false;  // set by UI touch handler, consumed by pollTask
+TrafficFilter g_traffic = TrafficFilter::CIVIL;
+int g_radiusNm = DEFAULT_RADIUS_NM;
+// Set by a UI touch handler, consumed by pollTask: forget which aircraft have
+// been seen, so a changed location or filter doesn't flag everything as new.
+bool g_resetBaseline = false;
+bool g_pollNow = false;  // skip the rest of the poll interval and refetch
 
 // Only touched by pollTask - no locking needed since it's the sole writer/reader.
 std::map<String, uint32_t> g_seenMap;
@@ -43,20 +51,49 @@ constexpr int TABLE_X = 8, TABLE_Y = 122, TABLE_W = 1264, ROW_HEIGHT = 52;
 void pollTask(void *) {
     for (;;) {
         double lat, lon;
+        TrafficFilter traffic = TrafficFilter::CIVIL;
+        int radius = DEFAULT_RADIUS_NM;
         if (xSemaphoreTake(g_dataMutex, portMAX_DELAY) == pdTRUE) {
-            if (g_locationChanged) {
+            if (g_resetBaseline) {
                 g_seenMap.clear();
                 g_baseline = true;
-                g_locationChanged = false;
+                g_resetBaseline = false;
             }
+            g_pollNow = false;
             lat = g_lat;
             lon = g_lon;
+            traffic = g_traffic;
+            radius = g_radiusNm;
             xSemaphoreGive(g_dataMutex);
         }
 
-        std::vector<Aircraft> aircraft;
-        bool ok = fetchAircraft(lat, lon, DEFAULT_RADIUS_NM, aircraft);
+        // The radius is already clamped to whichever ceiling the chosen filter
+        // carries, so it doubles as the poll radius.
+        bool wantMilitary = (traffic == TrafficFilter::MILITARY);
+
+        std::vector<Aircraft> fetched;
+        bool ok = fetchAircraft(lat, lon, radius, fetched);
         if (ok) {
+            std::vector<Aircraft> aircraft;
+            for (const Aircraft &a : fetched) {
+                if (a.military != wantMilitary) {
+                    continue;
+                }
+                if (a.hasDist && a.distNm > radius) {
+                    continue;  // the API is occasionally a little generous
+                }
+                aircraft.push_back(a);
+            }
+
+            // adsb_client sorts by distance, so this keeps the nearest few and
+            // drops the rest: a 60nm radius can easily return a hundred
+            // aircraft where only eleven rows fit. Trimming here rather than at
+            // draw time also means "new arrival" means a new *row*, instead of
+            // beeping at every aircraft entering the radius unseen.
+            size_t maxRows = (size_t)displayMaxRows();
+            if (aircraft.size() > maxRows) {
+                aircraft.resize(maxRows);
+            }
             uint32_t now = millis();
             std::vector<uint8_t> isNew(aircraft.size(), 0);
             bool anyNew = false;
@@ -88,7 +125,19 @@ void pollTask(void *) {
                 xSemaphoreGive(g_dataMutex);
             }
         }
-        vTaskDelay(pdMS_TO_TICKS(POLL_INTERVAL_MS));
+        // Sliced rather than one long delay, so a location or filter change
+        // takes effect straight away instead of up to a poll interval later.
+        for (uint32_t waited = 0; waited < POLL_INTERVAL_MS; waited += 200) {
+            vTaskDelay(pdMS_TO_TICKS(200));
+            bool now = false;
+            if (xSemaphoreTake(g_dataMutex, 0) == pdTRUE) {
+                now = g_pollNow;
+                xSemaphoreGive(g_dataMutex);
+            }
+            if (now) {
+                break;
+            }
+        }
     }
 }
 
@@ -113,9 +162,9 @@ void checkRotation() {
     screen::flush();
 }
 
-void connectWifi() {
+void connectWifi(const String &ssid, const String &password) {
     WiFi.mode(WIFI_STA);
-    WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+    WiFi.begin(ssid.c_str(), password.c_str());
     uint32_t start = millis();
     while (WiFi.status() != WL_CONNECTED && millis() - start < 15000) {
         delay(500);
@@ -125,6 +174,13 @@ void connectWifi() {
 }
 
 void handleMainTouch(int x, int y) {
+    if (displayHitCog(x, y)) {
+        settingsScreenSet(g_traffic, g_radiusNm);
+        g_screen = Screen::SETTINGS;
+        settingsScreenDraw();
+        return;
+    }
+
     if (x >= LOC_BTN_X && x < LOC_BTN_X + LOC_BTN_W && y >= LOC_BTN_Y && y < LOC_BTN_Y + LOC_BTN_H) {
         locationScreenReset();
         g_screen = Screen::LOCATION;
@@ -174,17 +230,55 @@ void handleLocationTouch(int x, int y) {
             xSemaphoreGive(g_dataMutex);
         }
     } else if (action == LocationAction::LOCATION_SET) {
-        saveSettings(lat, lon, label);
+        saveLocation(lat, lon, label);
         displayInvalidate();
         if (xSemaphoreTake(g_dataMutex, portMAX_DELAY) == pdTRUE) {
             g_lat = lat;
             g_lon = lon;
             g_label = label;
-            g_locationChanged = true;
+            g_resetBaseline = true;
+            g_pollNow = true;
             g_dataReady = true;
             xSemaphoreGive(g_dataMutex);
         }
         g_screen = Screen::MAIN;
+    }
+}
+
+void handleSettingsTouch(int x, int y, bool pressed, bool clicked) {
+    switch (settingsScreenHandleTouch(x, y, pressed, clicked)) {
+    case SettingsAction::BACK: {
+        TrafficFilter traffic = settingsScreenTraffic();
+        int radius = settingsScreenRadius();
+        saveFilters(traffic, radius);
+        if (xSemaphoreTake(g_dataMutex, portMAX_DELAY) == pdTRUE) {
+            bool changed = (traffic != g_traffic) || (radius != g_radiusNm);
+            g_traffic = traffic;
+            g_radiusNm = radius;
+            if (changed) {
+                g_resetBaseline = true;
+                g_pollNow = true;
+            }
+            g_dataReady = true;
+            xSemaphoreGive(g_dataMutex);
+        }
+        g_screen = Screen::MAIN;
+        displayInvalidate();
+        break;
+    }
+    case SettingsAction::OPEN_WIFI:
+        g_screen = Screen::WIFI;
+        wifiScreenEnter();
+        break;
+    case SettingsAction::NONE:
+        break;
+    }
+}
+
+void handleWifiTouch(int x, int y) {
+    if (wifiScreenHandleTouch(x, y) == WifiAction::BACK) {
+        g_screen = Screen::SETTINGS;
+        settingsScreenDraw();
     }
 }
 
@@ -209,16 +303,21 @@ void setup() {
     }
     displayInit();
 
-    LocationSettings s = loadSettings();
+    AppSettings s = loadSettings();
     g_lat = s.lat;
     g_lon = s.lon;
     g_label = s.label;
+    g_traffic = s.traffic;
+    g_radiusNm = s.radiusNm;
 
     std::vector<Aircraft> none;
     std::vector<uint8_t> noneNew;
     displayRenderAircraft(none, "Connecting...", noneNew);
 
-    connectWifi();
+    // Credentials set on-screen win; secrets.h is the fallback for a device
+    // that's never had WiFi configured through the settings screen.
+    connectWifi(s.wifiSsid.length() ? s.wifiSsid : String(WIFI_SSID),
+                s.wifiSsid.length() ? s.wifiPass : String(WIFI_PASSWORD));
 
     g_dataMutex = xSemaphoreCreateMutex();
     // Pinned to core 0 so it doesn't contend with the render/UI loop on core 1.
@@ -231,17 +330,45 @@ void setup() {
 void loop() {
     M5.update();
 
-    if (M5.Touch.getCount()) {
+    if (g_screen == Screen::SETTINGS) {
+        // Dispatched every pass, touch or not: the slider has to hear about
+        // the finger lifting, and a release arrives as an absence of touch
+        // rather than as an event of its own.
+        bool touching = M5.Touch.getCount() > 0;
+        int tx = -1, ty = -1;
+        bool pressed = false, clicked = false;
+        if (touching) {
+            auto t = M5.Touch.getDetail(0);
+            tx = t.x;
+            ty = t.y;
+            pressed = t.isPressed();
+            clicked = t.wasClicked();
+        }
+        handleSettingsTouch(tx, ty, pressed, clicked);
+    } else if (M5.Touch.getCount()) {
         auto t = M5.Touch.getDetail(0);
         if (t.wasClicked()) {
-            if (g_screen == Screen::MAIN) {
+            switch (g_screen) {
+            case Screen::MAIN:
                 handleMainTouch(t.x, t.y);
-            } else if (g_screen == Screen::LOCATION) {
+                break;
+            case Screen::LOCATION:
                 handleLocationTouch(t.x, t.y);
-            } else {
+                break;
+            case Screen::DETAIL:
                 handleDetailTouch(t.x, t.y);
+                break;
+            case Screen::WIFI:
+                handleWifiTouch(t.x, t.y);
+                break;
+            default:
+                break;
             }
         }
+    }
+
+    if (g_screen == Screen::WIFI) {
+        wifiScreenTick();  // scans and connection attempts both complete asynchronously
     }
 
     static uint32_t nextRotationCheck = 0;

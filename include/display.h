@@ -7,6 +7,14 @@
 
 void displayInit();
 
+// How many aircraft rows actually fit on screen. The poll task trims its
+// results to this, so the rows that could never be drawn aren't carried
+// around and copied every refresh.
+int displayMaxRows();
+
+// True if (x, y) is on the settings cog in the header.
+bool displayHitCog(int x, int y);
+
 // Drop the render cache - call when another screen has drawn over the shared
 // canvas, so the next render repaints from scratch.
 void displayInvalidate();
