@@ -12,21 +12,26 @@ bool colorsReady = false;
 
 constexpr int BACK_X = 1140, BACK_Y = 8, BACK_W = 124, BACK_H = 44;
 
-constexpr int SEG_X = 40, SEG_Y = 128, SEG_W = 1200, SEG_H = 76;
+constexpr int SHOW_LABEL_Y = 84;
+constexpr int SEG_X = 40, SEG_Y = 112, SEG_W = 1200, SEG_H = 76;
 
-constexpr int RADIUS_LABEL_Y = 232;
-constexpr int RADIUS_VALUE_Y = 262;
-constexpr int SLIDER_X = 64, SLIDER_W = 1152, SLIDER_Y = 344, SLIDER_TRACK_H = 10;
+constexpr int RADIUS_LABEL_Y = 216;
+constexpr int RADIUS_VALUE_Y = 244;
+constexpr int SLIDER_X = 64, SLIDER_W = 1152, SLIDER_Y = 318, SLIDER_TRACK_H = 10;
 constexpr int KNOB_R = 24;
 constexpr int SLIDER_BAND_TOP = SLIDER_Y - 44, SLIDER_BAND_H = 88;
-constexpr int TICKS_Y = SLIDER_Y + 40;
-constexpr int CAPS_Y = 424;
+constexpr int TICKS_Y = SLIDER_Y + 38;
+constexpr int CAPS_Y = 392;
 
-constexpr int WIFI_LABEL_Y = 470;
-constexpr int WIFI_X = 40, WIFI_Y = 500, WIFI_W = 1200, WIFI_H = 96;
+constexpr int DISPLAY_LABEL_Y = 436;
+constexpr int REFRESH_X = 40, REFRESH_Y = 464, REFRESH_W = 1200, REFRESH_H = 76;
+
+constexpr int WIFI_LABEL_Y = 568;
+constexpr int WIFI_X = 40, WIFI_Y = 596, WIFI_W = 1200, WIFI_H = 96;
 
 TrafficFilter g_traffic = TrafficFilter::CIVIL;
 int g_radius = DEFAULT_RADIUS_NM;
+bool g_showRefresh = true;
 bool g_dragging = false;
 
 uint16_t colorBg, colorWhite, colorGrey, colorDim, colorBtnBg, colorOn, colorOff, colorTrack, colorKnob, colorBorder;
@@ -83,6 +88,34 @@ void drawSegments() {
     screen::markDirty(SEG_X, SEG_Y, SEG_W, SEG_H);
 }
 
+void drawRefreshToggle() {
+    auto &canvas = screen::canvas();
+    canvas.fillRoundRect(REFRESH_X, REFRESH_Y, REFRESH_W, REFRESH_H, 8, colorBtnBg);
+    canvas.drawRoundRect(REFRESH_X, REFRESH_Y, REFRESH_W, REFRESH_H, 8, colorBorder);
+
+    canvas.setFont(&fonts::Font0);
+    canvas.setTextDatum(ML_DATUM);
+    canvas.setTextSize(3);
+    canvas.setTextColor(colorWhite);
+    canvas.drawString("Show flight refresh", REFRESH_X + 24, REFRESH_Y + 26);
+    canvas.setTextSize(2);
+    canvas.setTextColor(colorDim);
+    canvas.drawString("Shades cells that changed on the last poll", REFRESH_X + 24, REFRESH_Y + 54);
+
+    int sw = 120, sh = 44;
+    int sx = REFRESH_X + REFRESH_W - sw - 24, sy = REFRESH_Y + (REFRESH_H - sh) / 2;
+    canvas.fillRoundRect(sx, sy, sw, sh, sh / 2, g_showRefresh ? colorOn : colorOff);
+    int knob = sh - 8;
+    canvas.fillCircle(g_showRefresh ? (sx + sw - 4 - knob / 2) : (sx + 4 + knob / 2), sy + sh / 2, knob / 2,
+                      colorWhite);
+    canvas.setTextSize(2);
+    canvas.setTextColor(colorWhite);
+    canvas.setTextDatum(MC_DATUM);
+    canvas.drawString(g_showRefresh ? "ON" : "OFF", g_showRefresh ? (sx + 34) : (sx + sw - 34), sy + sh / 2);
+
+    screen::markDirty(REFRESH_X, REFRESH_Y, REFRESH_W, REFRESH_H);
+}
+
 void drawSlider() {
     auto &canvas = screen::canvas();
     int top = RADIUS_VALUE_Y - 8;
@@ -119,9 +152,10 @@ void drawSlider() {
 
 }  // namespace
 
-void settingsScreenSet(TrafficFilter traffic, int radiusNm) {
+void settingsScreenSet(TrafficFilter traffic, int radiusNm, bool showRefresh) {
     g_traffic = traffic;
     g_radius = radiusNm;
+    g_showRefresh = showRefresh;
     g_dragging = false;
     clampRadius();
 }
@@ -145,7 +179,7 @@ void settingsScreenDraw() {
     canvas.setTextColor(colorGrey);
     canvas.setTextSize(2);
     canvas.setTextDatum(TL_DATUM);
-    canvas.drawString("SHOW", 40, 92);
+    canvas.drawString("SHOW", 40, SHOW_LABEL_Y);
     drawSegments();
 
     canvas.setTextColor(colorGrey);
@@ -154,6 +188,12 @@ void settingsScreenDraw() {
     drawSlider();
 
     canvas.setTextColor(colorGrey);
+    canvas.setTextDatum(TL_DATUM);
+    canvas.drawString("DISPLAY", 40, DISPLAY_LABEL_Y);
+    drawRefreshToggle();
+
+    canvas.setTextColor(colorGrey);
+    canvas.setTextSize(2);
     canvas.setTextDatum(TL_DATUM);
     canvas.drawString("NETWORK", 40, WIFI_LABEL_Y);
     canvas.fillRoundRect(WIFI_X, WIFI_Y, WIFI_W, WIFI_H, 8, colorBtnBg);
@@ -217,6 +257,13 @@ SettingsAction settingsScreenHandleTouch(int x, int y, bool pressed, bool clicke
         return SettingsAction::NONE;
     }
 
+    if (x >= REFRESH_X && x < REFRESH_X + REFRESH_W && y >= REFRESH_Y && y < REFRESH_Y + REFRESH_H) {
+        g_showRefresh = !g_showRefresh;
+        drawRefreshToggle();
+        screen::flush();
+        return SettingsAction::NONE;
+    }
+
     if (x >= WIFI_X && x < WIFI_X + WIFI_W && y >= WIFI_Y && y < WIFI_Y + WIFI_H) {
         return SettingsAction::OPEN_WIFI;
     }
@@ -225,3 +272,4 @@ SettingsAction settingsScreenHandleTouch(int x, int y, bool pressed, bool clicke
 
 TrafficFilter settingsScreenTraffic() { return g_traffic; }
 int settingsScreenRadius() { return g_radius; }
+bool settingsScreenShowRefresh() { return g_showRefresh; }

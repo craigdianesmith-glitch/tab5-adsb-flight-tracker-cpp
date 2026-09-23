@@ -14,6 +14,9 @@ constexpr int MILITARY_MAX_RADIUS_NM = 150;
 constexpr uint32_t POLL_INTERVAL_MS = 10000;
 constexpr uint32_t FORGET_AFTER_MS = 120000;
 
+// How long a cell that just changed value stays shaded.
+constexpr uint32_t CELL_HIGHLIGHT_MS = 2000;
+
 constexpr bool SOUND_ENABLED = true;
 constexpr uint8_t SOUND_VOLUME = 96;  // 0-255
 

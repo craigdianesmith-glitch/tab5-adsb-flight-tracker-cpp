@@ -19,6 +19,13 @@ bool displayHitCog(int x, int y);
 // canvas, so the next render repaints from scratch.
 void displayInvalidate();
 
+// Turns the shading of just-changed cells on or off.
+void displaySetShowRefresh(bool enabled);
+
+// Fades out cell shading once it has had its time on screen. Call every loop
+// while the main screen is up; it does nothing until something expires.
+void displayTickHighlights();
+
 // isNew[i] true => aircraft[i]'s row is drawn in dark green for this frame.
 void displayRenderAircraft(const std::vector<Aircraft> &aircraft, const String &locationLabel,
                             const std::vector<uint8_t> &isNew);

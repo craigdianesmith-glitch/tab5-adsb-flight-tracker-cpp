@@ -2,6 +2,7 @@
 
 #include <math.h>
 
+#include "config.h"
 #include "screen.h"
 
 namespace {
@@ -23,7 +24,8 @@ constexpr int TABLE_Y = HEADER_Y + HEADER_H;
 constexpr int ROW_HEIGHT = 52;
 constexpr int MAX_CACHE_ROWS = 16;  // generous upper bound on any screen size we'd realistically run at
 
-uint16_t colorBg, colorWhite, colorHeaderBg, colorHeaderText, colorButtonBg, colorBorder, colorGrey, colorNew;
+uint16_t colorBg, colorWhite, colorHeaderBg, colorHeaderText, colorButtonBg, colorBorder, colorGrey, colorNew,
+    colorChanged;
 
 constexpr int ICON_SIZE = 18;
 
@@ -39,6 +41,9 @@ bool g_lastWasEmpty = false;
 String g_lastCell[MAX_CACHE_ROWS][NUM_COLS];
 uint16_t g_lastCellColor[MAX_CACHE_ROWS][NUM_COLS];
 bool g_lastCellValid[MAX_CACHE_ROWS][NUM_COLS] = {};
+// millis() at which a cell's shading lapses; 0 means it isn't shaded.
+uint32_t g_highlightUntil[MAX_CACHE_ROWS][NUM_COLS] = {};
+bool g_showRefresh = true;
 
 // Drawn geometric icons rather than a hand-authored bitmap: precise and
 // reliable without needing to eyeball pixel arrays on real hardware.
@@ -80,12 +85,12 @@ void drawGear(int cx, int cy, int r, uint16_t color) {
     canvas.fillCircle(cx, cy, (int)lroundf(r * 0.40f), colorBg);
 }
 
-void drawCell(int r, int c, const String &value, uint16_t color) {
+void drawCell(int r, int c, const String &value, uint16_t color, bool highlight) {
     auto &canvas = screen::canvas();
     int w = COLUMNS[c].width - 4;
     int y = TABLE_Y + r * ROW_HEIGHT;
     int h = ROW_HEIGHT - 4;
-    canvas.fillRect(colX[c], y, w, h, colorBg);
+    canvas.fillRect(colX[c], y, w, h, highlight ? colorChanged : colorBg);
     canvas.drawRect(colX[c], y, w, h, colorBorder);
     canvas.setFont(&fonts::FreeSans9pt7b);
     canvas.setTextColor(color);
@@ -107,6 +112,7 @@ void clearRow(int r) {
     screen::markDirty(TABLE_X, y, TABLE_W, ROW_HEIGHT - 4);
     for (int c = 0; c < NUM_COLS; c++) {
         g_lastCellValid[r][c] = false;
+        g_highlightUntil[r][c] = 0;
     }
 }
 
@@ -123,6 +129,7 @@ void displayInit() {
     colorBorder = M5.Display.color565(0x44, 0x44, 0x44);
     colorGrey = M5.Display.color565(0x88, 0x88, 0x88);
     colorNew = M5.Display.color565(0x1B, 0x7A, 0x1B);
+    colorChanged = M5.Display.color565(0x1E, 0x2E, 0x40);
 
     int x = TABLE_X;
     for (int i = 0; i < NUM_COLS; i++) {
@@ -153,7 +160,30 @@ void displayInvalidate() {
     for (int r = 0; r < MAX_CACHE_ROWS; r++) {
         for (int c = 0; c < NUM_COLS; c++) {
             g_lastCellValid[r][c] = false;
+            g_highlightUntil[r][c] = 0;
         }
+    }
+}
+
+void displaySetShowRefresh(bool enabled) { g_showRefresh = enabled; }
+
+void displayTickHighlights() {
+    uint32_t now = millis();
+    bool any = false;
+    for (int r = 0; r < MAX_CACHE_ROWS; r++) {
+        for (int c = 0; c < NUM_COLS; c++) {
+            if (g_highlightUntil[r][c] == 0 || (int32_t)(now - g_highlightUntil[r][c]) < 0) {
+                continue;
+            }
+            g_highlightUntil[r][c] = 0;
+            if (g_lastCellValid[r][c]) {
+                drawCell(r, c, g_lastCell[r][c], g_lastCellColor[r][c], false);
+                any = true;
+            }
+        }
+    }
+    if (any) {
+        screen::flush();
     }
 }
 
@@ -242,7 +272,16 @@ void displayRenderAircraft(const std::vector<Aircraft> &aircraft, const String &
                 if (g_lastCellValid[r][c] && g_lastCell[r][c] == values[c] && g_lastCellColor[r][c] == color) {
                     continue;  // unchanged - skip the redraw entirely
                 }
-                drawCell(r, c, values[c], color);
+                // Shade genuine changes only. A cell with no cached value is
+                // being painted for the first time or repainted after another
+                // screen covered the canvas, neither of which is news.
+                bool changed = g_lastCellValid[r][c] && g_showRefresh;
+                drawCell(r, c, values[c], color, changed);
+                uint32_t until = millis() + CELL_HIGHLIGHT_MS;
+                if (until == 0) {
+                    until = 1;  // 0 is the "not shaded" sentinel
+                }
+                g_highlightUntil[r][c] = changed ? until : 0;
                 g_lastCell[r][c] = values[c];
                 g_lastCellColor[r][c] = color;
                 g_lastCellValid[r][c] = true;

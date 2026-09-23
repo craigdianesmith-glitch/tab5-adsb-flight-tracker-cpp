@@ -38,9 +38,10 @@ The cog in the header opens a settings screen holding:
 
 - **Traffic filter** - civilian or military, as an either/or choice rather than two independent switches. Military aircraft are the ones adsb.lol sets bit 0 of `dbFlags` on.
 - **Range** - a slider whose ceiling follows the filter above it: 60nm for civil traffic, 150nm for military, since military traffic is worth watching further out. Switching to civil with the slider up high clamps it back down.
+- **Show flight refresh** - whether cells that changed on the last poll are shaded for a moment (see Rendering below). On by default.
 - **WiFi** - scans for networks and connects to one, so the device can move between networks without a reflash. Credentials are saved to NVS and win over the ones compiled in from `secrets.h`, which stay as the fallback for a device that's never had WiFi set on-screen.
 
-Filters, range and WiFi credentials all persist across reboots alongside the chosen location. Changing any of them refetches immediately rather than waiting out the rest of the poll interval.
+Filters, range, the refresh toggle and WiFi credentials all persist across reboots alongside the chosen location. Changing any of them refetches immediately rather than waiting out the rest of the poll interval.
 
 ## Sound
 
@@ -63,7 +64,9 @@ Two details worth knowing if you touch `screen.cpp`: the PPA's RGB565 byte order
 
 The poll task also trims each result set to the number of rows that actually fit (eleven at this size), nearest first - a 60nm radius over a busy area returns well over a hundred aircraft, and carrying the other ninety through two vector copies per refresh bought nothing. Trimming there rather than at draw time also keeps "new arrival" meaning a new *row*, rather than beeping at every aircraft that enters the radius unseen.
 
-Rendering also still does per-cell diffing, so a refresh where nothing changed costs nothing at all, and the three screens share the one canvas rather than holding 1.8MB each.
+The per-cell diffing earns its keep twice over: a cell whose value hasn't moved is never redrawn, and the cells that *have* moved are shaded for two seconds so a change is visible without having to watch for it. That costs one extra flush per poll - about 24ms in every 10 seconds, or a quarter of one percent of the time. `CELL_HIGHLIGHT_MS` in `include/config.h` sets how long the shading lasts, and the *Show flight refresh* toggle on the settings screen turns it off.
+
+Rendering also means a refresh where nothing changed costs nothing at all, and the three screens share the one canvas rather than holding 1.8MB each.
 
 ## Layout
 

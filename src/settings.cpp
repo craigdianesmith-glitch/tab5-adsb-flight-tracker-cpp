@@ -17,6 +17,7 @@ AppSettings loadSettings() {
     s.label = prefs.getString("label", DEFAULT_LABEL);
     s.traffic = prefs.getBool("milonly", false) ? TrafficFilter::MILITARY : TrafficFilter::CIVIL;
     s.radiusNm = prefs.getInt("radius", DEFAULT_RADIUS_NM);
+    s.showRefresh = prefs.getBool("refresh", true);
     // isKey() first: getString() on a missing key logs an ESP error line, and
     // an unconfigured device would print two of them on every boot.
     s.wifiSsid = prefs.isKey("ssid") ? prefs.getString("ssid") : String("");
@@ -42,11 +43,12 @@ void saveLocation(double lat, double lon, const String &label) {
     prefs.end();
 }
 
-void saveFilters(TrafficFilter traffic, int radiusNm) {
+void saveFilters(TrafficFilter traffic, int radiusNm, bool showRefresh) {
     Preferences prefs;
     prefs.begin(NAMESPACE, false);
     prefs.putBool("milonly", traffic == TrafficFilter::MILITARY);
     prefs.putInt("radius", radiusNm);
+    prefs.putBool("refresh", showRefresh);
     prefs.end();
 }
 

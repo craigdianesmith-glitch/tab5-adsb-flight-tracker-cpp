@@ -32,6 +32,7 @@ double g_lat, g_lon;
 String g_label;
 TrafficFilter g_traffic = TrafficFilter::CIVIL;
 int g_radiusNm = DEFAULT_RADIUS_NM;
+bool g_showRefresh = true;
 // Set by a UI touch handler, consumed by pollTask: forget which aircraft have
 // been seen, so a changed location or filter doesn't flag everything as new.
 bool g_resetBaseline = false;
@@ -175,7 +176,7 @@ void connectWifi(const String &ssid, const String &password) {
 
 void handleMainTouch(int x, int y) {
     if (displayHitCog(x, y)) {
-        settingsScreenSet(g_traffic, g_radiusNm);
+        settingsScreenSet(g_traffic, g_radiusNm, g_showRefresh);
         g_screen = Screen::SETTINGS;
         settingsScreenDraw();
         return;
@@ -250,7 +251,9 @@ void handleSettingsTouch(int x, int y, bool pressed, bool clicked) {
     case SettingsAction::BACK: {
         TrafficFilter traffic = settingsScreenTraffic();
         int radius = settingsScreenRadius();
-        saveFilters(traffic, radius);
+        g_showRefresh = settingsScreenShowRefresh();
+        saveFilters(traffic, radius, g_showRefresh);
+        displaySetShowRefresh(g_showRefresh);
         if (xSemaphoreTake(g_dataMutex, portMAX_DELAY) == pdTRUE) {
             bool changed = (traffic != g_traffic) || (radius != g_radiusNm);
             g_traffic = traffic;
@@ -309,6 +312,8 @@ void setup() {
     g_label = s.label;
     g_traffic = s.traffic;
     g_radiusNm = s.radiusNm;
+    g_showRefresh = s.showRefresh;
+    displaySetShowRefresh(g_showRefresh);
 
     std::vector<Aircraft> none;
     std::vector<uint8_t> noneNew;
@@ -408,6 +413,7 @@ void loop() {
         if (shouldRender) {
             displayRenderAircraft(aircraft, label, isNew);
         }
+        displayTickHighlights();
     }
 
     delay(10);
