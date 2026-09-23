@@ -31,6 +31,7 @@ constexpr int ICON_SIZE = 18;
 
 // Settings cog, centred in the gap between the title and the location button.
 constexpr int COG_X = 452, COG_Y = 6, COG_SIZE = 52;
+constexpr int RADAR_X = 524, RADAR_Y = 6, RADAR_SIZE = 52;
 
 // The header bar's vertical centre. The cog and the location button both sit
 // in the 6..58 band, so the title lines up with them rather than with the
@@ -91,6 +92,15 @@ void drawGear(int cx, int cy, int r, uint16_t color) {
     }
     canvas.fillCircle(cx, cy, r, color);
     canvas.fillCircle(cx, cy, (int)lroundf(r * 0.40f), colorBg);
+}
+
+void drawRadarIcon(int cx, int cy, int r, uint16_t color) {
+    auto &canvas = screen::canvas();
+    canvas.drawCircle(cx, cy, r, color);
+    canvas.drawCircle(cx, cy, (r * 2) / 3, color);
+    canvas.drawCircle(cx, cy, r / 3, color);
+    // sweep line, up and to the right
+    canvas.drawLine(cx, cy, cx + (int)lroundf(r * 0.707f), cy - (int)lroundf(r * 0.707f), color);
 }
 
 void drawCell(int r, int c, const String &value, uint16_t color, bool highlight) {
@@ -158,6 +168,10 @@ bool displayHitCog(int x, int y) {
     return x >= COG_X && x < COG_X + COG_SIZE && y >= COG_Y && y < COG_Y + COG_SIZE;
 }
 
+bool displayHitRadar(int x, int y) {
+    return x >= RADAR_X && x < RADAR_X + RADAR_SIZE && y >= RADAR_Y && y < RADAR_Y + RADAR_SIZE;
+}
+
 void displayInvalidate() {
     // Another screen has been drawing on the shared canvas, so nothing cached
     // here is on it any more. Clearing g_headerDrawn makes the next render
@@ -215,6 +229,7 @@ void displayRenderAircraft(const std::vector<Aircraft> &aircraft, const String &
         canvas.drawString(g_military ? " - MIL -" : " - CIV -", 16 + canvas.textWidth(title), HEADER_MID_Y);
 
         drawGear(COG_X + COG_SIZE / 2, COG_Y + COG_SIZE / 2, COG_SIZE / 2 - 6, colorGrey);
+        drawRadarIcon(RADAR_X + RADAR_SIZE / 2, RADAR_Y + RADAR_SIZE / 2, RADAR_SIZE / 2 - 6, colorGrey);
 
         int x = TABLE_X;
         for (int i = 0; i < NUM_COLS; i++) {

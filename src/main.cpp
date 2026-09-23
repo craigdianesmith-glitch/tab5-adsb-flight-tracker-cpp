@@ -10,6 +10,7 @@
 #include "detail_screen.h"
 #include "display.h"
 #include "location_screen.h"
+#include "radar_screen.h"
 #include "screen.h"
 #include "secrets.h"
 #include "settings.h"
@@ -19,8 +20,11 @@
 
 namespace {
 
-enum class Screen { MAIN, LOCATION, DETAIL, SETTINGS, WIFI };
+enum class Screen { MAIN, LOCATION, DETAIL, SETTINGS, WIFI, RADAR };
 Screen g_screen = Screen::MAIN;
+// The detail screen is reachable from the table and from the radar, and Back
+// should land wherever you came from.
+Screen g_detailReturnTo = Screen::MAIN;
 
 SemaphoreHandle_t g_dataMutex;
 std::vector<Aircraft> g_latestAircraft;
@@ -41,6 +45,10 @@ bool g_pollNow = false;  // skip the rest of the poll interval and refetch
 // Only touched by pollTask - no locking needed since it's the sole writer/reader.
 std::map<String, uint32_t> g_seenMap;
 bool g_baseline = true;
+
+// Enough for the radar plot to look like the sky rather than a handful of
+// dots, while still dropping the long tail of a busy radius.
+constexpr size_t MAX_CONTACTS = 60;
 
 int g_rotation = 3;
 constexpr float ROTATION_THRESHOLD = 0.5f;
@@ -86,14 +94,14 @@ void pollTask(void *) {
                 aircraft.push_back(a);
             }
 
-            // adsb_client sorts by distance, so this keeps the nearest few and
-            // drops the rest: a 60nm radius can easily return a hundred
-            // aircraft where only eleven rows fit. Trimming here rather than at
-            // draw time also means "new arrival" means a new *row*, instead of
-            // beeping at every aircraft entering the radius unseen.
+            // adsb_client sorts by distance, so this keeps the nearest and
+            // drops the long tail: a 60nm radius can easily return well over a
+            // hundred aircraft. The table draws only the rows that fit, but the
+            // radar plots the lot, so the cap is the radar's rather than the
+            // table's.
             size_t maxRows = (size_t)displayMaxRows();
-            if (aircraft.size() > maxRows) {
-                aircraft.resize(maxRows);
+            if (aircraft.size() > MAX_CONTACTS) {
+                aircraft.resize(MAX_CONTACTS);
             }
             uint32_t now = millis();
             std::vector<uint8_t> isNew(aircraft.size(), 0);
@@ -101,7 +109,11 @@ void pollTask(void *) {
             for (size_t i = 0; i < aircraft.size(); i++) {
                 if (g_seenMap.find(aircraft[i].hex) == g_seenMap.end() && !g_baseline) {
                     isNew[i] = 1;
-                    anyNew = true;
+                    // The beep still means a new *row*, so only contacts near
+                    // enough to reach the table count towards it.
+                    if (i < maxRows) {
+                        anyNew = true;
+                    }
                 }
                 g_seenMap[aircraft[i].hex] = now;
             }
@@ -174,7 +186,68 @@ void connectWifi(const String &ssid, const String &password) {
                   WiFi.status() == WL_CONNECTED ? WiFi.localIP().toString().c_str() : "FAILED to connect");
 }
 
+void drawRadar() {
+    std::vector<Aircraft> aircraft;
+    std::vector<uint8_t> isNew;
+    double lat = 0, lon = 0;
+    int radius = DEFAULT_RADIUS_NM;
+    bool military = false;
+    if (xSemaphoreTake(g_dataMutex, portMAX_DELAY) == pdTRUE) {
+        aircraft = g_latestAircraft;
+        isNew = g_latestIsNew;
+        lat = g_lat;
+        lon = g_lon;
+        radius = g_radiusNm;
+        military = (g_traffic == TrafficFilter::MILITARY);
+        xSemaphoreGive(g_dataMutex);
+    }
+    radarScreenDraw(aircraft, isNew, lat, lon, radius, military);
+}
+
+void handleRadarTouch(int x, int y) {
+    String hex;
+    switch (radarScreenHandleTouch(x, y, hex)) {
+    case RadarAction::BACK:
+        g_screen = Screen::MAIN;
+        displayInvalidate();
+        if (xSemaphoreTake(g_dataMutex, portMAX_DELAY) == pdTRUE) {
+            g_dataReady = true;
+            xSemaphoreGive(g_dataMutex);
+        }
+        break;
+    case RadarAction::SELECT: {
+        Aircraft tapped;
+        bool found = false;
+        if (xSemaphoreTake(g_dataMutex, portMAX_DELAY) == pdTRUE) {
+            for (const Aircraft &a : g_latestAircraft) {
+                if (a.hex == hex) {
+                    tapped = a;
+                    found = true;
+                    break;
+                }
+            }
+            xSemaphoreGive(g_dataMutex);
+        }
+        if (found) {
+            detailScreenSet(tapped);
+            g_detailReturnTo = Screen::RADAR;
+            g_screen = Screen::DETAIL;
+            detailScreenDraw();
+        }
+        break;
+    }
+    case RadarAction::NONE:
+        break;
+    }
+}
+
 void handleMainTouch(int x, int y) {
+    if (displayHitRadar(x, y)) {
+        g_screen = Screen::RADAR;
+        drawRadar();
+        return;
+    }
+
     if (displayHitCog(x, y)) {
         settingsScreenSet(g_traffic, g_radiusNm, g_showRefresh);
         g_screen = Screen::SETTINGS;
@@ -202,6 +275,7 @@ void handleMainTouch(int x, int y) {
         }
         if (found) {
             detailScreenSet(tapped);
+            g_detailReturnTo = Screen::MAIN;
             g_screen = Screen::DETAIL;
             detailScreenDraw();
         }
@@ -209,13 +283,19 @@ void handleMainTouch(int x, int y) {
 }
 
 void handleDetailTouch(int x, int y) {
-    if (detailScreenHandleTouch(x, y)) {
-        g_screen = Screen::MAIN;
-        displayInvalidate();
-        if (xSemaphoreTake(g_dataMutex, portMAX_DELAY) == pdTRUE) {
-            g_dataReady = true;  // force a redraw of the main screen with current data
-            xSemaphoreGive(g_dataMutex);
-        }
+    if (!detailScreenHandleTouch(x, y)) {
+        return;
+    }
+    if (g_detailReturnTo == Screen::RADAR) {
+        g_screen = Screen::RADAR;
+        drawRadar();
+        return;
+    }
+    g_screen = Screen::MAIN;
+    displayInvalidate();
+    if (xSemaphoreTake(g_dataMutex, portMAX_DELAY) == pdTRUE) {
+        g_dataReady = true;  // force a redraw of the main screen with current data
+        xSemaphoreGive(g_dataMutex);
     }
 }
 
@@ -368,6 +448,9 @@ void loop() {
             case Screen::WIFI:
                 handleWifiTouch(t.x, t.y);
                 break;
+            case Screen::RADAR:
+                handleRadarTouch(t.x, t.y);
+                break;
             default:
                 break;
             }
@@ -395,6 +478,18 @@ void loop() {
     }
     if (newFlight) {
         soundNewFlight();
+    }
+
+    if (g_screen == Screen::RADAR) {
+        bool fresh = false;
+        if (xSemaphoreTake(g_dataMutex, 0) == pdTRUE) {
+            fresh = g_dataReady;
+            g_dataReady = false;
+            xSemaphoreGive(g_dataMutex);
+        }
+        if (fresh) {
+            drawRadar();
+        }
     }
 
     if (g_screen == Screen::MAIN) {

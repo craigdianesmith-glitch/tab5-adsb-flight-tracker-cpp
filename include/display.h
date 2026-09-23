@@ -15,6 +15,9 @@ int displayMaxRows();
 // True if (x, y) is on the settings cog in the header.
 bool displayHitCog(int x, int y);
 
+// True if (x, y) is on the radar button in the header.
+bool displayHitRadar(int x, int y);
+
 // Drop the render cache - call when another screen has drawn over the shared
 // canvas, so the next render repaints from scratch.
 void displayInvalidate();

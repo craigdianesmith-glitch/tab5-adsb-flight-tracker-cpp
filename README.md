@@ -58,6 +58,16 @@ Every designator in both tables is checked against the ICAO doc 8643 list rather
 | `E175` | not a designator; the E175 is split by wing | `E75L` + `E75S` |
 | `PA28` | not a designator | `P28A` (already present) |
 
+## Radar
+
+The radar button in the header opens a plan-position plot centred on the configured location, in phosphor green: range rings on round numbers, bearing marks every 30 degrees, and every contact that reported a position as a blip with a vector showing a minute of flight at its current groundspeed. A tap on a blip opens that aircraft's detail screen.
+
+A single hue is deliberate - on a plot like this brightness is what carries meaning, which leaves it free to mark a new arrival as the brightest thing on screen.
+
+Callsigns are placed nearest-first and one may not overlap another already placed, so in a cluster the closest aircraft keeps its label and the rest stay as bare blips. The footer says how many were plotted and how many of those are labelled, so a thinned display doesn't read as a missing one.
+
+The code at the centre is the nearest airport, from a generated table of the 3244 large and medium airports with scheduled service in the public-domain [OurAirports](https://ourairports.com/data/) dataset (~39KB of flash). A full scan takes 6.7ms, so the result is cached until the location changes rather than recomputed per frame. Nothing within 120nm leaves the centre as a bare cross.
+
 ## Sound
 
 A two-note rise once the firmware is up, and a short blip whenever an aircraft that wasn't there before appears in the table - one blip per poll however many arrived, and never on the first poll after a start or a location change, where every aircraft is new by definition. `SOUND_ENABLED` and `SOUND_VOLUME` in `include/config.h` turn it off or change the level.
@@ -96,5 +106,7 @@ Rendering also means a refresh where nothing changed costs nothing at all, and t
 - `src/aircraft_db.cpp` - ICAO type code and operator lookups for the detail screen
 - `src/geocode.cpp` - Open-Meteo location search
 - `src/settings.cpp` - persists location, filters and WiFi credentials via ESP32 `Preferences` (NVS)
+- `src/radar_screen.cpp` - the radar plot: range rings, bearings, contacts and vectors
+- `src/airports.cpp` - generated nearest-airport lookup, for the code at the centre of the plot
 - `src/sound.cpp` - boot and new-arrival beeps through the built-in speaker
 - `include/config.h` - tunable constants
