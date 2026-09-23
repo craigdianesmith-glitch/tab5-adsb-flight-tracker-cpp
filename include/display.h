@@ -19,6 +19,10 @@ bool displayHitCog(int x, int y);
 // canvas, so the next render repaints from scratch.
 void displayInvalidate();
 
+// Which traffic the table is showing, for the header's MIL/CIV marker. Takes
+// effect on the next full repaint, which a filter change causes anyway.
+void displaySetMilitary(bool military);
+
 // Turns the shading of just-changed cells on or off.
 void displaySetShowRefresh(bool enabled);
 

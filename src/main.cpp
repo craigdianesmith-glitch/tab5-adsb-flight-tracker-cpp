@@ -254,6 +254,7 @@ void handleSettingsTouch(int x, int y, bool pressed, bool clicked) {
         g_showRefresh = settingsScreenShowRefresh();
         saveFilters(traffic, radius, g_showRefresh);
         displaySetShowRefresh(g_showRefresh);
+        displaySetMilitary(traffic == TrafficFilter::MILITARY);
         if (xSemaphoreTake(g_dataMutex, portMAX_DELAY) == pdTRUE) {
             bool changed = (traffic != g_traffic) || (radius != g_radiusNm);
             g_traffic = traffic;
@@ -314,6 +315,7 @@ void setup() {
     g_radiusNm = s.radiusNm;
     g_showRefresh = s.showRefresh;
     displaySetShowRefresh(g_showRefresh);
+    displaySetMilitary(g_traffic == TrafficFilter::MILITARY);
 
     std::vector<Aircraft> none;
     std::vector<uint8_t> noneNew;

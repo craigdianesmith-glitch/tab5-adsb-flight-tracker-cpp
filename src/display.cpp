@@ -31,6 +31,13 @@ constexpr int ICON_SIZE = 18;
 
 // Settings cog, centred in the gap between the title and the location button.
 constexpr int COG_X = 452, COG_Y = 6, COG_SIZE = 52;
+
+// The header bar's vertical centre. The cog and the location button both sit
+// in the 6..58 band, so the title lines up with them rather than with the
+// nominal centre of the strip. The +3 is an optical nudge: ML_DATUM centres
+// the whole glyph cell including the descender space, which a line of capitals
+// doesn't use, so a mathematically centred title reads as sitting high.
+constexpr int HEADER_MID_Y = COG_Y + COG_SIZE / 2 + 3;
 int colX[NUM_COLS];
 
 // Render cache: what's currently on screen, so a redraw only touches cells
@@ -44,6 +51,7 @@ bool g_lastCellValid[MAX_CACHE_ROWS][NUM_COLS] = {};
 // millis() at which a cell's shading lapses; 0 means it isn't shaded.
 uint32_t g_highlightUntil[MAX_CACHE_ROWS][NUM_COLS] = {};
 bool g_showRefresh = true;
+bool g_military = false;
 
 // Drawn geometric icons rather than a hand-authored bitmap: precise and
 // reliable without needing to eyeball pixel arrays on real hardware.
@@ -167,6 +175,8 @@ void displayInvalidate() {
 
 void displaySetShowRefresh(bool enabled) { g_showRefresh = enabled; }
 
+void displaySetMilitary(bool military) { g_military = military; }
+
 void displayTickHighlights() {
     uint32_t now = millis();
     bool any = false;
@@ -194,10 +204,15 @@ void displayRenderAircraft(const std::vector<Aircraft> &aircraft, const String &
     if (!g_headerDrawn) {
         screen::clear(colorBg);
         canvas.setFont(&fonts::Font0);
-        canvas.setTextColor(colorWhite);
         canvas.setTextSize(3);
-        canvas.setTextDatum(TL_DATUM);
-        canvas.drawString("ADSB Flight Display", 16, 10);
+        canvas.setTextDatum(ML_DATUM);
+        canvas.setTextColor(colorWhite);
+        const char *title = "ADSB Flights";
+        canvas.drawString(title, 16, HEADER_MID_Y);
+        // Which traffic the table is showing, so an empty table in military
+        // mode reads as "nothing about" rather than "something's broken".
+        canvas.setTextColor(colorGrey);
+        canvas.drawString(g_military ? " - MIL -" : " - CIV -", 16 + canvas.textWidth(title), HEADER_MID_Y);
 
         drawGear(COG_X + COG_SIZE / 2, COG_Y + COG_SIZE / 2, COG_SIZE / 2 - 6, colorGrey);
 
