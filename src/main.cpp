@@ -9,6 +9,7 @@
 #include "detail_screen.h"
 #include "display.h"
 #include "location_screen.h"
+#include "screen.h"
 #include "secrets.h"
 #include "settings.h"
 
@@ -90,12 +91,18 @@ void checkRotation() {
         return;
     }
     if (ax > ROTATION_THRESHOLD && g_rotation != 3) {
-        M5.Display.setRotation(3);
+        M5.Display.setRotation(3);  // keeps touch coordinates in step
         g_rotation = 3;
     } else if (ax < -ROTATION_THRESHOLD && g_rotation != 1) {
         M5.Display.setRotation(1);
         g_rotation = 1;
+    } else {
+        return;
     }
+    // The canvas is drawn landscape either way; only the angle it's rotated
+    // through on the way to the panel changes, so re-push what's already there.
+    screen::setRotation(g_rotation);
+    screen::flush();
 }
 
 void connectWifi() {
@@ -139,6 +146,7 @@ void handleMainTouch(int x, int y) {
 void handleDetailTouch(int x, int y) {
     if (detailScreenHandleTouch(x, y)) {
         g_screen = Screen::MAIN;
+        displayInvalidate();
         if (xSemaphoreTake(g_dataMutex, portMAX_DELAY) == pdTRUE) {
             g_dataReady = true;  // force a redraw of the main screen with current data
             xSemaphoreGive(g_dataMutex);
@@ -152,12 +160,14 @@ void handleLocationTouch(int x, int y) {
     LocationAction action = locationScreenHandleTouch(x, y, lat, lon, label);
     if (action == LocationAction::BACK) {
         g_screen = Screen::MAIN;
+        displayInvalidate();
         if (xSemaphoreTake(g_dataMutex, portMAX_DELAY) == pdTRUE) {
             g_dataReady = true;  // force a redraw of the main screen with current data
             xSemaphoreGive(g_dataMutex);
         }
     } else if (action == LocationAction::LOCATION_SET) {
         saveSettings(lat, lon, label);
+        displayInvalidate();
         if (xSemaphoreTake(g_dataMutex, portMAX_DELAY) == pdTRUE) {
             g_lat = lat;
             g_lon = lon;
@@ -184,6 +194,9 @@ void setup() {
     auto cfg = M5.config();
     M5.begin(cfg);
 
+    if (!screen::init()) {
+        Serial.println("[setup] display canvas unavailable");
+    }
     displayInit();
 
     LocationSettings s = loadSettings();

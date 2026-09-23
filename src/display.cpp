@@ -2,9 +2,9 @@
 
 #include <math.h>
 
-namespace {
+#include "screen.h"
 
-M5Canvas canvas(&M5.Display);
+namespace {
 
 struct Column {
     const char *title;
@@ -16,6 +16,7 @@ const Column COLUMNS[] = {
 };
 constexpr int NUM_COLS = 6;
 constexpr int TABLE_X = 8;
+constexpr int TABLE_W = 1264;
 constexpr int HEADER_Y = 68;
 constexpr int HEADER_H = 54;
 constexpr int TABLE_Y = HEADER_Y + HEADER_H;
@@ -32,7 +33,6 @@ int colX[NUM_COLS];
 bool g_headerDrawn = false;
 String g_lastLabel = "\x01";  // sentinel that can never equal a real label
 bool g_lastWasEmpty = false;
-int g_lastAircraftCount = -1;
 String g_lastCell[MAX_CACHE_ROWS][NUM_COLS];
 uint16_t g_lastCellColor[MAX_CACHE_ROWS][NUM_COLS];
 bool g_lastCellValid[MAX_CACHE_ROWS][NUM_COLS] = {};
@@ -40,6 +40,7 @@ bool g_lastCellValid[MAX_CACHE_ROWS][NUM_COLS] = {};
 // Drawn geometric icons rather than a hand-authored bitmap: precise and
 // reliable without needing to eyeball pixel arrays on real hardware.
 void drawStatusIcon(int cx, int cy, const String &status, uint16_t color) {
+    auto &canvas = screen::canvas();
     int half = ICON_SIZE / 2;
     if (status == "CLIMB") {
         canvas.fillTriangle(cx, cy - half, cx - half, cy + half, cx + half, cy + half, color);
@@ -55,6 +56,7 @@ void drawStatusIcon(int cx, int cy, const String &status, uint16_t color) {
 }
 
 void drawCell(int r, int c, const String &value, uint16_t color) {
+    auto &canvas = screen::canvas();
     int w = COLUMNS[c].width - 4;
     int y = TABLE_Y + r * ROW_HEIGHT;
     int h = ROW_HEIGHT - 4;
@@ -71,11 +73,13 @@ void drawCell(int r, int c, const String &value, uint16_t color) {
     } else {
         canvas.drawString(value, colX[c] + 10, midY);
     }
+    screen::markDirty(colX[c], y, w, h);
 }
 
 void clearRow(int r) {
     int y = TABLE_Y + r * ROW_HEIGHT;
-    canvas.fillRect(TABLE_X, y, 1264, ROW_HEIGHT - 4, colorBg);
+    screen::canvas().fillRect(TABLE_X, y, TABLE_W, ROW_HEIGHT - 4, colorBg);
+    screen::markDirty(TABLE_X, y, TABLE_W, ROW_HEIGHT - 4);
     for (int c = 0; c < NUM_COLS; c++) {
         g_lastCellValid[r][c] = false;
     }
@@ -95,9 +99,6 @@ void displayInit() {
     colorGrey = M5.Display.color565(0x88, 0x88, 0x88);
     colorNew = M5.Display.color565(0x1B, 0x7A, 0x1B);
 
-    canvas.setColorDepth(16);
-    canvas.createSprite(M5.Display.width(), M5.Display.height());
-
     int x = TABLE_X;
     for (int i = 0; i < NUM_COLS; i++) {
         colX[i] = x;
@@ -105,12 +106,27 @@ void displayInit() {
     }
 }
 
+void displayInvalidate() {
+    // Another screen has been drawing on the shared canvas, so nothing cached
+    // here is on it any more. Clearing g_headerDrawn makes the next render
+    // clear the canvas and repaint from scratch.
+    g_headerDrawn = false;
+    g_lastLabel = "\x01";
+    g_lastWasEmpty = false;
+    for (int r = 0; r < MAX_CACHE_ROWS; r++) {
+        for (int c = 0; c < NUM_COLS; c++) {
+            g_lastCellValid[r][c] = false;
+        }
+    }
+}
+
 void displayRenderAircraft(const std::vector<Aircraft> &aircraft, const String &locationLabel,
                             const std::vector<uint8_t> &isNew) {
-    int screenH = M5.Display.height();
+    auto &canvas = screen::canvas();
+    int screenH = canvas.height();
 
     if (!g_headerDrawn) {
-        canvas.fillScreen(colorBg);
+        screen::clear(colorBg);
         canvas.setFont(&fonts::Font0);
         canvas.setTextColor(colorWhite);
         canvas.setTextSize(3);
@@ -144,6 +160,7 @@ void displayRenderAircraft(const std::vector<Aircraft> &aircraft, const String &
             canvas.setTextSize(size);
         }
         canvas.drawString(locationLabel, btnX + btnW / 2, btnY + btnH / 2);
+        screen::markDirty(btnX, btnY, btnW, btnH);
         g_lastLabel = locationLabel;
     }
 
@@ -166,7 +183,8 @@ void displayRenderAircraft(const std::vector<Aircraft> &aircraft, const String &
     } else {
         if (g_lastWasEmpty) {
             // wipe the "No aircraft" message before drawing real rows
-            canvas.fillRect(TABLE_X, TABLE_Y, 1264, maxRows * ROW_HEIGHT, colorBg);
+            canvas.fillRect(TABLE_X, TABLE_Y, TABLE_W, maxRows * ROW_HEIGHT, colorBg);
+            screen::markDirty(TABLE_X, TABLE_Y, TABLE_W, maxRows * ROW_HEIGHT);
         }
         int count = (int)aircraft.size();
         for (int r = 0; r < maxRows; r++) {
@@ -198,5 +216,5 @@ void displayRenderAircraft(const std::vector<Aircraft> &aircraft, const String &
     }
     g_lastWasEmpty = aircraft.empty();
 
-    canvas.pushSprite(0, 0);
+    screen::flush();
 }

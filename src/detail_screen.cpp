@@ -4,11 +4,11 @@
 #include <math.h>
 
 #include "aircraft_db.h"
+#include "screen.h"
 
 namespace {
 
-M5Canvas canvas(&M5.Display);
-bool canvasReady = false;
+bool colorsReady = false;
 
 constexpr int BACK_X = 1140, BACK_Y = 8, BACK_W = 124, BACK_H = 44;
 // Label column widened to fit the bigger label font (e.g. "ALTITUDE (BARO)"
@@ -40,6 +40,7 @@ uint16_t statusColor(const String &status) {
 
 void field(int labelX, int valueX, int maxValueW, int y, const char *label, const String &value,
            uint16_t valueColor) {
+    auto &canvas = screen::canvas();
     canvas.setFont(&fonts::Font0);
     canvas.setTextSize(3);
     canvas.setTextColor(colorGrey);
@@ -67,7 +68,8 @@ void detailScreenSet(const Aircraft &ac) {
 }
 
 void detailScreenDraw() {
-    if (!canvasReady) {
+    auto &canvas = screen::canvas();
+    if (!colorsReady) {
         colorBg = M5.Display.color565(0x10, 0x14, 0x18);
         colorWhite = M5.Display.color565(0xFF, 0xFF, 0xFF);
         colorGrey = M5.Display.color565(0x88, 0x88, 0x88);
@@ -75,15 +77,15 @@ void detailScreenDraw() {
         colorClimb = M5.Display.color565(0x2E, 0xCC, 0x71);
         colorDescend = M5.Display.color565(0xF3, 0x9C, 0x12);
         colorLevel = M5.Display.color565(0xFF, 0xFF, 0xFF);
-        canvas.setColorDepth(16);
-        canvas.createSprite(M5.Display.width(), M5.Display.height());
-        canvasReady = true;
+        colorsReady = true;
     }
     if (!g_hasAc) {
         return;
     }
 
-    canvas.fillScreen(colorBg);
+    // Whole-screen repaint, so hand the clear to the PPA and let the flush
+    // below push the lot in one transfer.
+    screen::clear(colorBg);
     canvas.setFont(&fonts::Font0);
 
     canvas.setTextColor(colorWhite);
@@ -154,7 +156,7 @@ void detailScreenDraw() {
     }
     canvas.drawString(footer, 16, ROW0_Y + 6 * ROW_H);
 
-    canvas.pushSprite(0, 0);
+    screen::flush();
 }
 
 bool detailScreenHandleTouch(int x, int y) {
