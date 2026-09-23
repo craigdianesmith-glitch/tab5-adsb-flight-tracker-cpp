@@ -1,5 +1,7 @@
 #include "aircraft_db.h"
 
+#include <iterator>
+
 namespace {
 
 struct TypeEntry {
@@ -30,7 +32,7 @@ const TypeEntry TYPES[] = {
     {"B78X", "Boeing 787-10 Dreamliner"},
     // Embraer
     {"E135", "Embraer ERJ-135"}, {"E145", "Embraer ERJ-145"}, {"E170", "Embraer E170"},
-    {"E175", "Embraer E175"}, {"E190", "Embraer E190"}, {"E195", "Embraer E195"},
+    {"E75L", "Embraer E175"}, {"E75S", "Embraer E175"}, {"E190", "Embraer E190"}, {"E195", "Embraer E195"},
     {"E290", "Embraer E190-E2"}, {"E295", "Embraer E195-E2"},
     // Bombardier / De Havilland Canada
     {"CRJ2", "Bombardier CRJ200"}, {"CRJ7", "Bombardier CRJ700"}, {"CRJ9", "Bombardier CRJ900"},
@@ -42,10 +44,10 @@ const TypeEntry TYPES[] = {
     {"AT75", "ATR 72-500"}, {"AT76", "ATR 72-600"},
     // GA / light
     {"C172", "Cessna 172 Skyhawk"}, {"C152", "Cessna 152"}, {"C182", "Cessna 182 Skylane"},
-    {"C206", "Cessna 206"}, {"C208", "Cessna Grand Caravan"}, {"C25A", "Cessna Citation CJ2"},
+    {"C206", "Cessna 206"}, {"C208", "Cessna 208 Caravan"}, {"C25A", "Cessna Citation CJ2"},
     {"C25B", "Cessna Citation CJ3"}, {"C25C", "Cessna Citation CJ4"}, {"C550", "Cessna Citation II"},
     {"C56X", "Cessna Citation Excel/XLS"}, {"C680", "Cessna Citation Sovereign"},
-    {"C750", "Cessna Citation X"}, {"PA28", "Piper Cherokee"}, {"P28A", "Piper Cherokee"},
+    {"C750", "Cessna Citation X"}, {"P28A", "Piper Cherokee"},
     {"PA34", "Piper Seneca"}, {"SR22", "Cirrus SR22"}, {"BE20", "Beechcraft King Air 200"},
     {"BE9L", "Beechcraft King Air 90"}, {"P180", "Piaggio P180 Avanti"},
     // Business jets
@@ -57,11 +59,66 @@ const TypeEntry TYPES[] = {
     {"EC35", "Eurocopter EC135"}, {"EC45", "Eurocopter EC145"}, {"AS50", "Eurocopter AS350 Squirrel"},
     {"A109", "Agusta A109"}, {"A139", "AgustaWestland AW139"}, {"R44", "Robinson R44"},
     {"S76", "Sikorsky S-76"}, {"H160", "Airbus H160"},
-    // Military
-    {"C130", "Lockheed C-130 Hercules"}, {"E3TF", "Boeing E-3 Sentry AWACS"},
-    {"RC135", "Boeing RC-135"}, {"K35R", "Boeing KC-135R Stratotanker"}, {"F16", "F-16 Fighting Falcon"},
-    {"F35", "F-35 Lightning II"}, {"TYPH", "Eurofighter Typhoon"}, {"TUCA", "Embraer Tucano"},
-    {"HAWK", "BAE Hawk"}, {"VC10", "Vickers VC10"},
+    // Civil aircraft whose type code the military table also lists, so a
+    // civil-registered one doesn't pick up a military variant's name.
+    {"A310", "Airbus A310"}, {"B350", "Beechcraft King Air 350"}, {"B190", "Beechcraft 1900"},
+    {"SW4", "Swearingen Metroliner"}, {"LJ35", "Learjet 35"}, {"C560", "Cessna Citation V"},
+    {"SR20", "Cirrus SR20"}, {"E550", "Embraer Praetor 600"}, {"TBM7", "Socata TBM 700"},
+    {"AT8T", "Air Tractor AT-802"}, {"DG1T", "DG Flugzeugbau DG-1000T"}, {"B412", "Bell 412"},
+    {"S92", "Sikorsky S-92"}, {"A119", "Leonardo AW119 Koala"}, {"EC25", "Airbus EC225 Super Puma"},
+    {"AS32", "Airbus AS332 Super Puma"}, {"AS55", "Airbus AS355 Ecureuil 2"},
+    {"AS65", "Airbus AS365 Dauphin"}, {"GAZL", "Aerospatiale Gazelle"}, {"MI8", "Mil Mi-8"},
+};
+
+// Military types, consulted first for anything adsb.lol flags as military.
+// Every designator here was checked against the ICAO doc 8643 list rather
+// than written from memory - the two entries this table replaces, "RC135"
+// and "TYPH", were both wrong and could never have matched (the real codes
+// are R135 and EUFI).
+const TypeEntry MIL_TYPES[] = {
+    // Transports and tankers
+    {"C130", "Lockheed C-130 Hercules"}, {"C30J", "Lockheed C-130J Super Hercules"},
+    {"C17", "Boeing C-17 Globemaster III"}, {"C5M", "Lockheed C-5M Super Galaxy"}, {"A400", "Airbus A400M Atlas"},
+    {"C27J", "Leonardo C-27J Spartan"}, {"C295", "Airbus C295 Persuader"}, {"CN35", "Airbus CN-235 Persuader"},
+    {"C160", "Transall C-160"}, {"K35R", "Boeing KC-135R Stratotanker"}, {"K35E", "Boeing KC-135E Stratotanker"},
+    {"C135", "Boeing WC-135 Constant Phoenix"}, {"B762", "Boeing KC-46 Pegasus"},
+    {"A332", "Airbus A330 MRTT Voyager"}, {"A310", "Airbus A310 MRTT"}, {"B737", "Boeing C-40 Clipper"},
+    {"DHC6", "De Havilland UV-18 Twin Otter"}, {"SW4", "Swearingen C-26 Metroliner"},
+    {"B190", "Beechcraft C-12J Huron"}, {"LJ35", "Learjet C-21A"},
+    // Surveillance, patrol and command
+    {"P8", "Boeing P-8 Poseidon"}, {"P3", "Lockheed P-3 Orion"}, {"P1", "Kawasaki P-1"},
+    {"R135", "Boeing RC-135 Rivet Joint"}, {"E3TF", "Boeing E-3 Sentry AWACS"},
+    {"E3CF", "Boeing E-3 Sentry AWACS"}, {"E737", "Boeing E-7 Wedgetail"}, {"E6", "Boeing E-6 Mercury"},
+    {"E2", "Grumman E-2 Hawkeye"}, {"U2", "Lockheed U-2 Dragon Lady"}, {"B350", "Beechcraft King Air 350 Shadow"},
+    {"BE20", "Beechcraft C-12 Huron"}, {"C560", "Cessna UC-35 Citation"}, {"GLF5", "Gulfstream C-37A"},
+    {"E550", "Embraer EMB-550 Praetor"},
+    // Combat
+    {"EUFI", "Eurofighter Typhoon"}, {"F15", "McDonnell Douglas F-15 Eagle"},
+    {"F16", "General Dynamics F-16 Fighting Falcon"}, {"F18H", "McDonnell Douglas F/A-18 Hornet"},
+    {"F18S", "Boeing F/A-18 Super Hornet"}, {"F22", "Lockheed Martin F-22 Raptor"},
+    {"F35", "Lockheed Martin F-35 Lightning II"}, {"A10", "Fairchild A-10 Thunderbolt II"},
+    {"B1", "Rockwell B-1 Lancer"}, {"B2", "Northrop Grumman B-2 Spirit"}, {"B52", "Boeing B-52 Stratofortress"},
+    {"TOR", "Panavia Tornado"}, {"RFAL", "Dassault Rafale"}, {"MIR2", "Dassault Mirage 2000"},
+    {"JAGR", "SEPECAT Jaguar"},
+    // Trainers
+    {"HAWK", "BAE Systems Hawk"}, {"TEX2", "Beechcraft T-6 Texan II"}, {"T38", "Northrop T-38 Talon"},
+    {"T34T", "Beechcraft T-34C Turbo Mentor"}, {"TUCA", "Embraer EMB-312 Tucano"}, {"E314", "Embraer EMB-314 Super Tucano"},
+    {"BT7", "Boeing T-7 Red Hawk"}, {"SR20", "Cirrus T-53"}, {"DG1T", "DG Flugzeugbau DG-1000T"},
+    // Helicopters and tilt-rotor
+    {"H60", "Sikorsky H-60 Black Hawk"}, {"H47", "Boeing CH-47 Chinook"}, {"H64", "Boeing AH-64 Apache"},
+    {"H53", "Sikorsky CH-53 Sea Stallion"}, {"H53S", "Sikorsky CH-53E Super Stallion"},
+    {"V22", "Bell Boeing V-22 Osprey"}, {"EH10", "AgustaWestland AW101 Merlin"},
+    {"LYNX", "Leonardo AW159 Wildcat"}, {"NH90", "NHIndustries NH90"}, {"AS65", "Aerospatiale AS565 Panther"},
+    {"AS32", "Aerospatiale AS532 Cougar"}, {"AS55", "Aerospatiale AS555 Fennec"},
+    {"EC25", "Airbus EC225 Super Puma"}, {"EC45", "Airbus UH-72 Lakota"}, {"EC35", "Airbus H135 Juno"},
+    {"MI8", "Mil Mi-8 Hip"}, {"GAZL", "Aerospatiale SA342 Gazelle"}, {"S92", "Sikorsky S-92"},
+    {"A119", "Leonardo AW119 Koala"}, {"SUCO", "Bell AH-1Z Viper"}, {"UH1", "Bell UH-1 Iroquois"},
+    {"UH1Y", "Bell UH-1Y Venom"}, {"B412", "Bell 412"},
+    // Uncrewed
+    {"Q9", "General Atomics MQ-9 Reaper"}, {"Q4", "Northrop Grumman RQ-4 Global Hawk"},
+    {"Q1", "General Atomics MQ-1 Predator"},
+    // Other
+    {"AT8T", "Air Tractor AT-802"}, {"TBM7", "Socata TBM 700"},
 };
 
 struct AirlineEntry {
@@ -93,13 +150,30 @@ const AirlineEntry AIRLINES[] = {
 
 }  // namespace
 
-String lookupAircraftType(const String &icaoCode) {
-    for (const auto &t : TYPES) {
-        if (icaoCode == t.code) {
-            return t.name;
+namespace {
+
+const char *findType(const TypeEntry *table, size_t count, const String &code) {
+    for (size_t i = 0; i < count; i++) {
+        if (code == table[i].code) {
+            return table[i].name;
         }
     }
-    return icaoCode;
+    return nullptr;
+}
+
+}  // namespace
+
+String lookupAircraftType(const String &icaoCode, bool military) {
+    const TypeEntry *first = military ? MIL_TYPES : TYPES;
+    size_t firstCount = military ? std::size(MIL_TYPES) : std::size(TYPES);
+    const TypeEntry *second = military ? TYPES : MIL_TYPES;
+    size_t secondCount = military ? std::size(TYPES) : std::size(MIL_TYPES);
+
+    const char *hit = findType(first, firstCount, icaoCode);
+    if (hit == nullptr) {
+        hit = findType(second, secondCount, icaoCode);
+    }
+    return hit != nullptr ? String(hit) : icaoCode;
 }
 
 bool lookupAirline(const String &callsign, AirlineInfo &out) {

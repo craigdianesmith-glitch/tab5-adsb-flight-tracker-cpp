@@ -5,7 +5,13 @@
 // Returns the full aircraft name for an ICAO type code (e.g. "A320" ->
 // "Airbus A320"), or the code itself if not in the table. adsb.lol's `desc`
 // field is always null on this endpoint, so this is filled in locally.
-String lookupAircraftType(const String &icaoCode);
+//
+// Plenty of designators cover both a civil and a military aircraft - EC45 is
+// an air ambulance or a UH-72 Lakota, BE20 a King Air or a C-12 Huron - so
+// `military` (from the aircraft's dbFlags) picks which table is consulted
+// first. Either way the other is still searched, so a type only listed in one
+// of them resolves whatever the flag says.
+String lookupAircraftType(const String &icaoCode, bool military = false);
 
 struct AirlineInfo {
     String name;

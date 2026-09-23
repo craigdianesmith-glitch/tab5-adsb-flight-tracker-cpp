@@ -43,6 +43,21 @@ The cog in the header opens a settings screen holding:
 
 Filters, range, the refresh toggle and WiFi credentials all persist across reboots alongside the chosen location. Changing any of them refetches immediately rather than waiting out the rest of the poll interval.
 
+## Aircraft types
+
+adsb.lol's `desc` field is always null on the endpoints this uses, so the detail screen's full aircraft name is filled in locally from `src/aircraft_db.cpp`. There are two tables: civil types, and around 85 military ones covering transports, tankers, surveillance, combat, trainers, helicopters and drones.
+
+Which is consulted first depends on the aircraft's own military flag, because a good number of ICAO designators cover both - `EC45` is an air ambulance or a US Army UH-72 Lakota, `BE20` a King Air or a C-12 Huron, `B762` a 767-200 or a KC-46 Pegasus. The other table is still searched as a fallback, so a type listed in only one resolves either way.
+
+Every designator in both tables is checked against the ICAO doc 8643 list rather than written from memory, which is how four bad entries came to light - each one a row that could never have matched an aircraft:
+
+| was | problem | now |
+| --- | --- | --- |
+| `RC135` | designators are four characters at most | `R135` |
+| `TYPH` | not a designator | `EUFI` |
+| `E175` | not a designator; the E175 is split by wing | `E75L` + `E75S` |
+| `PA28` | not a designator | `P28A` (already present) |
+
 ## Sound
 
 A two-note rise once the firmware is up, and a short blip whenever an aircraft that wasn't there before appears in the table - one blip per poll however many arrived, and never on the first poll after a start or a location change, where every aircraft is new by definition. `SOUND_ENABLED` and `SOUND_VOLUME` in `include/config.h` turn it off or change the level.
@@ -78,7 +93,8 @@ Rendering also means a refresh where nothing changed costs nothing at all, and t
 - `src/wifi_screen.cpp` - network scan, passphrase entry and connection
 - `src/keyboard.cpp` - the on-screen keyboard shared by the location and WiFi screens
 - `src/adsb_client.cpp` - adsb.lol polling and aircraft parsing
+- `src/aircraft_db.cpp` - ICAO type code and operator lookups for the detail screen
 - `src/geocode.cpp` - Open-Meteo location search
-- `src/settings.cpp` - persists the chosen location via ESP32 `Preferences` (NVS)
+- `src/settings.cpp` - persists location, filters and WiFi credentials via ESP32 `Preferences` (NVS)
 - `src/sound.cpp` - boot and new-arrival beeps through the built-in speaker
 - `include/config.h` - tunable constants

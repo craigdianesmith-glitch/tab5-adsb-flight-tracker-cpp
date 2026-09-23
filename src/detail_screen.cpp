@@ -124,7 +124,7 @@ void detailScreenDraw() {
     String vrate = g_ac.hasVertRate ? (String(g_ac.vertRate >= 0 ? "+" : "") + String((int)g_ac.vertRate) + " ft/min")
                                      : "unknown";
     String dist = g_ac.hasDist ? (String((int)lroundf(g_ac.distNm)) + " nm") : "unknown";
-    String type = g_ac.type.length() ? lookupAircraftType(g_ac.type) : "unknown";
+    String type = g_ac.type.length() ? lookupAircraftType(g_ac.type, g_ac.military) : "unknown";
     String category = g_ac.category.length() ? g_ac.category : "unknown";
     String squawk = g_ac.squawk.length() ? g_ac.squawk : "unknown";
     String reg = g_ac.reg.length() ? g_ac.reg : "unknown";
