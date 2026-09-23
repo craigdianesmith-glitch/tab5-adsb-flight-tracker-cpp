@@ -29,7 +29,12 @@ pip install platformio
 - **Flash partitioning**: the board's default Arduino partition scheme reserves a tiny (~1.3MB) app partition despite 16MB of flash. `partitions_custom.csv` gives the app a single ~14MB partition instead (no OTA needed for this project).
 - **HTTPClient's User-Agent**: `HTTPClient::addHeader("User-Agent", ...)` is silently overridden by an internal default (`ESP32HTTPClient`) - use `setUserAgent()` instead. adsb.lol rejects generic User-Agents outright.
 - **mbedTLS stack size**: the background poll task needs a considerably larger stack (16KB) than a typical FreeRTOS task, or HTTPS requests fail silently.
+- **Speaker startup**: `M5.begin()` configures the Tab5's ES8388 codec and enables its amp, but stops short of starting the I2S output - nothing is audible until `M5.Speaker.begin()` is called as well (see `src/sound.cpp`).
 - **Rotated framebuffer**: the panel is physically 720x1280 portrait, so in the landscape orientation this app runs at, every horizontal line of the UI is a *column* in memory. LovyanGFX's rotated `pushSprite` can't memcpy in that case and walks the image pixel by pixel - a full-screen push measures **650ms** on this device. `src/screen.cpp` hands the rotation to the ESP32-P4's PPA (its 2D graphics accelerator) instead; see below.
+
+## Sound
+
+A two-note rise once the firmware is up, and a short blip whenever an aircraft that wasn't there before appears in the table - one blip per poll however many arrived, and never on the first poll after a start or a location change, where every aircraft is new by definition. `SOUND_ENABLED` and `SOUND_VOLUME` in `include/config.h` turn it off or change the level.
 
 ## Rendering
 
@@ -57,4 +62,5 @@ Rendering also still does per-cell diffing, so a refresh where nothing changed c
 - `src/adsb_client.cpp` - adsb.lol polling and aircraft parsing
 - `src/geocode.cpp` - Open-Meteo location search
 - `src/settings.cpp` - persists the chosen location via ESP32 `Preferences` (NVS)
+- `src/sound.cpp` - boot and new-arrival beeps through the built-in speaker
 - `include/config.h` - tunable constants

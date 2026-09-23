@@ -8,6 +8,9 @@ constexpr int DEFAULT_RADIUS_NM = 25;
 constexpr uint32_t POLL_INTERVAL_MS = 10000;
 constexpr uint32_t FORGET_AFTER_MS = 120000;
 
+constexpr bool SOUND_ENABLED = true;
+constexpr uint8_t SOUND_VOLUME = 96;  // 0-255
+
 constexpr int CLIMB_THRESHOLD_FPM = 150;
 constexpr int DESCEND_THRESHOLD_FPM = -150;
 

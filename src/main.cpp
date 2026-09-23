@@ -12,6 +12,7 @@
 #include "screen.h"
 #include "secrets.h"
 #include "settings.h"
+#include "sound.h"
 
 namespace {
 
@@ -22,6 +23,7 @@ SemaphoreHandle_t g_dataMutex;
 std::vector<Aircraft> g_latestAircraft;
 std::vector<uint8_t> g_latestIsNew;
 bool g_dataReady = false;
+bool g_newFlightPending = false;  // set by pollTask, consumed by loop() to beep
 
 double g_lat, g_lon;
 String g_label;
@@ -57,9 +59,11 @@ void pollTask(void *) {
         if (ok) {
             uint32_t now = millis();
             std::vector<uint8_t> isNew(aircraft.size(), 0);
+            bool anyNew = false;
             for (size_t i = 0; i < aircraft.size(); i++) {
                 if (g_seenMap.find(aircraft[i].hex) == g_seenMap.end() && !g_baseline) {
                     isNew[i] = 1;
+                    anyNew = true;
                 }
                 g_seenMap[aircraft[i].hex] = now;
             }
@@ -77,6 +81,10 @@ void pollTask(void *) {
                 g_latestAircraft = aircraft;
                 g_latestIsNew = isNew;
                 g_dataReady = true;
+                // One blip per poll however many arrived, and never on the
+                // first poll after a start or a location change, where
+                // everything is new by definition.
+                g_newFlightPending = g_newFlightPending || anyNew;
                 xSemaphoreGive(g_dataMutex);
             }
         }
@@ -194,6 +202,8 @@ void setup() {
     auto cfg = M5.config();
     M5.begin(cfg);
 
+    soundInit();
+
     if (!screen::init()) {
         Serial.println("[setup] display canvas unavailable");
     }
@@ -214,6 +224,8 @@ void setup() {
     // Pinned to core 0 so it doesn't contend with the render/UI loop on core 1.
     // mbedTLS/HTTPS needs considerably more stack than a typical task.
     xTaskCreatePinnedToCore(pollTask, "poll", 16384, nullptr, 1, nullptr, 0);
+
+    soundBoot();
 }
 
 void loop() {
@@ -237,6 +249,18 @@ void loop() {
     if (now >= nextRotationCheck) {
         nextRotationCheck = now + 1000;
         checkRotation();
+    }
+
+    // Deliberately outside the MAIN branch: an arrival is worth hearing even
+    // while the location or detail screen is up.
+    bool newFlight = false;
+    if (xSemaphoreTake(g_dataMutex, 0) == pdTRUE) {
+        newFlight = g_newFlightPending;
+        g_newFlightPending = false;
+        xSemaphoreGive(g_dataMutex);
+    }
+    if (newFlight) {
+        soundNewFlight();
     }
 
     if (g_screen == Screen::MAIN) {
