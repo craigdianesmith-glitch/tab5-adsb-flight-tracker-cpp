@@ -13,9 +13,11 @@ struct Column {
 };
 
 const Column COLUMNS[] = {
-    {"FLIGHT", 240}, {"TYPE", 150}, {"ALT", 220}, {"SPD", 190}, {"DIST", 190}, {"STATUS", 260},
+    {"FLIGHT", 180}, {"TYPE", 150}, {"ALT", 170}, {"SPD", 160}, {"DIST", 160}, {"HDG", 150}, {"STATUS", 280},
 };
-constexpr int NUM_COLS = 6;
+constexpr int NUM_COLS = 7;
+// The only column drawn differently - it carries an icon ahead of its text.
+constexpr int STATUS_COL = NUM_COLS - 1;
 constexpr int TABLE_X = 8;
 constexpr int TABLE_W = 1264;
 constexpr int HEADER_Y = 68;
@@ -159,6 +161,32 @@ void drawSpeaker(int cx, int cy, int r, bool muted, uint16_t color) {
     }
 }
 
+// Above 9999ft the five-digit number stops fitting a narrower column and
+// stops being how the altitude is actually referred to, so it reads as a
+// flight level: hundreds of feet, as the convention has it, so 20000ft is
+// FL200. Below that the figure is given in feet as before.
+String formatAltitude(const String &altStr) {
+    if (altStr == "GND" || altStr == "?") {
+        return altStr;
+    }
+    long ft = altStr.toInt();
+    if (ft > 9999) {
+        return "FL" + String((ft + 50) / 100);
+    }
+    return altStr + "ft";
+}
+
+// Three digits, the way a heading is written and spoken - "035", not "35".
+String formatHeading(const Aircraft &ac) {
+    if (!ac.hasTrack) {
+        return "?";
+    }
+    int deg = ((int)lroundf(ac.track) % 360 + 360) % 360;
+    char buf[8];
+    snprintf(buf, sizeof(buf), "%03d", deg);
+    return String(buf);
+}
+
 void drawCell(int r, int c, const String &value, uint16_t color, bool highlight) {
     auto &canvas = screen::canvas();
     int w = COLUMNS[c].width - 4;
@@ -170,7 +198,7 @@ void drawCell(int r, int c, const String &value, uint16_t color, bool highlight)
     canvas.setTextColor(color);
     canvas.setTextDatum(ML_DATUM);
     int midY = y + h / 2;
-    if (c == 5) {
+    if (c == STATUS_COL) {
         int iconCx = colX[c] + 10 + STATUS_ICON_SIZE / 2;
         drawStatusIcon(iconCx, midY, value, color);
         canvas.drawString(value, colX[c] + 10 + STATUS_ICON_SIZE + 8, midY);
@@ -435,9 +463,9 @@ void displayRenderAircraft(const std::vector<Aircraft> &aircraft, const std::vec
             uint16_t color = rowIsNew ? colorNew : colorWhite;
 
             String dist = ac.hasDist ? (String((int)lroundf(ac.distNm)) + "nm") : "?";
-            String alt = (ac.altStr == "GND") ? ac.altStr : (ac.altStr + "ft");
-            String speedKt = ac.speedStr + "kt";
-            String values[NUM_COLS] = {ac.callsign, ac.type, alt, speedKt, dist, ac.status};
+            String alt = formatAltitude(ac.altStr);
+            String speedKt = (ac.speedStr == "?") ? String("?") : (ac.speedStr + "kt");
+            String values[NUM_COLS] = {ac.callsign, ac.type, alt, speedKt, dist, formatHeading(ac), ac.status};
 
             for (int c = 0; c < NUM_COLS; c++) {
                 if (g_lastCellValid[r][c] && g_lastCell[r][c] == values[c] && g_lastCellColor[r][c] == color) {

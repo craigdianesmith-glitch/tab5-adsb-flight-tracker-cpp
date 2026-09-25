@@ -38,6 +38,16 @@ The left of the bar says what is being shown and where from - `ADSB Flights - Ci
 
 The controls sit together at the right edge rather than scattered across the bar, which leaves the whole left side to that one line. Muting is a header control rather than a settings one because it is the thing most likely to be wanted in a hurry.
 
+## The table
+
+Seven columns: flight, type, altitude, speed, distance, heading and status.
+
+Altitude is given in feet up to 9999 and as a flight level above that - `FL200` for 20000ft, hundreds of feet as the convention has it. Past ten thousand the exact figure is neither how the altitude gets referred to nor worth the width of five digits, and the column is narrower for it.
+
+Heading is the reported ground track in three digits, `035` rather than `35`, the way a heading is written and spoken. Status carries a drawn icon ahead of its word, so the column reads at a glance without the text having to be parsed.
+
+Widths are fixed rather than measured: the content of each column is known and bounded - eight characters of callsign, four of designator, five of flight level - so there is nothing to be gained from measuring at runtime, and a table whose columns don't move between refreshes is easier to read.
+
 ## Settings
 
 The cog opens a settings screen in two columns - six controls will not stack down 720px of height, and 1280px of width was going spare:
