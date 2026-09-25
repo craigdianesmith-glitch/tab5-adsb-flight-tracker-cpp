@@ -24,27 +24,41 @@ constexpr int TABLE_Y = HEADER_Y + HEADER_H;
 constexpr int ROW_HEIGHT = 52;
 constexpr int MAX_CACHE_ROWS = 16;  // generous upper bound on any screen size we'd realistically run at
 
-uint16_t colorBg, colorWhite, colorHeaderBg, colorHeaderText, colorButtonBg, colorBorder, colorGrey, colorNew,
-    colorChanged;
+uint16_t colorBg, colorWhite, colorHeaderBg, colorHeaderText, colorBorder, colorGrey, colorNew,
+    colorChanged, colorStale, colorMutedIcon;
 
-constexpr int ICON_SIZE = 18;
+constexpr int STATUS_ICON_SIZE = 18;
 
-// Settings cog, centred in the gap between the title and the location button.
-constexpr int COG_X = 452, COG_Y = 6, COG_SIZE = 52;
-constexpr int RADAR_X = 524, RADAR_Y = 6, RADAR_SIZE = 52;
+// The header's controls sit together at the right edge, leaving the whole
+// left of the bar to the title line. Laid out from the right so the cog - the
+// one that leads everywhere else now - lands in the corner.
+constexpr int ICON_Y = 6, ICON_SIZE = 52, ICON_GAP = 12;
+constexpr int COG_X = TABLE_X + TABLE_W - ICON_SIZE;
+constexpr int MUTE_X = COG_X - ICON_GAP - ICON_SIZE;
+constexpr int RADAR_X = MUTE_X - ICON_GAP - ICON_SIZE;
 
-// The header bar's vertical centre. The cog and the location button both sit
-// in the 6..58 band, so the title lines up with them rather than with the
+// The strip left over between the last row that fits and the bottom of the
+// screen - too short for a row, tall enough for a line of size-2 text.
+//
+// Only as wide as the longest string it can hold ("Last update 10m 30s ago -
+// retrying", 34 chars of 12px), rather than the full table width: this strip
+// repaints every second as the age ticks over, and the rotated blit costs its
+// own area, so the 800px of empty background to the right of the text was the
+// bulk of what that repaint was paying for.
+constexpr int STATUS_H = 22;
+constexpr int STATUS_W = 460;
+
+// The header bar's vertical centre. The icons sit in the 6..58 band, so the
+// title lines up with them rather than with the
 // nominal centre of the strip. The +3 is an optical nudge: ML_DATUM centres
 // the whole glyph cell including the descender space, which a line of capitals
 // doesn't use, so a mathematically centred title reads as sitting high.
-constexpr int HEADER_MID_Y = COG_Y + COG_SIZE / 2 + 3;
+constexpr int HEADER_MID_Y = ICON_Y + ICON_SIZE / 2 + 3;
 int colX[NUM_COLS];
 
 // Render cache: what's currently on screen, so a redraw only touches cells
 // whose value or color actually changed instead of repainting everything.
 bool g_headerDrawn = false;
-String g_lastLabel = "\x01";  // sentinel that can never equal a real label
 bool g_lastWasEmpty = false;
 String g_lastCell[MAX_CACHE_ROWS][NUM_COLS];
 uint16_t g_lastCellColor[MAX_CACHE_ROWS][NUM_COLS];
@@ -53,22 +67,32 @@ bool g_lastCellValid[MAX_CACHE_ROWS][NUM_COLS] = {};
 uint32_t g_highlightUntil[MAX_CACHE_ROWS][NUM_COLS] = {};
 bool g_showRefresh = true;
 bool g_military = false;
+String g_airportCode;
+bool g_muted = false;
+
+// Poll state, for the status line under the table.
+bool g_linkUp = true;
+bool g_pollOk = true;
+bool g_everSucceeded = false;
+uint32_t g_lastSuccessMs = 0;
+String g_lastStatus = "\x01";  // sentinel that can never equal a real status
+uint16_t g_lastStatusColor = 0;
 
 // Drawn geometric icons rather than a hand-authored bitmap: precise and
 // reliable without needing to eyeball pixel arrays on real hardware.
 void drawStatusIcon(int cx, int cy, const String &status, uint16_t color) {
     auto &canvas = screen::canvas();
-    int half = ICON_SIZE / 2;
+    int half = STATUS_ICON_SIZE / 2;
     if (status == "CLIMB") {
         canvas.fillTriangle(cx, cy - half, cx - half, cy + half, cx + half, cy + half, color);
     } else if (status == "DESCEND") {
         canvas.fillTriangle(cx, cy + half, cx - half, cy - half, cx + half, cy - half, color);
     } else if (status == "LEVEL") {
-        canvas.fillRect(cx - half, cy - 3, ICON_SIZE, 6, color);
+        canvas.fillRect(cx - half, cy - 3, STATUS_ICON_SIZE, 6, color);
     } else if (status == "TAXI") {
         canvas.fillCircle(cx, cy, half, color);
     } else if (status == "GROUND") {
-        canvas.drawRect(cx - half, cy - half, ICON_SIZE, ICON_SIZE, color);
+        canvas.drawRect(cx - half, cy - half, STATUS_ICON_SIZE, STATUS_ICON_SIZE, color);
     }
 }
 
@@ -103,6 +127,38 @@ void drawRadarIcon(int cx, int cy, int r, uint16_t color) {
     canvas.drawLine(cx, cy, cx + (int)lroundf(r * 0.707f), cy - (int)lroundf(r * 0.707f), color);
 }
 
+// Drawn like the others: a driver box, a cone flaring right as two triangles,
+// and either sound coming out of it or a bar through it.
+void drawSpeaker(int cx, int cy, int r, bool muted, uint16_t color) {
+    auto &canvas = screen::canvas();
+    int boxW = (int)lroundf(r * 0.45f);
+    int boxH = (int)lroundf(r * 0.44f);
+    int left = cx - r;
+    int coneX = left + boxW;
+    int coneR = (int)lroundf(r * 0.30f);   // right edge of the cone
+    int coneH = (int)lroundf(r * 0.92f);   // half-height at that edge
+
+    canvas.fillRect(left, cy - boxH / 2, boxW + 1, boxH, color);
+    canvas.fillTriangle(coneX, cy - boxH / 2, coneX, cy + boxH / 2, cx + coneR, cy - coneH, color);
+    canvas.fillTriangle(coneX, cy + boxH / 2, cx + coneR, cy - coneH, cx + coneR, cy + coneH, color);
+
+    if (muted) {
+        // A bar through it rather than waves - unmistakable at this size, and
+        // it needs no arc drawing to come out symmetrical.
+        for (int i = -1; i <= 1; i++) {
+            canvas.drawLine(left + i, cy - coneH, cx + coneR + i, cy + coneH, color);
+        }
+        return;
+    }
+    // Split at 0 rather than asking for 300..420 and trusting the wrap to be
+    // handled: two explicit quadrants either side of due east.
+    for (int i = 1; i <= 2; i++) {
+        int rr = coneR + i * (int)lroundf(r * 0.26f);
+        canvas.drawArc(cx, cy, rr, rr + 2, 300, 360, color);
+        canvas.drawArc(cx, cy, rr, rr + 2, 0, 60, color);
+    }
+}
+
 void drawCell(int r, int c, const String &value, uint16_t color, bool highlight) {
     auto &canvas = screen::canvas();
     int w = COLUMNS[c].width - 4;
@@ -115,9 +171,9 @@ void drawCell(int r, int c, const String &value, uint16_t color, bool highlight)
     canvas.setTextDatum(ML_DATUM);
     int midY = y + h / 2;
     if (c == 5) {
-        int iconCx = colX[c] + 10 + ICON_SIZE / 2;
+        int iconCx = colX[c] + 10 + STATUS_ICON_SIZE / 2;
         drawStatusIcon(iconCx, midY, value, color);
-        canvas.drawString(value, colX[c] + 10 + ICON_SIZE + 8, midY);
+        canvas.drawString(value, colX[c] + 10 + STATUS_ICON_SIZE + 8, midY);
     } else {
         canvas.drawString(value, colX[c] + 10, midY);
     }
@@ -143,11 +199,12 @@ void displayInit() {
     colorWhite = M5.Display.color565(0xFF, 0xFF, 0xFF);
     colorHeaderBg = M5.Display.color565(0xB6, 0xF2, 0xB6);
     colorHeaderText = M5.Display.color565(0x10, 0x20, 0x10);
-    colorButtonBg = M5.Display.color565(0x2C, 0x3E, 0x50);
     colorBorder = M5.Display.color565(0x44, 0x44, 0x44);
     colorGrey = M5.Display.color565(0x88, 0x88, 0x88);
     colorNew = M5.Display.color565(0x1B, 0x7A, 0x1B);
     colorChanged = M5.Display.color565(0x1E, 0x2E, 0x40);
+    colorStale = M5.Display.color565(0xF3, 0x9C, 0x12);  // amber: on screen but not current
+    colorMutedIcon = M5.Display.color565(0x5A, 0x60, 0x68);  // dimmer than the live icons
 
     int x = TABLE_X;
     for (int i = 0; i < NUM_COLS; i++) {
@@ -164,12 +221,31 @@ int displayMaxRows() {
     return rows < 0 ? 0 : rows;
 }
 
-bool displayHitCog(int x, int y) {
-    return x >= COG_X && x < COG_X + COG_SIZE && y >= COG_Y && y < COG_Y + COG_SIZE;
+namespace {
+bool hitIcon(int iconX, int x, int y) {
+    return x >= iconX && x < iconX + ICON_SIZE && y >= ICON_Y && y < ICON_Y + ICON_SIZE;
 }
+}  // namespace
 
-bool displayHitRadar(int x, int y) {
-    return x >= RADAR_X && x < RADAR_X + RADAR_SIZE && y >= RADAR_Y && y < RADAR_Y + RADAR_SIZE;
+bool displayHitCog(int x, int y) { return hitIcon(COG_X, x, y); }
+
+bool displayHitRadar(int x, int y) { return hitIcon(RADAR_X, x, y); }
+
+bool displayHitMute(int x, int y) { return hitIcon(MUTE_X, x, y); }
+
+bool displayHitRow(int x, int y, int &outRow) {
+    if (x < TABLE_X || x >= TABLE_X + TABLE_W || y < TABLE_Y) {
+        return false;
+    }
+    int row = (y - TABLE_Y) / ROW_HEIGHT;
+    // Bounded by the rows actually drawn, not by how many aircraft are held:
+    // the strip below the last row is the status line, and a tap there used to
+    // land on an aircraft the table had never shown.
+    if (row < 0 || row >= displayMaxRows()) {
+        return false;
+    }
+    outRow = row;
+    return true;
 }
 
 void displayInvalidate() {
@@ -177,8 +253,8 @@ void displayInvalidate() {
     // here is on it any more. Clearing g_headerDrawn makes the next render
     // clear the canvas and repaint from scratch.
     g_headerDrawn = false;
-    g_lastLabel = "\x01";
     g_lastWasEmpty = false;
+    g_lastStatus = "\x01";
     for (int r = 0; r < MAX_CACHE_ROWS; r++) {
         for (int c = 0; c < NUM_COLS; c++) {
             g_lastCellValid[r][c] = false;
@@ -189,7 +265,81 @@ void displayInvalidate() {
 
 void displaySetShowRefresh(bool enabled) { g_showRefresh = enabled; }
 
-void displaySetMilitary(bool military) { g_military = military; }
+void displaySetPollState(bool linkUp, bool lastPollOk, bool everSucceeded, uint32_t lastSuccessMs) {
+    g_linkUp = linkUp;
+    g_pollOk = lastPollOk;
+    g_everSucceeded = everSucceeded;
+    g_lastSuccessMs = lastSuccessMs;
+}
+
+void displayTickStatus() {
+    // The status line belongs to the table, so don't paint it over whatever is
+    // there until the table itself has been drawn: returning from the radar
+    // invalidates the cache, and a render that loses the race for the data
+    // mutex would otherwise leave this strip sitting on the old screen.
+    if (!g_headerDrawn) {
+        return;
+    }
+    uint32_t age = (millis() - g_lastSuccessMs) / 1000;
+    String ageStr = age < 60 ? (String(age) + "s") : (String(age / 60) + "m " + String(age % 60) + "s");
+
+    String text;
+    uint16_t color = colorGrey;
+    if (!g_linkUp) {
+        // Named separately from a failed fetch: a dropped link is the device's
+        // problem to fix and it is already trying, where a failed fetch is the
+        // API's and there is nothing to do but wait for the next one. And a
+        // link never yet established is the boot case, where "reconnecting"
+        // would be a claim about a connection that never existed.
+        text = g_everSucceeded ? "WiFi disconnected - reconnecting" : "Connecting to WiFi";
+        color = colorStale;
+    } else if (!g_everSucceeded) {
+        text = "Waiting for data";
+    } else if (!g_pollOk) {
+        text = "Last update " + ageStr + " ago - retrying";
+        color = colorStale;
+    } else {
+        text = "Updated " + ageStr + " ago";
+    }
+
+    if (text == g_lastStatus && color == g_lastStatusColor) {
+        return;
+    }
+    g_lastStatus = text;
+    g_lastStatusColor = color;
+
+    auto &canvas = screen::canvas();
+    int y = TABLE_Y + displayMaxRows() * ROW_HEIGHT;
+    canvas.fillRect(TABLE_X, y, STATUS_W, STATUS_H, colorBg);
+    canvas.setFont(&fonts::Font0);
+    canvas.setTextSize(2);
+    canvas.setTextColor(color);
+    canvas.setTextDatum(ML_DATUM);
+    canvas.drawString(text, TABLE_X + 10, y + STATUS_H / 2);
+    screen::markDirty(TABLE_X, y, STATUS_W, STATUS_H);
+    screen::flush();
+}
+
+void displaySetHeader(bool military, const String &airportCode) {
+    g_military = military;
+    g_airportCode = airportCode;
+}
+
+void displaySetMuted(bool muted) {
+    if (muted == g_muted) {
+        return;
+    }
+    g_muted = muted;
+    if (!g_headerDrawn) {
+        return;  // nothing on screen to update; the next repaint draws it right
+    }
+    auto &canvas = screen::canvas();
+    canvas.fillRect(MUTE_X, ICON_Y, ICON_SIZE, ICON_SIZE, colorBg);
+    drawSpeaker(MUTE_X + ICON_SIZE / 2, ICON_Y + ICON_SIZE / 2, ICON_SIZE / 2 - 8, g_muted,
+                g_muted ? colorMutedIcon : colorGrey);
+    screen::markDirty(MUTE_X, ICON_Y, ICON_SIZE, ICON_SIZE);
+    screen::flush();
+}
 
 void displayTickHighlights() {
     uint32_t now = millis();
@@ -211,8 +361,7 @@ void displayTickHighlights() {
     }
 }
 
-void displayRenderAircraft(const std::vector<Aircraft> &aircraft, const String &locationLabel,
-                            const std::vector<uint8_t> &isNew) {
+void displayRenderAircraft(const std::vector<Aircraft> &aircraft, const std::vector<uint8_t> &isNew) {
     auto &canvas = screen::canvas();
 
     if (!g_headerDrawn) {
@@ -223,13 +372,22 @@ void displayRenderAircraft(const std::vector<Aircraft> &aircraft, const String &
         canvas.setTextColor(colorWhite);
         const char *title = "ADSB Flights";
         canvas.drawString(title, 16, HEADER_MID_Y);
-        // Which traffic the table is showing, so an empty table in military
-        // mode reads as "nothing about" rather than "something's broken".
+        // Which traffic is being shown - so an empty table in military mode
+        // reads as "nothing about" rather than "something's broken" - and
+        // where it is being shown from, which is the only place the location
+        // now appears once the header's location button has moved into the
+        // settings screen.
+        String sub = g_military ? " - Military" : " - Civilian";
+        if (g_airportCode.length()) {
+            sub += " (Nearest airport " + g_airportCode + ")";
+        }
         canvas.setTextColor(colorGrey);
-        canvas.drawString(g_military ? " - MIL -" : " - CIV -", 16 + canvas.textWidth(title), HEADER_MID_Y);
+        canvas.drawString(sub, 16 + canvas.textWidth(title), HEADER_MID_Y);
 
-        drawGear(COG_X + COG_SIZE / 2, COG_Y + COG_SIZE / 2, COG_SIZE / 2 - 6, colorGrey);
-        drawRadarIcon(RADAR_X + RADAR_SIZE / 2, RADAR_Y + RADAR_SIZE / 2, RADAR_SIZE / 2 - 6, colorGrey);
+        drawRadarIcon(RADAR_X + ICON_SIZE / 2, ICON_Y + ICON_SIZE / 2, ICON_SIZE / 2 - 6, colorGrey);
+        drawSpeaker(MUTE_X + ICON_SIZE / 2, ICON_Y + ICON_SIZE / 2, ICON_SIZE / 2 - 8, g_muted,
+                    g_muted ? colorMutedIcon : colorGrey);
+        drawGear(COG_X + ICON_SIZE / 2, ICON_Y + ICON_SIZE / 2, ICON_SIZE / 2 - 6, colorGrey);
 
         int x = TABLE_X;
         for (int i = 0; i < NUM_COLS; i++) {
@@ -242,24 +400,7 @@ void displayRenderAircraft(const std::vector<Aircraft> &aircraft, const String &
             x += COLUMNS[i].width;
         }
         g_headerDrawn = true;
-    }
-
-    if (locationLabel != g_lastLabel) {
-        canvas.setFont(&fonts::Font0);
-        int btnX = 600, btnY = 6, btnW = 664, btnH = 52;
-        canvas.fillRoundRect(btnX, btnY, btnW, btnH, 6, colorButtonBg);
-        canvas.setTextColor(colorWhite);
-        canvas.setTextDatum(MC_DATUM);
-        int maxTextW = btnW - 20;
-        int size = 2;
-        canvas.setTextSize(size);
-        while (size > 1 && canvas.textWidth(locationLabel) > maxTextW) {
-            size--;
-            canvas.setTextSize(size);
-        }
-        canvas.drawString(locationLabel, btnX + btnW / 2, btnY + btnH / 2);
-        screen::markDirty(btnX, btnY, btnW, btnH);
-        g_lastLabel = locationLabel;
+        g_lastStatus = "\x01";  // cleared along with the rest of the canvas
     }
 
     int maxRows = displayMaxRows();

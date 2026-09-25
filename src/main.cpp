@@ -6,6 +6,7 @@
 #include <vector>
 
 #include "adsb_client.h"
+#include "airports.h"
 #include "config.h"
 #include "detail_screen.h"
 #include "display.h"
@@ -37,6 +38,11 @@ String g_label;
 TrafficFilter g_traffic = TrafficFilter::CIVIL;
 int g_radiusNm = DEFAULT_RADIUS_NM;
 bool g_showRefresh = true;
+int g_pollIntervalS = DEFAULT_POLL_INTERVAL_S;
+bool g_muted = false;
+// The header shows the nearest airport rather than the place name now, and it
+// only changes when the location does, so it's resolved there and kept.
+String g_airportCode;
 // Set by a UI touch handler, consumed by pollTask: forget which aircraft have
 // been seen, so a changed location or filter doesn't flag everything as new.
 bool g_resetBaseline = false;
@@ -53,15 +59,82 @@ constexpr size_t MAX_CONTACTS = 60;
 int g_rotation = 3;
 constexpr float ROTATION_THRESHOLD = 0.5f;
 
-// Must match the geometry drawn in display.cpp.
-constexpr int LOC_BTN_X = 600, LOC_BTN_Y = 6, LOC_BTN_W = 664, LOC_BTN_H = 52;
-constexpr int TABLE_X = 8, TABLE_Y = 122, TABLE_W = 1264, ROW_HEIGHT = 52;
+// What the status line under the table reports. Written by pollTask, read by
+// loop(); the link flag is separate from the fetch flag because a dropped
+// link is something the device is actively fixing and a failed fetch isn't.
+bool g_linkUp = false;
+bool g_pollOk = false;
+bool g_everSucceeded = false;
+uint32_t g_lastSuccessMs = 0;
+
+// Credentials the poll task reconnects with, refreshed whenever the WiFi
+// screen has been in and possibly changed them.
+String g_wifiSsid, g_wifiPass;
+// The WiFi screen drives the radio itself (scan, disconnect, begin) while it
+// is up, so the poll task's reconnect stands down for the duration.
+bool g_uiOwnsWifi = false;
+
+constexpr uint32_t WIFI_CONNECT_TIMEOUT_MS = 12000;
+constexpr uint32_t WIFI_RETRY_MIN_MS = 5000;
+constexpr uint32_t WIFI_RETRY_MAX_MS = 120000;
+// Backed off rather than retried flat out: a network that is genuinely gone
+// shouldn't have the radio hammering at it for however long the device sits
+// there, and a network that's merely rebooting is back inside the first step.
+uint32_t g_wifiRetryMs = WIFI_RETRY_MIN_MS;
+uint32_t g_nextWifiTryMs = 0;
+
+// Reconnects a link that has dropped since boot. Without this the tracker
+// would sit there failing a fetch every interval until someone power-cycled
+// it - an AP reboot or a few minutes out of range was enough to lose it for
+// good. Runs on the poll task, so the blocking wait costs the UI nothing.
+bool ensureWifi() {
+    if (WiFi.status() == WL_CONNECTED) {
+        g_wifiRetryMs = WIFI_RETRY_MIN_MS;
+        return true;
+    }
+
+    String ssid, pass;
+    bool uiBusy = false;
+    if (xSemaphoreTake(g_dataMutex, portMAX_DELAY) == pdTRUE) {
+        uiBusy = g_uiOwnsWifi;
+        ssid = g_wifiSsid;
+        pass = g_wifiPass;
+        xSemaphoreGive(g_dataMutex);
+    }
+    if (uiBusy || ssid.length() == 0) {
+        return false;
+    }
+
+    uint32_t now = millis();
+    if (g_nextWifiTryMs != 0 && (int32_t)(now - g_nextWifiTryMs) < 0) {
+        return false;
+    }
+
+    Serial.printf("[wifi] link down, reconnecting to %s\n", ssid.c_str());
+    WiFi.disconnect();
+    WiFi.begin(ssid.c_str(), pass.c_str());
+    uint32_t start = millis();
+    while (WiFi.status() != WL_CONNECTED && millis() - start < WIFI_CONNECT_TIMEOUT_MS) {
+        vTaskDelay(pdMS_TO_TICKS(250));
+    }
+    if (WiFi.status() == WL_CONNECTED) {
+        Serial.printf("[wifi] reconnected: %s\n", WiFi.localIP().toString().c_str());
+        g_wifiRetryMs = WIFI_RETRY_MIN_MS;
+        g_nextWifiTryMs = 0;
+        return true;
+    }
+    g_nextWifiTryMs = millis() + g_wifiRetryMs;
+    g_wifiRetryMs = std::min(g_wifiRetryMs * 2, WIFI_RETRY_MAX_MS);
+    Serial.printf("[wifi] reconnect failed, next try in %us\n", (unsigned)(g_wifiRetryMs / 1000));
+    return false;
+}
 
 void pollTask(void *) {
     for (;;) {
         double lat, lon;
         TrafficFilter traffic = TrafficFilter::CIVIL;
         int radius = DEFAULT_RADIUS_NM;
+        uint32_t intervalMs = (uint32_t)DEFAULT_POLL_INTERVAL_S * 1000;
         if (xSemaphoreTake(g_dataMutex, portMAX_DELAY) == pdTRUE) {
             if (g_resetBaseline) {
                 g_seenMap.clear();
@@ -73,6 +146,7 @@ void pollTask(void *) {
             lon = g_lon;
             traffic = g_traffic;
             radius = g_radiusNm;
+            intervalMs = (uint32_t)g_pollIntervalS * 1000;
             xSemaphoreGive(g_dataMutex);
         }
 
@@ -80,8 +154,9 @@ void pollTask(void *) {
         // carries, so it doubles as the poll radius.
         bool wantMilitary = (traffic == TrafficFilter::MILITARY);
 
+        bool linkUp = ensureWifi();
         std::vector<Aircraft> fetched;
-        bool ok = fetchAircraft(lat, lon, radius, fetched);
+        bool ok = linkUp && fetchAircraft(lat, lon, radius, fetched);
         if (ok) {
             std::vector<Aircraft> aircraft;
             for (const Aircraft &a : fetched) {
@@ -128,8 +203,8 @@ void pollTask(void *) {
             }
 
             if (xSemaphoreTake(g_dataMutex, portMAX_DELAY) == pdTRUE) {
-                g_latestAircraft = aircraft;
-                g_latestIsNew = isNew;
+                g_latestAircraft = std::move(aircraft);
+                g_latestIsNew = std::move(isNew);
                 g_dataReady = true;
                 // One blip per poll however many arrived, and never on the
                 // first poll after a start or a location change, where
@@ -138,13 +213,27 @@ void pollTask(void *) {
                 xSemaphoreGive(g_dataMutex);
             }
         }
+
+        if (xSemaphoreTake(g_dataMutex, portMAX_DELAY) == pdTRUE) {
+            g_linkUp = linkUp;
+            g_pollOk = ok;
+            if (ok) {
+                g_everSucceeded = true;
+                g_lastSuccessMs = millis();
+            }
+            xSemaphoreGive(g_dataMutex);
+        }
+
         // Sliced rather than one long delay, so a location or filter change
         // takes effect straight away instead of up to a poll interval later.
-        for (uint32_t waited = 0; waited < POLL_INTERVAL_MS; waited += 200) {
+        // The interval is re-read each slice too, so dragging it shorter on the
+        // settings screen shortens the wait already in progress.
+        for (uint32_t waited = 0; waited < intervalMs; waited += 200) {
             vTaskDelay(pdMS_TO_TICKS(200));
             bool now = false;
             if (xSemaphoreTake(g_dataMutex, 0) == pdTRUE) {
                 now = g_pollNow;
+                intervalMs = (uint32_t)g_pollIntervalS * 1000;
                 xSemaphoreGive(g_dataMutex);
             }
             if (now) {
@@ -249,25 +338,34 @@ void handleMainTouch(int x, int y) {
     }
 
     if (displayHitCog(x, y)) {
-        settingsScreenSet(g_traffic, g_radiusNm, g_showRefresh);
+        String label;
+        if (xSemaphoreTake(g_dataMutex, portMAX_DELAY) == pdTRUE) {
+            label = g_label;
+            xSemaphoreGive(g_dataMutex);
+        }
+        settingsScreenSet(g_traffic, g_radiusNm, g_showRefresh, g_pollIntervalS, label);
         g_screen = Screen::SETTINGS;
         settingsScreenDraw();
         return;
     }
 
-    if (x >= LOC_BTN_X && x < LOC_BTN_X + LOC_BTN_W && y >= LOC_BTN_Y && y < LOC_BTN_Y + LOC_BTN_H) {
-        locationScreenReset();
-        g_screen = Screen::LOCATION;
-        locationScreenDraw();
+    if (displayHitMute(x, y)) {
+        g_muted = !g_muted;
+        soundSetMuted(g_muted);
+        saveMuted(g_muted);
+        displaySetMuted(g_muted);  // repaints just the icon
+        if (!g_muted) {
+            soundNewFlight();  // unmuting says so in the medium being unmuted
+        }
         return;
     }
 
-    if (x >= TABLE_X && x < TABLE_X + TABLE_W && y >= TABLE_Y) {
-        int row = (y - TABLE_Y) / ROW_HEIGHT;
+    int row;
+    if (displayHitRow(x, y, row)) {
         Aircraft tapped;
         bool found = false;
         if (xSemaphoreTake(g_dataMutex, portMAX_DELAY) == pdTRUE) {
-            if (row >= 0 && row < (int)g_latestAircraft.size()) {
+            if (row < (int)g_latestAircraft.size()) {
                 tapped = g_latestAircraft[row];
                 found = true;
             }
@@ -303,27 +401,28 @@ void handleLocationTouch(int x, int y) {
     double lat, lon;
     String label;
     LocationAction action = locationScreenHandleTouch(x, y, lat, lon, label);
-    if (action == LocationAction::BACK) {
-        g_screen = Screen::MAIN;
-        displayInvalidate();
-        if (xSemaphoreTake(g_dataMutex, portMAX_DELAY) == pdTRUE) {
-            g_dataReady = true;  // force a redraw of the main screen with current data
-            xSemaphoreGive(g_dataMutex);
-        }
-    } else if (action == LocationAction::LOCATION_SET) {
+    if (action == LocationAction::NONE) {
+        return;
+    }
+    // Reached from the settings screen now, so both outcomes go back there
+    // rather than to the table: setting a location then lands you where you
+    // can see it took, on the button you pressed to get here.
+    if (action == LocationAction::LOCATION_SET) {
         saveLocation(lat, lon, label);
-        displayInvalidate();
+        g_airportCode = nearestAirportCode(lat, lon);
+        displaySetHeader(g_traffic == TrafficFilter::MILITARY, g_airportCode);
+        settingsScreenSetLocation(label);
         if (xSemaphoreTake(g_dataMutex, portMAX_DELAY) == pdTRUE) {
             g_lat = lat;
             g_lon = lon;
             g_label = label;
             g_resetBaseline = true;
             g_pollNow = true;
-            g_dataReady = true;
             xSemaphoreGive(g_dataMutex);
         }
-        g_screen = Screen::MAIN;
     }
+    g_screen = Screen::SETTINGS;
+    settingsScreenDraw();
 }
 
 void handleSettingsTouch(int x, int y, bool pressed, bool clicked) {
@@ -331,14 +430,18 @@ void handleSettingsTouch(int x, int y, bool pressed, bool clicked) {
     case SettingsAction::BACK: {
         TrafficFilter traffic = settingsScreenTraffic();
         int radius = settingsScreenRadius();
+        int interval = settingsScreenPollInterval();
         g_showRefresh = settingsScreenShowRefresh();
-        saveFilters(traffic, radius, g_showRefresh);
+        saveFilters(traffic, radius, g_showRefresh, interval);
         displaySetShowRefresh(g_showRefresh);
-        displaySetMilitary(traffic == TrafficFilter::MILITARY);
+        displaySetHeader(traffic == TrafficFilter::MILITARY, g_airportCode);
         if (xSemaphoreTake(g_dataMutex, portMAX_DELAY) == pdTRUE) {
+            // A changed interval alone doesn't warrant refetching - the new
+            // one simply applies to the wait already running.
             bool changed = (traffic != g_traffic) || (radius != g_radiusNm);
             g_traffic = traffic;
             g_radiusNm = radius;
+            g_pollIntervalS = interval;
             if (changed) {
                 g_resetBaseline = true;
                 g_pollNow = true;
@@ -350,7 +453,16 @@ void handleSettingsTouch(int x, int y, bool pressed, bool clicked) {
         displayInvalidate();
         break;
     }
+    case SettingsAction::OPEN_LOCATION:
+        locationScreenReset();
+        g_screen = Screen::LOCATION;
+        locationScreenDraw();
+        break;
     case SettingsAction::OPEN_WIFI:
+        if (xSemaphoreTake(g_dataMutex, portMAX_DELAY) == pdTRUE) {
+            g_uiOwnsWifi = true;  // hands the radio to the screen; see ensureWifi()
+            xSemaphoreGive(g_dataMutex);
+        }
         g_screen = Screen::WIFI;
         wifiScreenEnter();
         break;
@@ -361,6 +473,18 @@ void handleSettingsTouch(int x, int y, bool pressed, bool clicked) {
 
 void handleWifiTouch(int x, int y) {
     if (wifiScreenHandleTouch(x, y) == WifiAction::BACK) {
+        // Whatever the screen did, NVS now holds the credentials the poll task
+        // should reconnect with - so take them back from there rather than
+        // tracking every path through the screen that might have changed them.
+        AppSettings s = loadSettings();
+        if (xSemaphoreTake(g_dataMutex, portMAX_DELAY) == pdTRUE) {
+            g_uiOwnsWifi = false;
+            g_wifiSsid = s.wifiSsid.length() ? s.wifiSsid : String(WIFI_SSID);
+            g_wifiPass = s.wifiSsid.length() ? s.wifiPass : String(WIFI_PASSWORD);
+            xSemaphoreGive(g_dataMutex);
+        }
+        g_nextWifiTryMs = 0;  // a fresh attempt is wanted now, not after the backoff
+        g_wifiRetryMs = WIFI_RETRY_MIN_MS;
         g_screen = Screen::SETTINGS;
         settingsScreenDraw();
     }
@@ -394,17 +518,29 @@ void setup() {
     g_traffic = s.traffic;
     g_radiusNm = s.radiusNm;
     g_showRefresh = s.showRefresh;
+    g_pollIntervalS = s.pollIntervalS;
+    g_muted = s.muted;
+    soundSetMuted(g_muted);
     displaySetShowRefresh(g_showRefresh);
-    displaySetMilitary(g_traffic == TrafficFilter::MILITARY);
+    displaySetMuted(g_muted);
+    g_airportCode = nearestAirportCode(g_lat, g_lon);
+    displaySetHeader(g_traffic == TrafficFilter::MILITARY, g_airportCode);
 
+    // Something on screen before the WiFi connect blocks for up to 15s. The
+    // status line under it says what's happening.
     std::vector<Aircraft> none;
     std::vector<uint8_t> noneNew;
-    displayRenderAircraft(none, "Connecting...", noneNew);
+    displayRenderAircraft(none, noneNew);
+    displaySetPollState(false, false, false, 0);
+    displayTickStatus();
 
     // Credentials set on-screen win; secrets.h is the fallback for a device
-    // that's never had WiFi configured through the settings screen.
-    connectWifi(s.wifiSsid.length() ? s.wifiSsid : String(WIFI_SSID),
-                s.wifiSsid.length() ? s.wifiPass : String(WIFI_PASSWORD));
+    // that's never had WiFi configured through the settings screen. Kept so
+    // the poll task can reconnect with them without re-reading NVS each time.
+    g_wifiSsid = s.wifiSsid.length() ? s.wifiSsid : String(WIFI_SSID);
+    g_wifiPass = s.wifiSsid.length() ? s.wifiPass : String(WIFI_PASSWORD);
+    connectWifi(g_wifiSsid, g_wifiPass);
+    g_linkUp = (WiFi.status() == WL_CONNECTED);
 
     g_dataMutex = xSemaphoreCreateMutex();
     // Pinned to core 0 so it doesn't contend with the render/UI loop on core 1.
@@ -495,10 +631,8 @@ void loop() {
     if (g_screen == Screen::MAIN) {
         std::vector<Aircraft> aircraft;
         std::vector<uint8_t> isNew;
-        String label;
         bool shouldRender = false;
         if (xSemaphoreTake(g_dataMutex, 0) == pdTRUE) {
-            label = g_label;
             if (g_dataReady) {
                 aircraft = g_latestAircraft;
                 isNew = g_latestIsNew;
@@ -508,9 +642,21 @@ void loop() {
             xSemaphoreGive(g_dataMutex);
         }
         if (shouldRender) {
-            displayRenderAircraft(aircraft, label, isNew);
+            displayRenderAircraft(aircraft, isNew);
         }
         displayTickHighlights();
+
+        bool linkUp = false, pollOk = false, everSucceeded = false;
+        uint32_t lastSuccess = 0;
+        if (xSemaphoreTake(g_dataMutex, 0) == pdTRUE) {
+            linkUp = g_linkUp;
+            pollOk = g_pollOk;
+            everSucceeded = g_everSucceeded;
+            lastSuccess = g_lastSuccessMs;
+            xSemaphoreGive(g_dataMutex);
+            displaySetPollState(linkUp, pollOk, everSucceeded, lastSuccess);
+        }
+        displayTickStatus();
     }
 
     delay(10);

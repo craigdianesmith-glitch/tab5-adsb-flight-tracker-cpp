@@ -12,3 +12,8 @@ void soundBoot();
 
 // Short blip when an aircraft that wasn't there before appears in the table.
 void soundNewFlight();
+
+// Silences the beeps without shutting the speaker down, so unmuting needs no
+// re-initialisation. Toggled from the header and persisted.
+void soundSetMuted(bool muted);
+bool soundMuted();

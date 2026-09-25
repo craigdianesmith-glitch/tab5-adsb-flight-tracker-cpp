@@ -7,6 +7,7 @@
 namespace {
 
 bool g_ready = false;
+bool g_muted = false;
 
 // Everything shares one virtual channel and queues rather than interrupting,
 // so a new-flight blip that lands during the boot rise waits its turn instead
@@ -28,8 +29,12 @@ void soundInit() {
     Serial.printf("[sound] speaker ready, volume %d\n", SOUND_VOLUME);
 }
 
+void soundSetMuted(bool muted) { g_muted = muted; }
+
+bool soundMuted() { return g_muted; }
+
 void soundBoot() {
-    if (!g_ready) {
+    if (!g_ready || g_muted) {
         return;
     }
     M5.Speaker.tone(880, 90, CHANNEL, false);
@@ -37,7 +42,7 @@ void soundBoot() {
 }
 
 void soundNewFlight() {
-    if (!g_ready) {
+    if (!g_ready || g_muted) {
         return;
     }
     M5.Speaker.tone(1568, 70, CHANNEL, false);

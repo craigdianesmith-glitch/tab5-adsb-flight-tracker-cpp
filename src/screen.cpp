@@ -5,6 +5,8 @@
 #include <esp_heap_caps.h>
 #include <lgfx/v1/platforms/esp32p4/Panel_DSI.hpp>
 
+#include <algorithm>
+
 namespace screen {
 namespace {
 
@@ -38,12 +40,61 @@ int g_rectCount = 0;
 // the rect count at one per row instead of one per cell.
 constexpr int MERGE_GAP = 96;
 
+// A canvas row is contiguous and 2560 bytes long - a whole number of 64-byte
+// cache lines - so any span of rows is a flat, correctly aligned range.
+constexpr size_t ROW_BYTES = (size_t)CANVAS_W * 2;
+
 void writeBackCanvas() {
     // The PPA reads the canvas by DMA, so the CPU's dirty cache lines have to
     // be in PSRAM first.
     esp_cache_msync(g_buffer, CANVAS_BYTES, ESP_CACHE_MSYNC_FLAG_DIR_C2M);
 }
 
+#ifdef RENDER_PROFILE
+size_t g_syncedBytes = 0;
+#endif
+
+// Writes back only the rows the dirty rects cover, rather than all 1.8MB of
+// the canvas. A refresh that repaints one cell touches 48 rows - 123KB - so
+// the full-canvas sync that used to precede every flush was doing fifteen
+// times the work of the transfer it was preparing for.
+//
+// Safe because every canvas write is covered by the dirty list at the flush
+// that follows it: a partial redraw marks the region it touched, and a full
+// repaint goes through clear(), which marks the lot. Rows outside the list
+// were therefore written back by an earlier flush and are already clean in
+// PSRAM, which is what lets the merged bounding-box blit below stay correct.
+void writeBackDirty() {
+    struct Span {
+        int16_t top, bot;
+    };
+    Span spans[MAX_RECTS];
+    int n = 0;
+    for (int i = 0; i < g_rectCount; i++) {
+        spans[n++] = {g_rects[i].y, (int16_t)(g_rects[i].y + g_rects[i].h)};
+    }
+    // Merge overlapping bands - cells in the same table row share their rows,
+    // and syncing those once each rather than once per cell is the whole point.
+    std::sort(spans, spans + n, [](const Span &a, const Span &b) { return a.top < b.top; });
+    int i = 0;
+    while (i < n) {
+        int top = spans[i].top, bot = spans[i].bot;
+        while (++i < n && spans[i].top <= bot) {
+            bot = std::max<int>(bot, spans[i].bot);
+        }
+        esp_cache_msync((uint8_t *)g_buffer + (size_t)top * ROW_BYTES, (size_t)(bot - top) * ROW_BYTES,
+                        ESP_CACHE_MSYNC_FLAG_DIR_C2M);
+#ifdef RENDER_PROFILE
+        g_syncedBytes += (size_t)(bot - top) * ROW_BYTES;
+#endif
+    }
+}
+
+// Deliberately blocking, one transfer at a time. Queueing these as
+// PPA_TRANS_MODE_NON_BLOCKING and waiting only on the last was measured
+// *slower* - 16.8us per KB against 12.5 - because the CPU was never what the
+// transfers were waiting on, and the queue and completion interrupt cost more
+// than the round trip they replaced.
 void blitRect(const Rect &r) {
     ppa_srm_oper_config_t op = {};
     op.in.buffer = g_buffer;
@@ -78,7 +129,12 @@ void blitRect(const Rect &r) {
     op.byte_swap = true;
     op.mode = PPA_TRANS_MODE_BLOCKING;
 
-    ppa_do_scale_rotate_mirror(g_srm, &op);
+    esp_err_t err = ppa_do_scale_rotate_mirror(g_srm, &op);
+    if (err != ESP_OK) {
+        // Worth knowing about: a full queue would otherwise drop the transfer
+        // and leave that region of the panel showing the previous frame.
+        Serial.printf("[screen] PPA blit failed: %s\n", esp_err_to_name(err));
+    }
 }
 
 // Fallback for a board where the PPA didn't come up: LovyanGFX's own push,
@@ -112,7 +168,7 @@ bool init() {
     if (g_fb != nullptr) {
         ppa_client_config_t srmCfg = {};
         srmCfg.oper_type = PPA_OPERATION_SRM;
-        srmCfg.max_pending_trans_num = 1;
+        srmCfg.max_pending_trans_num = 1;  // sufficient while every transfer is blocking
         ppa_client_config_t fillCfg = {};
         fillCfg.oper_type = PPA_OPERATION_FILL;
         fillCfg.max_pending_trans_num = 1;
@@ -226,6 +282,7 @@ void flush() {
 #ifdef RENDER_PROFILE
     uint32_t t0 = micros();
     int rects = g_rectCount;
+    g_syncedBytes = 0;
 #endif
 
     if (!g_ppaOk) {
@@ -236,7 +293,7 @@ void flush() {
         return;
     }
 
-    writeBackCanvas();
+    writeBackDirty();
 
     // Each transfer costs roughly its own area plus a fixed overhead, so once
     // the separate rects cover most of their common bounding box it's quicker
@@ -264,7 +321,8 @@ void flush() {
     g_rectCount = 0;
 
 #ifdef RENDER_PROFILE
-    Serial.printf("[render] flush %d rect(s) in %.2f ms\n", rects, (micros() - t0) / 1000.0);
+    Serial.printf("[render] flush %d rect(s), %uKB synced, in %.2f ms\n", rects,
+                  (unsigned)(g_syncedBytes / 1024), (micros() - t0) / 1000.0);
 #endif
 }
 

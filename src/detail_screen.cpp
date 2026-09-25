@@ -118,7 +118,10 @@ void detailScreenDraw() {
 
     canvas.drawFastHLine(16, 92, 1248, colorGrey);
 
-    String altBaro = (g_ac.altStr == "GND") ? g_ac.altStr : (g_ac.altStr + " ft");
+    String altBaro = (g_ac.altStr == "GND")  ? g_ac.altStr
+                     : (g_ac.altStr == "?") ? String("unknown")
+                                            : (g_ac.altStr + " ft");
+    String speed = (g_ac.speedStr == "?") ? String("unknown") : (g_ac.speedStr + " kt");
     String altGeom = g_ac.hasAltGeom ? (String(g_ac.altGeom) + " ft") : "unknown";
     String heading = g_ac.hasTrack ? (String((int)g_ac.track) + " deg") : "unknown";
     String vrate = g_ac.hasVertRate ? (String(g_ac.vertRate >= 0 ? "+" : "") + String((int)g_ac.vertRate) + " ft/min")
@@ -139,8 +142,7 @@ void detailScreenDraw() {
 
     field(COL2_LABEL_X, COL2_VALUE_X, COL2_VALUE_MAX_W, ROW0_Y + 0 * ROW_H, "ALTITUDE (BARO)", altBaro, colorWhite);
     field(COL2_LABEL_X, COL2_VALUE_X, COL2_VALUE_MAX_W, ROW0_Y + 1 * ROW_H, "ALTITUDE (GEOM)", altGeom, colorWhite);
-    field(COL2_LABEL_X, COL2_VALUE_X, COL2_VALUE_MAX_W, ROW0_Y + 2 * ROW_H, "GROUND SPEED", g_ac.speedStr + " kt",
-          colorWhite);
+    field(COL2_LABEL_X, COL2_VALUE_X, COL2_VALUE_MAX_W, ROW0_Y + 2 * ROW_H, "GROUND SPEED", speed, colorWhite);
     field(COL2_LABEL_X, COL2_VALUE_X, COL2_VALUE_MAX_W, ROW0_Y + 3 * ROW_H, "HEADING", heading, colorWhite);
     field(COL2_LABEL_X, COL2_VALUE_X, COL2_VALUE_MAX_W, ROW0_Y + 4 * ROW_H, "VERTICAL RATE", vrate, colorWhite);
     field(COL2_LABEL_X, COL2_VALUE_X, COL2_VALUE_MAX_W, ROW0_Y + 5 * ROW_H, "DISTANCE", dist, colorWhite);

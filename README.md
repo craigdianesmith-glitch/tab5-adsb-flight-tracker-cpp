@@ -32,16 +32,42 @@ pip install platformio
 - **Speaker startup**: `M5.begin()` configures the Tab5's ES8388 codec and enables its amp, but stops short of starting the I2S output - nothing is audible until `M5.Speaker.begin()` is called as well (see `src/sound.cpp`).
 - **Rotated framebuffer**: the panel is physically 720x1280 portrait, so in the landscape orientation this app runs at, every horizontal line of the UI is a *column* in memory. LovyanGFX's rotated `pushSprite` can't memcpy in that case and walks the image pixel by pixel - a full-screen push measures **650ms** on this device. `src/screen.cpp` hands the rotation to the ESP32-P4's PPA (its 2D graphics accelerator) instead; see below.
 
+## Header
+
+The left of the bar says what is being shown and where from - `ADSB Flights - Civilian (Nearest airport GLA)` - and the right carries the three controls: radar, mute, and the cog. The airport is the nearest one to the configured location from the same table the radar centres on, and is left off entirely when nothing is within range of it.
+
+The controls sit together at the right edge rather than scattered across the bar, which leaves the whole left side to that one line. Muting is a header control rather than a settings one because it is the thing most likely to be wanted in a hurry.
+
 ## Settings
 
-The cog in the header opens a settings screen holding:
+The cog opens a settings screen in two columns - six controls will not stack down 720px of height, and 1280px of width was going spare:
 
 - **Traffic filter** - civilian or military, as an either/or choice rather than two independent switches. Military aircraft are the ones adsb.lol sets bit 0 of `dbFlags` on.
 - **Range** - a slider whose ceiling follows the filter above it: 60nm for civil traffic, 150nm for military, since military traffic is worth watching further out. Switching to civil with the slider up high clamps it back down.
 - **Show flight refresh** - whether cells that changed on the last poll are shaded for a moment (see Rendering below). On by default.
+- **Refresh interval** - how often the sky is refetched, from 5 to 60 seconds in fives. The slider is stepped rather than continuous, with a detent mark per position, so it can't be left on a value nobody asked for. Below five seconds the endpoint starts refusing; past a minute the table is stale enough that a slower dial wouldn't be asked for.
+- **Location** - the place search, which used to be a button filling half the main header. It is a setting rather than a permanent fixture of the table: it gets changed once when the device moves and then not again. Both finishing and cancelling return here rather than to the table, so a new location lands you back on the button that shows it took.
 - **WiFi** - scans for networks and connects to one, so the device can move between networks without a reflash. Credentials are saved to NVS and win over the ones compiled in from `secrets.h`, which stay as the fallback for a device that's never had WiFi set on-screen.
 
-Filters, range, the refresh toggle and WiFi credentials all persist across reboots alongside the chosen location. Changing any of them refetches immediately rather than waiting out the rest of the poll interval.
+All of it persists across reboots, along with the mute state and the chosen location. Changing the filter or the range refetches immediately rather than waiting out the rest of the interval; changing the interval itself doesn't - the new value simply applies to the wait already running, including shortening one in progress.
+
+## Polling
+
+adsb.lol returns around forty fields per aircraft and this app reads fifteen, so the fetch hands ArduinoJson a `DeserializationOption::Filter` and the rest are skipped in the tokeniser rather than allocated into the document and then ignored. Where the response declares a `Content-Length` the document is parsed straight off the socket; where it doesn't, it goes through `getString()` first, because `HTTPClient` de-chunks on the `getString()`/`writeToStream()` paths but *not* on the raw stream - a chunked reply read directly still has the chunk headers in it.
+
+The HTTPS client is held for the life of the firmware rather than built per fetch, with `setReuse(true)`, so the socket stays open between polls and each fetch skips DNS, TCP and the TLS handshake. `HTTPClient` stores the client by reference and its `clear()` touches neither the socket nor the reuse flag, so this needs nothing more than keeping both objects alive. Measured with `-DNET_PROFILE`:
+
+| | before | after |
+| --- | --- | --- |
+| fetch, start to parsed | ~340ms | ~90ms |
+
+The document itself is allocated from PSRAM through a custom `ArduinoJson::Allocator`, keeping the largest thing this task holds off the 512KB of internal RAM that the WiFi and TLS stacks compete for. PSRAM is the slower memory, so this could have cost parse time; measured, it didn't - parse sits at 25-29ms either way, because with a streaming parse that figure is mostly the body still arriving rather than the document being written. The filter document stays in internal RAM: it is a handful of keys and not worth the slower memory.
+
+The first fetch after a boot still pays the full handshake, and a connection the far end has closed in the meantime shows up as a transport error on the next request rather than at the time it was dropped - so a *connection-level* failure retries once on a fresh socket. Only a connection-level one: a read timeout means the server has the request and is simply slow, and sending it again would put two of the same request on an endpoint that is already throttling. The read timeout is 12s rather than the 5s default for the same reason - a served request takes about 45ms, but a throttled one can take several seconds and is still worth waiting for. The standing cost is one mbedTLS context resident (about 380 bytes of static RAM here) instead of one built and torn down every ten seconds.
+
+adsb.lol answers `429 Too Many Requests` once it has had enough, and a poll that collects one is followed by a minute in which no request goes out at all, rather than by more of the same at the usual cadence. If 429s are a standing feature rather than an occasional one, `POLL_INTERVAL_MS` in `include/config.h` is the dial to turn - ten seconds is not guaranteed to be within what the endpoint will serve, and a long session of reflashing (each boot polls immediately) is enough to trip it.
+
+The status line under the table says how old the data is, and turns amber when the last poll didn't land, so a quiet sky can be told apart from a dead network. A link that drops is reconnected from the poll task with a 5s-to-2min backoff, standing down while the WiFi screen is up, since that screen drives the radio itself.
 
 ## Aircraft types
 
@@ -70,7 +96,9 @@ The code at the centre is the nearest airport, from a generated table of the 324
 
 ## Sound
 
-A two-note rise once the firmware is up, and a short blip whenever an aircraft that wasn't there before appears in the table - one blip per poll however many arrived, and never on the first poll after a start or a location change, where every aircraft is new by definition. `SOUND_ENABLED` and `SOUND_VOLUME` in `include/config.h` turn it off or change the level.
+A two-note rise once the firmware is up, and a short blip whenever an aircraft that wasn't there before appears in the table - one blip per poll however many arrived, and never on the first poll after a start or a location change, where every aircraft is new by definition.
+
+The speaker icon in the header mutes it, and the setting persists. Muting silences the beeps rather than shutting the speaker down, so unmuting needs no re-initialisation - and unmuting plays the arrival blip, which is the one confirmation that can only be given in the medium being switched back on. `SOUND_ENABLED` and `SOUND_VOLUME` in `include/config.h` remain the build-time "never make a sound" and the level.
 
 ## Rendering
 
@@ -85,9 +113,24 @@ Measured on hardware (`-DRENDER_PROFILE` in `platformio.ini` logs the per-flush 
 | full-screen repaint (boot, screen change) | 650ms | 42ms |
 | clearing the canvas | 42ms (CPU) | 5ms (PPA fill) |
 
+One thing that was tried and rejected: queueing the rects as `PPA_TRANS_MODE_NON_BLOCKING` and waiting only on the last, so the CPU fills the queue instead of making a round trip per transfer. Normalised against the work each flush actually did, it measured *slower* - 16.8us per KB against 12.5 - so the transfers are not waiting on the CPU, and the queue plus the completion interrupt cost more than the round trip they replaced. The blit stays blocking. What did come out of that attempt is worth keeping: `ppa_do_scale_rotate_mirror`'s return value is now checked, where a failure used to pass silently and leave that region of the panel showing the previous frame.
+
 Two details worth knowing if you touch `screen.cpp`: the PPA's RGB565 byte order is the opposite of the one LovyanGFX uses for this panel (hence `byte_swap` on every blit, and the pre-swapped fill colour, both checked against what LovyanGFX itself reads back), and the canvas has to be flushed out of the CPU cache before the PPA's DMA can see it.
 
-The poll task also trims each result set to the number of rows that actually fit (eleven at this size), nearest first - a 60nm radius over a busy area returns well over a hundred aircraft, and carrying the other ninety through two vector copies per refresh bought nothing. Trimming there rather than at draw time also keeps "new arrival" meaning a new *row*, rather than beeping at every aircraft that enters the radius unseen.
+That cache flush used to be the floor under every push. `esp_cache_msync` is a range operation - it becomes `Cache_WriteBack_Addr(vaddr, size)`, run over both the L1 D-cache and L2 - so its cost follows the range it is given, and flushing all 1.8MB of the canvas cost the same whether the transfer that followed was the whole screen or one cell. With a 128KB L2 (`CONFIG_CACHE_L2_CACHE_SIZE`) at most ~2,000 lines of that canvas can be dirty, yet the sync was walking 28,800 lines' worth of addresses.
+
+`flush()` now writes back only the rows its dirty rects cover, merged so cells sharing a table row sync once between them. A canvas row is 2560 bytes - a whole number of 64-byte cache lines - so every span is naturally aligned. Measured over ~100s of live traffic with `-DRENDER_PROFILE`:
+
+| | before | after |
+| --- | --- | --- |
+| smallest flush | 4.07ms | 0.69ms |
+| median flush | 9.19ms | 7.17ms (table) / 0.96ms (status line) |
+
+The floor is what moved: a small update no longer pays for the whole canvas. A refresh that touches cells across eight table rows still syncs most of it, and there the PPA transfer dominates anyway.
+
+This is only safe because of an invariant the screens already keep: every canvas write is covered by the dirty list at the flush that follows it - a partial redraw marks the region it touched, a full repaint goes through `clear()`, which marks the lot. Rows outside the list were therefore written back by an earlier flush and are already clean in PSRAM, which is also what lets the merged bounding-box blit stay correct. A screen that drew without marking would now show stale pixels rather than merely wasting a sync, so keep marking.
+
+The poll task also trims each result set, nearest first, to the sixty contacts the radar will plot - a 60nm radius over a busy area returns well over a hundred aircraft, and carrying the long tail through a vector copy per refresh bought nothing. The cap is the radar's rather than the table's, since the table draws only the eleven rows that fit but the radar plots the lot; the result is published by `std::move`, so the only copy left per refresh is the one `loop()` takes to render from. Trimming in the poll task rather than at draw time also keeps "new arrival" meaning a new *row*, rather than beeping at every aircraft that enters the radius unseen.
 
 The per-cell diffing earns its keep twice over: a cell whose value hasn't moved is never redrawn, and the cells that *have* moved are shaded for two seconds so a change is visible without having to watch for it. That costs one extra flush per poll - about 24ms in every 10 seconds, or a quarter of one percent of the time. `CELL_HIGHLIGHT_MS` in `include/config.h` sets how long the shading lasts, and the *Show flight refresh* toggle on the settings screen turns it off.
 
@@ -98,8 +141,8 @@ Rendering also means a refresh where nothing changed costs nothing at all, and t
 - `src/main.cpp` - setup/loop, WiFi, the background poll task, screen state, touch dispatch
 - `src/screen.cpp` - the shared canvas, dirty-region tracking and the PPA-accelerated push to the panel
 - `src/display.cpp` - main table rendering, with per-cell diffing so only changed cells are repainted
-- `src/location_screen.cpp` - location search screen: text entry and results list
-- `src/settings_screen.cpp` - the cog screen: traffic filters and the range slider
+- `src/location_screen.cpp` - location search screen: text entry and results list, reached from the settings screen
+- `src/settings_screen.cpp` - the cog screen: filters, the range and interval sliders, and the way in to location and WiFi
 - `src/wifi_screen.cpp` - network scan, passphrase entry and connection
 - `src/keyboard.cpp` - the on-screen keyboard shared by the location and WiFi screens
 - `src/adsb_client.cpp` - adsb.lol polling and aircraft parsing

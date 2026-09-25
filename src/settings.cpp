@@ -18,6 +18,8 @@ AppSettings loadSettings() {
     s.traffic = prefs.getBool("milonly", false) ? TrafficFilter::MILITARY : TrafficFilter::CIVIL;
     s.radiusNm = prefs.getInt("radius", DEFAULT_RADIUS_NM);
     s.showRefresh = prefs.getBool("refresh", true);
+    s.pollIntervalS = prefs.getInt("pollint", DEFAULT_POLL_INTERVAL_S);
+    s.muted = prefs.getBool("muted", false);
     // isKey() first: getString() on a missing key logs an ESP error line, and
     // an unconfigured device would print two of them on every boot.
     s.wifiSsid = prefs.isKey("ssid") ? prefs.getString("ssid") : String("");
@@ -31,6 +33,15 @@ AppSettings loadSettings() {
     if (s.radiusNm > maxNm) {
         s.radiusNm = maxNm;
     }
+    // Snapped as well as clamped: a value saved by an older build, or a step
+    // that has since changed, shouldn't leave the slider between detents.
+    s.pollIntervalS = (s.pollIntervalS + POLL_INTERVAL_STEP_S / 2) / POLL_INTERVAL_STEP_S * POLL_INTERVAL_STEP_S;
+    if (s.pollIntervalS < POLL_INTERVAL_MIN_S) {
+        s.pollIntervalS = POLL_INTERVAL_MIN_S;
+    }
+    if (s.pollIntervalS > POLL_INTERVAL_MAX_S) {
+        s.pollIntervalS = POLL_INTERVAL_MAX_S;
+    }
     return s;
 }
 
@@ -43,12 +54,20 @@ void saveLocation(double lat, double lon, const String &label) {
     prefs.end();
 }
 
-void saveFilters(TrafficFilter traffic, int radiusNm, bool showRefresh) {
+void saveFilters(TrafficFilter traffic, int radiusNm, bool showRefresh, int pollIntervalS) {
     Preferences prefs;
     prefs.begin(NAMESPACE, false);
     prefs.putBool("milonly", traffic == TrafficFilter::MILITARY);
     prefs.putInt("radius", radiusNm);
     prefs.putBool("refresh", showRefresh);
+    prefs.putInt("pollint", pollIntervalS);
+    prefs.end();
+}
+
+void saveMuted(bool muted) {
+    Preferences prefs;
+    prefs.begin(NAMESPACE, false);
+    prefs.putBool("muted", muted);
     prefs.end();
 }
 
