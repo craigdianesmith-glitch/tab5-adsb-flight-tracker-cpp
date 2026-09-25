@@ -26,6 +26,9 @@ Screen g_screen = Screen::MAIN;
 // The detail screen is reachable from the table and from the radar, and Back
 // should land wherever you came from.
 Screen g_detailReturnTo = Screen::MAIN;
+// The WiFi screen is normally reached from settings, but a device with no
+// credentials opens it straight from boot - where Back belongs on the table.
+Screen g_wifiReturnTo = Screen::SETTINGS;
 
 SemaphoreHandle_t g_dataMutex;
 std::vector<Aircraft> g_latestAircraft;
@@ -83,6 +86,12 @@ constexpr uint32_t WIFI_RETRY_MAX_MS = 120000;
 uint32_t g_wifiRetryMs = WIFI_RETRY_MIN_MS;
 uint32_t g_nextWifiTryMs = 0;
 
+// A build whose secrets.h was never filled in carries the example's
+// placeholder, which is no more usable than an empty string. Either way there
+// is nothing to connect with, and fifteen seconds spent failing to prove it
+// is fifteen seconds of a blank table.
+bool credentialsUnset(const String &ssid) { return ssid.length() == 0 || ssid == "your-ssid"; }
+
 // Reconnects a link that has dropped since boot. Without this the tracker
 // would sit there failing a fetch every interval until someone power-cycled
 // it - an AP reboot or a few minutes out of range was enough to lose it for
@@ -101,7 +110,7 @@ bool ensureWifi() {
         pass = g_wifiPass;
         xSemaphoreGive(g_dataMutex);
     }
-    if (uiBusy || ssid.length() == 0) {
+    if (uiBusy || credentialsUnset(ssid)) {
         return false;
     }
 
@@ -463,6 +472,7 @@ void handleSettingsTouch(int x, int y, bool pressed, bool clicked) {
             g_uiOwnsWifi = true;  // hands the radio to the screen; see ensureWifi()
             xSemaphoreGive(g_dataMutex);
         }
+        g_wifiReturnTo = Screen::SETTINGS;
         g_screen = Screen::WIFI;
         wifiScreenEnter();
         break;
@@ -485,6 +495,17 @@ void handleWifiTouch(int x, int y) {
         }
         g_nextWifiTryMs = 0;  // a fresh attempt is wanted now, not after the backoff
         g_wifiRetryMs = WIFI_RETRY_MIN_MS;
+        if (g_wifiReturnTo == Screen::MAIN) {
+            g_wifiReturnTo = Screen::SETTINGS;  // only the boot case lands on the table
+            g_screen = Screen::MAIN;
+            displayInvalidate();
+            if (xSemaphoreTake(g_dataMutex, portMAX_DELAY) == pdTRUE) {
+                g_dataReady = true;
+                g_pollNow = true;  // credentials may have just arrived - don't wait out the interval
+                xSemaphoreGive(g_dataMutex);
+            }
+            return;
+        }
         g_screen = Screen::SETTINGS;
         settingsScreenDraw();
     }
@@ -539,8 +560,20 @@ void setup() {
     // the poll task can reconnect with them without re-reading NVS each time.
     g_wifiSsid = s.wifiSsid.length() ? s.wifiSsid : String(WIFI_SSID);
     g_wifiPass = s.wifiSsid.length() ? s.wifiPass : String(WIFI_PASSWORD);
-    connectWifi(g_wifiSsid, g_wifiPass);
+
+    bool haveCredentials = !credentialsUnset(g_wifiSsid);
+    if (haveCredentials) {
+        connectWifi(g_wifiSsid, g_wifiPass);
+    } else {
+        // Nothing to connect with, so don't spend the timeout finding out.
+        // The screen scans, which needs the radio in station mode either way.
+        Serial.println("[wifi] no credentials set - opening the WiFi screen");
+        WiFi.mode(WIFI_STA);
+    }
     g_linkUp = (WiFi.status() == WL_CONNECTED);
+    // Set before the poll task exists, or its first pass could race the scan
+    // the WiFi screen is about to start.
+    g_uiOwnsWifi = !haveCredentials;
 
     g_dataMutex = xSemaphoreCreateMutex();
     // Pinned to core 0 so it doesn't contend with the render/UI loop on core 1.
@@ -548,6 +581,14 @@ void setup() {
     xTaskCreatePinnedToCore(pollTask, "poll", 16384, nullptr, 1, nullptr, 0);
 
     soundBoot();
+
+    // A device that has never been told about a network lands on the screen
+    // that fixes that, rather than on a table that can never fill.
+    if (!haveCredentials) {
+        g_wifiReturnTo = Screen::MAIN;
+        g_screen = Screen::WIFI;
+        wifiScreenEnter();
+    }
 }
 
 void loop() {
