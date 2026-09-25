@@ -21,6 +21,13 @@ constexpr int COMPASS_INSET = 26;
 // placed, so in a cluster the closest aircraft keeps its callsign and the rest
 // stay as bare blips. Better than a fixed cap, which suppressed labels in
 // empty sky as readily as in a crowd.
+constexpr int FOOTER_Y = 664;
+constexpr int BOX_PAD_X = 10, BOX_PAD_Y = 6;
+constexpr int BOX_H = 16 + 2 * BOX_PAD_Y;  // one line of Font0 at size 2, boxed
+constexpr int BOX_GAP = 10;
+// Text top to text top, so the two stacked boxes clear each other by BOX_GAP.
+constexpr int LEGEND_OFFSET = BOX_H + BOX_GAP;
+
 constexpr int MAX_LABELS = 64;
 constexpr int LABEL_H = 16;  // Font0 at size 2
 constexpr int LABEL_PAD = 4;
@@ -69,6 +76,51 @@ int ringStep(int rangeNm) {
     if (rangeNm <= 30) return 10;
     if (rangeNm <= 60) return 20;
     return 50;
+}
+
+// The footer readouts sit in boxes, the way a scope's data blocks do. A
+// right-aligned one is placed from its right edge so that the box, rather
+// than the text inside it, lines up with the margin the plot is given.
+void footerBox(const String &text, int edgeX, int textY, bool rightAligned) {
+    auto &canvas = screen::canvas();
+    canvas.setFont(&fonts::Font0);
+    canvas.setTextSize(2);
+    int w = canvas.textWidth(text) + 2 * BOX_PAD_X;
+    int x = rightAligned ? edgeX - w : edgeX;
+    canvas.drawRect(x, textY - BOX_PAD_Y, w, BOX_H, colorRing);
+    canvas.setTextColor(colorFaint);
+    canvas.setTextDatum(rightAligned ? TR_DATUM : TL_DATUM);
+    canvas.drawString(text, rightAligned ? edgeX - BOX_PAD_X : edgeX + BOX_PAD_X, textY);
+}
+
+// Vertical trend as a shape rather than a colour or a brightness: the plot is
+// one hue on purpose, and brightness is already spoken for marking a new
+// contact, so neither was free to take on a second meaning. A chevron above
+// the blip for a climb and below for a descent - pointing the way the
+// aircraft is going - and nothing at all for level or ground traffic, which
+// keeps the plot quiet when nothing is doing anything vertically.
+//
+// It sits directly over or under the blip, where the callsign (placed to one
+// side, on the same row) can't reach it.
+void drawTrend(int px, int py, const String &status, uint16_t color) {
+    int dir = 0;
+    if (status == "CLIMB") {
+        dir = -1;
+    } else if (status == "DESCEND") {
+        dir = 1;
+    }
+    if (dir == 0) {
+        return;
+    }
+    auto &canvas = screen::canvas();
+    constexpr int GAP = 9, HEIGHT = 5, HALF_W = 5;
+    // Two strokes: a single line reads as thin and accidental beside a 5px blip.
+    for (int i = 0; i <= 1; i++) {
+        int base = py + dir * (GAP + i);
+        int tip = py + dir * (GAP + HEIGHT + i);
+        canvas.drawLine(px - HALF_W, base, px, tip, color);
+        canvas.drawLine(px, tip, px + HALF_W, base, color);
+    }
 }
 
 }  // namespace
@@ -181,6 +233,7 @@ void radarScreenDraw(const std::vector<Aircraft> &aircraft, const std::vector<ui
             canvas.drawLine((int)px, (int)py, (int)(px + sinf(a) * len), (int)(py - cosf(a) * len), color);
         }
         canvas.fillCircle((int)px, (int)py, 5, color);
+        drawTrend((int)px, (int)py, ac.status, color);
         if (g_blipCount < MAX_BLIPS) {
             g_blips[g_blipCount++] = {(int16_t)px, (int16_t)py, ac.hex};
         }
@@ -211,13 +264,15 @@ void radarScreenDraw(const std::vector<Aircraft> &aircraft, const std::vector<ui
     }
 
     // --- footings ---------------------------------------------------------
-    canvas.setTextSize(2);
-    canvas.setTextColor(colorFaint);
-    canvas.setTextDatum(TL_DATUM);
-    canvas.drawString(String(rangeNm) + " nm range   rings every " + String(step) + " nm", 16, 664);
-    canvas.setTextDatum(TR_DATUM);
-    canvas.drawString(String(plotted) + " contacts" + (labelled < plotted ? "   " + String(labelled) + " labelled" : ""),
-                      1264, 664);
+    // Stacked in the bottom right rather than run along the bottom left: the
+    // plot is still 165px wide at the footer's height, and a legend appended
+    // to the range line reached x=664, well inside it. Boxed from the right
+    // edge, every one of them starts beyond the widest part of the circle at
+    // the height it sits at.
+    footerBox(String(rangeNm) + " nm range   rings every " + String(step) + " nm", 16, FOOTER_Y, false);
+    footerBox("^ climb   v descent", 1264, FOOTER_Y - LEGEND_OFFSET, true);
+    footerBox(String(plotted) + " contacts" + (labelled < plotted ? "   " + String(labelled) + " labelled" : ""), 1264,
+              FOOTER_Y, true);
 
     screen::flush();
 }

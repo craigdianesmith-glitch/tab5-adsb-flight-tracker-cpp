@@ -100,6 +100,10 @@ The radar button in the header opens a plan-position plot centred on the configu
 
 A single hue is deliberate - on a plot like this brightness is what carries meaning, which leaves it free to mark a new arrival as the brightest thing on screen.
 
+Which is also why vertical movement is a shape rather than a colour or a shade: both of those were already spoken for, and neither was free to take on a second meaning without muddling the first. A contact that is climbing carries a chevron above the blip and one that is descending carries it below, pointing the way the aircraft is going; level and ground traffic carry nothing at all, so the plot stays quiet when nothing is doing anything vertically. The footer names the two marks rather than leaving them to be worked out, stacked above the contact count in the bottom right: the plot is still 165px wide at the footer's height, so a legend appended to the range line on the left ran straight into it. Each of the three readouts sits in its own boxed cell the way a scope's data blocks do, drawn in the same dim green as the range rings so the boxes read as furniture and the text inside them as the reading.
+
+That is roughly what a real secondary-radar display does, for the same reason - the scopes those plots were drawn on had one phosphor and no colour to spend, so trend information went into the symbol.
+
 Callsigns are placed nearest-first and one may not overlap another already placed, so in a cluster the closest aircraft keeps its label and the rest stay as bare blips. The footer says how many were plotted and how many of those are labelled, so a thinned display doesn't read as a missing one.
 
 The code at the centre is the nearest airport, from a generated table of the 3244 large and medium airports with scheduled service in the public-domain [OurAirports](https://ourairports.com/data/) dataset (~39KB of flash). A full scan takes 6.7ms, so the result is cached until the location changes rather than recomputed per frame. Nothing within 120nm leaves the centre as a bare cross.
