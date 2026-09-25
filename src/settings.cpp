@@ -20,11 +20,19 @@ AppSettings loadSettings() {
     s.showRefresh = prefs.getBool("refresh", true);
     s.pollIntervalS = prefs.getInt("pollint", DEFAULT_POLL_INTERVAL_S);
     s.muted = prefs.getBool("muted", false);
+    s.source = (AdsbSource)prefs.getUChar("source", (uint8_t)DEFAULT_ADSB_SOURCE);
     // isKey() first: getString() on a missing key logs an ESP error line, and
     // an unconfigured device would print two of them on every boot.
     s.wifiSsid = prefs.isKey("ssid") ? prefs.getString("ssid") : String("");
     s.wifiPass = prefs.isKey("pass") ? prefs.getString("pass") : String("");
     prefs.end();
+
+    // A stored value from a build that listed more providers than this one
+    // would index off the end of the table, so anything unrecognised falls
+    // back to letting the tracker choose.
+    if (adsbSourceIndex(s.source) >= ADSB_PROVIDER_COUNT) {
+        s.source = AdsbSource::AUTO;
+    }
 
     if (s.radiusNm < RADIUS_MIN_NM) {
         s.radiusNm = RADIUS_MIN_NM;
@@ -54,13 +62,15 @@ void saveLocation(double lat, double lon, const String &label) {
     prefs.end();
 }
 
-void saveFilters(TrafficFilter traffic, int radiusNm, bool showRefresh, int pollIntervalS) {
+void saveFilters(TrafficFilter traffic, int radiusNm, bool showRefresh, int pollIntervalS,
+                 AdsbSource source) {
     Preferences prefs;
     prefs.begin(NAMESPACE, false);
     prefs.putBool("milonly", traffic == TrafficFilter::MILITARY);
     prefs.putInt("radius", radiusNm);
     prefs.putBool("refresh", showRefresh);
     prefs.putInt("pollint", pollIntervalS);
+    prefs.putUChar("source", (uint8_t)source);
     prefs.end();
 }
 

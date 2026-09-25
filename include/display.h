@@ -32,10 +32,13 @@ bool displayHitRow(int x, int y, int &outRow);
 // canvas, so the next render repaints from scratch.
 void displayInvalidate();
 
-// The header's subtitle: which traffic is being shown, and the nearest
-// airport to the configured location (empty if nothing is near enough).
-// Takes effect on the next full repaint, which any of these changing causes.
-void displaySetHeader(bool military, const String &airportCode);
+// The header's subtitle: which traffic is being shown, the nearest airport to
+// the configured location (empty if nothing is near enough), and which
+// provider the data came from (empty until a poll has succeeded). Anything
+// changing here forces the full repaint that draws it - a failover picking a
+// different provider mid-run would otherwise not show until something else
+// happened to invalidate the header.
+void displaySetHeader(bool military, const String &airportCode, const String &provider);
 
 // Whether the speaker icon is drawn muted. Repaints the icon on its own.
 void displaySetMuted(bool muted);

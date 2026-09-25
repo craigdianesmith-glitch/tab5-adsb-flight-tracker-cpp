@@ -34,7 +34,9 @@ pip install platformio
 
 ## Header
 
-The left of the bar says what is being shown and where from - `ADSB Flights - Civilian (Nearest airport GLA)` - and the right carries the three controls: radar, mute, and the cog. The airport is the nearest one to the configured location from the same table the radar centres on, and is left off entirely when nothing is within range of it.
+The left of the bar says what is being shown, where from, and who it came from - `ADSB Flights - Civilian (Nearest airport GLA)   via adsb.lol` - and the right carries the three controls: radar, mute, and the cog. The airport is the nearest one to the configured location from the same table the radar centres on, and is left off entirely when nothing is within range of it.
+
+The source is named because it can change on its own: under **Auto** the tracker fails over between providers, and a table quietly being served by the other one should say so rather than leave it to be guessed. It appears once a poll has succeeded, and changing it forces the repaint that draws it.
 
 The controls sit together at the right edge rather than scattered across the bar, which leaves the whole left side to that one line. Muting is a header control rather than a settings one because it is the thing most likely to be wanted in a hurry.
 
@@ -50,20 +52,21 @@ Widths are fixed rather than measured: the content of each column is known and b
 
 ## Settings
 
-The cog opens a settings screen in two columns - six controls will not stack down 720px of height, and 1280px of width was going spare:
+The cog opens a settings screen in two columns - seven controls will not stack down 720px of height, and 1280px of width was going spare:
 
-- **Traffic filter** - civilian or military, as an either/or choice rather than two independent switches. Military aircraft are the ones adsb.lol sets bit 0 of `dbFlags` on.
+- **Traffic filter** - civilian or military, as an either/or choice rather than two independent switches. Military aircraft are the ones readsb sets bit 0 of `dbFlags` on - or, on a feed that doesn't carry that field, the ones a military-only endpoint returned.
 - **Range** - a slider whose ceiling follows the filter above it: 60nm for civil traffic, 150nm for military, since military traffic is worth watching further out. Switching to civil with the slider up high clamps it back down.
 - **Show flight refresh** - whether cells that changed on the last poll are shaded for a moment (see Rendering below). On by default.
+- **Data source** - which provider to poll: **Auto**, or one of them pinned. Auto is the default and the reason this control exists - see [Data sources](#data-sources). Pinning is for when you would rather know which one you are looking at than have it chosen for you; a pinned provider's empty answer is reported as it stands, with no second opinion sought.
 - **Refresh interval** - how often the sky is refetched, from 5 to 60 seconds in fives, defaulting to 30. The slider is stepped rather than continuous, with a detent mark per position, so it can't be left on a value nobody asked for. Below five seconds the endpoint starts refusing; past a minute the table is stale enough that a slower dial wouldn't be asked for. The default is deliberately not the fastest the dial allows - see [Data sources](#data-sources).
 - **Location** - the place search, which used to be a button filling half the main header. It is a setting rather than a permanent fixture of the table: it gets changed once when the device moves and then not again. Both finishing and cancelling return here rather than to the table, so a new location lands you back on the button that shows it took.
 - **WiFi** - scans for networks and connects to one, so the device can move between networks without a reflash. Credentials are saved to NVS and win over the ones compiled in from `secrets.h`, which stay as the fallback for a device that's never had WiFi set on-screen. A device with neither - a fresh flash of a released image - opens this screen on boot rather than spending the connect timeout proving it has nothing to connect with, and Back from there lands on the table. Credentials that are merely wrong, or an access point that is down, are left to the poll task to retry, since being thrown into setup over a router reboot would be worse than the status line saying what is happening.
 
-All of it persists across reboots, along with the mute state and the chosen location. Changing the filter or the range refetches immediately rather than waiting out the rest of the interval; changing the interval itself doesn't - the new value simply applies to the wait already running, including shortening one in progress.
+All of it persists across reboots, along with the mute state and the chosen location. Changing the filter, the range or the source refetches immediately rather than waiting out the rest of the interval; changing the interval itself doesn't - the new value simply applies to the wait already running, including shortening one in progress.
 
 ## Polling
 
-adsb.lol returns around forty fields per aircraft and this app reads fifteen, so the fetch hands ArduinoJson a `DeserializationOption::Filter` and the rest are skipped in the tokeniser rather than allocated into the document and then ignored. Where the response declares a `Content-Length` the document is parsed straight off the socket; where it doesn't, it goes through `getString()` first, because `HTTPClient` de-chunks on the `getString()`/`writeToStream()` paths but *not* on the raw stream - a chunked reply read directly still has the chunk headers in it.
+These endpoints return around forty fields per aircraft and this app reads fifteen, so the fetch hands ArduinoJson a `DeserializationOption::Filter` and the rest are skipped in the tokeniser rather than allocated into the document and then ignored. Where the response declares a `Content-Length` the document is parsed straight off the socket; where it doesn't, it goes through `getString()` first, because `HTTPClient` de-chunks on the `getString()`/`writeToStream()` paths but *not* on the raw stream - a chunked reply read directly still has the chunk headers in it.
 
 The HTTPS client is held for the life of the firmware rather than built per fetch, with `setReuse(true)`, so the socket stays open between polls and each fetch skips DNS, TCP and the TLS handshake. `HTTPClient` stores the client by reference and its `clear()` touches neither the socket nor the reuse flag, so this needs nothing more than keeping both objects alive. Measured with `-DNET_PROFILE`:
 
@@ -75,13 +78,15 @@ The document itself is allocated from PSRAM through a custom `ArduinoJson::Alloc
 
 The first fetch after a boot still pays the full handshake, and a connection the far end has closed in the meantime shows up as a transport error on the next request rather than at the time it was dropped - so a *connection-level* failure retries once on a fresh socket. Only a connection-level one: a read timeout means the server has the request and is simply slow, and sending it again would put two of the same request on an endpoint that is already throttling. The read timeout is 12s rather than the 5s default for the same reason - a served request takes about 45ms, but a throttled one can take several seconds and is still worth waiting for. The standing cost is one mbedTLS context resident (about 380 bytes of static RAM here) instead of one built and torn down every ten seconds.
 
-adsb.lol answers `429 Too Many Requests` once it has had enough, and a poll that collects one is followed by a minute in which no request goes out at all, rather than by more of the same at the usual cadence. If 429s are a standing feature rather than an occasional one, `POLL_INTERVAL_MS` in `include/config.h` is the dial to turn - ten seconds is not guaranteed to be within what the endpoint will serve, and a long session of reflashing (each boot polls immediately) is enough to trip it.
+Providers answer `429 Too Many Requests` once they have had enough, and a poll that collects one is followed by a minute in which no request goes out to *that* provider at all, rather than by more of the same at the usual cadence. The backoff is per provider, so one throttling the device doesn't sideline the other. If 429s are a standing feature rather than an occasional one, `POLL_INTERVAL_MS` in `include/config.h` is the dial to turn - ten seconds is not guaranteed to be within what the endpoint will serve, and a long session of reflashing (each boot polls immediately) is enough to trip it.
+
+The kept-alive socket is closed when a poll is aimed at a different host, since reusing it would send the request down a connection to the wrong server.
 
 The status line under the table says how old the data is, and turns amber when the last poll didn't land, so a quiet sky can be told apart from a dead network. A link that drops is reconnected from the poll task with a 5s-to-2min backoff, standing down while the WiFi screen is up, since that screen drives the radio itself.
 
 ## Aircraft types
 
-adsb.lol's `desc` field is always null on the endpoints this uses, so the detail screen's full aircraft name is filled in locally from `src/aircraft_db.cpp`. There are two tables: civil types, and around 85 military ones covering transports, tankers, surveillance, combat, trainers, helicopters and drones.
+The `desc` field is always null on the endpoints this uses, so the detail screen's full aircraft name is filled in locally from `src/aircraft_db.cpp`. There are two tables: civil types, and around 85 military ones covering transports, tankers, surveillance, combat, trainers, helicopters and drones.
 
 Which is consulted first depends on the aircraft's own military flag, because a good number of ICAO designators cover both - `EC45` is an air ambulance or a US Army UH-72 Lakota, `BE20` a King Air or a C-12 Huron, `B762` a 767-200 or a KC-46 Pegasus. The other table is still searched as a fallback, so a type listed in only one resolves either way.
 
@@ -152,11 +157,59 @@ Rendering also means a refresh where nothing changed costs nothing at all, and t
 
 ## Data sources
 
-Live aircraft come from [adsb.lol](https://adsb.lol), whose data is made available under the [Open Database License 1.0](https://opendatacommons.org/licenses/odbl/1-0/). The firmware carries none of that data - it is fetched at runtime and displayed - so what appears on screen is an ODbL Produced Work, and the attribution is the obligation that comes with it.
+Live aircraft come from two providers, either of which can serve the whole app:
+
+- [adsb.lol](https://adsb.lol), whose data is made available under the [Open Database License 1.0](https://opendatacommons.org/licenses/odbl/1-0/).
+- [adsb.fi](https://adsb.fi), whose open data API is free to use without a key, for personal and non-commercial use, and asks that adsb.fi be cited with a link to its home page - which this is.
+
+The firmware carries none of that data - it is fetched at runtime and displayed - so what appears on screen is an ODbL Produced Work, and the attribution is the obligation that comes with it.
+
+### Why there are two
+
+adsb.lol spent an evening answering `200 OK` with an empty aircraft array. Its API was up and its responses were well-formed; the feed behind it had drained, and its own `/0/me` reported `global.aircraft: 0` while `/v2/all` returned 503. Sampled at 8-second intervals, the point endpoint returned nothing for about eighty seconds and then refilled, cycling:
+
+```
+22:00:57  lol_point=0   lol_global=0       lol_all=503  | fi_point=6
+   ...     (nine consecutive polls, total: 0)
+22:02:22  lol_point=4   lol_global=3690    lol_all=503  | fi_point=6
+22:02:39  lol_point=5   lol_global=10726   lol_all=503  | fi_point=6
+```
+
+At the point of parsing, that is indistinguishable from an empty sky - which is exactly what the table said, for several polls in a row. A failed request would have left the last known data up (see below); only a *successful* empty response produces "No aircraft in range".
+
+So a single source is a single point of failure that fails silently, and **Auto** does something about it:
+
+- Sticky, not round-robin: whichever provider last answered is asked first, so one that has gone down doesn't cost a 12-second timeout on every poll for the duration of the outage.
+- A provider that fails outright is skipped to the next one.
+- An empty result that follows a *non-empty* one is checked against the other provider before it reaches the screen. If that one finds traffic, it takes over and says so in the header. If both agree the sky is empty, it is empty.
+- Only on that transition, so a genuinely quiet sky costs one request per poll rather than two.
+
+### What a source has to describe
+
+A source is a pair of endpoints rather than a URL, because providers disagree about more than their hostname:
+
+| | adsb.lol | adsb.fi |
+| --- | --- | --- |
+| civil endpoint | `/v2/point/{lat}/{lon}/{radius}` | `/v2/lat/{lat}/lon/{lon}/dist/{radius}` |
+| military endpoint | the same point query | `/v2/mil`, global |
+| array key | `ac` | `aircraft` (point), `ac` (mil) |
+| carries `dbFlags` | yes | no (point), yes (mil) |
+
+Which is why `include/config.h` holds a table of `AdsbProvider` rather than a format string, and why each endpoint carries its own array key: adsb.fi's two really are differently shaped, not one path with a variant.
+
+Where an endpoint omits `dbFlags` there is nothing to test, so the endpoint itself is the answer - everything from a military feed is military, nothing from a civil one is. And a *global* endpoint hasn't applied the radius, so the client does: it drops anything outside it, and anything it cannot place at all. That last part matters more than it sounds. adsb.fi's military feed carried 232 aircraft when this was written, 50 of them with no `lat`/`lon` at all; without that rule every one would have landed in a table captioned as showing traffic within a few dozen miles.
+
+The URL templates use `{lat}`/`{lon}`/`{radius}` substitution rather than printf formatting. A format string that reaches `snprintf` from anywhere but a literal is how a `double` gets read as a pointer, and these are data - a mis-spelled placeholder can only ever produce a wrong URL.
+
+### Paid alternatives, and why there are none here
+
+Worth recording, since it looks like the obvious fix and isn't. A paid tier buys quota, not uptime, and the quota on offer doesn't fit a device that polls around the clock: 30-second polling is ~86,400 requests a month, where ADS-B Exchange's $10 Community tier allows 10,000 - about one poll every four minutes. [OpenSky](https://opensky-network.org)'s free tier is generous enough (4,000 credits a day, 1 per small bounding box, so a poll every 21s) but its state vectors carry no type designator and no military flag, which would empty the TYPE column and the military filter outright. [airplanes.live](https://airplanes.live) is the same readsb schema *with* `dbFlags` and would be a genuine drop-in, but its public endpoint currently answers 403 and asks you to get in touch first.
+
+The reliable answer, if this ever needs one, is not a subscription but a receiver: an RTL-SDR running readsb on the same network serves `aircraft.json` in this exact schema with no rate limit, no TLS and no outages.
 
 That endpoint is free, volunteer-run infrastructure, and the default refresh interval is set with that in mind rather than at the fastest the hardware or the dial would allow. `DEFAULT_POLL_INTERVAL_S` is 30 seconds: an aircraft covers perhaps three miles in that time, which at these ranges moves a blip by a few pixels, so the cost to the display is slight and the cost to the server is a third of what ten seconds asks of it. The dial is there for anyone who wants it faster on their own account - what matters is that every device doesn't take that by default.
 
-`POLL_INTERVAL_MIN_S` stops the slider going below five seconds, and adsb.lol answers `429` well before that if it has had enough; a poll that collects one is followed by a minute's silence rather than more of the same. If you are flashing this onto several devices, leave them slower still.
+`POLL_INTERVAL_MIN_S` stops the slider going below five seconds, and either provider answers `429` well before that if it has had enough - adsb.fi documents a limit of one request per second; a poll that collects one is followed by a minute's silence from that provider rather than more of the same. If you are flashing this onto several devices, leave them slower still.
 
 Place search is [Open-Meteo's geocoding API](https://open-meteo.com/), free for non-commercial use, its data licensed [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).
 
@@ -174,14 +227,14 @@ MIT - see [LICENSE](LICENSE). The libraries it builds on (M5Unified, M5GFX, Ardu
 - `src/screen.cpp` - the shared canvas, dirty-region tracking and the PPA-accelerated push to the panel
 - `src/display.cpp` - main table rendering, with per-cell diffing so only changed cells are repainted
 - `src/location_screen.cpp` - location search screen: text entry and results list, reached from the settings screen
-- `src/settings_screen.cpp` - the cog screen: filters, the range and interval sliders, and the way in to location and WiFi
+- `src/settings_screen.cpp` - the cog screen: filters, the data source, the range and interval sliders, and the way in to location and WiFi
 - `src/wifi_screen.cpp` - network scan, passphrase entry and connection
 - `src/keyboard.cpp` - the on-screen keyboard shared by the location and WiFi screens
-- `src/adsb_client.cpp` - adsb.lol polling and aircraft parsing
+- `src/adsb_client.cpp` - provider polling, failover and aircraft parsing
 - `src/aircraft_db.cpp` - ICAO type code and operator lookups for the detail screen
 - `src/geocode.cpp` - Open-Meteo location search
 - `src/settings.cpp` - persists location, filters and WiFi credentials via ESP32 `Preferences` (NVS)
 - `src/radar_screen.cpp` - the radar plot: range rings, bearings, contacts and vectors
 - `src/airports.cpp` - generated nearest-airport lookup, for the code at the centre of the plot
 - `src/sound.cpp` - boot and new-arrival beeps through the built-in speaker
-- `include/config.h` - tunable constants
+- `include/config.h` - tunable constants, and the ADS-B provider table

@@ -70,6 +70,7 @@ uint32_t g_highlightUntil[MAX_CACHE_ROWS][NUM_COLS] = {};
 bool g_showRefresh = true;
 bool g_military = false;
 String g_airportCode;
+String g_provider;
 bool g_muted = false;
 
 // Poll state, for the status line under the table.
@@ -348,9 +349,17 @@ void displayTickStatus() {
     screen::flush();
 }
 
-void displaySetHeader(bool military, const String &airportCode) {
+void displaySetHeader(bool military, const String &airportCode, const String &provider) {
+    if (military == g_military && airportCode == g_airportCode && provider == g_provider) {
+        return;
+    }
     g_military = military;
     g_airportCode = airportCode;
+    g_provider = provider;
+    // The subtitle is only drawn by a full repaint. A filter or location change
+    // already causes one by another route, but a failover behind the scenes
+    // does not, so ask for it here rather than leaving a stale source on show.
+    displayInvalidate();
 }
 
 void displaySetMuted(bool muted) {
@@ -410,7 +419,29 @@ void displayRenderAircraft(const std::vector<Aircraft> &aircraft, const std::vec
             sub += " (Nearest airport " + g_airportCode + ")";
         }
         canvas.setTextColor(colorGrey);
-        canvas.drawString(sub, 16 + canvas.textWidth(title), HEADER_MID_Y);
+        int subX = 16 + canvas.textWidth(title);
+        canvas.drawString(sub, subX, HEADER_MID_Y);
+
+        // Which provider served this, named because it can now change on its
+        // own: a table quietly being fed by the fallback should say so rather
+        // than leave you guessing. Set a size down from the line it follows,
+        // both because it is the least of the three things said here and
+        // because at size 3 it reached past the icons at the right edge.
+        if (g_provider.length()) {
+            int x = subX + canvas.textWidth(sub);
+            String via = "  via " + g_provider;
+            int size = 2;
+            canvas.setTextSize(size);
+            // The icons own everything from RADAR_X rightwards. A name long
+            // enough to reach them is dropped rather than drawn underneath.
+            while (size > 1 && x + canvas.textWidth(via) > RADAR_X - 12) {
+                canvas.setTextSize(--size);
+            }
+            if (x + canvas.textWidth(via) <= RADAR_X - 12) {
+                canvas.drawString(via, x, HEADER_MID_Y);
+            }
+            canvas.setTextSize(3);
+        }
 
         drawRadarIcon(RADAR_X + ICON_SIZE / 2, ICON_Y + ICON_SIZE / 2, ICON_SIZE / 2 - 6, colorGrey);
         drawSpeaker(MUTE_X + ICON_SIZE / 2, ICON_Y + ICON_SIZE / 2, ICON_SIZE / 2 - 8, g_muted,

@@ -15,7 +15,7 @@ enum class SettingsAction {
 // displayed - the location itself is changed on the location screen, which
 // this screen is now the only way into.
 void settingsScreenSet(TrafficFilter traffic, int radiusNm, bool showRefresh, int pollIntervalS,
-                       const String &locationLabel);
+                       const String &locationLabel, AdsbSource source);
 
 // Updates the location shown on the button, after the location screen has
 // been in and changed it.
@@ -31,3 +31,4 @@ TrafficFilter settingsScreenTraffic();
 int settingsScreenRadius();
 bool settingsScreenShowRefresh();
 int settingsScreenPollInterval();
+AdsbSource settingsScreenSource();

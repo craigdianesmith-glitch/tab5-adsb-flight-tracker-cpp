@@ -43,6 +43,10 @@ int g_radiusNm = DEFAULT_RADIUS_NM;
 bool g_showRefresh = true;
 int g_pollIntervalS = DEFAULT_POLL_INTERVAL_S;
 bool g_muted = false;
+AdsbSource g_source = DEFAULT_ADSB_SOURCE;
+// Which provider actually answered the last successful poll, for the header.
+// Under AUTO that is not necessarily the one at the top of the table.
+String g_activeProvider;
 // The header shows the nearest airport rather than the place name now, and it
 // only changes when the location does, so it's resolved there and kept.
 String g_airportCode;
@@ -143,6 +147,7 @@ void pollTask(void *) {
         double lat, lon;
         TrafficFilter traffic = TrafficFilter::CIVIL;
         int radius = DEFAULT_RADIUS_NM;
+        AdsbSource source = DEFAULT_ADSB_SOURCE;
         uint32_t intervalMs = (uint32_t)DEFAULT_POLL_INTERVAL_S * 1000;
         if (xSemaphoreTake(g_dataMutex, portMAX_DELAY) == pdTRUE) {
             if (g_resetBaseline) {
@@ -155,6 +160,7 @@ void pollTask(void *) {
             lon = g_lon;
             traffic = g_traffic;
             radius = g_radiusNm;
+            source = g_source;
             intervalMs = (uint32_t)g_pollIntervalS * 1000;
             xSemaphoreGive(g_dataMutex);
         }
@@ -165,7 +171,8 @@ void pollTask(void *) {
 
         bool linkUp = ensureWifi();
         std::vector<Aircraft> fetched;
-        bool ok = linkUp && fetchAircraft(lat, lon, radius, fetched);
+        const char *provider = nullptr;
+        bool ok = linkUp && fetchAircraft(lat, lon, radius, wantMilitary, source, fetched, provider);
         if (ok) {
             std::vector<Aircraft> aircraft;
             for (const Aircraft &a : fetched) {
@@ -229,6 +236,9 @@ void pollTask(void *) {
             if (ok) {
                 g_everSucceeded = true;
                 g_lastSuccessMs = millis();
+                if (provider != nullptr) {
+                    g_activeProvider = provider;
+                }
             }
             xSemaphoreGive(g_dataMutex);
         }
@@ -250,6 +260,19 @@ void pollTask(void *) {
             }
         }
     }
+}
+
+// g_activeProvider is written by pollTask on the other core, so the UI copies
+// it under the mutex rather than reading a String mid-reassignment. Not usable
+// before the mutex exists - setup() reads the variable directly, where it is
+// still empty and nothing else is running yet.
+String activeProvider() {
+    String p;
+    if (xSemaphoreTake(g_dataMutex, portMAX_DELAY) == pdTRUE) {
+        p = g_activeProvider;
+        xSemaphoreGive(g_dataMutex);
+    }
+    return p;
 }
 
 void checkRotation() {
@@ -352,7 +375,7 @@ void handleMainTouch(int x, int y) {
             label = g_label;
             xSemaphoreGive(g_dataMutex);
         }
-        settingsScreenSet(g_traffic, g_radiusNm, g_showRefresh, g_pollIntervalS, label);
+        settingsScreenSet(g_traffic, g_radiusNm, g_showRefresh, g_pollIntervalS, label, g_source);
         g_screen = Screen::SETTINGS;
         settingsScreenDraw();
         return;
@@ -419,7 +442,7 @@ void handleLocationTouch(int x, int y) {
     if (action == LocationAction::LOCATION_SET) {
         saveLocation(lat, lon, label);
         g_airportCode = nearestAirportCode(lat, lon);
-        displaySetHeader(g_traffic == TrafficFilter::MILITARY, g_airportCode);
+        displaySetHeader(g_traffic == TrafficFilter::MILITARY, g_airportCode, activeProvider());
         settingsScreenSetLocation(label);
         if (xSemaphoreTake(g_dataMutex, portMAX_DELAY) == pdTRUE) {
             g_lat = lat;
@@ -440,16 +463,18 @@ void handleSettingsTouch(int x, int y, bool pressed, bool clicked) {
         TrafficFilter traffic = settingsScreenTraffic();
         int radius = settingsScreenRadius();
         int interval = settingsScreenPollInterval();
+        AdsbSource source = settingsScreenSource();
         g_showRefresh = settingsScreenShowRefresh();
-        saveFilters(traffic, radius, g_showRefresh, interval);
+        saveFilters(traffic, radius, g_showRefresh, interval, source);
         displaySetShowRefresh(g_showRefresh);
-        displaySetHeader(traffic == TrafficFilter::MILITARY, g_airportCode);
+        displaySetHeader(traffic == TrafficFilter::MILITARY, g_airportCode, activeProvider());
         if (xSemaphoreTake(g_dataMutex, portMAX_DELAY) == pdTRUE) {
             // A changed interval alone doesn't warrant refetching - the new
             // one simply applies to the wait already running.
-            bool changed = (traffic != g_traffic) || (radius != g_radiusNm);
+            bool changed = (traffic != g_traffic) || (radius != g_radiusNm) || (source != g_source);
             g_traffic = traffic;
             g_radiusNm = radius;
+            g_source = source;
             g_pollIntervalS = interval;
             if (changed) {
                 g_resetBaseline = true;
@@ -541,11 +566,21 @@ void setup() {
     g_showRefresh = s.showRefresh;
     g_pollIntervalS = s.pollIntervalS;
     g_muted = s.muted;
+    g_source = s.source;
     soundSetMuted(g_muted);
     displaySetShowRefresh(g_showRefresh);
     displaySetMuted(g_muted);
     g_airportCode = nearestAirportCode(g_lat, g_lon);
-    displaySetHeader(g_traffic == TrafficFilter::MILITARY, g_airportCode);
+    displaySetHeader(g_traffic == TrafficFilter::MILITARY, g_airportCode, g_activeProvider);
+
+    // What the device actually loaded, said once at boot. An empty table has
+    // several innocent explanations - military mode over quiet airspace being
+    // the likeliest - and none of them were visible from the log, which made
+    // "nothing is showing" impossible to tell from "nothing is working".
+    Serial.printf("[settings] %s  %.4f,%.4f  %dnm  every %ds  source=%s\n",
+                  g_traffic == TrafficFilter::MILITARY ? "MILITARY" : "CIVIL", g_lat, g_lon, g_radiusNm,
+                  g_pollIntervalS,
+                  adsbSourceIndex(g_source) < 0 ? "auto" : ADSB_PROVIDERS[adsbSourceIndex(g_source)].name);
 
     // Something on screen before the WiFi connect blocks for up to 15s. The
     // status line under it says what's happening.
@@ -689,13 +724,29 @@ void loop() {
 
         bool linkUp = false, pollOk = false, everSucceeded = false;
         uint32_t lastSuccess = 0;
+        String provider;
         if (xSemaphoreTake(g_dataMutex, 0) == pdTRUE) {
             linkUp = g_linkUp;
             pollOk = g_pollOk;
             everSucceeded = g_everSucceeded;
             lastSuccess = g_lastSuccessMs;
+            provider = g_activeProvider;
             xSemaphoreGive(g_dataMutex);
             displaySetPollState(linkUp, pollOk, everSucceeded, lastSuccess);
+        }
+
+        // A failover happens on the poll task with nothing else to announce it,
+        // so the header is checked against what answered last. Naming it drops
+        // the render cache, and only a render repaints the header - so ask for
+        // one too, or the new source wouldn't show until the next poll.
+        static String shownProvider;
+        if (provider.length() && provider != shownProvider) {
+            shownProvider = provider;
+            displaySetHeader(g_traffic == TrafficFilter::MILITARY, g_airportCode, provider);
+            if (xSemaphoreTake(g_dataMutex, 0) == pdTRUE) {
+                g_dataReady = true;
+                xSemaphoreGive(g_dataMutex);
+            }
         }
         displayTickStatus();
     }

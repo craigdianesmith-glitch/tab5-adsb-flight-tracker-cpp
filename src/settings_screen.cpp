@@ -38,6 +38,13 @@ constexpr int RADIUS_CAPS_Y = 392;
 constexpr int DISPLAY_LABEL_Y = 440;
 constexpr int REFRESH_X = COL1_X, REFRESH_Y = 468, REFRESH_W = COL_W, REFRESH_H = 76;
 
+// The space below the refresh toggle was the only room left for this, which is
+// no hardship: the source is the one thing here you set once and forget.
+constexpr int SOURCE_LABEL_Y = 568;
+constexpr int SRC_X = COL1_X, SRC_Y = 596, SRC_W = COL_W, SRC_H = 76;
+// Auto plus one per provider.
+constexpr int SRC_SEGMENTS = ADSB_PROVIDER_COUNT + 1;
+
 // --- right column ---
 constexpr int INTERVAL_LABEL_Y = 84;
 constexpr int INTERVAL_VALUE_Y = 112;
@@ -56,6 +63,7 @@ int g_radius = DEFAULT_RADIUS_NM;
 int g_interval = DEFAULT_POLL_INTERVAL_S;
 bool g_showRefresh = true;
 String g_locationLabel;
+AdsbSource g_source = DEFAULT_ADSB_SOURCE;
 
 // Which slider, if either, currently owns the finger.
 enum class Drag { NONE, RADIUS, INTERVAL };
@@ -194,6 +202,41 @@ void drawSegments() {
     screen::markDirty(SEG_X, SEG_Y, SEG_W, SEG_H);
 }
 
+// Reads as one control with three choices, for the same reason the traffic
+// filter does: they are mutually exclusive, and a segmented control says so
+// without a caption. "Auto" first because it is what almost everyone wants -
+// the named providers are there for pinning one deliberately.
+const char *sourceName(int seg) { return seg == 0 ? "Auto" : ADSB_PROVIDERS[seg - 1].name; }
+
+int sourceSegment() { return (int)g_source; }
+
+void drawSourceSegments() {
+    auto &canvas = screen::canvas();
+    int seg = SRC_W / SRC_SEGMENTS;
+    int active = sourceSegment();
+    canvas.fillRoundRect(SRC_X, SRC_Y, SRC_W, SRC_H, 8, colorOff);
+    canvas.fillRoundRect(SRC_X + active * seg, SRC_Y, seg, SRC_H, 8, colorOn);
+    canvas.drawRoundRect(SRC_X, SRC_Y, SRC_W, SRC_H, 8, colorBorder);
+
+    canvas.setFont(&fonts::Font0);
+    canvas.setTextDatum(MC_DATUM);
+    for (int i = 0; i < SRC_SEGMENTS; i++) {
+        canvas.setTextColor(i == active ? colorWhite : colorDim);
+        // Provider names are longer than "Civilian"/"Military" and the segments
+        // are narrower, so step the text down until it fits rather than let it
+        // run into its neighbour.
+        String name(sourceName(i));
+        int size = 3;
+        canvas.setTextSize(size);
+        while (size > 1 && canvas.textWidth(name) > seg - 16) {
+            canvas.setTextSize(--size);
+        }
+        canvas.drawString(name, SRC_X + i * seg + seg / 2, SRC_Y + SRC_H / 2);
+    }
+
+    screen::markDirty(SRC_X, SRC_Y, SRC_W, SRC_H);
+}
+
 void drawRefreshToggle() {
     auto &canvas = screen::canvas();
     canvas.fillRoundRect(REFRESH_X, REFRESH_Y, REFRESH_W, REFRESH_H, 8, colorBtnBg);
@@ -284,12 +327,13 @@ bool inBand(int x, int y, int colX, int sliderY) {
 }  // namespace
 
 void settingsScreenSet(TrafficFilter traffic, int radiusNm, bool showRefresh, int pollIntervalS,
-                       const String &locationLabel) {
+                       const String &locationLabel, AdsbSource source) {
     g_traffic = traffic;
     g_radius = radiusNm;
     g_showRefresh = showRefresh;
     g_interval = pollIntervalS;
     g_locationLabel = locationLabel;
+    g_source = source;
     g_drag = Drag::NONE;
     clampRadius();
 }
@@ -320,6 +364,8 @@ void settingsScreenDraw() {
     drawRadiusSlider();
     sectionLabel("DISPLAY", COL1_X, DISPLAY_LABEL_Y);
     drawRefreshToggle();
+    sectionLabel("DATA SOURCE", COL1_X, SOURCE_LABEL_Y);
+    drawSourceSegments();
 
     sectionLabel("REFRESH", COL2_X, INTERVAL_LABEL_Y);
     drawIntervalSlider();
@@ -399,6 +445,20 @@ SettingsAction settingsScreenHandleTouch(int x, int y, bool pressed, bool clicke
         return SettingsAction::NONE;
     }
 
+    if (y >= SRC_Y && y < SRC_Y + SRC_H && x >= SRC_X && x < SRC_X + SRC_W) {
+        int seg = (x - SRC_X) / (SRC_W / SRC_SEGMENTS);
+        if (seg >= SRC_SEGMENTS) {
+            seg = SRC_SEGMENTS - 1;  // the rounding slack at the right edge
+        }
+        AdsbSource picked = (AdsbSource)seg;
+        if (picked != g_source) {
+            g_source = picked;
+            drawSourceSegments();
+            screen::flush();
+        }
+        return SettingsAction::NONE;
+    }
+
     if (x >= LOC_X && x < LOC_X + LOC_W && y >= LOC_Y && y < LOC_Y + LOC_H) {
         return SettingsAction::OPEN_LOCATION;
     }
@@ -412,3 +472,4 @@ SettingsAction settingsScreenHandleTouch(int x, int y, bool pressed, bool clicke
 TrafficFilter settingsScreenTraffic() { return g_traffic; }
 int settingsScreenRadius() { return g_radius; }
 bool settingsScreenShowRefresh() { return g_showRefresh; }
+AdsbSource settingsScreenSource() { return g_source; }

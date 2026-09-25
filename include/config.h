@@ -37,4 +37,55 @@ constexpr uint8_t SOUND_VOLUME = 96;  // 0-255
 constexpr int CLIMB_THRESHOLD_FPM = 150;
 constexpr int DESCEND_THRESHOLD_FPM = -150;
 
-constexpr const char *ADSB_API_URL_FMT = "https://api.adsb.lol/v2/point/%.4f/%.4f/%d";
+// --- data sources ---------------------------------------------------------
+//
+// One source used to be enough, until adsb.lol spent an evening answering 200
+// OK with an empty aircraft array: its feed had drained while its API stayed
+// up, and at the point of parsing that is indistinguishable from an empty sky.
+// So the source is a setting, and AUTO checks an empty result against a second
+// one before it reaches the screen.
+//
+// A source is a pair of endpoints rather than a single URL, because providers
+// disagree about more than their hostname: the array the aircraft arrive in is
+// called `ac` by one and `aircraft` by another, only some carry readsb's
+// dbFlags, and a military feed may be global rather than radius-limited.
+struct AdsbEndpoint {
+    const char *urlTemplate;  // {lat}, {lon} and {radius} are substituted in
+    const char *arrayKey;     // top-level key the aircraft array sits under
+    bool global;              // ignores {radius}; distance is filtered locally
+    // readsb's dbFlags, whose bit 0 marks military. Where an endpoint omits it
+    // there is nothing to test, so the endpoint itself is the answer: all of a
+    // military feed is military, none of a civil one is.
+    bool hasDbFlags;
+};
+
+struct AdsbProvider {
+    const char *name;
+    AdsbEndpoint civil;
+    AdsbEndpoint military;
+};
+
+// adsb.lol's point endpoint carries dbFlags, so the one URL serves both
+// filters. adsb.fi's doesn't, but its /v2/mil does - and returns it under `ac`
+// where its point query uses `aircraft`, so those two really are separate
+// endpoints rather than one path with a variant. /v2/mil is global, which the
+// distance filter the app already applies takes care of.
+constexpr AdsbProvider ADSB_PROVIDERS[] = {
+    {"adsb.lol",
+     {"https://api.adsb.lol/v2/point/{lat}/{lon}/{radius}", "ac", false, true},
+     {"https://api.adsb.lol/v2/point/{lat}/{lon}/{radius}", "ac", false, true}},
+    {"adsb.fi",
+     {"https://opendata.adsb.fi/api/v2/lat/{lat}/lon/{lon}/dist/{radius}", "aircraft", false, false},
+     {"https://opendata.adsb.fi/api/v2/mil", "ac", true, true}},
+};
+constexpr int ADSB_PROVIDER_COUNT = 2;
+
+// Which source the tracker polls. AUTO moves on when one fails or reports an
+// empty sky another disagrees with; the named values pin it, for when you want
+// to know which one you are looking at rather than have it chosen for you.
+// Stored in NVS by value, so the numbers are not free to change.
+enum class AdsbSource : uint8_t { AUTO = 0, ADSB_LOL = 1, ADSB_FI = 2 };
+constexpr AdsbSource DEFAULT_ADSB_SOURCE = AdsbSource::AUTO;
+
+// Index into ADSB_PROVIDERS, or -1 for AUTO.
+constexpr int adsbSourceIndex(AdsbSource s) { return s == AdsbSource::AUTO ? -1 : (int)s - 1; }
