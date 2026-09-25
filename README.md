@@ -16,7 +16,7 @@ pip install platformio
 
 ## Setup
 
-1. Copy `include/secrets.h.example` to `include/secrets.h` and fill in your WiFi credentials (`secrets.h` is gitignored).
+1. Copy `include/secrets.h.example` to `include/secrets.h` (it is gitignored). Filling in WiFi credentials there is optional: a build left with the placeholder opens the WiFi screen on boot and takes a network on-screen instead, which is how a device flashed from a released image is expected to be set up. Credentials compiled in here are only ever a fallback for a device that has never been given one that way.
 2. Build and flash:
    ```
    pio run -t upload --upload-port /dev/ttyACM0
@@ -57,7 +57,7 @@ The cog opens a settings screen in two columns - six controls will not stack dow
 - **Show flight refresh** - whether cells that changed on the last poll are shaded for a moment (see Rendering below). On by default.
 - **Refresh interval** - how often the sky is refetched, from 5 to 60 seconds in fives, defaulting to 30. The slider is stepped rather than continuous, with a detent mark per position, so it can't be left on a value nobody asked for. Below five seconds the endpoint starts refusing; past a minute the table is stale enough that a slower dial wouldn't be asked for. The default is deliberately not the fastest the dial allows - see [Data sources](#data-sources).
 - **Location** - the place search, which used to be a button filling half the main header. It is a setting rather than a permanent fixture of the table: it gets changed once when the device moves and then not again. Both finishing and cancelling return here rather than to the table, so a new location lands you back on the button that shows it took.
-- **WiFi** - scans for networks and connects to one, so the device can move between networks without a reflash. Credentials are saved to NVS and win over the ones compiled in from `secrets.h`, which stay as the fallback for a device that's never had WiFi set on-screen.
+- **WiFi** - scans for networks and connects to one, so the device can move between networks without a reflash. Credentials are saved to NVS and win over the ones compiled in from `secrets.h`, which stay as the fallback for a device that's never had WiFi set on-screen. A device with neither - a fresh flash of a released image - opens this screen on boot rather than spending the connect timeout proving it has nothing to connect with, and Back from there lands on the table. Credentials that are merely wrong, or an access point that is down, are left to the poll task to retry, since being thrown into setup over a router reboot would be worse than the status line saying what is happening.
 
 All of it persists across reboots, along with the mute state and the chosen location. Changing the filter or the range refetches immediately rather than waiting out the rest of the interval; changing the interval itself doesn't - the new value simply applies to the wait already running, including shortening one in progress.
 
