@@ -36,7 +36,7 @@ bool geocodeSearch(const String &query, std::vector<GeoResult> &out) {
         return false;
     }
     http.setUserAgent(
-        "OverheadFlightTracker/1.0 (+https://github.com/craigdianesmith-glitch/tab5-adsb-flight-tracker-micropython)");
+        "OverheadFlightTracker/1.0 (+https://github.com/craigdianesmith-glitch/tab5-adsb-flight-tracker-cpp)");
     int code = http.GET();
     String payload = http.getString();
     http.end();
