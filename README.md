@@ -150,6 +150,22 @@ The per-cell diffing earns its keep twice over: a cell whose value hasn't moved 
 
 Rendering also means a refresh where nothing changed costs nothing at all, and the three screens share the one canvas rather than holding 1.8MB each.
 
+## Data sources
+
+Live aircraft come from [adsb.lol](https://adsb.lol), whose data is made available under the [Open Database License 1.0](https://opendatacommons.org/licenses/odbl/1-0/). The firmware carries none of that data - it is fetched at runtime and displayed - so what appears on screen is an ODbL Produced Work, and the attribution is the obligation that comes with it.
+
+That endpoint is free, volunteer-run infrastructure. `POLL_INTERVAL_MIN_S` stops the refresh slider going below five seconds, and adsb.lol answers `429` well before that if it has had enough; a poll that collects one is followed by a minute's silence rather than more of the same. If you are flashing this onto more than one device, set the interval higher than you strictly need.
+
+Place search is [Open-Meteo's geocoding API](https://open-meteo.com/), free for non-commercial use, its data licensed [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).
+
+The airport table is generated from [OurAirports](https://ourairports.com/data/), which is released into the public domain.
+
+Aircraft type designators are checked against ICAO Doc 8643. Airline names and colours identify the operator and imply no endorsement by it.
+
+## Licence
+
+MIT - see [LICENSE](LICENSE). The libraries it builds on (M5Unified, M5GFX, ArduinoJson) are MIT too; note that the ESP32 Arduino core is LGPL, which is worth reading up on before distributing compiled binaries rather than source.
+
 ## Layout
 
 - `src/main.cpp` - setup/loop, WiFi, the background poll task, screen state, touch dispatch
