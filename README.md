@@ -55,7 +55,7 @@ The cog opens a settings screen in two columns - six controls will not stack dow
 - **Traffic filter** - civilian or military, as an either/or choice rather than two independent switches. Military aircraft are the ones adsb.lol sets bit 0 of `dbFlags` on.
 - **Range** - a slider whose ceiling follows the filter above it: 60nm for civil traffic, 150nm for military, since military traffic is worth watching further out. Switching to civil with the slider up high clamps it back down.
 - **Show flight refresh** - whether cells that changed on the last poll are shaded for a moment (see Rendering below). On by default.
-- **Refresh interval** - how often the sky is refetched, from 5 to 60 seconds in fives. The slider is stepped rather than continuous, with a detent mark per position, so it can't be left on a value nobody asked for. Below five seconds the endpoint starts refusing; past a minute the table is stale enough that a slower dial wouldn't be asked for.
+- **Refresh interval** - how often the sky is refetched, from 5 to 60 seconds in fives, defaulting to 30. The slider is stepped rather than continuous, with a detent mark per position, so it can't be left on a value nobody asked for. Below five seconds the endpoint starts refusing; past a minute the table is stale enough that a slower dial wouldn't be asked for. The default is deliberately not the fastest the dial allows - see [Data sources](#data-sources).
 - **Location** - the place search, which used to be a button filling half the main header. It is a setting rather than a permanent fixture of the table: it gets changed once when the device moves and then not again. Both finishing and cancelling return here rather than to the table, so a new location lands you back on the button that shows it took.
 - **WiFi** - scans for networks and connects to one, so the device can move between networks without a reflash. Credentials are saved to NVS and win over the ones compiled in from `secrets.h`, which stay as the fallback for a device that's never had WiFi set on-screen.
 
@@ -154,7 +154,9 @@ Rendering also means a refresh where nothing changed costs nothing at all, and t
 
 Live aircraft come from [adsb.lol](https://adsb.lol), whose data is made available under the [Open Database License 1.0](https://opendatacommons.org/licenses/odbl/1-0/). The firmware carries none of that data - it is fetched at runtime and displayed - so what appears on screen is an ODbL Produced Work, and the attribution is the obligation that comes with it.
 
-That endpoint is free, volunteer-run infrastructure. `POLL_INTERVAL_MIN_S` stops the refresh slider going below five seconds, and adsb.lol answers `429` well before that if it has had enough; a poll that collects one is followed by a minute's silence rather than more of the same. If you are flashing this onto more than one device, set the interval higher than you strictly need.
+That endpoint is free, volunteer-run infrastructure, and the default refresh interval is set with that in mind rather than at the fastest the hardware or the dial would allow. `DEFAULT_POLL_INTERVAL_S` is 30 seconds: an aircraft covers perhaps three miles in that time, which at these ranges moves a blip by a few pixels, so the cost to the display is slight and the cost to the server is a third of what ten seconds asks of it. The dial is there for anyone who wants it faster on their own account - what matters is that every device doesn't take that by default.
+
+`POLL_INTERVAL_MIN_S` stops the slider going below five seconds, and adsb.lol answers `429` well before that if it has had enough; a poll that collects one is followed by a minute's silence rather than more of the same. If you are flashing this onto several devices, leave them slower still.
 
 Place search is [Open-Meteo's geocoding API](https://open-meteo.com/), free for non-commercial use, its data licensed [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).
 

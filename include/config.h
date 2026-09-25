@@ -17,7 +17,12 @@ constexpr int MILITARY_MAX_RADIUS_NM = 150;
 constexpr int POLL_INTERVAL_MIN_S = 5;
 constexpr int POLL_INTERVAL_MAX_S = 60;
 constexpr int POLL_INTERVAL_STEP_S = 5;
-constexpr int DEFAULT_POLL_INTERVAL_S = 10;
+// Thirty rather than ten: adsb.lol is free, volunteer-run infrastructure, and
+// a default is what most devices will actually run at. Aircraft move perhaps
+// three miles in that time, which at these ranges moves a blip by a few
+// pixels - so the dial is there for anyone who wants it faster on their own
+// account, rather than every device taking it by default.
+constexpr int DEFAULT_POLL_INTERVAL_S = 30;
 
 constexpr uint32_t FORGET_AFTER_MS = 120000;
 
