@@ -91,11 +91,11 @@ void detailScreenDraw() {
     canvas.setTextColor(colorWhite);
     canvas.setTextSize(3);
     canvas.setTextDatum(TL_DATUM);
-    String title = g_ac.callsign;
-    if (g_ac.reg.length()) {
-        title += "  (" + g_ac.reg + ")";
-    }
-    canvas.drawString(title, 16, 16);
+    // Callsign alone: the registration has a field of its own below, and
+    // repeating it up here read as noise - worst of all for the aircraft
+    // whose callsign *is* the registration, where the title came out as
+    // "GSGTS  (G-SGTS)".
+    canvas.drawString(g_ac.callsign, 16, 16);
 
     canvas.fillRoundRect(BACK_X, BACK_Y, BACK_W, BACK_H, 6, colorBtnBg);
     canvas.setTextSize(2);
