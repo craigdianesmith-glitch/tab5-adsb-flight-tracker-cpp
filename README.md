@@ -66,7 +66,9 @@ Altitude is given in feet up to 9999 and as a flight level above that - `FL200` 
 
 Heading is the reported ground track in three digits, `035` rather than `35`, the way a heading is written and spoken. Status carries a drawn icon ahead of its word, so the column reads at a glance without the text having to be parsed.
 
-Widths are fixed rather than measured: the content of each column is known and bounded - eight characters of callsign, four of designator, five of flight level - so there is nothing to be gained from measuring at runtime, and a table whose columns don't move between refreshes is easier to read.
+Widths are fixed rather than measured: the content of each column is known and bounded - eight characters of callsign, four of designator, five of flight level - so there is nothing to be gained from measuring at runtime, and a table whose columns don't move between refreshes is easier to read. They are sized against the widest realistic value in each column, in the table's font: FLIGHT fits eight `W`s, the widest callsign there can be (272px), where it used to be too narrow for `LOG27VQ`; STATUS fits `DESCEND` behind its icon; HDG never holds more than three digits, and had been given room for seven. A value that is still too wide is drawn at a smaller size until it fits, rather than running over the border into the next cell.
+
+A callsign the transponder sent as blank arrives from readsb as a row of `@`s. Those are stripped, and one that was nothing else shows as `UNKNOWN`; an aircraft with no callsign field at all is shown by its ICAO hex, as before.
 
 ## Settings
 

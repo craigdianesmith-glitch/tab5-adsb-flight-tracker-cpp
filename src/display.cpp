@@ -13,9 +13,15 @@ struct Column {
 };
 
 const Column COLUMNS[] = {
-    {"FLIGHT", 180}, {"TYPE", 150}, {"ALT", 170}, {"SPD", 160}, {"DIST", 160}, {"HDG", 150}, {"STATUS", 280},
+    {"FLIGHT", 300}, {"TYPE", 140}, {"ALT", 150}, {"SPD", 150}, {"DIST", 150}, {"HDG", 110}, {"STATUS", 250},
 };
+// Sized against the widest realistic value in each, drawn in FreeSans 9pt at
+// size 2: FLIGHT fits eight W's, the widest callsign there can be (272px);
+// STATUS fits DESCEND behind its icon; HDG never holds more than three digits.
+// Each leaves at least CELL_PAD_RIGHT clear of its right border.
 constexpr int NUM_COLS = 7;
+constexpr int CELL_PAD_RIGHT = 8;
+constexpr float MIN_CELL_TEXT_SIZE = 1.2f;
 // The only column drawn differently - it carries an icon ahead of its text.
 constexpr int STATUS_COL = NUM_COLS - 1;
 constexpr int TABLE_X = 8;
@@ -216,13 +222,22 @@ void drawCell(int r, int c, const String &value, uint16_t color, bool highlight,
     canvas.setTextColor(color);
     canvas.setTextDatum(ML_DATUM);
     int midY = y + h / 2;
+    int textX = colX[c] + 10;
     if (c == STATUS_COL) {
-        int iconCx = colX[c] + 10 + STATUS_ICON_SIZE / 2;
-        drawStatusIcon(iconCx, midY, value, color);
-        canvas.drawString(value, colX[c] + 10 + STATUS_ICON_SIZE + 8, midY);
-    } else {
-        canvas.drawString(value, colX[c] + 10, midY);
+        drawStatusIcon(textX + STATUS_ICON_SIZE / 2, midY, value, color);
+        textX += STATUS_ICON_SIZE + 8;
     }
+    // The widths are sized for the widest realistic value at size 2, so this
+    // rarely does anything - but a value wider than that is drawn smaller to
+    // fit, rather than running over the border into the next cell.
+    int room = colX[c] + w - CELL_PAD_RIGHT - textX;
+    float size = 2.0f;
+    canvas.setTextSize(size);
+    while (size > MIN_CELL_TEXT_SIZE && canvas.textWidth(value) > room) {
+        size -= 0.1f;
+        canvas.setTextSize(size);
+    }
+    canvas.drawString(value, textX, midY);
     screen::markDirty(colX[c], y, w, h);
 }
 

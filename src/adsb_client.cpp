@@ -200,8 +200,14 @@ static void parseInto(JsonDocument &doc, const AdsbEndpoint &ep, bool military, 
         Aircraft a;
         a.hex = hex;
         String cs = String((const char *)(ac["flight"] | ""));
+        // readsb passes on '@' for a callsign character the transponder sent
+        // as blank, so a callsign that is nothing but those was never set -
+        // shown as UNKNOWN rather than a row of @s. With no field at all, the
+        // hex is the only name there is.
+        bool sentBlank = cs.indexOf('@') >= 0;
+        cs.replace("@", "");
         cs.trim();
-        a.callsign = cs.length() ? cs : a.hex;
+        a.callsign = cs.length() ? cs : (sentBlank ? String("UNKNOWN") : a.hex);
         a.type = (const char *)(ac["t"] | "----");
         // Where the feed carries readsb's dbFlags, bit 0 is the military one
         // (bits 1/2/3 are interesting/PIA/LADD). Where it doesn't, which feed
