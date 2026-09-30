@@ -11,6 +11,10 @@ namespace {
 bool colorsReady = false;
 
 constexpr int BACK_X = 1140, BACK_Y = 8, BACK_W = 124, BACK_H = 44;
+// The centre toggle sits beside Back, the same size, and is labelled with
+// what the plot is centred on now.
+constexpr int CENTRE_W = 124;
+constexpr int CENTRE_X = BACK_X - 12 - CENTRE_W;
 // The plot is as large as the 720px height allows. The compass letters sit
 // just inside the outer ring rather than outside it - outside, they were what
 // capped the radius, and "S" ran off the bottom of the screen.
@@ -126,7 +130,7 @@ void drawTrend(int px, int py, const String &status, uint16_t color) {
 }  // namespace
 
 void radarScreenDraw(const std::vector<Aircraft> &aircraft, const std::vector<uint8_t> &isNew, double lat, double lon,
-                     int rangeNm, bool military) {
+                     int rangeNm, bool military, RadarCentre centre) {
     ensureColors();
     auto &canvas = screen::canvas();
     screen::clear(colorBg);
@@ -146,6 +150,10 @@ void radarScreenDraw(const std::vector<Aircraft> &aircraft, const std::vector<ui
     canvas.setTextDatum(MC_DATUM);
     canvas.setTextColor(colorText);
     canvas.drawString("Back", BACK_X + BACK_W / 2, BACK_Y + BACK_H / 2);
+
+    canvas.fillRoundRect(CENTRE_X, BACK_Y, CENTRE_W, BACK_H, 6, colorBtnBg);
+    canvas.drawString(centre == RadarCentre::HOME ? "HOME" : "AIRPORT", CENTRE_X + CENTRE_W / 2,
+                      BACK_Y + BACK_H / 2);
 
     // --- rings and bearings ----------------------------------------------
     int step = ringStep(rangeNm);
@@ -179,17 +187,21 @@ void radarScreenDraw(const std::vector<Aircraft> &aircraft, const std::vector<ui
         canvas.drawLine(x0, y0, x1, y1, colorRing);
     }
 
-    // home marker, tagged with the nearest airport so the centre says where
-    // it is rather than just being a cross
-    canvas.drawLine(CENTER_X - 9, CENTER_Y, CENTER_X + 9, CENTER_Y, colorHome);
-    canvas.drawLine(CENTER_X, CENTER_Y - 9, CENTER_X, CENTER_Y + 9, colorHome);
-    String here = nearestAirportCode(lat, lon);
-    if (here.length()) {
+    // Centred on the airport, the cross is tagged with its code so the centre
+    // says where it is; centred on home, it is a bare cross. Airport mode with
+    // nothing in range of the lookup falls back to home, since there is no
+    // other point to centre on.
+    Airport airport;
+    if (centre == RadarCentre::AIRPORT && nearestAirport(lat, lon, airport)) {
+        lat = airport.lat;
+        lon = airport.lon;
         canvas.setTextSize(2);
         canvas.setTextColor(colorHome);
         canvas.setTextDatum(TC_DATUM);
-        canvas.drawString(here, CENTER_X, CENTER_Y + 13);
+        canvas.drawString(airport.code, CENTER_X, CENTER_Y + 13);
     }
+    canvas.drawLine(CENTER_X - 9, CENTER_Y, CENTER_X + 9, CENTER_Y, colorHome);
+    canvas.drawLine(CENTER_X, CENTER_Y - 9, CENTER_X, CENTER_Y + 9, colorHome);
 
     // --- contacts ---------------------------------------------------------
     // Flat-earth projection: over a 150nm radius the error is far smaller than
@@ -280,6 +292,9 @@ void radarScreenDraw(const std::vector<Aircraft> &aircraft, const std::vector<ui
 RadarAction radarScreenHandleTouch(int x, int y, String &outHex) {
     if (x >= BACK_X && x < BACK_X + BACK_W && y >= BACK_Y && y < BACK_Y + BACK_H) {
         return RadarAction::BACK;
+    }
+    if (x >= CENTRE_X && x < CENTRE_X + CENTRE_W && y >= BACK_Y && y < BACK_Y + BACK_H) {
+        return RadarAction::TOGGLE_CENTRE;
     }
 
     // Nearest blip within reach, not merely the first one found: in a cluster

@@ -44,6 +44,7 @@ bool g_showRefresh = true;
 int g_pollIntervalS = DEFAULT_POLL_INTERVAL_S;
 bool g_muted = false;
 AdsbSource g_source = DEFAULT_ADSB_SOURCE;
+RadarCentre g_radarCentre = DEFAULT_RADAR_CENTRE;  // only touched by loop()
 // Which provider actually answered the last successful poll, for the header.
 // Under AUTO that is not necessarily the one at the top of the table.
 String g_activeProvider;
@@ -322,7 +323,7 @@ void drawRadar() {
         military = (g_traffic == TrafficFilter::MILITARY);
         xSemaphoreGive(g_dataMutex);
     }
-    radarScreenDraw(aircraft, isNew, lat, lon, radius, military);
+    radarScreenDraw(aircraft, isNew, lat, lon, radius, military, g_radarCentre);
 }
 
 void handleRadarTouch(int x, int y) {
@@ -357,6 +358,11 @@ void handleRadarTouch(int x, int y) {
         }
         break;
     }
+    case RadarAction::TOGGLE_CENTRE:
+        g_radarCentre = (g_radarCentre == RadarCentre::HOME) ? RadarCentre::AIRPORT : RadarCentre::HOME;
+        saveRadarCentre(g_radarCentre);
+        drawRadar();
+        break;
     case RadarAction::NONE:
         break;
     }
@@ -567,6 +573,7 @@ void setup() {
     g_pollIntervalS = s.pollIntervalS;
     g_muted = s.muted;
     g_source = s.source;
+    g_radarCentre = s.radarCentre;
     soundSetMuted(g_muted);
     displaySetShowRefresh(g_showRefresh);
     displaySetMuted(g_muted);

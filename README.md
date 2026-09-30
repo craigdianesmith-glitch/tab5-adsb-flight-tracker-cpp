@@ -113,6 +113,8 @@ Callsigns are placed nearest-first and one may not overlap another already place
 
 The code at the centre is the nearest airport, from a generated table of the 3244 large and medium airports with scheduled service in the public-domain [OurAirports](https://ourairports.com/data/) dataset (~39KB of flash). A full scan takes 6.7ms, so the result is cached until the location changes rather than recomputed per frame. Nothing within 120nm leaves the centre as a bare cross.
 
+The button beside Back chooses what the plot is centred on, and is labelled with the current choice: **AIRPORT**, the default, puts that airport at the centre with its code under the cross; **HOME** centres on the configured location itself and marks it with a bare `+`. The choice persists. Airport mode with nothing in range falls back to home. The aircraft are still fetched around home, so with the plot centred on an airport some way off, the edge of the plot furthest from home can sit beyond the fetch radius and show empty.
+
 ## Sound
 
 A two-note rise once the firmware is up, and a short blip whenever an aircraft that wasn't there before appears in the table - one blip per poll however many arrived, and never on the first poll after a start or a location change, where every aircraft is new by definition.

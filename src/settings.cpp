@@ -21,6 +21,9 @@ AppSettings loadSettings() {
     s.pollIntervalS = prefs.getInt("pollint", DEFAULT_POLL_INTERVAL_S);
     s.muted = prefs.getBool("muted", false);
     s.source = (AdsbSource)prefs.getUChar("source", (uint8_t)DEFAULT_ADSB_SOURCE);
+    s.radarCentre = prefs.getUChar("radarctr", (uint8_t)DEFAULT_RADAR_CENTRE) == (uint8_t)RadarCentre::HOME
+                        ? RadarCentre::HOME
+                        : RadarCentre::AIRPORT;
     // isKey() first: getString() on a missing key logs an ESP error line, and
     // an unconfigured device would print two of them on every boot.
     s.wifiSsid = prefs.isKey("ssid") ? prefs.getString("ssid") : String("");
@@ -78,6 +81,13 @@ void saveMuted(bool muted) {
     Preferences prefs;
     prefs.begin(NAMESPACE, false);
     prefs.putBool("muted", muted);
+    prefs.end();
+}
+
+void saveRadarCentre(RadarCentre centre) {
+    Preferences prefs;
+    prefs.begin(NAMESPACE, false);
+    prefs.putUChar("radarctr", (uint8_t)centre);
     prefs.end();
 }
 

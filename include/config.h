@@ -34,6 +34,11 @@ constexpr uint32_t CELL_HIGHLIGHT_MS = 2000;
 constexpr bool SOUND_ENABLED = true;
 constexpr uint8_t SOUND_VOLUME = 96;  // 0-255
 
+// What the radar plot is centred on: the configured location, or the airport
+// nearest to it. Stored in NVS by value, so the numbers are not free to change.
+enum class RadarCentre : uint8_t { HOME = 0, AIRPORT = 1 };
+constexpr RadarCentre DEFAULT_RADAR_CENTRE = RadarCentre::AIRPORT;
+
 constexpr int CLIMB_THRESHOLD_FPM = 150;
 constexpr int DESCEND_THRESHOLD_FPM = -150;
 

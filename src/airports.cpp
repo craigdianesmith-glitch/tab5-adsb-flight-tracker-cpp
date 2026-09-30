@@ -1099,31 +1099,43 @@ const AirportEntry AIRPORTS[] = {
 
 // Cached, because the answer only changes when the location does.
 double g_lastLat = 1e9, g_lastLon = 1e9;
-String g_lastCode;
+float g_lastMaxNm = -1.0f;
+const AirportEntry *g_lastEntry = nullptr;
 
 }  // namespace
 
-String nearestAirportCode(double lat, double lon, float maxNm) {
-    if (lat == g_lastLat && lon == g_lastLon) {
-        return g_lastCode;
-    }
-    // Equirectangular rather than haversine: over the tens of miles that
-    // decide the nearest airport the difference is far below the precision
-    // that matters, and it keeps this to a few flops per entry.
-    double cosLat = cos(lat * M_PI / 180.0);
-    float best = maxNm * maxNm;
-    const char *bestCode = nullptr;
-    for (const auto &a : AIRPORTS) {
-        float dy = (float)((a.lat - lat) * 60.0);
-        float dx = (float)((a.lon - lon) * 60.0 * cosLat);
-        float d2 = dx * dx + dy * dy;
-        if (d2 < best) {
-            best = d2;
-            bestCode = a.code;
+bool nearestAirport(double lat, double lon, Airport &out, float maxNm) {
+    if (lat != g_lastLat || lon != g_lastLon || maxNm != g_lastMaxNm) {
+        // Equirectangular rather than haversine: over the tens of miles that
+        // decide the nearest airport the difference is far below the precision
+        // that matters, and it keeps this to a few flops per entry.
+        double cosLat = cos(lat * M_PI / 180.0);
+        float best = maxNm * maxNm;
+        const AirportEntry *bestEntry = nullptr;
+        for (const auto &a : AIRPORTS) {
+            float dy = (float)((a.lat - lat) * 60.0);
+            float dx = (float)((a.lon - lon) * 60.0 * cosLat);
+            float d2 = dx * dx + dy * dy;
+            if (d2 < best) {
+                best = d2;
+                bestEntry = &a;
+            }
         }
+        g_lastLat = lat;
+        g_lastLon = lon;
+        g_lastMaxNm = maxNm;
+        g_lastEntry = bestEntry;
     }
-    g_lastLat = lat;
-    g_lastLon = lon;
-    g_lastCode = bestCode != nullptr ? String(bestCode) : String("");
-    return g_lastCode;
+    if (g_lastEntry == nullptr) {
+        return false;
+    }
+    out.code = g_lastEntry->code;
+    out.lat = g_lastEntry->lat;
+    out.lon = g_lastEntry->lon;
+    return true;
+}
+
+String nearestAirportCode(double lat, double lon, float maxNm) {
+    Airport a;
+    return nearestAirport(lat, lon, a, maxNm) ? a.code : String("");
 }
