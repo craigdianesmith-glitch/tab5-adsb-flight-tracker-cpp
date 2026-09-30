@@ -41,4 +41,10 @@ void markAllDirty();
 // Push everything marked dirty to the panel, then start a fresh dirty list.
 void flush();
 
+// Writes the canvas to Serial as a screenshot, for tools/screenshot.py: a
+// header line, then the raw 1280x720 RGB565 pixels as the canvas holds them.
+// The canvas is landscape whatever the panel's rotation, so this is exactly
+// what is on screen, the right way up.
+void dumpToSerial();
+
 }  // namespace screen

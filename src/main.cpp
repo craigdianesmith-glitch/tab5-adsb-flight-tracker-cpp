@@ -637,6 +637,13 @@ void setup() {
 void loop() {
     M5.update();
 
+    // 'S' over serial sends the screen back, for tools/screenshot.py.
+    while (Serial.available()) {
+        if (Serial.read() == 'S') {
+            screen::dumpToSerial();
+        }
+    }
+
     if (g_screen == Screen::SETTINGS) {
         // Dispatched every pass, touch or not: the slider has to hear about
         // the finger lifting, and a release arrives as an absence of touch

@@ -340,4 +340,26 @@ void flush() {
 #endif
 }
 
+void dumpToSerial() {
+    if (g_buffer == nullptr) {
+        return;
+    }
+    Serial.flush();
+    Serial.printf("\nSCREENSHOT %d %d\n", CANVAS_W, CANVAS_H);
+    // In chunks: a single 1.8MB write can outlast the CDC driver's transmit
+    // timeout while the host catches up, and the remainder would be dropped.
+    const uint8_t *p = (const uint8_t *)g_buffer;
+    size_t left = CANVAS_BYTES;
+    while (left > 0) {
+        size_t n = Serial.write(p, std::min<size_t>(left, 4096));
+        p += n;
+        left -= n;
+        if (n == 0) {
+            delay(1);
+        }
+    }
+    Serial.flush();
+    Serial.print("\nSCREENSHOT END\n");
+}
+
 }  // namespace screen

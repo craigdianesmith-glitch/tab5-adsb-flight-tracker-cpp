@@ -23,6 +23,17 @@ pip install platformio
    ```
 3. Watch serial output at 115200 baud for boot/WiFi diagnostics if anything looks wrong.
 
+## Screenshots
+
+The Tab5 has no screenshot function of its own, but everything on screen is drawn into a landscape canvas in PSRAM before the PPA rotates it onto the panel - so the firmware answers an `S` on USB serial with that canvas, and `tools/screenshot.py` turns it into a PNG:
+
+```
+pip install pyserial pillow
+python tools/screenshot.py radar.png
+```
+
+It is pixel-exact and the right way up whatever the device's orientation, and takes about three seconds. Close any serial monitor first. The script leaves DTR and RTS as the kernel sets them on open: clearing DTR while RTS is still raised is the ESP32's USB-serial reset signal, which is what pyserial's usual `dtr = False` sends. And it checks that the end marker follows the last pixel exactly, retrying if a log line from the poll task landed mid-transfer and shifted the image.
+
 ## Notable hardware quirks this project works around
 
 - **WiFi**: Tab5's WiFi lives on a separate ESP32-C6 co-processor reached over SDIO. The generic P4 eval-board pin defaults don't reach it, so `hostedSetPins(12, 13, 11, 10, 9, 8, 15)` must be called before WiFi initializes (see `main.cpp`). M5Unified is supposed to do this automatically in `M5.begin()`, but it's called explicitly here too.
