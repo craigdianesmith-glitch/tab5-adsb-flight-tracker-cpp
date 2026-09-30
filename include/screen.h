@@ -30,6 +30,11 @@ void setRotation(int lgfxRotation);
 // Hardware fill of the whole canvas (~5ms, vs ~42ms for canvas().fillScreen()).
 void clear(uint16_t color);
 
+// Hardware fill of part of it, marked dirty. Worth it for a large area: the
+// radar's plot square fills in a fraction of the 15ms canvas().fillRect()
+// takes, the CPU being slow to write that much into PSRAM.
+void fillRect(int x, int y, int w, int h, uint16_t color);
+
 void markDirty(int x, int y, int w, int h);
 void markAllDirty();
 

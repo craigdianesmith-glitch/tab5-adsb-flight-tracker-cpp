@@ -32,6 +32,18 @@ constexpr int BOX_GAP = 10;
 // Text top to text top, so the two stacked boxes clear each other by BOX_GAP.
 constexpr int LEGEND_OFFSET = BOX_H + BOX_GAP;
 
+// What a data refresh repaints, where entering the screen repaints the lot:
+// the plot square, with room at its edges for a blip's chevron and callsign,
+// down to the bottom of the canvas; and, separately, the footer readouts to
+// its right. The header and the margins either side of the plot never change
+// while the screen is up, and pushing them again was two-thirds of a refresh.
+// Contacts are clipped to the square so nothing is drawn outside what gets
+// erased - a vector at short range can otherwise reach well past the ring.
+constexpr int PLOT_L = CENTER_X - RADIUS - 16, PLOT_R = CENTER_X + RADIUS + 16;
+constexpr int PLOT_T = 56, PLOT_B = 720;
+constexpr int FOOT_L = PLOT_R, FOOT_R = 1280;
+constexpr int FOOT_T = FOOTER_Y - LEGEND_OFFSET - BOX_PAD_Y, FOOT_B = FOOTER_Y - BOX_PAD_Y + BOX_H;
+
 constexpr int MAX_LABELS = 64;
 constexpr int LABEL_H = 16;  // Font0 at size 2
 constexpr int LABEL_PAD = 4;
@@ -127,16 +139,10 @@ void drawTrend(int px, int py, const String &status, uint16_t color) {
     }
 }
 
-}  // namespace
-
-void radarScreenDraw(const std::vector<Aircraft> &aircraft, const std::vector<uint8_t> &isNew, double lat, double lon,
-                     int rangeNm, bool military, RadarCentre centre) {
-    ensureColors();
+// Title and buttons: drawn on a full repaint only, since nothing in them
+// changes while the screen is up.
+void drawHeader(bool military, RadarCentre centre) {
     auto &canvas = screen::canvas();
-    screen::clear(colorBg);
-    canvas.setFont(&fonts::Font0);
-
-    // --- header -----------------------------------------------------------
     canvas.setTextSize(3);
     canvas.setTextDatum(ML_DATUM);
     canvas.setTextColor(colorText);
@@ -154,6 +160,25 @@ void radarScreenDraw(const std::vector<Aircraft> &aircraft, const std::vector<ui
     canvas.fillRoundRect(CENTRE_X, BACK_Y, CENTRE_W, BACK_H, 6, colorBtnBg);
     canvas.drawString(centre == RadarCentre::HOME ? "HOME" : "AIRPORT", CENTRE_X + CENTRE_W / 2,
                       BACK_Y + BACK_H / 2);
+}
+
+}  // namespace
+
+void radarScreenDraw(const std::vector<Aircraft> &aircraft, const std::vector<uint8_t> &isNew, double lat, double lon,
+                     int rangeNm, bool military, RadarCentre centre, bool full) {
+    ensureColors();
+    auto &canvas = screen::canvas();
+    if (full) {
+        screen::clear(colorBg);
+    } else {
+        screen::fillRect(PLOT_L, PLOT_T, PLOT_R - PLOT_L, PLOT_B - PLOT_T, colorBg);
+        canvas.fillRect(FOOT_L, FOOT_T, FOOT_R - FOOT_L, FOOT_B - FOOT_T, colorBg);
+    }
+    canvas.setFont(&fonts::Font0);
+
+    if (full) {
+        drawHeader(military, centre);
+    }
 
     // --- rings and bearings ----------------------------------------------
     int step = ringStep(rangeNm);
@@ -208,6 +233,7 @@ void radarScreenDraw(const std::vector<Aircraft> &aircraft, const std::vector<ui
     // a blip, and it keeps this to two multiplications per aircraft.
     double nmPerDegLon = 60.0 * cos(lat * M_PI / 180.0);
     int plotted = 0, labelled = 0;
+    canvas.setClipRect(PLOT_L, PLOT_T, PLOT_R - PLOT_L, PLOT_B - PLOT_T);
     LabelBox taken[MAX_LABELS];
     int takenCount = 0;
     g_blipCount = 0;
@@ -275,17 +301,34 @@ void radarScreenDraw(const std::vector<Aircraft> &aircraft, const std::vector<ui
         }
     }
 
+    canvas.clearClipRect();
+
     // --- footings ---------------------------------------------------------
     // Stacked in the bottom right rather than run along the bottom left: the
     // plot is still 165px wide at the footer's height, and a legend appended
     // to the range line reached x=664, well inside it. Boxed from the right
     // edge, every one of them starts beyond the widest part of the circle at
     // the height it sits at.
+    // The range readout doesn't change while the screen is up, but the plot
+    // square cuts across it; on a refresh only the part inside is redrawn.
+    if (!full) {
+        canvas.setClipRect(PLOT_L, PLOT_T, PLOT_R - PLOT_L, PLOT_B - PLOT_T);
+    }
     footerBox(String(rangeNm) + " nm range   rings every " + String(step) + " nm", 16, FOOTER_Y, false);
+    canvas.clearClipRect();
     footerBox("^ climb   v descent", 1264, FOOTER_Y - LEGEND_OFFSET, true);
     footerBox(String(plotted) + " contacts" + (labelled < plotted ? "   " + String(labelled) + " labelled" : ""), 1264,
               FOOTER_Y, true);
 
+    if (full) {
+        screen::flush();
+        return;
+    }
+    // Two flushes rather than one: marked together, flush() would judge the
+    // two regions close enough to send as their bounding box, which takes in
+    // the empty margin between the plot and the right edge.
+    screen::flush();  // the plot, marked by its fill
+    screen::markDirty(FOOT_L, FOOT_T, FOOT_R - FOOT_L, FOOT_B - FOOT_T);
     screen::flush();
 }
 

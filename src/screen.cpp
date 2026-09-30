@@ -190,10 +190,10 @@ void setRotation(int lgfxRotation) {
     markAllDirty();
 }
 
-void clear(uint16_t color) {
+void fillRect(int x, int y, int w, int h, uint16_t color) {
     if (!g_ppaOk) {
-        g_canvas.fillScreen(color);
-        markAllDirty();
+        g_canvas.fillRect(x, y, w, h, color);
+        markDirty(x, y, w, h);
         return;
     }
     // The PPA fills RGB565 in the same swapped byte order it reads it in, and
@@ -208,19 +208,33 @@ void clear(uint16_t color) {
     op.out.buffer_size = CANVAS_BYTES;
     op.out.pic_w = CANVAS_W;
     op.out.pic_h = CANVAS_H;
+    op.out.block_offset_x = x;
+    op.out.block_offset_y = y;
     op.out.fill_cm = PPA_FILL_COLOR_MODE_RGB565;
-    op.fill_block_w = CANVAS_W;
-    op.fill_block_h = CANVAS_H;
+    op.fill_block_w = w;
+    op.fill_block_h = h;
     op.fill_argb_color.val = argb;
     op.mode = PPA_TRANS_MODE_BLOCKING;
 
-    writeBackCanvas();  // don't let stale CPU lines land on top of the fill
+    // Whole rows either side of the DMA, which is what a canvas row being a
+    // whole number of cache lines allows: written back first so no stale CPU
+    // line lands on top of the fill later, then dropped so the CPU reads the
+    // fill rather than what it had cached. The write-back is what makes the
+    // drop safe for the parts of those rows outside the block.
+    uint8_t *rows = (uint8_t *)g_buffer + (size_t)y * ROW_BYTES;
+    size_t rowsBytes = (size_t)h * ROW_BYTES;
+    esp_cache_msync(rows, rowsBytes, ESP_CACHE_MSYNC_FLAG_DIR_C2M);
     if (ppa_do_fill(g_fillClient, &op) != ESP_OK) {
-        g_canvas.fillScreen(color);
+        g_canvas.fillRect(x, y, w, h, color);
     } else {
-        esp_cache_msync(g_buffer, CANVAS_BYTES, ESP_CACHE_MSYNC_FLAG_DIR_M2C);
+        esp_cache_msync(rows, rowsBytes, ESP_CACHE_MSYNC_FLAG_DIR_M2C);
     }
-    markAllDirty();
+    markDirty(x, y, w, h);
+}
+
+void clear(uint16_t color) {
+    fillRect(0, 0, CANVAS_W, CANVAS_H, color);
+    markAllDirty();  // one rect for the lot, rather than one on top of the list
 }
 
 void markAllDirty() {

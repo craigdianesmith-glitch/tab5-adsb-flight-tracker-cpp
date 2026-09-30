@@ -309,7 +309,7 @@ void connectWifi(const String &ssid, const String &password) {
                   WiFi.status() == WL_CONNECTED ? WiFi.localIP().toString().c_str() : "FAILED to connect");
 }
 
-void drawRadar() {
+void drawRadar(bool full) {
     std::vector<Aircraft> aircraft;
     std::vector<uint8_t> isNew;
     double lat = 0, lon = 0;
@@ -324,7 +324,7 @@ void drawRadar() {
         military = (g_traffic == TrafficFilter::MILITARY);
         xSemaphoreGive(g_dataMutex);
     }
-    radarScreenDraw(aircraft, isNew, lat, lon, radius, military, g_radarCentre);
+    radarScreenDraw(aircraft, isNew, lat, lon, radius, military, g_radarCentre, full);
 }
 
 void handleRadarTouch(int x, int y) {
@@ -362,7 +362,7 @@ void handleRadarTouch(int x, int y) {
     case RadarAction::TOGGLE_CENTRE:
         g_radarCentre = (g_radarCentre == RadarCentre::HOME) ? RadarCentre::AIRPORT : RadarCentre::HOME;
         saveRadarCentre(g_radarCentre);
-        drawRadar();
+        drawRadar(true);
         break;
     case RadarAction::NONE:
         break;
@@ -372,7 +372,7 @@ void handleRadarTouch(int x, int y) {
 void handleMainTouch(int x, int y) {
     if (displayHitRadar(x, y)) {
         g_screen = Screen::RADAR;
-        drawRadar();
+        drawRadar(true);
         return;
     }
 
@@ -425,7 +425,7 @@ void handleDetailTouch(int x, int y) {
     }
     if (g_detailReturnTo == Screen::RADAR) {
         g_screen = Screen::RADAR;
-        drawRadar();
+        drawRadar(true);
         return;
     }
     g_screen = Screen::MAIN;
@@ -708,7 +708,7 @@ void loop() {
             xSemaphoreGive(g_dataMutex);
         }
         if (fresh) {
-            drawRadar();
+            drawRadar(false);
         }
     }
 

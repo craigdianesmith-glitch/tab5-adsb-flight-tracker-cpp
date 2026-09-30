@@ -111,6 +111,8 @@ Which is also why vertical movement is a shape rather than a colour or a shade: 
 
 That is roughly what a real secondary-radar display does, for the same reason - the scopes those plots were drawn on had one phosphor and no colour to spend, so trend information went into the symbol.
 
+A data refresh redraws only what can change: the plot square, and the footer readouts beside it. The header and the margins either side of the plot stay as they were drawn on arrival, which halves the area pushed to the panel, and the square is cleared by the PPA rather than the CPU - 15ms of `fillRect` into PSRAM, where the hardware fills the whole screen in 5. Measured with 60 contacts, a refresh went from 64ms to 41ms; arriving at the screen, or toggling its centre, is still the full 64ms repaint. Contacts are clipped to the square so that nothing is drawn outside what a refresh erases - at short range a fast aircraft's vector can otherwise run well past the outer ring.
+
 Callsigns are placed nearest-first and one may not overlap another already placed, so in a cluster the closest aircraft keeps its label and the rest stay as bare blips. The footer says how many were plotted and how many of those are labelled, so a thinned display doesn't read as a missing one.
 
 The code at the centre is the nearest airport, from a generated table of the 3244 large and medium airports with scheduled service in the public-domain [OurAirports](https://ourairports.com/data/) dataset (~39KB of flash). A full scan takes 6.7ms, so the result is cached until the location changes rather than recomputed per frame. Nothing within 120nm leaves the centre as a bare cross.
