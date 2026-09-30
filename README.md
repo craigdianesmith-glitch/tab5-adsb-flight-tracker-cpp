@@ -2,6 +2,13 @@
 
 A C++ rewrite of [Overhead](https://github.com/craigdianesmith-glitch/tab5-adsb-flight-tracker-micropython), a live ADS-B flight tracker for the [M5Stack Tab5](https://docs.m5stack.com/en/core/Tab5). Built on PlatformIO + Arduino + M5Unified/M5GFX (no LVGL), with genuine multithreading: the network fetch runs on its own FreeRTOS task pinned to core 0, so the UI never blocks - the thing that wasn't possible on the MicroPython version, where sockets couldn't be created from a secondary thread at all.
 
+| | |
+| --- | --- |
+| ![The table of aircraft overhead](docs/screenshots/table.png) | ![The radar plot, centred on the nearest airport](docs/screenshots/radar.png) |
+| ![The detail screen for one flight](docs/screenshots/detail.png) | ![The settings screen](docs/screenshots/settings.png) |
+
+Captured from the device with `tools/screenshot.py` - see [Screenshots](#screenshots).
+
 ## Hardware
 
 - M5Stack Tab5 (5" 1280x720 touchscreen, ESP32-P4 + ESP32-C6)
