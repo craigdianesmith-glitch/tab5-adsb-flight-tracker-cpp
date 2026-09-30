@@ -157,6 +157,8 @@ The poll task also trims each result set, nearest first, to the sixty contacts t
 
 The per-cell diffing earns its keep twice over: a cell whose value hasn't moved is never redrawn, and the cells that *have* moved are shaded for two seconds so a change is visible without having to watch for it. That costs one extra flush per poll - about 24ms in every 10 seconds, or a quarter of one percent of the time. `CELL_HIGHLIGHT_MS` in `include/config.h` sets how long the shading lasts, and the *Show flight refresh* toggle on the settings screen turns it off.
 
+A full repaint of the table, returning to it from another screen, draws in 33ms and pushes in 42ms. The drawing used to be 44ms, half of it filling cell backgrounds that `clear()` had just filled with the same colour - narrow rects are slow to write into a canvas in PSRAM. A cell with no cached value is now known to be background already and gets only its border and text. A cell being redrawn is filled inside its border rather than over it, so the border is drawn once rather than on every refresh. A per-poll refresh is bound by the push rather than the drawing: an update of four columns across eleven rows takes ~17ms, and taking the border redraws out of it saved only half a millisecond - the bulk is the PPA rotating those rows into the panel, which already runs at its maximum burst length.
+
 Rendering also means a refresh where nothing changed costs nothing at all, and the three screens share the one canvas rather than holding 1.8MB each.
 
 ## Data sources

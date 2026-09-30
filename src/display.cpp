@@ -191,13 +191,27 @@ String formatHeading(const Aircraft &ac) {
     return String(buf);
 }
 
-void drawCell(int r, int c, const String &value, uint16_t color, bool highlight) {
+// `erase` says whether the cell's area may hold anything but background. A
+// cell with no cached value never does - every path that invalidates one also
+// paints it over, whether by clear() on a full repaint or clearRow() - so it
+// gets its border and nothing else. Narrow rects are slow to fill into a
+// canvas in PSRAM, and skipping fills that repainted what the PPA had just
+// filled with the same colour took a full repaint from 87ms to 75ms.
+//
+// A cell that is erased is filled inside its border rather than over it, so
+// the border survives and is only ever drawn once: every refresh and every
+// shading lapsing used to redraw it too.
+void drawCell(int r, int c, const String &value, uint16_t color, bool highlight, bool erase) {
     auto &canvas = screen::canvas();
     int w = COLUMNS[c].width - 4;
     int y = TABLE_Y + r * ROW_HEIGHT;
     int h = ROW_HEIGHT - 4;
-    canvas.fillRect(colX[c], y, w, h, highlight ? colorChanged : colorBg);
-    canvas.drawRect(colX[c], y, w, h, colorBorder);
+    if (erase || highlight) {
+        canvas.fillRect(colX[c] + 1, y + 1, w - 2, h - 2, highlight ? colorChanged : colorBg);
+    }
+    if (!erase) {
+        canvas.drawRect(colX[c], y, w, h, colorBorder);
+    }
     canvas.setFont(&fonts::FreeSans9pt7b);
     canvas.setTextColor(color);
     canvas.setTextDatum(ML_DATUM);
@@ -405,7 +419,7 @@ void displayTickHighlights() {
             }
             g_highlightUntil[r][c] = 0;
             if (g_lastCellValid[r][c]) {
-                drawCell(r, c, g_lastCell[r][c], g_lastCellColor[r][c], false);
+                drawCell(r, c, g_lastCell[r][c], g_lastCellColor[r][c], false, true);
                 any = true;
             }
         }
@@ -523,7 +537,7 @@ void displayRenderAircraft(const std::vector<Aircraft> &aircraft, const std::vec
                 // being painted for the first time or repainted after another
                 // screen covered the canvas, neither of which is news.
                 bool changed = g_lastCellValid[r][c] && g_showRefresh;
-                drawCell(r, c, values[c], color, changed);
+                drawCell(r, c, values[c], color, changed, g_lastCellValid[r][c]);
                 uint32_t until = millis() + CELL_HIGHLIGHT_MS;
                 if (until == 0) {
                     until = 1;  // 0 is the "not shaded" sentinel
