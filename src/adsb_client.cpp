@@ -217,14 +217,19 @@ static void parseInto(JsonDocument &doc, const AdsbEndpoint &ep, bool military, 
             a.altStr = String((long)altNum);
         }
 
-        a.speedStr = ac["gs"].isNull() ? "?" : String((long)lround(ac["gs"].as<float>()));
+        // Each lookup is a walk of the object's keys, so the ones read more
+        // than once are looked up once.
+        JsonVariantConst gsV = ac["gs"];
+        JsonVariantConst latV = ac["lat"], lonV = ac["lon"];
+        a.speedStr = gsV.isNull() ? "?" : String((long)lround(gsV.as<float>()));
 
-        if (!ac["lat"].isNull() && !ac["lon"].isNull()) {
+        if (!latV.isNull() && !lonV.isNull()) {
+            double acLat = latV.as<double>(), acLon = lonV.as<double>();
             a.hasDist = true;
-            a.distNm = haversineNm(lat, lon, ac["lat"].as<double>(), ac["lon"].as<double>());
+            a.distNm = haversineNm(lat, lon, acLat, acLon);
             a.hasPos = true;
-            a.lat = ac["lat"].as<float>();
-            a.lon = ac["lon"].as<float>();
+            a.lat = (float)acLat;
+            a.lon = (float)acLon;
             if (ep.global && a.distNm > radiusNm) {
                 continue;
             }
@@ -237,29 +242,32 @@ static void parseInto(JsonDocument &doc, const AdsbEndpoint &ep, bool military, 
             a.hasPos = false;
         }
 
-        a.reg = ac["r"].isNull() ? "" : String((const char *)ac["r"]);
-        a.squawk = ac["squawk"].isNull() ? "" : String((const char *)ac["squawk"]);
-        a.category = ac["category"].isNull() ? "" : String((const char *)ac["category"]);
+        a.reg = (const char *)(ac["r"] | "");
+        a.squawk = (const char *)(ac["squawk"] | "");
+        a.category = (const char *)(ac["category"] | "");
 
-        if (!ac["track"].isNull()) {
+        JsonVariantConst trackV = ac["track"];
+        if (!trackV.isNull()) {
             a.hasTrack = true;
-            a.track = ac["track"].as<float>();
+            a.track = trackV.as<float>();
         } else {
             a.hasTrack = false;
         }
 
-        if (!ac["alt_geom"].isNull()) {
+        JsonVariantConst altGeomV = ac["alt_geom"];
+        if (!altGeomV.isNull()) {
             a.hasAltGeom = true;
-            a.altGeom = ac["alt_geom"].as<int>();
+            a.altGeom = altGeomV.as<int>();
         } else {
             a.hasAltGeom = false;
         }
 
-        a.hasVertRate = !ac["baro_rate"].isNull() || !ac["geom_rate"].isNull();
-        a.vertRate = ac["baro_rate"].isNull() ? ac["geom_rate"] | 0.0f : ac["baro_rate"].as<float>();
+        JsonVariantConst baroV = ac["baro_rate"], geomV = ac["geom_rate"];
+        a.hasVertRate = !baroV.isNull() || !geomV.isNull();
+        a.vertRate = baroV.isNull() ? geomV | 0.0f : baroV.as<float>();
 
         if (onGround) {
-            float gs = ac["gs"] | -1.0f;
+            float gs = gsV | -1.0f;
             a.status = (gs > 2) ? "TAXI" : "GROUND";
         } else {
             float rate = a.vertRate;
@@ -272,7 +280,7 @@ static void parseInto(JsonDocument &doc, const AdsbEndpoint &ep, bool military, 
             }
         }
 
-        result.push_back(a);
+        result.push_back(std::move(a));
     }
 
     std::sort(result.begin(), result.end(), [](const Aircraft &a, const Aircraft &b) {

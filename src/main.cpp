@@ -176,14 +176,15 @@ void pollTask(void *) {
         bool ok = linkUp && fetchAircraft(lat, lon, radius, wantMilitary, source, fetched, provider);
         if (ok) {
             std::vector<Aircraft> aircraft;
-            for (const Aircraft &a : fetched) {
+            aircraft.reserve(fetched.size());
+            for (Aircraft &a : fetched) {
                 if (a.military != wantMilitary) {
                     continue;
                 }
                 if (a.hasDist && a.distNm > radius) {
                     continue;  // the API is occasionally a little generous
                 }
-                aircraft.push_back(a);
+                aircraft.push_back(std::move(a));
             }
 
             // adsb_client sorts by distance, so this keeps the nearest and

@@ -78,8 +78,11 @@ bool g_linkUp = true;
 bool g_pollOk = true;
 bool g_everSucceeded = false;
 uint32_t g_lastSuccessMs = 0;
-String g_lastStatus = "\x01";  // sentinel that can never equal a real status
-uint16_t g_lastStatusColor = 0;
+// Which message the status line shows and the age it quotes, packed so that
+// loop()'s hundred passes a second can tell nothing has changed before
+// building any Strings to say so.
+constexpr uint32_t STATUS_NONE = UINT32_MAX;  // sentinel that no real status packs to
+uint32_t g_lastStatusKey = STATUS_NONE;
 
 // Drawn geometric icons rather than a hand-authored bitmap: precise and
 // reliable without needing to eyeball pixel arrays on real hardware.
@@ -283,7 +286,7 @@ void displayInvalidate() {
     // clear the canvas and repaint from scratch.
     g_headerDrawn = false;
     g_lastWasEmpty = false;
-    g_lastStatus = "\x01";
+    g_lastStatusKey = STATUS_NONE;
     for (int r = 0; r < MAX_CACHE_ROWS; r++) {
         for (int c = 0; c < NUM_COLS; c++) {
             g_lastCellValid[r][c] = false;
@@ -309,33 +312,47 @@ void displayTickStatus() {
     if (!g_headerDrawn) {
         return;
     }
-    uint32_t age = (millis() - g_lastSuccessMs) / 1000;
-    String ageStr = age < 60 ? (String(age) + "s") : (String(age / 60) + "m " + String(age % 60) + "s");
-
-    String text;
-    uint16_t color = colorGrey;
-    if (!g_linkUp) {
-        // Named separately from a failed fetch: a dropped link is the device's
-        // problem to fix and it is already trying, where a failed fetch is the
-        // API's and there is nothing to do but wait for the next one. And a
-        // link never yet established is the boot case, where "reconnecting"
-        // would be a claim about a connection that never existed.
-        text = g_everSucceeded ? "WiFi disconnected - reconnecting" : "Connecting to WiFi";
-        color = colorStale;
-    } else if (!g_everSucceeded) {
-        text = "Waiting for data";
-    } else if (!g_pollOk) {
-        text = "Last update " + ageStr + " ago - retrying";
-        color = colorStale;
-    } else {
-        text = "Updated " + ageStr + " ago";
-    }
-
-    if (text == g_lastStatus && color == g_lastStatusColor) {
+    // Named separately from a failed fetch: a dropped link is the device's
+    // problem to fix and it is already trying, where a failed fetch is the
+    // API's and there is nothing to do but wait for the next one. And a link
+    // never yet established is the boot case, where "reconnecting" would be a
+    // claim about a connection that never existed.
+    enum : uint32_t { RECONNECTING, CONNECTING, WAITING, RETRYING, UPDATED };
+    uint32_t state = !g_linkUp        ? (g_everSucceeded ? RECONNECTING : CONNECTING)
+                     : !g_everSucceeded ? WAITING
+                     : !g_pollOk        ? RETRYING
+                                        : UPDATED;
+    // Only the last two quote an age, so only they change with the clock.
+    uint32_t age = (state >= RETRYING) ? (millis() - g_lastSuccessMs) / 1000 : 0;
+    uint32_t key = (age << 3) | state;
+    if (key == g_lastStatusKey) {
         return;
     }
-    g_lastStatus = text;
-    g_lastStatusColor = color;
+    g_lastStatusKey = key;
+
+    String ageStr = age < 60 ? (String(age) + "s") : (String(age / 60) + "m " + String(age % 60) + "s");
+    String text;
+    uint16_t color = colorGrey;
+    switch (state) {
+    case RECONNECTING:
+        text = "WiFi disconnected - reconnecting";
+        color = colorStale;
+        break;
+    case CONNECTING:
+        text = "Connecting to WiFi";
+        color = colorStale;
+        break;
+    case WAITING:
+        text = "Waiting for data";
+        break;
+    case RETRYING:
+        text = "Last update " + ageStr + " ago - retrying";
+        color = colorStale;
+        break;
+    default:
+        text = "Updated " + ageStr + " ago";
+        break;
+    }
 
     auto &canvas = screen::canvas();
     int y = TABLE_Y + displayMaxRows() * ROW_HEIGHT;
@@ -459,7 +476,7 @@ void displayRenderAircraft(const std::vector<Aircraft> &aircraft, const std::vec
             x += COLUMNS[i].width;
         }
         g_headerDrawn = true;
-        g_lastStatus = "\x01";  // cleared along with the rest of the canvas
+        g_lastStatusKey = STATUS_NONE;  // cleared along with the rest of the canvas
     }
 
     int maxRows = displayMaxRows();
