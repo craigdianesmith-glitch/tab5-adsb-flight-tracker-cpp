@@ -13,6 +13,9 @@ void soundBoot();
 // Short blip when an aircraft that wasn't there before appears in the table.
 void soundNewFlight();
 
+// A short tick for each key pressed on the on-screen keyboard.
+void soundKeyClick();
+
 // Silences the beeps without shutting the speaker down, so unmuting needs no
 // re-initialisation. Toggled from the header and persisted.
 void soundSetMuted(bool muted);

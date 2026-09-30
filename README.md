@@ -143,6 +143,8 @@ The button beside Back chooses what the plot is centred on, and is labelled with
 
 A two-note rise once the firmware is up, and a short blip whenever an aircraft that wasn't there before appears in the table - one blip per poll however many arrived, and never on the first poll after a start or a location change, where every aircraft is new by definition.
 
+The on-screen keyboard ticks on each key - 25ms at 3kHz, on a channel of its own that cuts off the tick before it, so fast typing doesn't queue up behind itself or behind an arrival blip.
+
 The speaker icon in the header mutes it, and the setting persists. Muting silences the beeps rather than shutting the speaker down, so unmuting needs no re-initialisation - and unmuting plays the arrival blip, which is the one confirmation that can only be given in the medium being switched back on. `SOUND_ENABLED` and `SOUND_VOLUME` in `include/config.h` remain the build-time "never make a sound" and the level.
 
 ## Rendering

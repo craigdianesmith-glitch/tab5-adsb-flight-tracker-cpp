@@ -13,6 +13,10 @@ bool g_muted = false;
 // so a new-flight blip that lands during the boot rise waits its turn instead
 // of cutting it off.
 constexpr uint8_t CHANNEL = 0;
+// Key clicks get a channel of their own and cut off the one before, so fast
+// typing stays in step with the fingers instead of queueing behind itself -
+// or behind an arrival blip on the shared channel.
+constexpr uint8_t CLICK_CHANNEL = 1;
 
 }  // namespace
 
@@ -39,6 +43,13 @@ void soundBoot() {
     }
     M5.Speaker.tone(880, 90, CHANNEL, false);
     M5.Speaker.tone(1320, 140, CHANNEL, false);
+}
+
+void soundKeyClick() {
+    if (!g_ready || g_muted) {
+        return;
+    }
+    M5.Speaker.tone(KEY_CLICK_HZ, KEY_CLICK_MS, CLICK_CHANNEL, true);
 }
 
 void soundNewFlight() {

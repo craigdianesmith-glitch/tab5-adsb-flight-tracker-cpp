@@ -33,6 +33,11 @@ constexpr uint32_t CELL_HIGHLIGHT_MS = 2000;
 // and persists, where this is a build-time "never make a sound".
 constexpr bool SOUND_ENABLED = true;
 constexpr uint8_t SOUND_VOLUME = 96;  // 0-255
+// Short and high, so it reads as a tick rather than a beep. The channel is
+// already at full volume, so loudness comes from length: at 12ms it was too
+// brief to register as loud as the master volume allows.
+constexpr uint16_t KEY_CLICK_HZ = 3000;
+constexpr uint32_t KEY_CLICK_MS = 25;
 
 // What the radar plot is centred on: the configured location, or the airport
 // nearest to it. Stored in NVS by value, so the numbers are not free to change.

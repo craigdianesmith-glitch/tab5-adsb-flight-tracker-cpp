@@ -3,6 +3,7 @@
 #include <M5Unified.h>
 
 #include "screen.h"
+#include "sound.h"
 
 namespace keyboard {
 namespace {
@@ -83,6 +84,16 @@ uint16_t keyColor(const char *k) {
 
 void reset() { g_mode = Mode::LOWER; }
 
+namespace {
+// A mode key changes nothing the screen will repaint in response - it gets
+// NONE, and only pushes on EDITED - so the keyboard pushes itself. Without
+// this the new keys sat in the canvas until the next keypress pushed them.
+void redraw() {
+    draw();
+    screen::flush();
+}
+}  // namespace
+
 bool contains(int x, int y) {
     return y >= TOP_Y && y < TOP_Y + HEIGHT && x >= GRID_X && x < GRID_X + COLS * CELL_W;
 }
@@ -133,23 +144,24 @@ Result handleTouch(int x, int y, String &text, size_t maxLen) {
     if (k[0] == '\0') {
         return Result::NONE;
     }
+    soundKeyClick();  // every live key, even one that turns out to do nothing
 
     if (strcmp(k, "OK") == 0) {
         return Result::SUBMIT;
     }
     if (strcmp(k, "SHIFT") == 0) {
         g_mode = (g_mode == Mode::UPPER) ? Mode::LOWER : Mode::UPPER;
-        draw();
+        redraw();
         return Result::NONE;
     }
     if (strcmp(k, "?#") == 0) {
         g_mode = Mode::SYMBOL;
-        draw();
+        redraw();
         return Result::NONE;
     }
     if (strcmp(k, "abc") == 0) {
         g_mode = Mode::LOWER;
-        draw();
+        redraw();
         return Result::NONE;
     }
     if (strcmp(k, "BKSP") == 0) {
