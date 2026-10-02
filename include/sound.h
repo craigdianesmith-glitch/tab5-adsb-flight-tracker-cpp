@@ -16,6 +16,15 @@ void soundNewFlight();
 // A short tick for each key pressed on the on-screen keyboard.
 void soundKeyClick();
 
+// A rising three-note chime for an interesting flight, or for an emergency
+// squawk a two-tone warble that can't be mistaken for it. Returns at once:
+// the notes are played out by soundTick().
+void soundAlert(bool emergency);
+
+// Plays the next note of a queued alert once the one before has finished.
+// Call every loop.
+void soundTick();
+
 // Silences the beeps without shutting the speaker down, so unmuting needs no
 // re-initialisation. Toggled from the header and persisted.
 void soundSetMuted(bool muted);

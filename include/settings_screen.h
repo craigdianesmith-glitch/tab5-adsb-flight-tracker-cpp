@@ -9,6 +9,7 @@ enum class SettingsAction {
     BACK,           // caller should apply and persist the values below
     OPEN_WIFI,
     OPEN_LOCATION,
+    OPEN_ALERTS,
 };
 
 // Seeds the screen with the values currently in force. The label is only
@@ -20,6 +21,9 @@ void settingsScreenSet(TrafficFilter traffic, int radiusNm, bool showRefresh, in
 // Updates the location shown on the button, after the location screen has
 // been in and changed it.
 void settingsScreenSetLocation(const String &locationLabel);
+
+// The one-line summary shown on the alerts button, e.g. "3 of 4 on, auto-record on".
+void settingsScreenSetAlertSummary(const String &summary);
 
 void settingsScreenDraw();
 

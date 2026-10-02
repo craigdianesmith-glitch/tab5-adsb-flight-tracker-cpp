@@ -44,6 +44,32 @@ constexpr uint32_t KEY_CLICK_MS = 25;
 enum class RadarCentre : uint8_t { HOME = 0, AIRPORT = 1 };
 constexpr RadarCentre DEFAULT_RADAR_CENTRE = RadarCentre::AIRPORT;
 
+// --- alerts and recording ---------------------------------------------------
+
+// How long the alert banner stays up once it has been on screen, if nobody
+// taps it first.
+constexpr uint32_t ALERT_BANNER_MS = 20000;
+// An auto recording runs on this long after the last alerted aircraft has
+// gone, so a contact that drops out for a poll or two doesn't split one
+// sighting into several files.
+constexpr uint32_t AUTO_RECORD_TAIL_MS = 60000;
+// Room for a dozen or so entries; it is typed on the on-screen keyboard.
+constexpr size_t WATCHLIST_MAX_LEN = 160;
+// A recording carries on in a new file - its next part - once the one it is
+// writing reaches either of these. Opening a recording reads all of it to
+// index it, so a file left to grow for a day would take most of a minute to
+// open, and past half a million positions wouldn't fit the index at all. Size
+// is what decides that, so it is capped directly; the time keeps the parts of
+// a quiet recording to a length that reads sensibly in the list.
+constexpr uint32_t RECORDING_SPLIT_MS = 4UL * 60 * 60 * 1000;
+constexpr uint32_t RECORDING_SPLIT_BYTES = 4UL * 1024 * 1024;
+// Where exported videos go: the top of the card rather than beside the
+// recordings, to be easy to find on a computer. A recording's videos are named
+// after it - 20261002-143155.rec gives 20261002-143155-4x.mp4.
+constexpr const char *VIDEO_DIR = "/videos";
+// How far back a contact's trail reaches during playback.
+constexpr uint32_t REPLAY_TRAIL_MS = 10 * 60 * 1000;
+
 constexpr int CLIMB_THRESHOLD_FPM = 150;
 constexpr int DESCEND_THRESHOLD_FPM = -150;
 

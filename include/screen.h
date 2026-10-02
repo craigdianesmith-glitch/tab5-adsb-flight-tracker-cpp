@@ -41,6 +41,37 @@ void markAllDirty();
 // Push everything marked dirty to the panel, then start a fresh dirty list.
 void flush();
 
+// Something drawn over whichever screen is up - the alert banner. `draw`
+// paints it into the canvas and returns true, or returns false when it isn't
+// to be shown on the screen that is up. It is repainted at any flush whose
+// dirty regions touch (x, y, w, h), so a screen redrawing underneath can't
+// wipe it; to show it the first time, mark that region dirty and flush.
+// Taking it down is the caller's business: the screen under it has to be
+// repainted, since the overlay was drawn over its pixels.
+using OverlayFn = bool (*)(M5Canvas &canvas);
+void setOverlay(OverlayFn draw, int x, int y, int w, int h);
+
+// The whole canvas, converted by the PPA to YUV 4:2:0 in the packed layout
+// the P4's H.264 encoder takes (odd lines U Y Y, even lines V Y Y), for
+// encoding as a video frame. BT.601, limited range - what a decoder assumes
+// of a stream that doesn't say. `out` must be 64-byte aligned and hold
+// 1280 * 720 * 3 / 2 bytes. False if the PPA isn't available or refused.
+constexpr size_t YUV420_BYTES = 1280 * 720 * 3 / 2;
+bool toYuv420(uint8_t *out, size_t outBytes);
+
+// For an encoder that keeps its last frame and converts only what has changed
+// since: every region marked dirty since the last call, whether or not it has
+// been flushed. The list collapses to a bounding box when it overflows, so it
+// may say more than changed, never less.
+struct Region {
+    int16_t x, y, w, h;
+};
+constexpr int MAX_REGIONS = 16;
+int takeChanged(Region *out, int max);
+// As toYuv420(), for just one region of the canvas into the same place in
+// `out`. Widened to even edges, which YUV 4:2:0's shared colour needs.
+bool toYuv420(uint8_t *out, size_t outBytes, const Region &r);
+
 // Writes the canvas to Serial as a screenshot, for tools/screenshot.py: a
 // header line, then the raw 1280x720 RGB565 pixels as the canvas holds them.
 // The canvas is landscape whatever the panel's rotation, so this is exactly

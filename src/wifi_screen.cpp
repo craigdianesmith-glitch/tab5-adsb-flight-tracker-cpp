@@ -31,15 +31,29 @@ struct Network {
     String ssid;
     int32_t rssi;
     bool open;
+    bool wep;
 };
 std::vector<Network> g_networks;
 
 bool g_scanning = false;
+// A scan can fail while the radio is still busy with a connect it was given
+// earlier, so a failure is retried a couple of times before it is reported.
+constexpr int SCAN_RETRIES = 2;
+constexpr uint32_t SCAN_RETRY_MS = 1500;
+int g_scanRetriesLeft = 0;
+uint32_t g_scanRetryAt = 0;
 String g_status;
+String g_notice;
 String g_ssid;
+bool g_ssidWep = false;
 String g_password;
 uint32_t g_connectStartedAt = 0;
 bool g_connecting = false;
+// Credentials tried but not yet seen to work. They are saved only once they
+// have: saved up front, one mistyped password - or a tap on the neighbour's
+// network - replaced the credentials of the network that was working, and
+// the device had nothing to go back to.
+bool g_pending = false;
 
 uint16_t colorBg, colorWhite, colorGrey, colorDim, colorBtnBg, colorScanBtn, colorConnect, colorRow, colorBorder;
 
@@ -67,6 +81,7 @@ String connectionSummary() {
 }
 
 void startScan() {
+    g_scanRetryAt = 0;
     g_networks.clear();
     g_scanning = true;
     g_status = "Scanning...";
@@ -81,7 +96,10 @@ void drawStatus() {
     canvas.setTextSize(2);
     canvas.setTextColor(colorGrey);
     canvas.setTextDatum(TL_DATUM);
-    canvas.drawString(g_status.length() ? g_status : connectionSummary(), STATUS_X, STATUS_Y);
+    String text = g_status.length()                                ? g_status
+                  : g_notice.length() && WiFi.status() != WL_CONNECTED ? g_notice
+                                                                        : connectionSummary();
+    canvas.drawString(text, STATUS_X, STATUS_Y);
     screen::markDirty(STATUS_X, STATUS_Y, STATUS_W, STATUS_H);
 }
 
@@ -208,8 +226,24 @@ void drawPasswordScreen() {
     screen::flush();
 }
 
+// What's wrong with the passphrase as typed, or empty if nothing is. Checked
+// before connecting: the radio would only time out on a length that can never
+// work, twenty seconds later and with no word as to why - and the bad value
+// would already be saved.
+String passwordProblem() {
+    size_t n = g_password.length();
+    if (g_ssidWep) {
+        return (n == 5 || n == 13 || n == 10 || n == 26) ? String("")
+                                                         : String("A WEP key is 5 or 13 characters (10 or 26 in hex)");
+    }
+    if (n < 8) {
+        return n == 0 ? "Type the network's password first" : "Too short - a WiFi password is at least 8 characters";
+    }
+    return "";  // the keyboard stops it at 63
+}
+
 void beginConnect() {
-    saveWifi(g_ssid, g_password);
+    g_pending = true;
     g_connecting = true;
     g_connectStartedAt = millis();
     g_status = "Connecting to " + g_ssid + "...";
@@ -221,13 +255,21 @@ void beginConnect() {
 
 }  // namespace
 
-void wifiScreenEnter() {
+void wifiScreenEnter(const String &notice) {
     ensureColors();
     keyboard::reset();
     g_mode = Mode::LIST;
     g_password = "";
     g_connecting = false;
     g_status = "";
+    g_notice = notice;
+    g_pending = false;
+    // A station left trying to join a network that isn't there keeps the
+    // radio busy enough to fail a scan. A working link is left alone.
+    if (WiFi.status() != WL_CONNECTED) {
+        WiFi.disconnect();
+    }
+    g_scanRetriesLeft = SCAN_RETRIES;
     startScan();
     drawListScreen();
 }
@@ -241,7 +283,7 @@ void wifiScreenDraw() {
     }
 }
 
-void wifiScreenTick() {
+WifiAction wifiScreenTick() {
     if (g_scanning) {
         int found = WiFi.scanComplete();
         if (found >= 0) {
@@ -264,7 +306,8 @@ void wifiScreenTick() {
                 if (seen) {
                     continue;
                 }
-                g_networks.push_back({ssid, WiFi.RSSI(i), WiFi.encryptionType(i) == WIFI_AUTH_OPEN});
+                wifi_auth_mode_t auth = WiFi.encryptionType(i);
+                g_networks.push_back({ssid, WiFi.RSSI(i), auth == WIFI_AUTH_OPEN, auth == WIFI_AUTH_WEP});
             }
             WiFi.scanDelete();
             g_status = "";
@@ -273,9 +316,13 @@ void wifiScreenTick() {
                 drawList();
                 screen::flush();
             }
+        } else if (found == WIFI_SCAN_FAILED && g_scanRetriesLeft > 0) {
+            g_scanning = false;
+            g_scanRetriesLeft--;
+            g_scanRetryAt = millis() + SCAN_RETRY_MS;  // still "Scanning..." on screen meanwhile
         } else if (found == WIFI_SCAN_FAILED) {
             g_scanning = false;
-            g_status = "Scan failed";
+            g_status = "Scan failed - tap Scan to try again";
             if (g_mode == Mode::LIST) {
                 drawStatus();
                 screen::flush();
@@ -283,19 +330,31 @@ void wifiScreenTick() {
         }
     }
 
+    if (g_scanRetryAt != 0 && (int32_t)(millis() - g_scanRetryAt) >= 0) {
+        startScan();
+    }
+
+    // Checked whether or not the attempt has timed out: a connection that
+    // comes up late is no less worth keeping.
+    if (g_pending && WiFi.status() == WL_CONNECTED && WiFi.SSID() == g_ssid) {
+        saveWifi(g_ssid, g_password);
+        g_pending = false;
+        g_connecting = false;
+        g_status = "";
+        g_notice = "";
+        drawStatus();
+        screen::flush();
+        return WifiAction::CONNECTED;
+    }
     if (g_connecting) {
-        if (WiFi.status() == WL_CONNECTED) {
-            g_connecting = false;
-            g_status = "";
-            drawStatus();
-            screen::flush();
-        } else if (millis() - g_connectStartedAt > 20000) {
+        if (millis() - g_connectStartedAt > 20000) {
             g_connecting = false;
             g_status = "Could not connect to " + g_ssid;
             drawStatus();
             screen::flush();
         }
     }
+    return WifiAction::NONE;
 }
 
 WifiAction wifiScreenHandleTouch(int x, int y) {
@@ -310,6 +369,7 @@ WifiAction wifiScreenHandleTouch(int x, int y) {
 
     if (g_mode == Mode::LIST) {
         if (x >= SCAN_X && x < SCAN_X + SCAN_W && y >= SCAN_Y && y < SCAN_Y + SCAN_H) {
+            g_scanRetriesLeft = SCAN_RETRIES;
             startScan();
             drawStatus();
             drawList();
@@ -320,6 +380,7 @@ WifiAction wifiScreenHandleTouch(int x, int y) {
             int row = (y - LIST_Y) / LIST_ROW_H;
             if (row >= 0 && row < (int)g_networks.size() && row < MAX_ROWS) {
                 g_ssid = g_networks[row].ssid;
+                g_ssidWep = g_networks[row].wep;
                 g_password = "";
                 g_status = "";
                 keyboard::reset();
@@ -334,21 +395,33 @@ WifiAction wifiScreenHandleTouch(int x, int y) {
         return WifiAction::NONE;
     }
 
-    if (x >= CONNECT_X && x < CONNECT_X + CONNECT_W && y >= CONNECT_Y && y < CONNECT_Y + CONNECT_H) {
-        beginConnect();
-        return WifiAction::NONE;
+    bool submit = x >= CONNECT_X && x < CONNECT_X + CONNECT_W && y >= CONNECT_Y && y < CONNECT_Y + CONNECT_H;
+    if (!submit) {
+        switch (keyboard::handleTouch(x, y, g_password, 63)) {
+        case keyboard::Result::EDITED:
+            if (g_status.length() && !g_connecting) {
+                g_status = "";  // a complaint about the old value is answered by changing it
+                drawStatus();
+            }
+            drawPasswordField();
+            screen::flush();
+            break;
+        case keyboard::Result::SUBMIT:
+            submit = true;
+            break;
+        case keyboard::Result::NONE:
+            break;
+        }
     }
-
-    switch (keyboard::handleTouch(x, y, g_password, 63)) {
-    case keyboard::Result::EDITED:
-        drawPasswordField();
-        screen::flush();
-        break;
-    case keyboard::Result::SUBMIT:
-        beginConnect();
-        break;
-    case keyboard::Result::NONE:
-        break;
+    if (submit) {
+        String problem = passwordProblem();
+        if (problem.length()) {
+            g_status = problem;
+            drawStatus();
+            screen::flush();
+        } else {
+            beginConnect();
+        }
     }
     return WifiAction::NONE;
 }

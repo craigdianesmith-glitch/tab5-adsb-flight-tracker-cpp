@@ -52,17 +52,24 @@ constexpr int INTERVAL_SLIDER_X = COL2_X + SLIDER_INSET, INTERVAL_SLIDER_Y = 186
 constexpr int INTERVAL_TICKS_Y = INTERVAL_SLIDER_Y + 38;
 constexpr int INTERVAL_CAPS_Y = 260;
 
+// Three "leads somewhere else" rows now, so they are a little shorter than the
+// two used to be, to fit them all under the interval slider.
+constexpr int NAV_H = 84;
 constexpr int LOC_LABEL_Y = 308;
-constexpr int LOC_X = COL2_X, LOC_Y = 336, LOC_W = COL_W, LOC_H = 96;
+constexpr int LOC_X = COL2_X, LOC_Y = 336, LOC_W = COL_W, LOC_H = NAV_H;
 
-constexpr int WIFI_LABEL_Y = 468;
-constexpr int WIFI_X = COL2_X, WIFI_Y = 496, WIFI_W = COL_W, WIFI_H = 96;
+constexpr int WIFI_LABEL_Y = 440;
+constexpr int WIFI_X = COL2_X, WIFI_Y = 468, WIFI_W = COL_W, WIFI_H = NAV_H;
+
+constexpr int ALERTS_LABEL_Y = 572;
+constexpr int ALERTS_X = COL2_X, ALERTS_Y = 600, ALERTS_W = COL_W, ALERTS_H = NAV_H;
 
 TrafficFilter g_traffic = TrafficFilter::CIVIL;
 int g_radius = DEFAULT_RADIUS_NM;
 int g_interval = DEFAULT_POLL_INTERVAL_S;
 bool g_showRefresh = true;
 String g_locationLabel;
+String g_alertSummary;
 AdsbSource g_source = DEFAULT_ADSB_SOURCE;
 
 // Which slider, if either, currently owns the finger.
@@ -265,7 +272,7 @@ void drawRefreshToggle() {
     screen::markDirty(REFRESH_X, REFRESH_Y, REFRESH_W, REFRESH_H);
 }
 
-// The two "leads somewhere else" rows share a shape: a title, a line of
+// The "leads somewhere else" rows share a shape: a title, a line of
 // current state underneath, and a chevron.
 void drawNavButton(int x, int y, int w, int h, const char *title, const String &detail) {
     auto &canvas = screen::canvas();
@@ -275,7 +282,7 @@ void drawNavButton(int x, int y, int w, int h, const char *title, const String &
     canvas.setTextColor(colorWhite);
     canvas.setTextSize(3);
     canvas.setTextDatum(ML_DATUM);
-    canvas.drawString(title, x + 24, y + 30);
+    canvas.drawString(title, x + 24, y + 28);
 
     canvas.setTextColor(colorDim);
     canvas.setTextSize(2);
@@ -287,7 +294,7 @@ void drawNavButton(int x, int y, int w, int h, const char *title, const String &
         size--;
         canvas.setTextSize(size);
     }
-    canvas.drawString(detail, x + 24, y + 68);
+    canvas.drawString(detail, x + 24, y + 60);
 
     canvas.setTextColor(colorGrey);
     canvas.setTextSize(3);
@@ -306,6 +313,10 @@ void drawWifiButton() {
                   WiFi.status() == WL_CONNECTED
                       ? ("Connected to " + WiFi.SSID() + "   " + WiFi.localIP().toString())
                       : String("Not connected"));
+}
+
+void drawAlertsButton() {
+    drawNavButton(ALERTS_X, ALERTS_Y, ALERTS_W, ALERTS_H, "Alerts & recording", g_alertSummary);
 }
 
 void sectionLabel(const char *text, int x, int y) {
@@ -340,6 +351,8 @@ void settingsScreenSet(TrafficFilter traffic, int radiusNm, bool showRefresh, in
 
 void settingsScreenSetLocation(const String &locationLabel) { g_locationLabel = locationLabel; }
 
+void settingsScreenSetAlertSummary(const String &summary) { g_alertSummary = summary; }
+
 int settingsScreenPollInterval() { return g_interval; }
 
 void settingsScreenDraw() {
@@ -373,6 +386,8 @@ void settingsScreenDraw() {
     drawLocationButton();
     sectionLabel("NETWORK", COL2_X, WIFI_LABEL_Y);
     drawWifiButton();
+    sectionLabel("ALERTS", COL2_X, ALERTS_LABEL_Y);
+    drawAlertsButton();
 
     screen::flush();
 }
@@ -465,6 +480,10 @@ SettingsAction settingsScreenHandleTouch(int x, int y, bool pressed, bool clicke
 
     if (x >= WIFI_X && x < WIFI_X + WIFI_W && y >= WIFI_Y && y < WIFI_Y + WIFI_H) {
         return SettingsAction::OPEN_WIFI;
+    }
+
+    if (x >= ALERTS_X && x < ALERTS_X + ALERTS_W && y >= ALERTS_Y && y < ALERTS_Y + ALERTS_H) {
+        return SettingsAction::OPEN_ALERTS;
     }
     return SettingsAction::NONE;
 }

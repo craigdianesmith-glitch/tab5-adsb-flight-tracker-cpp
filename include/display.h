@@ -58,5 +58,9 @@ void displaySetPollState(bool linkUp, bool lastPollOk, bool everSucceeded, uint3
 // the data ageing by a second. Call every loop while the main screen is up.
 void displayTickStatus();
 
+// Puts a short message on the status line in place of the poll state, for a
+// few seconds - the answer to something done on the table itself.
+void displayShowNotice(const String &text);
+
 // isNew[i] true => aircraft[i]'s row is drawn in dark green for this frame.
 void displayRenderAircraft(const std::vector<Aircraft> &aircraft, const std::vector<uint8_t> &isNew);

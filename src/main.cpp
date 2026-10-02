@@ -3,25 +3,34 @@
 #include <esp32-hal-hosted.h>
 #include <algorithm>
 #include <map>
+#include <time.h>
 #include <vector>
 
 #include "adsb_client.h"
+#include "aircraft_db.h"
 #include "airports.h"
+#include "alerts.h"
+#include "alerts_screen.h"
 #include "config.h"
 #include "detail_screen.h"
 #include "display.h"
 #include "location_screen.h"
+#include "playback_screen.h"
 #include "radar_screen.h"
+#include "recorder.h"
+#include "recordings_screen.h"
 #include "screen.h"
 #include "secrets.h"
 #include "settings.h"
 #include "settings_screen.h"
+#include "share_screen.h"
 #include "sound.h"
+#include "watchlist_screen.h"
 #include "wifi_screen.h"
 
 namespace {
 
-enum class Screen { MAIN, LOCATION, DETAIL, SETTINGS, WIFI, RADAR };
+enum class Screen { MAIN, LOCATION, DETAIL, SETTINGS, WIFI, RADAR, ALERTS, WATCHLIST, RECORDINGS, PLAYBACK, SHARE };
 Screen g_screen = Screen::MAIN;
 // The detail screen is reachable from the table and from the radar, and Back
 // should land wherever you came from.
@@ -55,10 +64,58 @@ String g_airportCode;
 // been seen, so a changed location or filter doesn't flag everything as new.
 bool g_resetBaseline = false;
 bool g_pollNow = false;  // skip the rest of the poll interval and refetch
+// Set with the location, range or traffic changing. A recording's header holds
+// the home and range its plot is drawn around, so one that ran on across the
+// change would replay the new sky against the old centre - off the plot, or
+// clipped at the old range. The poll task stops it instead.
+bool g_sceneChanged = false;
 
 // Only touched by pollTask - no locking needed since it's the sole writer/reader.
 std::map<String, uint32_t> g_seenMap;
 bool g_baseline = true;
+
+// --- alerts and recording ---------------------------------------------------
+
+// The rules pollTask checks each aircraft against, and whether an alert
+// starts a recording. Set from the alerts screen, so read under the mutex.
+AlertRules g_alertRules;
+bool g_autoRecord = false;
+// The same, as the alerts screen edits them. Only touched by loop().
+uint8_t g_alertMask = ALERT_ALL;
+String g_watchlist;
+
+// Set by pollTask, consumed by loop(): the most important of the alerts the
+// last poll raised, and how many more came with it.
+bool g_alertPending = false;
+Aircraft g_pendingAlert;
+int g_pendingAlertMore = 0;
+// Every aircraft the alert is for, by ICAO hex, for the callsign flash.
+std::vector<String> g_pendingFlash;
+
+// Set when a recording that auto-record started is stopped by hand. Without
+// it, the next poll would find the same aircraft still about and start
+// another; pollTask clears it once no alerted aircraft are left.
+bool g_autoRecordHeld = false;
+
+// Only touched by pollTask. Which reasons each aircraft has already been
+// alerted for, so a contact alerts once per sighting rather than every poll -
+// but again if it trips a new rule, say by squawking 7700.
+struct AlertSeen {
+    uint8_t reasons;
+    uint32_t lastMs;
+};
+std::map<String, AlertSeen> g_alertSeen;
+uint32_t g_lastAlertedMs = 0;
+
+// The banner, owned by loop(). Shown over the screens where the sky is on
+// show; put off on the ones being typed into or worked through, and shown
+// on the next of the others that comes up.
+constexpr int BANNER_H = 60;
+constexpr int BANNER_CLOSE_W = 84;
+bool g_bannerUp = false;
+Aircraft g_bannerAc;
+int g_bannerMore = 0;
+uint32_t g_bannerShownMs = 0;  // 0 until it has actually been on screen
 
 // Enough for the radar plot to look like the sky rather than a handful of
 // dots, while still dropping the long tail of a busy radius.
@@ -91,6 +148,16 @@ constexpr uint32_t WIFI_RETRY_MAX_MS = 120000;
 uint32_t g_wifiRetryMs = WIFI_RETRY_MIN_MS;
 uint32_t g_nextWifiTryMs = 0;
 
+// Consecutive failed attempts, the boot connect included. Past the limit the
+// network is taken to be gone rather than blipping - a hotspot that's been
+// switched off, or a device carried somewhere else - and the WiFi screen is
+// put up so another can be picked. Retries carry on meanwhile, so a network
+// that comes back before anyone looks still wins.
+constexpr int WIFI_MAX_FAILS = 3;
+int g_wifiFails = 0;
+// Set by the poll task once the limit is reached; loop() acts on it.
+bool g_wifiGaveUp = false;
+
 // A build whose secrets.h was never filled in carries the example's
 // placeholder, which is no more usable than an empty string. Either way there
 // is nothing to connect with, and fifteen seconds spent failing to prove it
@@ -104,6 +171,18 @@ bool credentialsUnset(const String &ssid) { return ssid.length() == 0 || ssid ==
 bool ensureWifi() {
     if (WiFi.status() == WL_CONNECTED) {
         g_wifiRetryMs = WIFI_RETRY_MIN_MS;
+        // Cleared here too, not only after a reconnect of our own: a link the
+        // driver brought back by itself left a stale time behind, and once
+        // millis() had moved more than 24.8 days past it, the signed test
+        // below read it as the future and held off for weeks.
+        g_nextWifiTryMs = 0;
+        if (g_wifiFails != 0) {
+            g_wifiFails = 0;  // came back by itself between attempts
+            if (xSemaphoreTake(g_dataMutex, portMAX_DELAY) == pdTRUE) {
+                g_wifiGaveUp = false;
+                xSemaphoreGive(g_dataMutex);
+            }
+        }
         return true;
     }
 
@@ -135,11 +214,25 @@ bool ensureWifi() {
         Serial.printf("[wifi] reconnected: %s\n", WiFi.localIP().toString().c_str());
         g_wifiRetryMs = WIFI_RETRY_MIN_MS;
         g_nextWifiTryMs = 0;
+        g_wifiFails = 0;
+        if (xSemaphoreTake(g_dataMutex, portMAX_DELAY) == pdTRUE) {
+            g_wifiGaveUp = false;
+            xSemaphoreGive(g_dataMutex);
+        }
         return true;
     }
-    g_nextWifiTryMs = millis() + g_wifiRetryMs;
+    uint32_t wait = g_wifiRetryMs;
+    g_nextWifiTryMs = millis() + wait;
     g_wifiRetryMs = std::min(g_wifiRetryMs * 2, WIFI_RETRY_MAX_MS);
-    Serial.printf("[wifi] reconnect failed, next try in %us\n", (unsigned)(g_wifiRetryMs / 1000));
+    g_wifiFails++;
+    Serial.printf("[wifi] reconnect failed (%d of %d), next try in %us\n", g_wifiFails, WIFI_MAX_FAILS,
+                  (unsigned)(wait / 1000));
+    if (g_wifiFails >= WIFI_MAX_FAILS) {
+        if (xSemaphoreTake(g_dataMutex, portMAX_DELAY) == pdTRUE) {
+            g_wifiGaveUp = true;
+            xSemaphoreGive(g_dataMutex);
+        }
+    }
     return false;
 }
 
@@ -150,7 +243,12 @@ void pollTask(void *) {
         int radius = DEFAULT_RADIUS_NM;
         AdsbSource source = DEFAULT_ADSB_SOURCE;
         uint32_t intervalMs = (uint32_t)DEFAULT_POLL_INTERVAL_S * 1000;
+        AlertRules rules;
+        bool autoRecord = false;
+        bool sceneChanged = false;
         if (xSemaphoreTake(g_dataMutex, portMAX_DELAY) == pdTRUE) {
+            sceneChanged = g_sceneChanged;
+            g_sceneChanged = false;
             if (g_resetBaseline) {
                 g_seenMap.clear();
                 g_baseline = true;
@@ -163,12 +261,24 @@ void pollTask(void *) {
             radius = g_radiusNm;
             source = g_source;
             intervalMs = (uint32_t)g_pollIntervalS * 1000;
+            rules = g_alertRules;
+            autoRecord = g_autoRecord;
             xSemaphoreGive(g_dataMutex);
+        }
+
+        if (sceneChanged && recorder::active()) {
+            Serial.println("[rec] location, range or traffic changed - stopping the recording");
+            recorder::stop();  // auto-record starts afresh, with the new header, if an alert is still about
         }
 
         // The radius is already clamped to whichever ceiling the chosen filter
         // carries, so it doubles as the poll radius.
         bool wantMilitary = (traffic == TrafficFilter::MILITARY);
+        // A civil poll from a feed that marks military traffic carries it
+        // anyway, and it is only filtered out here - so with that alert on, it
+        // is kept, to be flagged. (A feed that doesn't mark it can't say which
+        // of its contacts are military, so there is nothing to keep.)
+        bool keepMilitary = !wantMilitary && (rules.enabled & ALERT_MILITARY);
 
         bool linkUp = ensureWifi();
         std::vector<Aircraft> fetched;
@@ -178,12 +288,13 @@ void pollTask(void *) {
             std::vector<Aircraft> aircraft;
             aircraft.reserve(fetched.size());
             for (Aircraft &a : fetched) {
-                if (a.military != wantMilitary) {
+                if (a.military != wantMilitary && !(a.military && keepMilitary)) {
                     continue;
                 }
                 if (a.hasDist && a.distNm > radius) {
                     continue;  // the API is occasionally a little generous
                 }
+                a.alert = evaluateAlert(a, rules, !wantMilitary);
                 aircraft.push_back(std::move(a));
             }
 
@@ -192,9 +303,15 @@ void pollTask(void *) {
             // hundred aircraft. The table draws only the rows that fit, but the
             // radar plots the lot, so the cap is the radar's rather than the
             // table's.
+            //
+            // Except that an alerted aircraft is never the tail: one that has
+            // tripped an alert at the edge of a busy radius is kept, after the
+            // rest, in distance order among themselves.
             size_t maxRows = (size_t)displayMaxRows();
             if (aircraft.size() > MAX_CONTACTS) {
-                aircraft.resize(MAX_CONTACTS);
+                auto keepEnd = std::stable_partition(aircraft.begin() + MAX_CONTACTS, aircraft.end(),
+                                                     [](const Aircraft &a) { return a.alert != 0; });
+                aircraft.erase(keepEnd, aircraft.end());
             }
             uint32_t now = millis();
             std::vector<uint8_t> isNew(aircraft.size(), 0);
@@ -220,7 +337,79 @@ void pollTask(void *) {
                 }
             }
 
+            // Which alerts are news. Unlike the new-row blip there is no
+            // baseline to sit out: an emergency in the sky at boot is as worth
+            // hearing about as one that turns up later.
+            const Aircraft *best = nullptr;
+            const Aircraft *firstAlerted = nullptr;
+            int fresh = 0;
+            std::vector<String> freshHexes;
+            for (const Aircraft &a : aircraft) {
+                if (!a.alert) {
+                    continue;
+                }
+                if (firstAlerted == nullptr) {
+                    firstAlerted = &a;
+                }
+                AlertSeen &seen = g_alertSeen[a.hex];
+                uint8_t newReasons = a.alert & ~seen.reasons;
+                seen.reasons |= a.alert;
+                seen.lastMs = now;
+                if (newReasons) {
+                    fresh++;
+                    freshHexes.push_back(a.hex);
+                    if (best == nullptr || alertOutranks(a, *best)) {
+                        best = &a;
+                    }
+                }
+            }
+            for (auto it = g_alertSeen.begin(); it != g_alertSeen.end();) {
+                if (now - it->second.lastMs > FORGET_AFTER_MS) {
+                    it = g_alertSeen.erase(it);
+                } else {
+                    ++it;
+                }
+            }
+
+            // Auto-record: started by any alerted aircraft being about, not
+            // only a fresh alert, so switching it on with one already in view
+            // starts it too; stopped once none has been seen for the tail.
+            bool held = false;
             if (xSemaphoreTake(g_dataMutex, portMAX_DELAY) == pdTRUE) {
+                if (firstAlerted == nullptr) {
+                    g_autoRecordHeld = false;
+                }
+                held = g_autoRecordHeld;
+                xSemaphoreGive(g_dataMutex);
+            }
+            if (firstAlerted != nullptr) {
+                g_lastAlertedMs = now;
+            }
+            if (autoRecord && firstAlerted != nullptr && !held && !recorder::active()) {
+                const Aircraft &why = best ? *best : *firstAlerted;
+                recorder::Header h;
+                time_t wall = time(nullptr);
+                h.startEpoch = wall > 1700000000 ? (uint32_t)wall : 0;
+                h.trigger = recorder::Trigger::AUTO;
+                h.note = why.callsign + " " + alertReasonText(why, why.alert);
+                h.lat = lat;
+                h.lon = lon;
+                h.radiusNm = radius;
+                h.military = wantMilitary;
+                recorder::start(h);
+            } else if (recorder::active() && recorder::activeTrigger() == recorder::Trigger::AUTO &&
+                       now - g_lastAlertedMs > AUTO_RECORD_TAIL_MS) {
+                recorder::stop();
+            }
+            recorder::addFrame(aircraft);
+
+            if (xSemaphoreTake(g_dataMutex, portMAX_DELAY) == pdTRUE) {
+                if (best != nullptr) {
+                    g_pendingAlert = *best;
+                    g_pendingAlertMore = fresh - 1;
+                    g_pendingFlash = std::move(freshHexes);
+                    g_alertPending = true;
+                }
                 g_latestAircraft = std::move(aircraft);
                 g_latestIsNew = std::move(isNew);
                 g_dataReady = true;
@@ -309,7 +498,12 @@ void connectWifi(const String &ssid, const String &password) {
                   WiFi.status() == WL_CONNECTED ? WiFi.localIP().toString().c_str() : "FAILED to connect");
 }
 
+void updateRecButton(bool onScreen);
+
 void drawRadar(bool full) {
+    if (full) {
+        updateRecButton(false);  // so the header is drawn showing the state as it is now
+    }
     std::vector<Aircraft> aircraft;
     std::vector<uint8_t> isNew;
     double lat = 0, lon = 0;
@@ -325,6 +519,213 @@ void drawRadar(bool full) {
         xSemaphoreGive(g_dataMutex);
     }
     radarScreenDraw(aircraft, isNew, lat, lon, radius, military, g_radarCentre, full);
+}
+
+// Where the banner may be shown: the screens the sky is on. The others are
+// either being typed into or are a replay, where a live alert drawn over the
+// top would read as part of what was recorded.
+bool bannerScreen(Screen s) { return s == Screen::MAIN || s == Screen::RADAR || s == Screen::DETAIL; }
+
+// The screen overlay: drawn by screen::flush() over whatever is up.
+bool drawBanner(M5Canvas &canvas) {
+    if (!g_bannerUp || !bannerScreen(g_screen)) {
+        return false;
+    }
+    if (g_bannerShownMs == 0) {
+        g_bannerShownMs = millis() | 1;  // never 0, which means "not yet shown"
+    } else if (millis() - g_bannerShownMs > ALERT_BANNER_MS) {
+        // Ran out while another screen was up. Coming back, it is about to be
+        // taken down - so it isn't put up first, only to flash off again.
+        return false;
+    }
+    const Aircraft &ac = g_bannerAc;
+    bool emergency = (ac.alert & ALERT_EMERGENCY) != 0;
+    uint16_t bg = emergency ? M5.Display.color565(0xC0, 0x39, 0x2B) : M5.Display.color565(0xB9, 0x6A, 0x0A);
+    uint16_t fg = M5.Display.color565(0xFF, 0xFF, 0xFF);
+    int midY = BANNER_H / 2;
+    canvas.fillRect(0, 0, 1280, BANNER_H, bg);
+    canvas.setFont(&fonts::Font0);
+    canvas.setTextDatum(ML_DATUM);
+    canvas.setTextColor(fg);
+
+    canvas.setTextSize(3);
+    String reason = alertReasonText(ac, ac.alert);
+    canvas.drawString(reason, 16, midY);
+    int x = 16 + canvas.textWidth(reason) + 28;
+    canvas.drawString(ac.callsign, x, midY);
+    x += canvas.textWidth(ac.callsign) + 24;
+
+    String rest = (ac.type.length() && ac.type != "----") ? lookupAircraftType(ac.type, ac.military) : String("");
+    if (ac.hasDist) {
+        rest += (rest.length() ? "   " : "") + String((int)lroundf(ac.distNm)) + " nm";
+    }
+    if (g_bannerMore > 0) {
+        rest += "   +" + String(g_bannerMore) + " more";
+    }
+    rest += "   - tap for details";
+    int room = 1280 - BANNER_CLOSE_W - 16 - x;
+    int size = 2;
+    canvas.setTextSize(size);
+    while (size > 1 && canvas.textWidth(rest) > room) {
+        canvas.setTextSize(--size);
+    }
+    canvas.drawString(rest, x, midY);
+
+    canvas.drawFastVLine(1280 - BANNER_CLOSE_W, 10, BANNER_H - 20, fg);
+    canvas.setTextSize(3);
+    canvas.setTextDatum(MC_DATUM);
+    canvas.drawString("X", 1280 - BANNER_CLOSE_W / 2, midY);
+    return true;
+}
+
+// Paints whichever banner screen is up from scratch, to take the banner off it.
+void repaintCurrentScreen() {
+    switch (g_screen) {
+    case Screen::MAIN:
+        displayInvalidate();
+        if (xSemaphoreTake(g_dataMutex, portMAX_DELAY) == pdTRUE) {
+            g_dataReady = true;
+            xSemaphoreGive(g_dataMutex);
+        }
+        break;
+    case Screen::RADAR:
+        drawRadar(true);
+        break;
+    case Screen::DETAIL:
+        detailScreenDraw();
+        break;
+    default:
+        break;
+    }
+}
+
+void dismissBanner() {
+    if (!g_bannerUp) {
+        return;
+    }
+    bool wasShowing = g_bannerShownMs != 0 && bannerScreen(g_screen);
+    g_bannerUp = false;
+    g_bannerShownMs = 0;
+    if (wasShowing) {
+        repaintCurrentScreen();
+    }
+}
+
+// Picks up an alert the poll task has raised, and times the banner out.
+void tickAlerts() {
+    bool fresh = false;
+    std::vector<String> flash;
+    if (xSemaphoreTake(g_dataMutex, 0) == pdTRUE) {
+        if (g_alertPending) {
+            g_bannerAc = g_pendingAlert;
+            g_bannerMore = g_pendingAlertMore;
+            flash = std::move(g_pendingFlash);
+            g_pendingFlash.clear();
+            g_alertPending = false;
+            fresh = true;
+        }
+        xSemaphoreGive(g_dataMutex);
+    }
+    if (fresh) {
+        alertFlashStart(flash);  // in step with the chime
+    }
+    if (fresh) {
+        Serial.printf("[alert] %s %s (+%d more)\n", g_bannerAc.callsign.c_str(),
+                      alertReasonText(g_bannerAc, g_bannerAc.alert).c_str(), g_bannerMore);
+        g_bannerUp = true;
+        g_bannerShownMs = 0;
+        soundAlert((g_bannerAc.alert & ALERT_EMERGENCY) != 0);
+    }
+    if (!g_bannerUp || !bannerScreen(g_screen)) {
+        return;
+    }
+    if (g_bannerShownMs == 0 || fresh) {
+        // Not on screen yet, or replaced by a newer alert: marking its strip
+        // dirty is what has the flush draw it.
+        g_bannerShownMs = 0;
+        screen::markDirty(0, 0, 1280, BANNER_H);
+        screen::flush();
+    } else if (millis() - g_bannerShownMs > ALERT_BANNER_MS) {
+        dismissBanner();
+    }
+}
+
+void openDetail(const Aircraft &ac, Screen returnTo) {
+    detailScreenSet(ac);
+    g_detailReturnTo = returnTo;
+    g_screen = Screen::DETAIL;
+    detailScreenDraw();
+}
+
+// A tap on the banner: the X closes it, anywhere else opens the aircraft -
+// as it is now if it's still in range, as it was when it alerted if not.
+bool handleBannerTouch(int x, int y) {
+    if (!g_bannerUp || g_bannerShownMs == 0 || !bannerScreen(g_screen) || y >= BANNER_H) {
+        return false;
+    }
+    if (x >= 1280 - BANNER_CLOSE_W) {
+        dismissBanner();
+        return true;
+    }
+    Aircraft ac = g_bannerAc;
+    if (xSemaphoreTake(g_dataMutex, portMAX_DELAY) == pdTRUE) {
+        for (const Aircraft &a : g_latestAircraft) {
+            if (a.hex == ac.hex) {
+                ac = a;
+                break;
+            }
+        }
+        xSemaphoreGive(g_dataMutex);
+    }
+    g_bannerUp = false;
+    g_bannerShownMs = 0;
+    // From the detail screen, Back still goes wherever it was going to.
+    openDetail(ac, g_screen == Screen::DETAIL ? g_detailReturnTo : g_screen);
+    return true;
+}
+
+void updateRecButton(bool onScreen) {
+    bool active = recorder::active();
+    RecButton state = active                ? RecButton::RECORDING
+                      : !recorder::mounted() ? RecButton::NO_CARD
+                                             : RecButton::IDLE;
+    uint32_t elapsed = active ? (millis() - recorder::activeSinceMs()) / 1000 : 0;
+    radarScreenSetRecording(state, elapsed, onScreen);
+}
+
+void toggleRecording() {
+    if (recorder::active()) {
+        if (recorder::activeTrigger() == recorder::Trigger::AUTO) {
+            if (xSemaphoreTake(g_dataMutex, portMAX_DELAY) == pdTRUE) {
+                g_autoRecordHeld = true;
+                xSemaphoreGive(g_dataMutex);
+            }
+        }
+        recorder::stop();
+    } else {
+        recorder::Header h;
+        time_t wall = time(nullptr);
+        h.startEpoch = wall > 1700000000 ? (uint32_t)wall : 0;
+        h.trigger = recorder::Trigger::MANUAL;
+        if (xSemaphoreTake(g_dataMutex, portMAX_DELAY) == pdTRUE) {
+            h.lat = g_lat;
+            h.lon = g_lon;
+            h.radiusNm = g_radiusNm;
+            h.military = (g_traffic == TrafficFilter::MILITARY);
+            xSemaphoreGive(g_dataMutex);
+        }
+        recorder::start(h);  // which mounts a card put in since; NO SD stays up if there still isn't one
+    }
+    updateRecButton(true);
+}
+
+String alertSummary() {
+    int on = 0;
+    for (uint8_t bit : {ALERT_EMERGENCY, ALERT_MILITARY, ALERT_WATCHLIST, ALERT_RARE}) {
+        on += (g_alertMask & bit) ? 1 : 0;
+    }
+    return String(on) + " of 4 alerts on, auto-record " +
+           (!g_autoRecord ? "off" : recorder::mounted() ? "on" : "on (no SD card)");
 }
 
 void handleRadarTouch(int x, int y) {
@@ -352,10 +753,7 @@ void handleRadarTouch(int x, int y) {
             xSemaphoreGive(g_dataMutex);
         }
         if (found) {
-            detailScreenSet(tapped);
-            g_detailReturnTo = Screen::RADAR;
-            g_screen = Screen::DETAIL;
-            detailScreenDraw();
+            openDetail(tapped, Screen::RADAR);
         }
         break;
     }
@@ -364,7 +762,183 @@ void handleRadarTouch(int x, int y) {
         saveRadarCentre(g_radarCentre);
         drawRadar(true);
         break;
+    case RadarAction::TOGGLE_RECORD:
+        toggleRecording();
+        break;
+    case RadarAction::OPEN_RECORDINGS:
+        // Greyed out without a card, but a tap still has another look for one.
+        if (!recorder::mount()) {
+            soundKeyClick();
+            updateRecButton(true);
+            break;
+        }
+        g_screen = Screen::RECORDINGS;
+        recordingsScreenEnter();
+        break;
     case RadarAction::NONE:
+        break;
+    }
+}
+
+void handleRecordingsTouch(int x, int y) {
+    String path;
+    switch (recordingsScreenHandleTouch(x, y, path)) {
+    case RecordingsAction::BACK:
+        g_screen = Screen::RADAR;
+        drawRadar(true);
+        break;
+    case RecordingsAction::PLAY:
+        if (playbackScreenOpen(path, recordingsScreenLoadProgress)) {
+            playbackScreenSetCentre(g_radarCentre);
+            g_screen = Screen::PLAYBACK;
+            playbackScreenDraw();
+        } else {
+            recordingsScreenEnter();  // the card has likely changed under it
+        }
+        break;
+    case RecordingsAction::SHARE:
+        g_screen = Screen::SHARE;
+        shareScreenEnter();
+        break;
+    case RecordingsAction::NONE:
+        break;
+    }
+}
+
+void handleShareTouch(int x, int y) {
+    if (shareScreenHandleTouch(x, y) == ShareAction::BACK) {
+        shareScreenLeave();
+        g_screen = Screen::RECORDINGS;
+        recordingsScreenEnter();  // the page may have deleted videos meanwhile
+    }
+}
+
+void handlePlaybackTouch(int x, int y) {
+    Aircraft tapped;
+    switch (playbackScreenHandleTouch(x, y, tapped)) {
+    case PlaybackAction::BACK:
+        playbackScreenClose();
+        g_screen = Screen::RECORDINGS;
+        recordingsScreenEnter();
+        break;
+    case PlaybackAction::TOGGLE_CENTRE:
+        g_radarCentre = (g_radarCentre == RadarCentre::HOME) ? RadarCentre::AIRPORT : RadarCentre::HOME;
+        saveRadarCentre(g_radarCentre);
+        playbackScreenSetCentre(g_radarCentre);
+        playbackScreenDraw();
+        break;
+    case PlaybackAction::SELECT:
+        openDetail(tapped, Screen::PLAYBACK);
+        break;
+    case PlaybackAction::EXPORT:
+        playbackScreenExport();  // blocks until the video is made or cancelled
+        break;
+    case PlaybackAction::NONE:
+        break;
+    }
+}
+
+// A long press on a table row puts that flight's callsign on the watchlist,
+// or takes it off if it is already there.
+void handleMainHold(int x, int y) {
+    int row;
+    if (!displayHitRow(x, y, row)) {
+        return;
+    }
+    String callsign;
+    if (xSemaphoreTake(g_dataMutex, portMAX_DELAY) == pdTRUE) {
+        if (row < (int)g_latestAircraft.size()) {
+            callsign = g_latestAircraft[row].callsign;
+        }
+        xSemaphoreGive(g_dataMutex);
+    }
+    callsign.trim();
+    callsign.toUpperCase();
+    soundKeyClick();
+    // Held to the same rules as a typed entry, so a feed's oddity can't put
+    // something on the list that the editor would then refuse to save.
+    if (callsign.length() == 0 || callsign == "UNKNOWN" || watchlistProblem(callsign).length()) {
+        displayShowNotice("This flight has no callsign to watch for");
+        return;
+    }
+
+    // Rebuilt from the parsed list rather than edited as typed, so a callsign
+    // is found however it was separated - at the cost of commas becoming
+    // spaces, which the parser reads the same.
+    std::vector<String> entries = parseWatchlist(g_watchlist);
+    bool removed = false;
+    for (auto it = entries.begin(); it != entries.end();) {
+        if (*it == callsign) {
+            it = entries.erase(it);
+            removed = true;
+        } else {
+            ++it;
+        }
+    }
+    if (!removed) {
+        entries.push_back(callsign);
+    }
+    String list;
+    for (const String &e : entries) {
+        list += (list.length() ? " " : "") + e;
+    }
+    if (list.length() > WATCHLIST_MAX_LEN) {
+        displayShowNotice("The watchlist is full - remove something in Settings first");
+        return;
+    }
+
+    g_watchlist = list;
+    saveAlerts(g_alertMask, g_watchlist, g_autoRecord);
+    if (xSemaphoreTake(g_dataMutex, portMAX_DELAY) == pdTRUE) {
+        g_alertRules.watch = parseWatchlist(g_watchlist);
+        g_pollNow = true;  // so the row changes colour now rather than an interval on
+        xSemaphoreGive(g_dataMutex);
+    }
+    String notice = removed ? "Removed " + callsign + " from the watchlist" : "Added " + callsign + " to the watchlist";
+    if (!removed && !(g_alertMask & ALERT_WATCHLIST)) {
+        notice += " - but watchlist alerts are switched off";
+    }
+    displayShowNotice(notice);
+}
+
+void handleAlertsTouch(int x, int y) {
+    switch (alertsScreenHandleTouch(x, y)) {
+    case AlertsAction::BACK: {
+        g_alertMask = alertsScreenMask();
+        g_autoRecord = alertsScreenAutoRecord();
+        g_watchlist = alertsScreenWatchlist();
+        saveAlerts(g_alertMask, g_watchlist, g_autoRecord);
+        if (xSemaphoreTake(g_dataMutex, portMAX_DELAY) == pdTRUE) {
+            g_alertRules.enabled = g_alertMask;
+            g_alertRules.watch = parseWatchlist(g_watchlist);
+            g_pollNow = true;  // so a new rule shows on the next poll, not one interval on
+            xSemaphoreGive(g_dataMutex);
+        }
+        settingsScreenSetAlertSummary(alertSummary());
+        g_screen = Screen::SETTINGS;
+        settingsScreenDraw();
+        break;
+    }
+    case AlertsAction::OPEN_WATCHLIST:
+        watchlistScreenSet(alertsScreenWatchlist());
+        g_screen = Screen::WATCHLIST;
+        watchlistScreenDraw();
+        break;
+    case AlertsAction::NONE:
+        break;
+    }
+}
+
+void handleWatchlistTouch(int x, int y) {
+    switch (watchlistScreenHandleTouch(x, y)) {
+    case WatchlistAction::SAVE:
+        alertsScreenSetWatchlist(watchlistScreenText());
+        [[fallthrough]];  // both go back to the alerts screen
+    case WatchlistAction::CANCEL:
+        g_screen = Screen::ALERTS;
+        alertsScreenDraw();
+        break;
+    case WatchlistAction::NONE:
         break;
     }
 }
@@ -383,6 +957,7 @@ void handleMainTouch(int x, int y) {
             xSemaphoreGive(g_dataMutex);
         }
         settingsScreenSet(g_traffic, g_radiusNm, g_showRefresh, g_pollIntervalS, label, g_source);
+        settingsScreenSetAlertSummary(alertSummary());
         g_screen = Screen::SETTINGS;
         settingsScreenDraw();
         return;
@@ -411,10 +986,7 @@ void handleMainTouch(int x, int y) {
             xSemaphoreGive(g_dataMutex);
         }
         if (found) {
-            detailScreenSet(tapped);
-            g_detailReturnTo = Screen::MAIN;
-            g_screen = Screen::DETAIL;
-            detailScreenDraw();
+            openDetail(tapped, Screen::MAIN);
         }
     }
 }
@@ -426,6 +998,11 @@ void handleDetailTouch(int x, int y) {
     if (g_detailReturnTo == Screen::RADAR) {
         g_screen = Screen::RADAR;
         drawRadar(true);
+        return;
+    }
+    if (g_detailReturnTo == Screen::PLAYBACK) {
+        g_screen = Screen::PLAYBACK;
+        playbackScreenDraw();
         return;
     }
     g_screen = Screen::MAIN;
@@ -456,6 +1033,7 @@ void handleLocationTouch(int x, int y) {
             g_lon = lon;
             g_label = label;
             g_resetBaseline = true;
+            g_sceneChanged = true;
             g_pollNow = true;
             xSemaphoreGive(g_dataMutex);
         }
@@ -479,6 +1057,9 @@ void handleSettingsTouch(int x, int y, bool pressed, bool clicked) {
             // A changed interval alone doesn't warrant refetching - the new
             // one simply applies to the wait already running.
             bool changed = (traffic != g_traffic) || (radius != g_radiusNm) || (source != g_source);
+            if (traffic != g_traffic || radius != g_radiusNm) {
+                g_sceneChanged = true;  // the source doesn't alter what a recording's plot is drawn around
+            }
             g_traffic = traffic;
             g_radiusNm = radius;
             g_source = source;
@@ -499,6 +1080,12 @@ void handleSettingsTouch(int x, int y, bool pressed, bool clicked) {
         g_screen = Screen::LOCATION;
         locationScreenDraw();
         break;
+    case SettingsAction::OPEN_ALERTS:
+        alertsScreenSet(g_alertMask, g_autoRecord, g_watchlist);
+        alertsScreenSetCard(recorder::mount());  // one look for a card put in since
+        g_screen = Screen::ALERTS;
+        alertsScreenDraw();
+        break;
     case SettingsAction::OPEN_WIFI:
         if (xSemaphoreTake(g_dataMutex, portMAX_DELAY) == pdTRUE) {
             g_uiOwnsWifi = true;  // hands the radio to the screen; see ensureWifi()
@@ -513,34 +1100,71 @@ void handleSettingsTouch(int x, int y, bool pressed, bool clicked) {
     }
 }
 
-void handleWifiTouch(int x, int y) {
-    if (wifiScreenHandleTouch(x, y) == WifiAction::BACK) {
-        // Whatever the screen did, NVS now holds the credentials the poll task
-        // should reconnect with - so take them back from there rather than
-        // tracking every path through the screen that might have changed them.
-        AppSettings s = loadSettings();
+void leaveWifiScreen() {
+    // Whatever the screen did, NVS now holds the credentials the poll task
+    // should reconnect with - so take them back from there rather than
+    // tracking every path through the screen that might have changed them.
+    AppSettings s = loadSettings();
+    if (xSemaphoreTake(g_dataMutex, portMAX_DELAY) == pdTRUE) {
+        g_uiOwnsWifi = false;
+        g_wifiGaveUp = false;
+        g_wifiSsid = s.wifiSsid.length() ? s.wifiSsid : String(WIFI_SSID);
+        g_wifiPass = s.wifiSsid.length() ? s.wifiPass : String(WIFI_PASSWORD);
+        xSemaphoreGive(g_dataMutex);
+    }
+    g_nextWifiTryMs = 0;  // a fresh attempt is wanted now, not after the backoff
+    g_wifiRetryMs = WIFI_RETRY_MIN_MS;
+    g_wifiFails = 0;  // and a full set of them before the screen comes back
+    if (g_wifiReturnTo == Screen::MAIN) {
+        g_wifiReturnTo = Screen::SETTINGS;  // only the boot and gave-up cases land on the table
+        g_screen = Screen::MAIN;
+        displayInvalidate();
         if (xSemaphoreTake(g_dataMutex, portMAX_DELAY) == pdTRUE) {
-            g_uiOwnsWifi = false;
-            g_wifiSsid = s.wifiSsid.length() ? s.wifiSsid : String(WIFI_SSID);
-            g_wifiPass = s.wifiSsid.length() ? s.wifiPass : String(WIFI_PASSWORD);
+            g_dataReady = true;
+            g_pollNow = true;  // credentials may have just arrived - don't wait out the interval
             xSemaphoreGive(g_dataMutex);
         }
-        g_nextWifiTryMs = 0;  // a fresh attempt is wanted now, not after the backoff
-        g_wifiRetryMs = WIFI_RETRY_MIN_MS;
-        if (g_wifiReturnTo == Screen::MAIN) {
-            g_wifiReturnTo = Screen::SETTINGS;  // only the boot case lands on the table
-            g_screen = Screen::MAIN;
-            displayInvalidate();
-            if (xSemaphoreTake(g_dataMutex, portMAX_DELAY) == pdTRUE) {
-                g_dataReady = true;
-                g_pollNow = true;  // credentials may have just arrived - don't wait out the interval
-                xSemaphoreGive(g_dataMutex);
-            }
-            return;
-        }
-        g_screen = Screen::SETTINGS;
-        settingsScreenDraw();
+        return;
     }
+    g_screen = Screen::SETTINGS;
+    settingsScreenDraw();
+}
+
+void handleWifiTouch(int x, int y) {
+    if (wifiScreenHandleTouch(x, y) == WifiAction::BACK) {
+        leaveWifiScreen();
+    }
+}
+
+// Puts the WiFi screen up once the poll task has given up on the saved
+// network. Only from the live screens: a replay or a half-typed watchlist
+// doesn't need the network, and being snatched away from either would be
+// worse than the wait. The flag keeps until one of them is back up.
+void checkWifiGaveUp() {
+    if (g_screen != Screen::MAIN && g_screen != Screen::RADAR && g_screen != Screen::DETAIL) {
+        return;
+    }
+    if (g_screen == Screen::DETAIL && g_detailReturnTo == Screen::PLAYBACK) {
+        return;  // an aircraft out of a replay is still the replay
+    }
+    bool gaveUp = false;
+    String ssid;
+    if (xSemaphoreTake(g_dataMutex, 0) == pdTRUE) {
+        gaveUp = g_wifiGaveUp;
+        if (gaveUp) {
+            g_wifiGaveUp = false;
+            g_uiOwnsWifi = true;  // hands the radio to the screen; see ensureWifi()
+            ssid = g_wifiSsid;
+        }
+        xSemaphoreGive(g_dataMutex);
+    }
+    if (!gaveUp) {
+        return;
+    }
+    Serial.printf("[wifi] giving up on %s - opening the WiFi screen\n", ssid.c_str());
+    g_wifiReturnTo = Screen::MAIN;
+    g_screen = Screen::WIFI;
+    wifiScreenEnter("Could not reach " + ssid + " - choose a network");
 }
 
 }  // namespace
@@ -575,11 +1199,23 @@ void setup() {
     g_muted = s.muted;
     g_source = s.source;
     g_radarCentre = s.radarCentre;
+    g_alertMask = s.alertMask;
+    g_watchlist = s.watchlist;
+    g_autoRecord = s.autoRecord;
+    g_alertRules.enabled = g_alertMask;
+    g_alertRules.watch = parseWatchlist(g_watchlist);
     soundSetMuted(g_muted);
     displaySetShowRefresh(g_showRefresh);
     displaySetMuted(g_muted);
     g_airportCode = nearestAirportCode(g_lat, g_lon);
     displaySetHeader(g_traffic == TrafficFilter::MILITARY, g_airportCode, g_activeProvider);
+    screen::setOverlay(drawBanner, 0, 0, 1280, BANNER_H);
+
+    // Mounted now so the log says whether there is a card; recording mounts
+    // it again later if one is put in after boot.
+    if (!recorder::mount()) {
+        Serial.println("[sd] no card - recording unavailable until one is inserted");
+    }
 
     // What the device actually loaded, said once at boot. An empty table has
     // several innocent explanations - military mode over quiet airspace being
@@ -607,6 +1243,9 @@ void setup() {
     bool haveCredentials = !credentialsUnset(g_wifiSsid);
     if (haveCredentials) {
         connectWifi(g_wifiSsid, g_wifiPass);
+        if (WiFi.status() != WL_CONNECTED) {
+            g_wifiFails = 1;  // the first of the attempts before the WiFi screen comes up
+        }
     } else {
         // Nothing to connect with, so don't spend the timeout finding out.
         // The screen scans, which needs the radio in station mode either way.
@@ -614,6 +1253,9 @@ void setup() {
         WiFi.mode(WIFI_STA);
     }
     g_linkUp = (WiFi.status() == WL_CONNECTED);
+    // UTC, for naming recordings and stamping their polls. SNTP keeps trying in
+    // the background, so a link that comes up later still gets the time.
+    configTime(0, 0, "pool.ntp.org", "time.google.com");
     // Set before the poll task exists, or its first pass could race the scan
     // the WiFi screen is about to start.
     g_uiOwnsWifi = !haveCredentials;
@@ -661,7 +1303,9 @@ void loop() {
         handleSettingsTouch(tx, ty, pressed, clicked);
     } else if (M5.Touch.getCount()) {
         auto t = M5.Touch.getDetail(0);
-        if (t.wasClicked()) {
+        if (t.wasHold() && g_screen == Screen::MAIN) {
+            handleMainHold(t.x, t.y);
+        } else if (t.wasClicked() && !handleBannerTouch(t.x, t.y)) {
             switch (g_screen) {
             case Screen::MAIN:
                 handleMainTouch(t.x, t.y);
@@ -678,6 +1322,21 @@ void loop() {
             case Screen::RADAR:
                 handleRadarTouch(t.x, t.y);
                 break;
+            case Screen::ALERTS:
+                handleAlertsTouch(t.x, t.y);
+                break;
+            case Screen::WATCHLIST:
+                handleWatchlistTouch(t.x, t.y);
+                break;
+            case Screen::RECORDINGS:
+                handleRecordingsTouch(t.x, t.y);
+                break;
+            case Screen::PLAYBACK:
+                handlePlaybackTouch(t.x, t.y);
+                break;
+            case Screen::SHARE:
+                handleShareTouch(t.x, t.y);
+                break;
             default:
                 break;
             }
@@ -685,8 +1344,13 @@ void loop() {
     }
 
     if (g_screen == Screen::WIFI) {
-        wifiScreenTick();  // scans and connection attempts both complete asynchronously
+        // Scans and connection attempts both complete asynchronously. Put up
+        // for want of a network, the screen is done once it has one.
+        if (wifiScreenTick() == WifiAction::CONNECTED && g_wifiReturnTo == Screen::MAIN) {
+            leaveWifiScreen();
+        }
     }
+    checkWifiGaveUp();
 
     static uint32_t nextRotationCheck = 0;
     uint32_t now = millis();
@@ -705,6 +1369,31 @@ void loop() {
     }
     if (newFlight) {
         soundNewFlight();
+    }
+    soundTick();
+    tickAlerts();
+
+    // Each step of a callsign flash is a redraw of whichever of the two
+    // screens showing callsigns is up, from the data it already has.
+    static uint32_t shownFlashStep = 0;
+    uint32_t flashStep = alertFlashStep();
+    if (flashStep != shownFlashStep) {
+        shownFlashStep = flashStep;
+        if ((g_screen == Screen::MAIN || g_screen == Screen::RADAR) &&
+            xSemaphoreTake(g_dataMutex, portMAX_DELAY) == pdTRUE) {
+            g_dataReady = true;
+            xSemaphoreGive(g_dataMutex);
+        }
+    }
+
+    if (g_screen == Screen::RADAR) {
+        updateRecButton(true);
+    }
+    if (g_screen == Screen::PLAYBACK) {
+        playbackScreenTick();
+    }
+    if (g_screen == Screen::SHARE) {
+        shareScreenTick();
     }
 
     if (g_screen == Screen::RADAR) {

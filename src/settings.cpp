@@ -2,6 +2,7 @@
 
 #include <Preferences.h>
 
+#include "alerts.h"
 #include "config.h"
 
 namespace {
@@ -12,9 +13,11 @@ AppSettings loadSettings() {
     Preferences prefs;
     prefs.begin(NAMESPACE, true);
     AppSettings s;
-    s.lat = prefs.getDouble("lat", DEFAULT_LAT);
-    s.lon = prefs.getDouble("lon", DEFAULT_LON);
-    s.label = prefs.getString("label", DEFAULT_LABEL);
+    // isKey() first for these, as for the WiFi keys below: a missing double
+    // or string logs an ESP error line rather than quietly taking the default.
+    s.lat = prefs.isKey("lat") ? prefs.getDouble("lat", DEFAULT_LAT) : DEFAULT_LAT;
+    s.lon = prefs.isKey("lon") ? prefs.getDouble("lon", DEFAULT_LON) : DEFAULT_LON;
+    s.label = prefs.isKey("label") ? prefs.getString("label", DEFAULT_LABEL) : String(DEFAULT_LABEL);
     s.traffic = prefs.getBool("milonly", false) ? TrafficFilter::MILITARY : TrafficFilter::CIVIL;
     s.radiusNm = prefs.getInt("radius", DEFAULT_RADIUS_NM);
     s.showRefresh = prefs.getBool("refresh", true);
@@ -24,6 +27,9 @@ AppSettings loadSettings() {
     s.radarCentre = prefs.getUChar("radarctr", (uint8_t)DEFAULT_RADAR_CENTRE) == (uint8_t)RadarCentre::HOME
                         ? RadarCentre::HOME
                         : RadarCentre::AIRPORT;
+    s.alertMask = prefs.getUChar("alerts", ALERT_ALL) & ALERT_ALL;
+    s.watchlist = prefs.isKey("watch") ? prefs.getString("watch") : String("");
+    s.autoRecord = prefs.getBool("autorec", false);
     // isKey() first: getString() on a missing key logs an ESP error line, and
     // an unconfigured device would print two of them on every boot.
     s.wifiSsid = prefs.isKey("ssid") ? prefs.getString("ssid") : String("");
@@ -96,5 +102,14 @@ void saveWifi(const String &ssid, const String &pass) {
     prefs.begin(NAMESPACE, false);
     prefs.putString("ssid", ssid);
     prefs.putString("pass", pass);
+    prefs.end();
+}
+
+void saveAlerts(uint8_t alertMask, const String &watchlist, bool autoRecord) {
+    Preferences prefs;
+    prefs.begin(NAMESPACE, false);
+    prefs.putUChar("alerts", alertMask);
+    prefs.putString("watch", watchlist);
+    prefs.putBool("autorec", autoRecord);
     prefs.end();
 }

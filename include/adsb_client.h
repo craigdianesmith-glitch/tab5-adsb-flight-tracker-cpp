@@ -11,23 +11,31 @@ struct Aircraft {
     String type;
     String altStr;
     String speedStr;
-    bool hasDist;
-    float distNm;
+    bool hasDist = false;
+    float distNm = 0;
     String status;   // CLIMB / DESCEND / LEVEL / TAXI / GROUND
-    bool military;   // readsb dbFlags bit 0, or which feed it came from
+    bool military = false;  // readsb dbFlags bit 0, or which feed it came from
+    // readsb dbFlags bit 1: the feed's own database marks the airframe as
+    // interesting. Only feeds that carry dbFlags can say so.
+    bool dbInteresting = false;
+    // AlertReason bits, set by the poll task once the aircraft has been
+    // checked against the alert rules. 0 for an ordinary contact.
+    uint8_t alert = 0;
 
     // Extra detail-view fields - not shown in the main table row.
     String reg;
     String squawk;
     String category;
-    bool hasTrack;
-    float track;      // degrees, ground track ("heading")
-    bool hasVertRate;
-    float vertRate;   // ft/min, signed
-    bool hasAltGeom;
-    int altGeom;       // ft
-    bool hasPos;
-    float lat, lon;    // aircraft's own position
+    // Defaulted so a default-constructed Aircraft - a placeholder before a
+    // lookup fills it - never carries garbage a has* flag would vouch for.
+    bool hasTrack = false;
+    float track = 0;      // degrees, ground track ("heading")
+    bool hasVertRate = false;
+    float vertRate = 0;   // ft/min, signed
+    bool hasAltGeom = false;
+    int altGeom = 0;      // ft
+    bool hasPos = false;
+    float lat = 0, lon = 0;  // aircraft's own position
 };
 
 // Fetches aircraft near (lat, lon) within radiusNm from `source`, asking that

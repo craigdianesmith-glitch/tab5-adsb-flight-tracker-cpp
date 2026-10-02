@@ -35,10 +35,63 @@ struct Rect {
 constexpr int MAX_RECTS = 16;
 Rect g_rects[MAX_RECTS];
 int g_rectCount = 0;
+// The same, kept for takeChanged(): not cleared by a flush, only by being taken.
+Rect g_changed[MAX_RECTS];
+int g_changedCount = 0;
+
+OverlayFn g_overlay = nullptr;
+Rect g_overlayRect = {0, 0, 0, 0};
+
+bool intersects(const Rect &a, const Rect &b) {
+    return a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h;
+}
 
 // Cells in the same row share a y/h, so merging those into one wide rect keeps
 // the rect count at one per row instead of one per cell.
 constexpr int MERGE_GAP = 96;
+
+// Adds a rect to a list, absorbed by one it lies inside, merged into one in
+// the same band it is close to (with `merge`), or - when the list is full -
+// with everything collapsed into one bounding box. Cheaper than paying the
+// per-transfer overhead many times over.
+//
+// The merge suits a flush, where a strip takes no longer to push than its
+// pieces. It doesn't suit a conversion for the encoder, which costs its area:
+// on a replay it joined the side panel, the plot and the footer beside it into
+// one box of nearly the whole screen.
+void addRect(Rect *rects, int &count, int x, int y, int w, int h, bool merge) {
+    for (int i = 0; i < count; i++) {
+        Rect &r = rects[i];
+        if (x >= r.x && y >= r.y && x + w <= r.x + r.w && y + h <= r.y + r.h) {
+            return;  // already covered
+        }
+        // same band, near enough horizontally: widen it instead of adding one
+        if (merge && y >= r.y && y + h <= r.y + r.h && x <= r.x + r.w + MERGE_GAP && x + w + MERGE_GAP >= r.x) {
+            int right = std::max<int>(r.x + r.w, x + w);
+            r.x = std::min<int>(r.x, x);
+            r.w = right - r.x;
+            return;
+        }
+    }
+    if (count == MAX_RECTS) {
+        int l = rects[0].x, t = rects[0].y, rgt = l + rects[0].w, bot = t + rects[0].h;
+        for (int i = 1; i < count; i++) {
+            l = std::min<int>(l, rects[i].x);
+            t = std::min<int>(t, rects[i].y);
+            rgt = std::max<int>(rgt, rects[i].x + rects[i].w);
+            bot = std::max<int>(bot, rects[i].y + rects[i].h);
+        }
+        l = std::min(l, x);
+        t = std::min(t, y);
+        rgt = std::max(rgt, x + w);
+        bot = std::max(bot, y + h);
+        count = 1;
+        rects[0] = {(int16_t)l, (int16_t)t, (int16_t)(rgt - l), (int16_t)(bot - t)};
+        return;
+    }
+    rects[count++] = {(int16_t)x, (int16_t)y, (int16_t)w, (int16_t)h};
+}
+
 
 // A canvas row is contiguous and 2560 bytes long - a whole number of 64-byte
 // cache lines - so any span of rows is a flat, correctly aligned range.
@@ -240,6 +293,8 @@ void clear(uint16_t color) {
 void markAllDirty() {
     g_rectCount = 1;
     g_rects[0] = {0, 0, CANVAS_W, CANVAS_H};
+    g_changedCount = 1;
+    g_changed[0] = g_rects[0];
 }
 
 void markDirty(int x, int y, int w, int h) {
@@ -253,45 +308,49 @@ void markDirty(int x, int y, int w, int h) {
     if (w <= 0 || h <= 0) {
         return;
     }
+    addRect(g_rects, g_rectCount, x, y, w, h, true);
+    addRect(g_changed, g_changedCount, x, y, w, h, false);
+}
 
-    for (int i = 0; i < g_rectCount; i++) {
-        Rect &r = g_rects[i];
-        if (x >= r.x && y >= r.y && x + w <= r.x + r.w && y + h <= r.y + r.h) {
-            return;  // already covered
-        }
-        // same band, near enough horizontally: widen it instead of adding one
-        if (y >= r.y && y + h <= r.y + r.h && x <= r.x + r.w + MERGE_GAP && x + w + MERGE_GAP >= r.x) {
-            int right = std::max<int>(r.x + r.w, x + w);
-            r.x = std::min<int>(r.x, x);
-            r.w = right - r.x;
-            return;
-        }
+int takeChanged(Region *out, int max) {
+    int n = std::min(g_changedCount, max);
+    for (int i = 0; i < n; i++) {
+        out[i] = {g_changed[i].x, g_changed[i].y, g_changed[i].w, g_changed[i].h};
     }
+    g_changedCount = 0;
+    return n;
+}
 
-    if (g_rectCount == MAX_RECTS) {
-        // Out of slots: collapse everything into one bounding box. Cheaper than
-        // paying the per-transfer overhead many times over.
-        int l = g_rects[0].x, t = g_rects[0].y, rgt = l + g_rects[0].w, bot = t + g_rects[0].h;
-        for (int i = 1; i < g_rectCount; i++) {
-            l = std::min<int>(l, g_rects[i].x);
-            t = std::min<int>(t, g_rects[i].y);
-            rgt = std::max<int>(rgt, g_rects[i].x + g_rects[i].w);
-            bot = std::max<int>(bot, g_rects[i].y + g_rects[i].h);
-        }
-        l = std::min(l, x);
-        t = std::min(t, y);
-        rgt = std::max(rgt, x + w);
-        bot = std::max(bot, y + h);
-        g_rectCount = 1;
-        g_rects[0] = {(int16_t)l, (int16_t)t, (int16_t)(rgt - l), (int16_t)(bot - t)};
-        return;
-    }
-    g_rects[g_rectCount++] = {(int16_t)x, (int16_t)y, (int16_t)w, (int16_t)h};
+void setOverlay(OverlayFn draw, int x, int y, int w, int h) {
+    g_overlay = draw;
+    g_overlayRect = {(int16_t)x, (int16_t)y, (int16_t)w, (int16_t)h};
 }
 
 void flush() {
     if (g_rectCount == 0 || g_buffer == nullptr) {
         return;
+    }
+    // Repainted only when something underneath has been drawn over it, so a
+    // flush elsewhere on the screen doesn't pay for pushing it again.
+    if (g_overlay != nullptr) {
+        bool touched = false;
+        for (int i = 0; i < g_rectCount && !touched; i++) {
+            touched = intersects(g_rects[i], g_overlayRect);
+        }
+        if (touched) {
+            // The overlay draws on the shared canvas, so the font and text
+            // style it leaves behind would carry on into whatever is drawn
+            // next - and a screen that sets a size but trusts the font it finds
+            // would draw in the banner's. Put back as they were.
+            const lgfx::IFont *font = g_canvas.getFont();
+            lgfx::TextStyle style = g_canvas.getTextStyle();
+            bool drawn = g_overlay(g_canvas);
+            g_canvas.setFont(font);
+            g_canvas.setTextStyle(style);
+            if (drawn) {
+                markDirty(g_overlayRect.x, g_overlayRect.y, g_overlayRect.w, g_overlayRect.h);
+            }
+        }
     }
 #ifdef RENDER_PROFILE
     uint32_t t0 = micros();
@@ -338,6 +397,67 @@ void flush() {
     Serial.printf("[render] flush %d rect(s), %uKB synced, in %.2f ms\n", rects,
                   (unsigned)(g_syncedBytes / 1024), (micros() - t0) / 1000.0);
 #endif
+}
+
+namespace {
+
+bool convertBlock(uint8_t *out, size_t outBytes, int x, int y, int w, int h) {
+    ppa_srm_oper_config_t op = {};
+    op.in.buffer = g_buffer;
+    op.in.pic_w = CANVAS_W;
+    op.in.pic_h = CANVAS_H;
+    op.in.block_w = w;
+    op.in.block_h = h;
+    op.in.block_offset_x = x;
+    op.in.block_offset_y = y;
+    op.in.srm_cm = PPA_SRM_COLOR_MODE_RGB565;
+    op.out.buffer = out;
+    op.out.buffer_size = outBytes;
+    op.out.pic_w = CANVAS_W;
+    op.out.pic_h = CANVAS_H;
+    op.out.block_offset_x = x;
+    op.out.block_offset_y = y;
+    op.out.srm_cm = PPA_SRM_COLOR_MODE_YUV420;
+    op.out.yuv_range = PPA_COLOR_RANGE_LIMIT;
+    op.out.yuv_std = PPA_COLOR_CONV_STD_RGB_YUV_BT601;
+    op.rotation_angle = PPA_SRM_ROTATION_ANGLE_0;
+    op.scale_x = 1.0f;
+    op.scale_y = 1.0f;
+    op.byte_swap = true;  // the canvas's byte order, as for blitRect()
+    op.mode = PPA_TRANS_MODE_BLOCKING;
+    esp_err_t err = ppa_do_scale_rotate_mirror(g_srm, &op);
+    if (err != ESP_OK) {
+        Serial.printf("[screen] PPA YUV conversion failed: %s\n", esp_err_to_name(err));
+        return false;
+    }
+    return true;
+}
+
+}  // namespace
+
+bool toYuv420(uint8_t *out, size_t outBytes, const Region &r) {
+    if (!g_ppaOk || g_buffer == nullptr || outBytes < YUV420_BYTES) {
+        return false;
+    }
+    int x0 = std::max(0, (int)r.x) & ~1, y0 = std::max(0, (int)r.y) & ~1;
+    int x1 = std::min(CANVAS_W, (r.x + r.w + 1) & ~1), y1 = std::min(CANVAS_H, (r.y + r.h + 1) & ~1);
+    if (x1 <= x0 || y1 <= y0) {
+        return true;
+    }
+    // Whole rows, as for a flush: all that the PPA will read has to be in PSRAM.
+    esp_cache_msync((uint8_t *)g_buffer + (size_t)y0 * ROW_BYTES, (size_t)(y1 - y0) * ROW_BYTES,
+                    ESP_CACHE_MSYNC_FLAG_DIR_C2M);
+    return convertBlock(out, outBytes, x0, y0, x1 - x0, y1 - y0);
+}
+
+bool toYuv420(uint8_t *out, size_t outBytes) {
+    if (!g_ppaOk || g_buffer == nullptr || outBytes < YUV420_BYTES) {
+        return false;
+    }
+    // The whole canvas is read, not just what is dirty, so all of it has to
+    // be in PSRAM - including regions drawn since the last flush.
+    writeBackCanvas();
+    return convertBlock(out, outBytes, 0, 0, CANVAS_W, CANVAS_H);
 }
 
 void dumpToSerial() {

@@ -4,6 +4,7 @@
 #include <math.h>
 
 #include "airports.h"
+#include "alerts.h"
 #include "screen.h"
 
 namespace {
@@ -15,6 +16,11 @@ constexpr int BACK_X = 1140, BACK_Y = 8, BACK_W = 124, BACK_H = 44;
 // what the plot is centred on now.
 constexpr int CENTRE_W = 124;
 constexpr int CENTRE_X = BACK_X - 12 - CENTRE_W;
+// Recording and playback follow along the same row.
+constexpr int REC_W = 124;
+constexpr int REC_X = CENTRE_X - 12 - REC_W;
+constexpr int REPLAY_W = 124;
+constexpr int REPLAY_X = REC_X - 12 - REPLAY_W;
 // The plot is as large as the 720px height allows. The compass letters sit
 // just inside the outer ring rather than outside it - outside, they were what
 // capped the radius, and "S" ran off the bottom of the screen.
@@ -57,7 +63,10 @@ struct Blip {
     int16_t x, y;
     String hex;
 };
-constexpr int MAX_BLIPS = 64;
+// Above the poll's MAX_CONTACTS with room to spare: alerted aircraft are kept
+// beyond that cap and come last, so a tighter limit here made exactly the
+// ones worth tapping the ones that couldn't be.
+constexpr int MAX_BLIPS = 128;
 constexpr int TAP_RADIUS = 28;
 Blip g_blips[MAX_BLIPS];
 int g_blipCount = 0;
@@ -65,8 +74,13 @@ int g_blipCount = 0;
 // A phosphor-green ramp rather than the rest of the app's blue-grey: on a
 // plan-position plot the brightness of a mark is what carries the meaning, and
 // a single hue leaves brightness free to do that.
+uint16_t colorDisabled;
 uint16_t colorBg, colorText, colorMuted, colorFaint, colorBtnBg, colorRing, colorRingText, colorBlip, colorNewBlip,
-    colorHome;
+    colorHome, colorTrail, colorAlert, colorEmergency, colorRec;
+RadarPalette g_palette;
+
+RecButton g_recState = RecButton::IDLE;
+uint32_t g_recElapsedS = 0;
 
 void ensureColors() {
     if (colorsReady) {
@@ -77,11 +91,19 @@ void ensureColors() {
     colorMuted = M5.Display.color565(0x7C, 0xD9, 0xA0);
     colorFaint = M5.Display.color565(0x5A, 0x9E, 0x78);
     colorBtnBg = M5.Display.color565(0x14, 0x3A, 0x28);
+    colorDisabled = M5.Display.color565(0x4A, 0x55, 0x50);
     colorRing = M5.Display.color565(0x1C, 0x5A, 0x38);
     colorRingText = M5.Display.color565(0x3F, 0x8E, 0x63);
     colorBlip = M5.Display.color565(0x3D, 0xE8, 0x7C);
     colorNewBlip = M5.Display.color565(0xE6, 0xFF, 0xEE);  // brightest: a new contact
     colorHome = M5.Display.color565(0xEA, 0xFF, 0xF0);
+    colorTrail = M5.Display.color565(0x2A, 0x7A, 0x4E);  // dimmer than any blip: where it was, not where it is
+    // The one exception to the single hue: an alerted contact has to stand out
+    // from the sky around it at a glance, which no shade of green does.
+    colorAlert = M5.Display.color565(0xFF, 0xB3, 0x2E);
+    colorEmergency = M5.Display.color565(0xFF, 0x4D, 0x4D);
+    colorRec = M5.Display.color565(0xC0, 0x39, 0x2B);
+    g_palette = {colorBg, colorText, colorMuted, colorFaint, colorBtnBg, colorRing, colorRec, colorDisabled};
     colorsReady = true;
 }
 
@@ -139,10 +161,83 @@ void drawTrend(int px, int py, const String &status, uint16_t color) {
     }
 }
 
+// A button with nothing behind it: outlined rather than filled, its label
+// in grey, so it reads as there but unavailable.
+void drawDisabledButton(int x, int w, const char *label) {
+    auto &canvas = screen::canvas();
+    canvas.fillRect(x, BACK_Y, w, BACK_H, colorBg);
+    canvas.drawRoundRect(x, BACK_Y, w, BACK_H, 6, colorDisabled);
+    canvas.setFont(&fonts::Font0);
+    canvas.setTextSize(2);
+    canvas.setTextDatum(MC_DATUM);
+    canvas.setTextColor(colorDisabled);
+    canvas.drawString(label, x + w / 2, BACK_Y + BACK_H / 2);
+    screen::markDirty(x, BACK_Y, w, BACK_H);
+}
+
+void drawReplaysButton() {
+    if (g_recState == RecButton::NO_CARD) {
+        drawDisabledButton(REPLAY_X, REPLAY_W, "Replays");
+        return;
+    }
+    auto &canvas = screen::canvas();
+    canvas.fillRect(REPLAY_X, BACK_Y, REPLAY_W, BACK_H, colorBg);
+    canvas.fillRoundRect(REPLAY_X, BACK_Y, REPLAY_W, BACK_H, 6, colorBtnBg);
+    canvas.setFont(&fonts::Font0);
+    canvas.setTextSize(2);
+    canvas.setTextDatum(MC_DATUM);
+    canvas.setTextColor(colorText);
+    canvas.drawString("Replays", REPLAY_X + REPLAY_W / 2, BACK_Y + BACK_H / 2);
+    screen::markDirty(REPLAY_X, BACK_Y, REPLAY_W, BACK_H);
+}
+
+// Idle, it is a red dot and REC, the way every recorder has said it. Running,
+// it turns red and counts, with a stop square: what a tap will now do.
+void drawRecButton() {
+    if (g_recState == RecButton::NO_CARD) {
+        drawDisabledButton(REC_X, REC_W, "NO SD");
+        return;
+    }
+    auto &canvas = screen::canvas();
+    canvas.fillRect(REC_X, BACK_Y, REC_W, BACK_H, colorBg);
+    bool running = (g_recState == RecButton::RECORDING);
+    canvas.fillRoundRect(REC_X, BACK_Y, REC_W, BACK_H, 6, running ? colorRec : colorBtnBg);
+    canvas.setFont(&fonts::Font0);
+    canvas.setTextSize(2);
+    canvas.setTextDatum(MC_DATUM);
+    int midY = BACK_Y + BACK_H / 2;
+    if (running) {
+        canvas.fillRect(REC_X + 16, midY - 6, 12, 12, colorText);
+        uint32_t s = g_recElapsedS;
+        char buf[12];
+        if (s >= 36000) {
+            // Ten hours on, 10:00:00 is a character wider than the button has
+            // room for beside the stop square - and the seconds no longer
+            // matter - so it counts in hours and minutes instead.
+            snprintf(buf, sizeof(buf), "%luh%02lum", (unsigned long)(s / 3600), (unsigned long)(s / 60 % 60));
+        } else if (s >= 3600) {
+            snprintf(buf, sizeof(buf), "%lu:%02lu:%02lu", (unsigned long)(s / 3600), (unsigned long)(s / 60 % 60),
+                     (unsigned long)(s % 60));
+        } else {
+            snprintf(buf, sizeof(buf), "%02lu:%02lu", (unsigned long)(s / 60), (unsigned long)(s % 60));
+        }
+        canvas.setTextColor(colorText);
+        canvas.drawString(buf, REC_X + 78, midY);
+    } else {
+        canvas.fillCircle(REC_X + 34, midY, 7, colorEmergency);
+        canvas.setTextColor(colorText);
+        canvas.drawString("REC", REC_X + 74, midY);
+    }
+    screen::markDirty(REC_X, BACK_Y, REC_W, BACK_H);
+}
+
 // Title and buttons: drawn on a full repaint only, since nothing in them
 // changes while the screen is up.
 void drawHeader(bool military, RadarCentre centre) {
     auto &canvas = screen::canvas();
+    // Set here rather than trusted from whatever drew last: the table leaves
+    // its cells' FreeSans selected, and at size 3 the title came out huge.
+    canvas.setFont(&fonts::Font0);
     canvas.setTextSize(3);
     canvas.setTextDatum(ML_DATUM);
     canvas.setTextColor(colorText);
@@ -160,6 +255,9 @@ void drawHeader(bool military, RadarCentre centre) {
     canvas.fillRoundRect(CENTRE_X, BACK_Y, CENTRE_W, BACK_H, 6, colorBtnBg);
     canvas.drawString(centre == RadarCentre::HOME ? "HOME" : "AIRPORT", CENTRE_X + CENTRE_W / 2,
                       BACK_Y + BACK_H / 2);
+
+    drawReplaysButton();
+    drawRecButton();
 }
 
 }  // namespace
@@ -167,18 +265,53 @@ void drawHeader(bool military, RadarCentre centre) {
 void radarScreenDraw(const std::vector<Aircraft> &aircraft, const std::vector<uint8_t> &isNew, double lat, double lon,
                      int rangeNm, bool military, RadarCentre centre, bool full) {
     ensureColors();
-    auto &canvas = screen::canvas();
     if (full) {
         screen::clear(colorBg);
-    } else {
+        drawHeader(military, centre);
+    }
+    radarPlotDraw({aircraft, isNew, nullptr, lat, lon, rangeNm, centre, true}, full);
+    if (full) {
+        screen::flush();
+    }
+}
+
+void radarScreenSetRecording(RecButton state, uint32_t elapsedS, bool onScreen) {
+    if (state == g_recState && elapsedS == g_recElapsedS) {
+        return;
+    }
+    // Replays greys out with REC, but only a change of state touches it: the
+    // count ticking over every second while recording is REC's alone.
+    bool stateChanged = (state != g_recState);
+    g_recState = state;
+    g_recElapsedS = elapsedS;
+    if (onScreen) {
+        ensureColors();
+        if (stateChanged) {
+            drawReplaysButton();
+        }
+        drawRecButton();
+        screen::flush();
+    }
+}
+
+const RadarPalette &radarPalette() {
+    ensureColors();
+    return g_palette;
+}
+
+void radarPlotDraw(const RadarScene &scene, bool full) {
+    ensureColors();
+    auto &canvas = screen::canvas();
+    const std::vector<Aircraft> &aircraft = scene.aircraft;
+    const std::vector<uint8_t> &isNew = scene.isNew;
+    double lat = scene.lat, lon = scene.lon;
+    int rangeNm = scene.rangeNm;
+    RadarCentre centre = scene.centre;
+    if (!full) {
         screen::fillRect(PLOT_L, PLOT_T, PLOT_R - PLOT_L, PLOT_B - PLOT_T, colorBg);
         canvas.fillRect(FOOT_L, FOOT_T, FOOT_R - FOOT_L, FOOT_B - FOOT_T, colorBg);
     }
     canvas.setFont(&fonts::Font0);
-
-    if (full) {
-        drawHeader(military, centre);
-    }
 
     // --- rings and bearings ----------------------------------------------
     int step = ringStep(rangeNm);
@@ -238,6 +371,28 @@ void radarScreenDraw(const std::vector<Aircraft> &aircraft, const std::vector<ui
     int takenCount = 0;
     g_blipCount = 0;
 
+    // Trails first, so every blip sits on top of its own and anyone else's.
+    if (scene.trails != nullptr) {
+        bool penDown = false;
+        int lastX = 0, lastY = 0;
+        for (const replay::TrailPoint &p : *scene.trails) {
+            if (isnan(p.lat)) {
+                penDown = false;
+                continue;
+            }
+            int x = CENTER_X + (int)lroundf((float)((p.lon - lon) * nmPerDegLon / rangeNm * RADIUS));
+            int y = CENTER_Y - (int)lroundf((float)((p.lat - lat) * 60.0 / rangeNm * RADIUS));
+            if (penDown) {
+                canvas.drawLine(lastX, lastY, x, y, colorTrail);
+            } else {
+                canvas.fillCircle(x, y, 1, colorTrail);
+            }
+            lastX = x;
+            lastY = y;
+            penDown = true;
+        }
+    }
+
     for (size_t i = 0; i < aircraft.size(); i++) {
         const Aircraft &ac = aircraft[i];
         if (!ac.hasPos) {
@@ -256,7 +411,10 @@ void radarScreenDraw(const std::vector<Aircraft> &aircraft, const std::vector<ui
         plotted++;
 
         bool isNewHere = (i < isNew.size()) && isNew[i];
-        uint16_t color = isNewHere ? colorNewBlip : colorBlip;
+        uint16_t color = (ac.alert & ALERT_EMERGENCY) ? colorEmergency
+                         : ac.alert                   ? colorAlert
+                         : isNewHere                  ? colorNewBlip
+                                                      : colorBlip;
 
         if (ac.hasTrack) {
             // One minute of flight at current groundspeed, with a floor so a
@@ -276,6 +434,14 @@ void radarScreenDraw(const std::vector<Aircraft> &aircraft, const std::vector<ui
             g_blips[g_blipCount++] = {(int16_t)px, (int16_t)py, ac.hex};
         }
 
+        // The label flashes between red and an ordinary contact's colour. A
+        // flashing one is drawn even where it would collide with another
+        // label: it's the one being drawn attention to.
+        AlertFlash flash = scene.flash ? alertFlash(ac.hex) : AlertFlash::NONE;
+        uint16_t labelColor = flash == AlertFlash::RED ? colorEmergency
+                              : flash == AlertFlash::OFF ? (isNewHere ? colorNewBlip : colorBlip)
+                                                         : color;
+
         canvas.setTextSize(2);
         int lw = canvas.textWidth(ac.callsign);
         int lx = (int)px + 9;
@@ -284,7 +450,7 @@ void radarScreenDraw(const std::vector<Aircraft> &aircraft, const std::vector<ui
             lx = (int)px - 9 - lw;  // would run off the plot - put it on the left
         }
         bool clear = true;
-        for (int j = 0; j < takenCount; j++) {
+        for (int j = 0; j < takenCount && flash == AlertFlash::NONE; j++) {
             const LabelBox &b = taken[j];
             if (lx - LABEL_PAD < b.x + b.w && lx + lw + LABEL_PAD > b.x && ly - LABEL_PAD < b.y + b.h &&
                 ly + LABEL_H + LABEL_PAD > b.y) {
@@ -292,11 +458,13 @@ void radarScreenDraw(const std::vector<Aircraft> &aircraft, const std::vector<ui
                 break;
             }
         }
-        if (clear && takenCount < MAX_LABELS) {
-            canvas.setTextColor(color);
+        if (clear && (takenCount < MAX_LABELS || flash != AlertFlash::NONE)) {
+            canvas.setTextColor(labelColor);
             canvas.setTextDatum(TL_DATUM);
             canvas.drawString(ac.callsign, lx, ly);
-            taken[takenCount++] = {(int16_t)lx, (int16_t)ly, (int16_t)lw, (int16_t)LABEL_H};
+            if (takenCount < MAX_LABELS) {
+                taken[takenCount++] = {(int16_t)lx, (int16_t)ly, (int16_t)lw, (int16_t)LABEL_H};
+            }
             labelled++;
         }
     }
@@ -321,7 +489,12 @@ void radarScreenDraw(const std::vector<Aircraft> &aircraft, const std::vector<ui
               FOOTER_Y, true);
 
     if (full) {
-        screen::flush();
+        return;  // the caller flushes, once it has drawn the rest of the screen
+    }
+    if (!scene.push) {
+        // Marked rather than pushed: the plot was by its fill, the footer
+        // wasn't, and whoever pushes next has to take both.
+        screen::markDirty(FOOT_L, FOOT_T, FOOT_R - FOOT_L, FOOT_B - FOOT_T);
         return;
     }
     // Two flushes rather than one: marked together, flush() would judge the
@@ -333,13 +506,24 @@ void radarScreenDraw(const std::vector<Aircraft> &aircraft, const std::vector<ui
 }
 
 RadarAction radarScreenHandleTouch(int x, int y, String &outHex) {
-    if (x >= BACK_X && x < BACK_X + BACK_W && y >= BACK_Y && y < BACK_Y + BACK_H) {
-        return RadarAction::BACK;
+    if (y >= BACK_Y && y < BACK_Y + BACK_H) {
+        if (x >= BACK_X && x < BACK_X + BACK_W) {
+            return RadarAction::BACK;
+        }
+        if (x >= CENTRE_X && x < CENTRE_X + CENTRE_W) {
+            return RadarAction::TOGGLE_CENTRE;
+        }
+        if (x >= REC_X && x < REC_X + REC_W) {
+            return RadarAction::TOGGLE_RECORD;
+        }
+        if (x >= REPLAY_X && x < REPLAY_X + REPLAY_W) {
+            return RadarAction::OPEN_RECORDINGS;
+        }
     }
-    if (x >= CENTRE_X && x < CENTRE_X + CENTRE_W && y >= BACK_Y && y < BACK_Y + BACK_H) {
-        return RadarAction::TOGGLE_CENTRE;
-    }
+    return radarPlotHit(x, y, outHex) ? RadarAction::SELECT : RadarAction::NONE;
+}
 
+bool radarPlotHit(int x, int y, String &outHex) {
     // Nearest blip within reach, not merely the first one found: in a cluster
     // the closest to the finger is the one meant.
     int best = -1;
@@ -355,7 +539,7 @@ RadarAction radarScreenHandleTouch(int x, int y, String &outHex) {
     }
     if (best >= 0) {
         outHex = g_blips[best].hex;
-        return RadarAction::SELECT;
+        return true;
     }
-    return RadarAction::NONE;
+    return false;
 }

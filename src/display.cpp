@@ -2,6 +2,7 @@
 
 #include <math.h>
 
+#include "alerts.h"
 #include "config.h"
 #include "screen.h"
 
@@ -33,7 +34,7 @@ constexpr int ROW_HEIGHT = 52;
 constexpr int MAX_CACHE_ROWS = 16;  // generous upper bound on any screen size we'd realistically run at
 
 uint16_t colorBg, colorWhite, colorHeaderBg, colorHeaderText, colorBorder, colorGrey, colorNew,
-    colorChanged, colorStale, colorMutedIcon;
+    colorChanged, colorStale, colorMutedIcon, colorAlert, colorEmergency;
 
 constexpr int STATUS_ICON_SIZE = 18;
 
@@ -89,6 +90,11 @@ uint32_t g_lastSuccessMs = 0;
 // building any Strings to say so.
 constexpr uint32_t STATUS_NONE = UINT32_MAX;  // sentinel that no real status packs to
 uint32_t g_lastStatusKey = STATUS_NONE;
+
+constexpr uint32_t NOTICE_MS = 4000;
+String g_notice;
+uint32_t g_noticeUntil = 0;
+uint32_t g_noticeGen = 0;  // packed into the status key, so each notice is a change
 
 // Drawn geometric icons rather than a hand-authored bitmap: precise and
 // reliable without needing to eyeball pixel arrays on real hardware.
@@ -266,6 +272,9 @@ void displayInit() {
     colorChanged = M5.Display.color565(0x1E, 0x2E, 0x40);
     colorStale = M5.Display.color565(0xF3, 0x9C, 0x12);  // amber: on screen but not current
     colorMutedIcon = M5.Display.color565(0x5A, 0x60, 0x68);  // dimmer than the live icons
+    // The same two as the radar's, so an alerted aircraft reads the same on both.
+    colorAlert = M5.Display.color565(0xFF, 0xB3, 0x2E);
+    colorEmergency = M5.Display.color565(0xFF, 0x4D, 0x4D);
 
     int x = TABLE_X;
     for (int i = 0; i < NUM_COLS; i++) {
@@ -346,13 +355,21 @@ void displayTickStatus() {
     // API's and there is nothing to do but wait for the next one. And a link
     // never yet established is the boot case, where "reconnecting" would be a
     // claim about a connection that never existed.
-    enum : uint32_t { RECONNECTING, CONNECTING, WAITING, RETRYING, UPDATED };
-    uint32_t state = !g_linkUp        ? (g_everSucceeded ? RECONNECTING : CONNECTING)
+    enum : uint32_t { RECONNECTING, CONNECTING, WAITING, RETRYING, UPDATED, NOTICE };
+    bool noticeUp = g_noticeUntil != 0 && (int32_t)(millis() - g_noticeUntil) < 0;
+    if (!noticeUp) {
+        g_noticeUntil = 0;
+    }
+    uint32_t state = noticeUp           ? NOTICE
+                     : !g_linkUp        ? (g_everSucceeded ? RECONNECTING : CONNECTING)
                      : !g_everSucceeded ? WAITING
                      : !g_pollOk        ? RETRYING
                                         : UPDATED;
-    // Only the last two quote an age, so only they change with the clock.
-    uint32_t age = (state >= RETRYING) ? (millis() - g_lastSuccessMs) / 1000 : 0;
+    // Only RETRYING and UPDATED quote an age, so only they change with the
+    // clock; a notice's slot carries which notice it is instead.
+    uint32_t age = (state == RETRYING || state == UPDATED) ? (millis() - g_lastSuccessMs) / 1000
+                   : state == NOTICE                       ? g_noticeGen
+                                                           : 0;
     uint32_t key = (age << 3) | state;
     if (key == g_lastStatusKey) {
         return;
@@ -377,6 +394,10 @@ void displayTickStatus() {
     case RETRYING:
         text = "Last update " + ageStr + " ago - retrying";
         color = colorStale;
+        break;
+    case NOTICE:
+        text = g_notice;
+        color = colorAlert;
         break;
     default:
         text = "Updated " + ageStr + " ago";
@@ -537,29 +558,41 @@ void displayRenderAircraft(const std::vector<Aircraft> &aircraft, const std::vec
             }
             const Aircraft &ac = aircraft[r];
             bool rowIsNew = (r < (int)isNew.size()) && isNew[r];
-            uint16_t color = rowIsNew ? colorNew : colorWhite;
+            // An alert outlasts the one refresh a new row is green for, so it
+            // wins: the row stays marked for as long as the aircraft is about.
+            uint16_t color = (ac.alert & ALERT_EMERGENCY) ? colorEmergency
+                             : ac.alert                   ? colorAlert
+                             : rowIsNew                   ? colorNew
+                                                          : colorWhite;
 
             String dist = ac.hasDist ? (String((int)lroundf(ac.distNm)) + "nm") : "?";
             String alt = formatAltitude(ac.altStr);
             String speedKt = (ac.speedStr == "?") ? String("?") : (ac.speedStr + "kt");
             String values[NUM_COLS] = {ac.callsign, ac.type, alt, speedKt, dist, formatHeading(ac), ac.status};
+            // Only the callsign flashes, between red and an ordinary row's white.
+            AlertFlash flash = alertFlash(ac.hex);
+            uint16_t callsignColor = flash == AlertFlash::RED ? colorEmergency
+                                     : flash == AlertFlash::OFF ? colorWhite
+                                                                : color;
 
             for (int c = 0; c < NUM_COLS; c++) {
-                if (g_lastCellValid[r][c] && g_lastCell[r][c] == values[c] && g_lastCellColor[r][c] == color) {
+                uint16_t cellColor = (c == 0) ? callsignColor : color;
+                if (g_lastCellValid[r][c] && g_lastCell[r][c] == values[c] && g_lastCellColor[r][c] == cellColor) {
                     continue;  // unchanged - skip the redraw entirely
                 }
                 // Shade genuine changes only. A cell with no cached value is
                 // being painted for the first time or repainted after another
-                // screen covered the canvas, neither of which is news.
-                bool changed = g_lastCellValid[r][c] && g_showRefresh;
-                drawCell(r, c, values[c], color, changed, g_lastCellValid[r][c]);
+                // screen covered the canvas, and one whose value is the same
+                // has only changed colour - none of which is news.
+                bool changed = g_lastCellValid[r][c] && g_lastCell[r][c] != values[c] && g_showRefresh;
+                drawCell(r, c, values[c], cellColor, changed, g_lastCellValid[r][c]);
                 uint32_t until = millis() + CELL_HIGHLIGHT_MS;
                 if (until == 0) {
                     until = 1;  // 0 is the "not shaded" sentinel
                 }
                 g_highlightUntil[r][c] = changed ? until : 0;
                 g_lastCell[r][c] = values[c];
-                g_lastCellColor[r][c] = color;
+                g_lastCellColor[r][c] = cellColor;
                 g_lastCellValid[r][c] = true;
             }
         }
@@ -567,4 +600,11 @@ void displayRenderAircraft(const std::vector<Aircraft> &aircraft, const std::vec
     g_lastWasEmpty = aircraft.empty();
 
     screen::flush();
+}
+
+void displayShowNotice(const String &text) {
+    g_notice = text;
+    g_noticeUntil = (millis() + NOTICE_MS) | 1;  // 0 means no notice
+    g_noticeGen++;
+    displayTickStatus();
 }

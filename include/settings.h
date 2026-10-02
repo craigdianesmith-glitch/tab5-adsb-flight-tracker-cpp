@@ -21,6 +21,10 @@ struct AppSettings {
     AdsbSource source;  // which ADS-B provider to poll, or AUTO to fail over
     RadarCentre radarCentre;  // toggled from the radar screen itself
 
+    uint8_t alertMask;  // which AlertReasons raise an alert
+    String watchlist;   // as typed: entries separated by spaces or commas
+    bool autoRecord;    // record the radar while an alerted aircraft is about
+
     // Empty ssid means "use the credentials compiled in from secrets.h", so a
     // device that's never had WiFi set on-screen behaves exactly as before.
     String wifiSsid;
@@ -34,3 +38,4 @@ void saveFilters(TrafficFilter traffic, int radiusNm, bool showRefresh, int poll
 void saveMuted(bool muted);
 void saveRadarCentre(RadarCentre centre);
 void saveWifi(const String &ssid, const String &pass);
+void saveAlerts(uint8_t alertMask, const String &watchlist, bool autoRecord);

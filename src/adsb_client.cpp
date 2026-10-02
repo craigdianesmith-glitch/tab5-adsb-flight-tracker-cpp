@@ -213,7 +213,9 @@ static void parseInto(JsonDocument &doc, const AdsbEndpoint &ep, bool military, 
         // (bits 1/2/3 are interesting/PIA/LADD). Where it doesn't, which feed
         // this came from is the only thing there is to go on - and it is a
         // sound answer, since a military endpoint returns nothing else.
-        a.military = ep.hasDbFlags ? (((ac["dbFlags"] | 0) & 1) != 0) : military;
+        int dbFlags = ac["dbFlags"] | 0;
+        a.military = ep.hasDbFlags ? ((dbFlags & 1) != 0) : military;
+        a.dbInteresting = ep.hasDbFlags && (dbFlags & 2) != 0;
 
         if (onGround) {
             a.altStr = "GND";
@@ -369,6 +371,23 @@ static bool fetchFrom(int idx, double lat, double lon, int radiusNm, bool milita
 // the top of the table: one that has gone down would otherwise cost a 12s
 // timeout on every poll for as long as the outage lasted.
 static int g_preferred = 0;
+// ...but not for good. The first provider is the one whose feed marks military
+// and "interesting" airframes, so a fallback that stuck after a single 429 or
+// blip quietly switched those alerts off for as long as the device stayed up.
+// Off it, it is asked first again every few minutes: a provider that is still
+// down costs one failed request each time, rather than the alerts.
+constexpr uint32_t PRIMARY_RETRY_MS = 5 * 60 * 1000;
+static uint32_t g_preferredSinceMs = 0;
+
+// Records which provider answered. `retriedPrimary` restarts the wait even
+// when the answer came from the same fallback as before, so a primary that
+// is still failing is tried once per interval rather than on every poll.
+static void prefer(int idx, bool retriedPrimary) {
+    if (idx != g_preferred || retriedPrimary) {
+        g_preferredSinceMs = millis();
+    }
+    g_preferred = idx;
+}
 // Whether an empty result has already been checked against another provider and
 // stood up. An empty sky and a drained feed are the same 200 response, so an
 // empty result wants a second opinion - but only until one has been given: once
@@ -422,8 +441,13 @@ bool fetchAircraft(double lat, double lon, int radiusNm, bool military, AdsbSour
         return true;
     }
 
+    int first = g_preferred;
+    bool retryPrimary = (first != 0 && millis() - g_preferredSinceMs >= PRIMARY_RETRY_MS);
+    if (retryPrimary) {
+        first = 0;
+    }
     for (int attempt = 0; attempt < ADSB_PROVIDER_COUNT; attempt++) {
-        int idx = (g_preferred + attempt) % ADSB_PROVIDER_COUNT;
+        int idx = (first + attempt) % ADSB_PROVIDER_COUNT;
         std::vector<Aircraft> got;
         if (!fetchFrom(idx, lat, lon, radiusNm, military, got)) {
             continue;  // failed outright - next provider
@@ -440,7 +464,7 @@ bool fetchAircraft(double lat, double lon, int radiusNm, bool military, AdsbSour
                 Serial.printf("[adsb] %s reported an empty sky, %s found %u - switching to %s\n",
                               ADSB_PROVIDERS[idx].name, ADSB_PROVIDERS[alt].name, (unsigned)second.size(),
                               ADSB_PROVIDERS[alt].name);
-                g_preferred = alt;
+                prefer(alt, retryPrimary);
                 g_emptyCorroborated = false;
                 usedProvider = ADSB_PROVIDERS[alt].name;
                 noteProvider(usedProvider, second.size());
@@ -452,7 +476,7 @@ bool fetchAircraft(double lat, double lon, int radiusNm, bool military, AdsbSour
             g_emptyCorroborated = true;
         }
 
-        g_preferred = idx;
+        prefer(idx, retryPrimary);
         if (!got.empty()) {
             g_emptyCorroborated = false;
         }
