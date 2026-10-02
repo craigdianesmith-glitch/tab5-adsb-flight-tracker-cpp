@@ -18,7 +18,7 @@ constexpr int TEXT_X = 560;
 constexpr int STATUS_Y = 600, STATUS_H = 60;
 
 bool g_started = false;
-share::Status g_shown = {UINT32_MAX, "", 0, 0};
+share::Status g_shown = {};  // what the status line says now
 
 uint16_t colorBg, colorWhite, colorGrey, colorDim, colorBtnBg, colorAccent, colorWarn;
 
@@ -62,7 +62,10 @@ void drawStatus() {
 
 void shareScreenEnter() {
     g_started = share::start();
-    g_shown = {UINT32_MAX, "", 0, 0};
+    // Drawn from the server's own count, not a sentinel meant to force the
+    // first update: the screen is drawn before that update, and for a moment
+    // said four billion requests had been served.
+    g_shown = share::status();
     shareScreenDraw();
 }
 
