@@ -6,8 +6,10 @@ A C++ rewrite of [Overhead](https://github.com/craigdianesmith-glitch/tab5-adsb-
 | --- | --- |
 | ![The table of aircraft overhead](docs/screenshots/table.png) | ![The radar plot, centred on the nearest airport](docs/screenshots/radar.png) |
 | ![The detail screen for one flight](docs/screenshots/detail.png) | ![The settings screen](docs/screenshots/settings.png) |
+| ![A recording played back at 16x, with trails](docs/screenshots/replay.png) | ![A recording being exported to video](docs/screenshots/export.png) |
+| ![The recordings on the card, and the videos made from them](docs/screenshots/recordings.png) | ![Sharing over WiFi, with a QR code to the page](docs/screenshots/share.png) |
 
-Captured from the device with `tools/screenshot.py` - see [Screenshots](#screenshots).
+Captured from the device with `tools/screenshot.py` - see [Screenshots](#screenshots). The address and network name on the share screen are placeholders.
 
 ## Hardware
 
@@ -48,6 +50,7 @@ It is pixel-exact and the right way up whatever the device's orientation, and ta
 - **HTTPClient's User-Agent**: `HTTPClient::addHeader("User-Agent", ...)` is silently overridden by an internal default (`ESP32HTTPClient`) - use `setUserAgent()` instead. adsb.lol rejects generic User-Agents outright.
 - **mbedTLS stack size**: the background poll task needs a considerably larger stack (16KB) than a typical FreeRTOS task, or HTTPS requests fail silently.
 - **Speaker startup**: `M5.begin()` configures the Tab5's ES8388 codec and enables its amp, but stops short of starting the I2S output - nothing is audible until `M5.Speaker.begin()` is called as well (see `src/sound.cpp`).
+- **H.264 encoder input**: this board's P4 is an early revision (v1.x - the board definition builds against the `esp32p4_es` libraries), and on those the hardware H.264 encoder takes only its own packed YUV 4:2:0 layout (`O_UYY_E_VYY`: odd lines U Y Y, even lines V Y Y), not the RGB565 the canvas holds. The PPA converts into it - see [Video export](#video-export). And `esp_h264_alloc.h` has no `extern "C"` guard, so its allocators don't link from C++; `heap_caps_aligned_calloc` does the same job.
 - **Rotated framebuffer**: the panel is physically 720x1280 portrait, so in the landscape orientation this app runs at, every horizontal line of the UI is a *column* in memory. LovyanGFX's rotated `pushSprite` can't memcpy in that case and walks the image pixel by pixel - a full-screen push measures **650ms** on this device. `src/screen.cpp` hands the rotation to the ESP32-P4's PPA (its 2D graphics accelerator) instead; see below.
 
 ## Header
@@ -80,7 +83,10 @@ The cog opens a settings screen in two columns - seven controls will not stack d
 - **Data source** - which provider to poll: **Auto**, or one of them pinned. Auto is the default and the reason this control exists - see [Data sources](#data-sources). Pinning is for when you would rather know which one you are looking at than have it chosen for you; a pinned provider's empty answer is reported as it stands, with no second opinion sought.
 - **Refresh interval** - how often the sky is refetched, from 5 to 60 seconds in fives, defaulting to 30. The slider is stepped rather than continuous, with a detent mark per position, so it can't be left on a value nobody asked for. Below five seconds the endpoint starts refusing; past a minute the table is stale enough that a slower dial wouldn't be asked for. The default is deliberately not the fastest the dial allows - see [Data sources](#data-sources).
 - **Location** - the place search, which used to be a button filling half the main header. It is a setting rather than a permanent fixture of the table: it gets changed once when the device moves and then not again. Both finishing and cancelling return here rather than to the table, so a new location lands you back on the button that shows it took.
-- **WiFi** - scans for networks and connects to one, so the device can move between networks without a reflash. Credentials are saved to NVS and win over the ones compiled in from `secrets.h`, which stay as the fallback for a device that's never had WiFi set on-screen. A device with neither - a fresh flash of a released image - opens this screen on boot rather than spending the connect timeout proving it has nothing to connect with, and Back from there lands on the table. Credentials that are merely wrong, or an access point that is down, are left to the poll task to retry, since being thrown into setup over a router reboot would be worse than the status line saying what is happening.
+- **WiFi** - scans for networks and connects to one, so the device can move between networks without a reflash. Credentials are saved to NVS and win over the ones compiled in from `secrets.h`, which stay as the fallback for a device that's never had WiFi set on-screen. They are saved only once they have connected: saved up front, one mistyped password - or a tap on the neighbour's network - replaced those of the network that was working. A passphrase too short for WPA (or WEP) is refused before anything is tried. A device with no credentials at all - a fresh flash of a released image - opens this screen on boot rather than spending the connect timeout proving it has nothing to connect with, and Back from there lands on the table.
+
+  A network that goes away is retried from the poll task, since being thrown into setup over a router reboot would be worse than the status line saying what is happening - but not indefinitely. Three failed attempts in a row, the boot connect included, is about a minute, and past that the network is taken to be gone rather than blipping (a phone's hotspot switched off, the device carried somewhere else): this screen opens, saying which network couldn't be reached, so another can be picked, and once one connects it goes straight back to the table. Only from the table, the radar or the detail screen - not from a replay or a half-typed watchlist, which don't need the network.
+- **Alerts & recording** - which of the four alert kinds are on, whether an alert starts a recording, and the watchlist. See [Alerts](#alerts) and [Recording and replay](#recording-and-replay).
 
 All of it persists across reboots, along with the mute state and the chosen location. Changing the filter, the range or the source refetches immediately rather than waiting out the rest of the interval; changing the interval itself doesn't - the new value simply applies to the wait already running, including shortening one in progress.
 
@@ -100,11 +106,11 @@ The build uses `-O2` rather than the Arduino default of `-Os`, which on a synthe
 
 The first fetch after a boot still pays the full handshake, and a connection the far end has closed in the meantime shows up as a transport error on the next request rather than at the time it was dropped - so a *connection-level* failure retries once on a fresh socket. Only a connection-level one: a read timeout means the server has the request and is simply slow, and sending it again would put two of the same request on an endpoint that is already throttling. The read timeout is 12s rather than the 5s default for the same reason - a served request takes about 45ms, but a throttled one can take several seconds and is still worth waiting for. The standing cost is one mbedTLS context resident (about 380 bytes of static RAM here) instead of one built and torn down every ten seconds.
 
-Providers answer `429 Too Many Requests` once they have had enough, and a poll that collects one is followed by a minute in which no request goes out to *that* provider at all, rather than by more of the same at the usual cadence. The backoff is per provider, so one throttling the device doesn't sideline the other. If 429s are a standing feature rather than an occasional one, `POLL_INTERVAL_MS` in `include/config.h` is the dial to turn - ten seconds is not guaranteed to be within what the endpoint will serve, and a long session of reflashing (each boot polls immediately) is enough to trip it.
+Providers answer `429 Too Many Requests` once they have had enough, and a poll that collects one is followed by a minute in which no request goes out to *that* provider at all, rather than by more of the same at the usual cadence. The backoff is per provider, so one throttling the device doesn't sideline the other. If 429s are a standing feature rather than an occasional one, the refresh interval in Settings is the dial to turn - a short one is not guaranteed to be within what the endpoint will serve, and a long session of reflashing (each boot polls immediately) is enough to trip it.
 
 The kept-alive socket is closed when a poll is aimed at a different host, since reusing it would send the request down a connection to the wrong server.
 
-The status line under the table says how old the data is, and turns amber when the last poll didn't land, so a quiet sky can be told apart from a dead network. A link that drops is reconnected from the poll task with a 5s-to-2min backoff, standing down while the WiFi screen is up, since that screen drives the radio itself.
+The status line under the table says how old the data is, and turns amber when the last poll didn't land, so a quiet sky can be told apart from a dead network. A link that drops is reconnected from the poll task with a 5s-to-2min backoff, standing down while the WiFi screen is up, since that screen drives the radio itself; three failures in a row open that screen (see [Settings](#settings)).
 
 ## Aircraft types
 
@@ -137,13 +143,65 @@ Callsigns are placed nearest-first and one may not overlap another already place
 
 The code at the centre is the nearest airport, from a generated table of the 3244 large and medium airports with scheduled service in the public-domain [OurAirports](https://ourairports.com/data/) dataset (~39KB of flash). A full scan takes 6.7ms, so the result is cached until the location changes rather than recomputed per frame. Nothing within 120nm leaves the centre as a bare cross.
 
+An alerted aircraft is drawn amber, or red for an emergency, and as its alert goes off its callsign flashes red three times - drawn even where it would otherwise give way to another label, since it is the one being pointed at. REC and Replays sit in the header; see [Recording and replay](#recording-and-replay).
+
 The button beside Back chooses what the plot is centred on, and is labelled with the current choice: **AIRPORT**, the default, puts that airport at the centre with its code under the cross; **HOME** centres on the configured location itself and marks it with a bare `+`. The choice persists. Airport mode with nothing in range falls back to home. The aircraft are still fetched around home, so with the plot centred on an airport some way off, the edge of the plot furthest from home can sit beyond the fetch radius and show empty.
+
+## Alerts
+
+Four kinds, each switched on or off under **Settings > Alerts & recording**:
+
+- **Emergency** - squawking 7700, 7600 (radio failure) or 7500 (hijack).
+- **Military** - a military aircraft while civil traffic is showing. A civil poll from a feed that marks military traffic carries it anyway and it is only filtered out locally, so with this alert on it is kept, to be flagged. A feed that doesn't mark it - adsb.fi's point endpoint - can't say which contacts are military, which is one reason Auto keeps going back to adsb.lol (see [Data sources](#data-sources)). In military mode every contact is military, so the rule stands down.
+- **Watchlist** - entries typed on the keyboard, matched against callsigns, registrations (dashes optional, so `G-ABCD` and `GABCD` both work), type designators and ICAO hex codes. A three-letter entry is an airline: `RYR` matches every flight number that starts with it. Entries are letters, digits and dashes, 2 to 10 long, and a list holding anything else is refused with the offending entries named, rather than kept and never matched. A **long press** on a table row puts that flight's callsign on the list, or takes it off.
+- **Rare type** - a short list of notable designators (the A380, 747s, the An-124, the Beluga, heavies and warbirds) plus readsb's own "interesting" flag where the feed carries it.
+
+An alert puts a banner across the table, radar or detail screen - red for an emergency, amber otherwise - with what tripped it, the callsign, type and distance. Tap it for the aircraft's details, tap the X to close it, or leave it: it goes after 20 seconds. A three-note chime plays, or a two-tone warble for an emergency that can't be mistaken for it. The callsign flashes red three times on the table and the radar, in step with the chime, then stays amber (red for an emergency) for as long as the aircraft is in range.
+
+Each aircraft alerts once per sighting, and again only if it trips a new rule - a watchlisted airliner that then squawks 7700. An alerted aircraft is never trimmed off a busy radius: the poll keeps the nearest sixty contacts for the radar, and any alerted one beyond that is kept as well.
+
+## Recording and replay
+
+**REC** on the radar records the whole scene - every contact, at every poll - to the SD card, and counts up while it runs. With **auto-record** on, an alert starts one, and it runs for as long as any alerted aircraft is in range and a minute after the last has gone, so a contact that drops out for a poll or two doesn't split one sighting into several files. Stopping an auto recording by hand holds it off until those aircraft have gone, or the next poll would start another. Changing the location, range or traffic filter stops a recording, since its header holds the home and range its plot is drawn around.
+
+Recordings are plain text in `/overhead`, named by the UTC time they started - a short header, then for each poll an `F` line and an `A` line per aircraft - so a card pulled from the device can be read on a laptop. At about 90 bytes per aircraft per poll, a quiet civil sky is about 0.2MB an hour and a busy military one at 15-second polls about 1.3MB. Each poll is flushed as it is written, so a card pulled or a battery run flat loses at most the poll in progress.
+
+A recording carries on in a new file - its next part - every 4 hours or 4MB, whichever comes first. Opening one reads all of it to index it, at about 1MB a second, so the cap is on size: no part takes more than about five seconds to open, and a progress bar shows across its row while it does.
+
+The card is write-tested at boot - written, read back and deleted - since a locked or failing card mounts happily and then loses every recording. Without a usable one, REC, Replays and the auto-record switch are greyed out; a tap on either button has another look for one, as does auto-record whenever an alert would start a recording.
+
+**Replays** lists recordings newest first, seven to a page, with what started each, its range and size, and which speeds it has been exported at. A delete takes two taps, and takes the recording's videos with it - which it says before the second. Playback draws the plot as it is live, with ten-minute trails, each contact gliding between polls rather than jumping; play and pause, a minute either way, a bar to tap anywhere along, and 1x, 4x, 16x or 64x. A tap on a blip opens that aircraft's details as they were at that moment.
+
+## Video export
+
+**Export** on the replay screen renders the whole recording, at the speed chosen, to an MP4 - H.264, 1280x720, ten frames a second - in `/videos` at the top of the card, named after the recording and the speed (`20261002-143155-16x.mp4`). The video is the replay as it looks on screen without the buttons, with the speed in the header. While it runs, the panel shows progress, the time left and Cancel, and the screen shows the frames as they are made. Once a recording has a video at the chosen speed, Export is greyed out and reads *Exported*; another speed is another video.
+
+Each frame is drawn into the canvas, converted by the PPA into the encoder's YUV layout, encoded by the P4's hardware H.264 block, and written by a small MP4 writer (`src/mp4_writer.cpp`): the encoder hands back Annex-B, NAL units behind start codes with the SPS and PPS in front of every keyframe, and MP4 wants each NAL behind its length and the parameter sets once, in the track's sample description, with the index of frame sizes written last. A keyframe every three seconds keeps it seekable. It comes to about 230kbps for a radar scene, so about 1.7MB a minute.
+
+Measured exporting a 90-second video (903 frames):
+
+| | first version | now |
+| --- | --- | --- |
+| export, start to saved | 78s | 48s |
+| colour conversion, per frame | 41ms | 28ms |
+
+Two changes made the difference. Only what has changed since a buffer last held a frame is converted - on a replay the title, the panel's labels and the frame of the plot never move. That needs a list of changed regions kept apart from the flush's, since the flush merges neighbours in a band into one strip, which for this joined the panel, the plot and the footer into nearly the whole screen. And encoding and writing run on a task of their own on core 0, from one of two buffers while the next frame is drawn and converted into the other. Every frame of the faster export decodes identical to the slower one's.
+
+## Sharing over WiFi
+
+**Share** on the Replays screen serves a page of the card's videos and recordings to anything on the same network, and puts up a QR code a phone's camera opens it from, along with the address and `http://overhead.local/`. Videos play in the browser, download and delete; recordings download.
+
+The server answers byte-range requests - Safari won't play a video from one that can't - and writes its own headers so a file goes with its length rather than chunked. It runs on its own task on core 0, reading the card 16KB at a time under the recorder's lock, so the table stays live and a recording carries on while a phone downloads, at about 1.3MB a second. File names from a URL are refused rather than cleaned up unless they are names this device would write, and only videos can be deleted.
+
+There is no password, so it runs only while the share screen is up, and Back stops it.
 
 ## Sound
 
 A two-note rise once the firmware is up, and a short blip whenever an aircraft that wasn't there before appears in the table - one blip per poll however many arrived, and never on the first poll after a start or a location change, where every aircraft is new by definition.
 
 The on-screen keyboard ticks on each key - 25ms at 3kHz, on a channel of its own that cuts off the tick before it, so fast typing doesn't queue up behind itself or behind an arrival blip.
+
+An alert plays a rising three-note chime, or a two-tone warble for an emergency, on a channel of its own, a note at a time from the main loop so it never holds up the screen.
 
 The speaker icon in the header mutes it, and the setting persists. Muting silences the beeps rather than shutting the speaker down, so unmuting needs no re-initialisation - and unmuting plays the arrival blip, which is the one confirmation that can only be given in the medium being switched back on. `SOUND_ENABLED` and `SOUND_VOLUME` in `include/config.h` remain the build-time "never make a sound" and the level.
 
@@ -209,7 +267,7 @@ At the point of parsing, that is indistinguishable from an empty sky - which is 
 
 So a single source is a single point of failure that fails silently, and **Auto** does something about it:
 
-- Sticky, not round-robin: whichever provider last answered is asked first, so one that has gone down doesn't cost a 12-second timeout on every poll for the duration of the outage.
+- Sticky, not round-robin: whichever provider last answered is asked first, so one that has gone down doesn't cost a 12-second timeout on every poll for the duration of the outage. But not for good: off adsb.lol, it is asked first again every five minutes. It is the one whose feed marks military and "interesting" airframes, so a fallback that stuck after a single 429 quietly switched those alerts off for as long as the device stayed up.
 - A provider that fails outright is skipped to the next one.
 - An empty result that follows a *non-empty* one is checked against the other provider before it reaches the screen. If that one finds traffic, it takes over and says so in the header. If both agree the sky is empty, it is empty.
 - Only on that transition, so a genuinely quiet sky costs one request per poll rather than two.
@@ -256,15 +314,23 @@ MIT - see [LICENSE](LICENSE). The libraries it builds on (M5Unified, M5GFX, Ardu
 - `src/main.cpp` - setup/loop, WiFi, the background poll task, screen state, touch dispatch
 - `src/screen.cpp` - the shared canvas, dirty-region tracking and the PPA-accelerated push to the panel
 - `src/display.cpp` - main table rendering, with per-cell diffing so only changed cells are repainted
+- `src/detail_screen.cpp` - one aircraft's details, from the table, the radar, a replay or an alert banner
 - `src/location_screen.cpp` - location search screen: text entry and results list, reached from the settings screen
-- `src/settings_screen.cpp` - the cog screen: filters, the data source, the range and interval sliders, and the way in to location and WiFi
+- `src/settings_screen.cpp` - the cog screen: filters, the data source, the range and interval sliders, and the way in to location, WiFi and alerts
+- `src/alerts.cpp` - the alert rules, the watchlist parser and the callsign flash
+- `src/alerts_screen.cpp`, `src/watchlist_screen.cpp` - alert switches and auto-record, and the watchlist editor
+- `src/recorder.cpp` - the SD card: mounting and the write test, recordings and their parts, and the video folder
+- `src/replay.cpp` - indexes a recording and gives the scene at any moment of it, with trails
+- `src/recordings_screen.cpp`, `src/playback_screen.cpp` - the list of recordings, and playback and export
+- `src/video_writer.cpp`, `src/mp4_writer.cpp` - canvas to H.264 by the PPA and the hardware encoder, and the MP4 around it
+- `src/share_server.cpp`, `src/share_screen.cpp` - the web server for sharing, and the screen with its QR code
 - `src/wifi_screen.cpp` - network scan, passphrase entry and connection
 - `src/keyboard.cpp` - the on-screen keyboard shared by the location and WiFi screens
 - `src/adsb_client.cpp` - provider polling, failover and aircraft parsing
 - `src/aircraft_db.cpp` - ICAO type code and operator lookups for the detail screen
 - `src/geocode.cpp` - Open-Meteo location search
-- `src/settings.cpp` - persists location, filters and WiFi credentials via ESP32 `Preferences` (NVS)
+- `src/settings.cpp` - persists location, filters, alert settings and WiFi credentials via ESP32 `Preferences` (NVS)
 - `src/radar_screen.cpp` - the radar plot: range rings, bearings, contacts and vectors
 - `src/airports.cpp` - generated nearest-airport lookup, for the code at the centre of the plot
-- `src/sound.cpp` - boot and new-arrival beeps through the built-in speaker
+- `src/sound.cpp` - boot and new-arrival beeps, key ticks and alert chimes through the built-in speaker
 - `include/config.h` - tunable constants, and the ADS-B provider table
