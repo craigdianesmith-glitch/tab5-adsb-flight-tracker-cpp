@@ -139,6 +139,12 @@ uint16_t colorBg, colorText, colorMuted, colorFaint, colorBtnBg, colorRing, colo
     colorHome, colorTrail, colorAlert, colorEmergency, colorRec, colorRunway;
 RadarPalette g_palette;
 
+// Where a plot's drawing time goes, for the [perf] line: the parts that
+// don't move from one frame to the next - erasing, the scope, the airports
+// and runways - then the contacts, then pushing it to the panel.
+uint64_t g_backgroundUs = 0, g_contactsUs = 0, g_pushUs = 0;
+uint32_t g_plotFrames = 0;
+
 RecButton g_recState = RecButton::IDLE;
 uint32_t g_recElapsedS = 0;
 
@@ -717,6 +723,18 @@ const RadarPalette &radarPalette() {
     return g_palette;
 }
 
+String radarTakeTimings() {
+    if (g_plotFrames == 0) {
+        return String("-");
+    }
+    String s = "background " + String((uint32_t)(g_backgroundUs / g_plotFrames / 1000)) + ", contacts " +
+               String((uint32_t)(g_contactsUs / g_plotFrames / 1000)) + ", push " +
+               String((uint32_t)(g_pushUs / g_plotFrames / 1000)) + "ms avg";
+    g_backgroundUs = g_contactsUs = g_pushUs = 0;
+    g_plotFrames = 0;
+    return s;
+}
+
 namespace {
 
 // How drawContacts() places and draws what it is given: the radar's and the
@@ -900,6 +918,7 @@ void pushPlot(bool push, int footTop) {
 
 void radarPlotDraw(const RadarScene &scene, bool full) {
     ensureColors();
+    uint32_t t0 = micros();
     auto &canvas = screen::canvas();
     double lat = scene.lat, lon = scene.lon;
     int rangeNm = scene.rangeNm;
@@ -952,6 +971,7 @@ void radarPlotDraw(const RadarScene &scene, bool full) {
     }
 
     int plotted = 0, labelled = 0;
+    uint32_t t1 = micros();
     drawContacts(scene.aircraft, scene.isNew, scene.trails, scene.flash,
                  {lat, lon, (float)RADIUS / rangeNm, 60.0f, false, scene.followHex}, plotted, labelled);
 
@@ -974,10 +994,15 @@ void radarPlotDraw(const RadarScene &scene, bool full) {
     footerBox(String(plotted) + " contacts" + (labelled < plotted ? "   " + String(labelled) + " labelled" : ""), 1264,
               FOOTER_Y, true);
 
+    uint32_t t2 = micros();
+    g_backgroundUs += t1 - t0;
+    g_contactsUs += t2 - t1;
+    g_plotFrames++;
     if (full) {
         return;  // the caller flushes, once it has drawn the rest of the screen
     }
     pushPlot(scene.push, FOOT_T);
+    g_pushUs += micros() - t2;
 }
 
 // --- the airport zoom --------------------------------------------------------
@@ -1398,6 +1423,7 @@ void zoomPlot(const ZoomFrame &f, const std::vector<Aircraft> &aircraft,
               const std::vector<replay::TrailPoint> *trails, bool flash, const String &followHex, bool full,
               bool push) {
     auto &canvas = screen::canvas();
+    uint32_t t0 = micros();
     if (!full) {
         screen::fillRect(PLOT_L, PLOT_T, PLOT_R - PLOT_L, PLOT_B - PLOT_T, colorBg);
         canvas.fillRect(FOOT_L, ZOOM_FOOT_T, FOOT_R - FOOT_L, FOOT_B - ZOOM_FOOT_T, colorBg);
@@ -1414,8 +1440,13 @@ void zoomPlot(const ZoomFrame &f, const std::vector<Aircraft> &aircraft,
     drawRunways(f, inUse);
     static const std::vector<uint8_t> noneNew;  // the radar marks new contacts; here they are all just traffic
     int plotted = 0, labelled = 0;
+    uint32_t t1 = micros();
     drawContacts(aircraft, noneNew, trails, flash, {f.lat, f.lon, RADIUS / range, ZOOM_LEAD_S, true, followHex},
                  plotted, labelled);
+    uint32_t t2 = micros();
+    g_backgroundUs += t1 - t0;
+    g_contactsUs += t2 - t1;
+    g_plotFrames++;
     canvas.clearClipRect();
 
     // As the radar's, with the runways in use on top when there are any.
@@ -1439,7 +1470,9 @@ void zoomPlot(const ZoomFrame &f, const std::vector<Aircraft> &aircraft,
               FOOTER_Y, true);
 
     if (!full) {
+        uint32_t t3 = micros();
         pushPlot(push, ZOOM_FOOT_T);
+        g_pushUs += micros() - t3;
     }
 }
 

@@ -170,3 +170,8 @@ struct RadarPalette {
     uint16_t bg, text, muted, faint, btnBg, ring, rec, disabled;
 };
 const RadarPalette &radarPalette();
+
+// Where the plots' drawing time has gone since last asked, for the [perf]
+// line - the parts that don't move, the contacts, the push - or "-" for no
+// plots drawn.
+String radarTakeTimings();

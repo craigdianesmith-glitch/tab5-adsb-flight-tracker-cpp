@@ -101,6 +101,14 @@ constexpr float ROTATE_KT = 145.0f;
 constexpr float CLIMB_ACCEL_KT_PER_S = 1.0f;
 constexpr float CLIMB_OUT_KT = 180.0f;
 constexpr int CLIMB_OUT_FPM = 2000;
+// A departure stopped on the runway itself - lined up, waiting - and lost
+// there is taken to have begun its roll once this long has gone by: it was
+// lined up to go, and the feed losing it is as likely as not its going.
+// Tighter about the centreline than a roll down it, since a holding point is
+// only some 90m from it, and pointing along it.
+constexpr float LINED_UP_WAIT_S = 10.0f;
+constexpr float LINED_UP_CENTRE_NM = 0.025f;
+constexpr float LINED_UP_HEADING_DEG = 30.0f;
 // A report in the air this long before one on the ground makes it a landing
 // rather than a departure.
 constexpr uint32_t LANDED_WITHIN_MS = 180000;
@@ -250,7 +258,11 @@ bool trackFromHistory(const std::vector<FollowSample> &history, const FollowSamp
 // track - none given, or still turning on - the runway whose pavement it is
 // on, taken in the direction it was moving along it, or failing that towards
 // the end with the more runway ahead.
-bool runwayUnder(const FollowSample &last, const std::vector<FollowSample> &history, Lineup &out) {
+//
+// With `linedUp`, for one stopped there, it has to be on the centreline and
+// pointing along the runway, which gives the direction - no movement to go by.
+bool runwayUnder(const FollowSample &last, const std::vector<FollowSample> &history, Lineup &out,
+                 bool linedUp = false) {
     float nmPerDegLon = 60.0f * cosf(last.lat * (float)M_PI / 180.0f);
     for (const Airport &a : airportsWithin(last.lat, last.lon, 5.0f)) {
         int count = 0;
@@ -269,16 +281,26 @@ bool runwayUnder(const FollowSample &last, const std::vector<FollowSample> &hist
             float ux = (bx - ax) / len, uy = (by - ay) / len;  // end 0 to end 1
             float along = -ax * ux - ay * uy;                  // from end 0
             float offset = fabsf(-ax * uy + ay * ux);
-            if (offset > ON_RUNWAY_OFFSET_NM || along < 0 || along > len) {
+            if (offset > (linedUp ? LINED_UP_CENTRE_NM : ON_RUNWAY_OFFSET_NM) || along < 0 || along > len) {
                 continue;
             }
-            // Towards end 1, unless it was moving towards end 0 - or, not
-            // known to be moving either way, end 0 has the more ahead.
             bool towards1 = along < len / 2;
-            float t;
-            if (trackFromHistory(history, last, t)) {
-                float a = t * (float)M_PI / 180.0f;
-                towards1 = sinf(a) * ux + cosf(a) * uy >= 0;
+            if (linedUp) {
+                // Which way it points, and that it points along it at all.
+                float heading = atan2f(ux, uy) * 180.0f / (float)M_PI;
+                float off = fabsf(fmodf(last.track - heading + 540.0f, 360.0f) - 180.0f);
+                if (off > LINED_UP_HEADING_DEG && off < 180.0f - LINED_UP_HEADING_DEG) {
+                    continue;
+                }
+                towards1 = off <= LINED_UP_HEADING_DEG;
+            } else {
+                // Towards end 1, unless it was moving towards end 0 - or, not
+                // known to be moving either way, end 0 has the more ahead.
+                float t;
+                if (trackFromHistory(history, last, t)) {
+                    float a = t * (float)M_PI / 180.0f;
+                    towards1 = sinf(a) * ux + cosf(a) * uy >= 0;
+                }
             }
             if (towards1) {
                 out = {ax, ay, ux, uy, len, along, rw.elevationFt};
@@ -316,6 +338,18 @@ FollowEstimate estimateFollowed(const FollowSample &given, float ageS, const std
     bool lined = rolling && lowEnough && findLineup(last, l);
     if (!lined && rolling && last.ground && departing) {
         lined = runwayUnder(last, history, l);
+    }
+    // Stopped on the runway, lined up: its roll is taken to begin once it has
+    // been lost for LINED_UP_WAIT_S, from a standstill.
+    if (!lined && !rolling && last.ground && departing && last.hasTrack && runwayUnder(last, history, l, true)) {
+        if (ageS <= LINED_UP_WAIT_S) {
+            e.how = "held: lined up";
+            return e;
+        }
+        lined = true;
+        ageS -= LINED_UP_WAIT_S;
+        gs = 0;
+        e.gsKt = 0;
     }
     if (!lined) {
         if (last.ground) {

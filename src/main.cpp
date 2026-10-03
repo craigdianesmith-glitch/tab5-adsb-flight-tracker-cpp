@@ -2397,9 +2397,10 @@ void reportPerf() {
         return;
     }
     lastMs = millis();
-    Serial.printf("[perf] radar %s, zoom %s, tracks %s (%u), loop max %ums; internal RAM %uKB free, %uKB "
-                  "lowest, %uKB largest block\n",
-                  g_perfRadar.text().c_str(), g_perfZoom.text().c_str(), g_perfTracks.text().c_str(),
+    Serial.printf("[perf] radar %s, zoom %s (plots: %s), tracks %s (%u), loop max %ums; internal RAM %uKB free, "
+                  "%uKB lowest, %uKB largest block\n",
+                  g_perfRadar.text().c_str(), g_perfZoom.text().c_str(), radarTakeTimings().c_str(),
+                  g_perfTracks.text().c_str(),
                   (unsigned)g_tracks.size(), (unsigned)(g_perfLoop.maxUs / 1000),
                   (unsigned)(heap_caps_get_free_size(MALLOC_CAP_INTERNAL) / 1024),
                   (unsigned)(heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL) / 1024),
