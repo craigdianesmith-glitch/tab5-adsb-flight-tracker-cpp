@@ -12,6 +12,7 @@ enum class RadarAction {
     BACK,
     SELECT,           // outHex identifies the tapped contact
     TOGGLE_CENTRE,    // switch between centring on home and on the airport
+    TOGGLE_AIRPORTS,  // show or hide the other airports in range
     TOGGLE_RECORD,    // start or stop a recording
     OPEN_RECORDINGS,  // the list of recordings, to play one back
 };
@@ -23,19 +24,26 @@ enum class RecButton { IDLE, RECORDING, NO_CARD };
 // A plan-position plot centred on the configured location (lat, lon) or the
 // airport nearest it: range rings, bearing marks, and every aircraft that
 // reported a position as a blip with a vector showing where it'll be a minute
-// from now.
+// from now. With `airports`, and the plot centred on an airport, every other
+// airport within the range is marked on it as well.
 //
 // `full` repaints the whole screen, for arriving at it or changing what it is
 // centred on. Without it only the plot and the footer readouts are redrawn,
 // for a data refresh; that relies on the rest still being on the canvas from
 // the last full draw.
 void radarScreenDraw(const std::vector<Aircraft> &aircraft, const std::vector<uint8_t> &isNew, double lat, double lon,
-                     int rangeNm, bool military, RadarCentre centre, bool full);
+                     int rangeNm, bool military, RadarCentre centre, bool airports, bool full);
 
 // Contacts are identified by ICAO hex rather than by index: a poll can land
 // between the plot being drawn and the screen being tapped, and an index into
 // the old list would then point at the wrong aircraft.
 RadarAction radarScreenHandleTouch(int x, int y, String &outHex);
+
+// A long press. On the centre toggle it shows or hides the airports - a tap
+// there already switches the centre - and anywhere else it does nothing.
+// Whether that applies is the caller's to say: it only does while centred on
+// the airport, since the airports are drawn only then.
+RadarAction radarScreenHandleHold(int x, int y);
 
 // Updates the record button. It is part of the header, which a refresh
 // doesn't repaint, so this repaints the button itself when `onScreen` says the
@@ -51,6 +59,7 @@ struct RadarScene {
     double lat, lon;  // home
     int rangeNm;
     RadarCentre centre;
+    bool airports;       // mark the other airports in range, when centred on one
     bool flash = false;  // live alerts' callsign flash - never for a replay
     // A refresh normally pushes what it drew to the panel. A video export
     // draws frames to encode, not to show, so it says when to push instead.

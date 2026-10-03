@@ -71,6 +71,7 @@ uint32_t g_lastTickMs = 0;
 uint32_t g_lastDrawMs = 0;
 bool g_dirty = false;
 RadarCentre g_centre = DEFAULT_RADAR_CENTRE;
+bool g_airports = false;
 
 std::vector<Aircraft> g_scene;
 std::vector<replay::TrailPoint> g_trails;
@@ -334,7 +335,7 @@ void waitForRelease() {
 void drawScene(bool full) {
     replay::sceneAt(g_t, g_scene, g_trails);
     const recorder::Header &h = replay::header();
-    radarPlotDraw({g_scene, g_noneNew, &g_trails, h.lat, h.lon, h.radiusNm, g_centre}, full);
+    radarPlotDraw({g_scene, g_noneNew, &g_trails, h.lat, h.lon, h.radiusNm, g_centre, g_airports}, full);
     drawDynamic();
     screen::flush();
 }
@@ -367,6 +368,7 @@ void playbackScreenClose() {
 }
 
 void playbackScreenSetCentre(RadarCentre centre) { g_centre = centre; }
+void playbackScreenSetAirports(bool airports) { g_airports = airports; }
 
 void playbackScreenDraw() {
     const RadarPalette &p = radarPalette();
@@ -375,7 +377,7 @@ void playbackScreenDraw() {
     drawStaticPanel(false);
     replay::sceneAt(g_t, g_scene, g_trails);
     const recorder::Header &h = replay::header();
-    radarPlotDraw({g_scene, g_noneNew, &g_trails, h.lat, h.lon, h.radiusNm, g_centre}, true);
+    radarPlotDraw({g_scene, g_noneNew, &g_trails, h.lat, h.lon, h.radiusNm, g_centre, g_airports}, true);
     drawDynamic();
     screen::flush();
     g_lastDrawMs = millis();
@@ -470,6 +472,13 @@ PlaybackAction playbackScreenHandleTouch(int x, int y, Aircraft &outAircraft) {
     return PlaybackAction::NONE;
 }
 
+PlaybackAction playbackScreenHandleHold(int x, int y) {
+    if (y >= BACK_Y && y < BACK_Y + BACK_H && x >= CENTRE_X && x < CENTRE_X + CENTRE_W) {
+        return PlaybackAction::TOGGLE_AIRPORTS;
+    }
+    return PlaybackAction::NONE;
+}
+
 void playbackScreenExport() {
     const RadarPalette &p = radarPalette();
     const recorder::Header &h = replay::header();
@@ -507,14 +516,14 @@ void playbackScreenExport() {
             screen::clear(p.bg);
             drawHeader(true);
             drawStaticPanel(true);
-            radarPlotDraw({g_scene, g_noneNew, &g_trails, h.lat, h.lon, h.radiusNm, g_centre}, true);
+            radarPlotDraw({g_scene, g_noneNew, &g_trails, h.lat, h.lon, h.radiusNm, g_centre, g_airports}, true);
         } else {
             if (overlay) {
                 canvas.fillRect(PANEL_X, CTRL_Y, PANEL_W, CTRL_H, p.bg);  // the progress is no part of the video
                 screen::markDirty(PANEL_X, CTRL_Y, PANEL_W, CTRL_H);
                 overlay = false;
             }
-            RadarScene scene{g_scene, g_noneNew, &g_trails, h.lat, h.lon, h.radiusNm, g_centre};
+            RadarScene scene{g_scene, g_noneNew, &g_trails, h.lat, h.lon, h.radiusNm, g_centre, g_airports};
             scene.push = false;
             radarPlotDraw(scene, false);
         }

@@ -11,6 +11,7 @@ enum class PlaybackAction {
     BACK,
     SELECT,         // outAircraft is the tapped contact, as recorded
     TOGGLE_CENTRE,  // same as the live radar's, and shared with it
+    TOGGLE_AIRPORTS,  // likewise, from a long press on the centre toggle
     EXPORT,         // make a video of it: playbackScreenExport()
 };
 
@@ -20,6 +21,7 @@ bool playbackScreenOpen(const String &path, replay::LoadProgress progress = null
 void playbackScreenClose();
 
 void playbackScreenSetCentre(RadarCentre centre);
+void playbackScreenSetAirports(bool airports);
 void playbackScreenDraw();
 
 // Advances playback and redraws when there is something new to show. Call
@@ -27,6 +29,7 @@ void playbackScreenDraw();
 void playbackScreenTick();
 
 PlaybackAction playbackScreenHandleTouch(int x, int y, Aircraft &outAircraft);
+PlaybackAction playbackScreenHandleHold(int x, int y);
 
 // Renders the whole recording, at the speed chosen for playback, to an MP4 in
 // /videos on the card, showing progress with a Cancel button as it goes. Takes

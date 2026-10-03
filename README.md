@@ -147,6 +147,8 @@ An alerted aircraft is drawn amber, or red for an emergency, and as its alert go
 
 The button beside Back chooses what the plot is centred on, and is labelled with the current choice: **AIRPORT**, the default, puts that airport at the centre with its code under the cross; **HOME** centres on the configured location itself and marks it with a bare `+`. The choice persists. Airport mode with nothing in range falls back to home. The aircraft are still fetched around home, so with the plot centred on an airport some way off, the edge of the plot furthest from home can sit beyond the fetch radius and show empty.
 
+A **long press** on the same button, while it says AIRPORT, marks every other airport within the plot's range, and another long press takes them off again; a tap still switches the centre. They belong to the airport view: switching to HOME hides them, switching back brings them back, and a long press on HOME does nothing. Each is a chart's airfield symbol - a ring with four ticks, so it can't be mistaken for a blip - with its code under it, in the dim green of the compass points and drawn before any contact, so the airports read as the map and the traffic stays on top. Codes are placed nearest-first and one that would overlap another is left off with its symbol kept, so a cluster of airfields still shows as one; callsigns don't give way to them. Over the busiest parts of the table that comes to about 25 airports at the 150nm military range, and 5 to 10 at the civil 60nm. The list comes from the same table, cached until the centre or the range changes, and the choice persists and carries over to replays, where the same long press works too. The press clicks when it registers, since with nothing in range the plot itself wouldn't change.
+
 ## Alerts
 
 Four kinds, each switched on or off under **Settings > Alerts & recording**:
@@ -331,6 +333,6 @@ MIT - see [LICENSE](LICENSE). The libraries it builds on (M5Unified, M5GFX, Ardu
 - `src/geocode.cpp` - Open-Meteo location search
 - `src/settings.cpp` - persists location, filters, alert settings and WiFi credentials via ESP32 `Preferences` (NVS)
 - `src/radar_screen.cpp` - the radar plot: range rings, bearings, contacts and vectors
-- `src/airports.cpp` - generated nearest-airport lookup, for the code at the centre of the plot
+- `src/airports.cpp` - generated airport table: the nearest one, for the code at the centre of the plot, and every one in range, for the overlay
 - `src/sound.cpp` - boot and new-arrival beeps, key ticks and alert chimes through the built-in speaker
 - `include/config.h` - tunable constants, and the ADS-B provider table

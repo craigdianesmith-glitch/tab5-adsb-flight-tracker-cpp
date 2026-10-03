@@ -1,6 +1,7 @@
 #include "radar_screen.h"
 
 #include <M5Unified.h>
+#include <algorithm>
 #include <math.h>
 
 #include "airports.h"
@@ -54,9 +55,28 @@ constexpr int MAX_LABELS = 64;
 constexpr int LABEL_H = 16;  // Font0 at size 2
 constexpr int LABEL_PAD = 4;
 
+// Where the centre's airport code goes, under the cross.
+constexpr int CENTRE_CODE_Y = CENTER_Y + 13;
+
+// Around 25 airports fall inside the widest range over the busiest parts of
+// the table (London, New York, Frankfurt), so this is never the limit.
+constexpr int MAX_AIRPORT_LABELS = 48;
+constexpr int AIRPORT_R = 5, AIRPORT_TICK = 3;
+
 struct LabelBox {
     int16_t x, y, w, h;
 };
+
+bool overlapsAny(const LabelBox *boxes, int count, int x, int y, int w, int h) {
+    for (int j = 0; j < count; j++) {
+        const LabelBox &b = boxes[j];
+        if (x - LABEL_PAD < b.x + b.w && x + w + LABEL_PAD > b.x && y - LABEL_PAD < b.y + b.h &&
+            y + h + LABEL_PAD > b.y) {
+            return true;
+        }
+    }
+    return false;
+}
 
 // Where each contact was last plotted, so a tap can be matched back to one.
 struct Blip {
@@ -158,6 +178,54 @@ void drawTrend(int px, int py, const String &status, uint16_t color) {
         int tip = py + dir * (GAP + HEIGHT + i);
         canvas.drawLine(px - HALF_W, base, px, tip, color);
         canvas.drawLine(px, tip, px + HALF_W, base, color);
+    }
+}
+
+// The other airports in range, as map rather than traffic: drawn before
+// anything that moves, in the shade the compass points use. The symbol is a
+// chart's airfield - a ring with four ticks - so it can't be read as a blip,
+// and the code goes under it, as the centre's does. Codes are placed nearest
+// first and one that would overlap another is left off, keeping the symbol,
+// so a cluster of airfields still shows as one. Contacts' callsigns don't
+// check against them: the traffic is what the plot is for.
+void drawAirports(double lat, double lon, int rangeNm, const String &centreCode) {
+    auto &canvas = screen::canvas();
+    double nmPerDegLon = 60.0 * cos(lat * M_PI / 180.0);
+    canvas.setTextSize(2);
+    canvas.setTextColor(colorFaint);
+    canvas.setTextDatum(TL_DATUM);
+    LabelBox taken[MAX_AIRPORT_LABELS];
+    int takenCount = 0;
+    if (centreCode.length()) {
+        int w = canvas.textWidth(centreCode);
+        taken[takenCount++] = {(int16_t)(CENTER_X - w / 2), (int16_t)CENTRE_CODE_Y, (int16_t)w, (int16_t)LABEL_H};
+    }
+    for (const Airport &a : airportsWithin(lat, lon, rangeNm)) {
+        if (a.code == centreCode) {
+            continue;  // the cross already marks it
+        }
+        int x = CENTER_X + (int)lroundf((float)((a.lon - lon) * nmPerDegLon / rangeNm * RADIUS));
+        int y = CENTER_Y - (int)lroundf((float)((a.lat - lat) * 60.0 / rangeNm * RADIUS));
+        canvas.drawCircle(x, y, AIRPORT_R, colorFaint);
+        constexpr int T0 = AIRPORT_R + 1, T1 = AIRPORT_R + AIRPORT_TICK;
+        canvas.drawLine(x, y - T0, x, y - T1, colorFaint);
+        canvas.drawLine(x, y + T0, x, y + T1, colorFaint);
+        canvas.drawLine(x - T0, y, x - T1, y, colorFaint);
+        canvas.drawLine(x + T0, y, x + T1, y, colorFaint);
+
+        // Under the symbol unless that runs off the bottom of the plot, and
+        // kept inside its sides: one due east or west at the very edge of the
+        // range would otherwise lose a character to the clip.
+        int w = canvas.textWidth(a.code);
+        int lx = std::min(std::max(x - w / 2, PLOT_L), PLOT_R - w);
+        int ly = y + T1 + 3;
+        if (ly + LABEL_H > PLOT_B) {
+            ly = y - T1 - 3 - LABEL_H;
+        }
+        if (takenCount < MAX_AIRPORT_LABELS && !overlapsAny(taken, takenCount, lx, ly, w, LABEL_H)) {
+            canvas.drawString(a.code, lx, ly);
+            taken[takenCount++] = {(int16_t)lx, (int16_t)ly, (int16_t)w, (int16_t)LABEL_H};
+        }
     }
 }
 
@@ -263,13 +331,13 @@ void drawHeader(bool military, RadarCentre centre) {
 }  // namespace
 
 void radarScreenDraw(const std::vector<Aircraft> &aircraft, const std::vector<uint8_t> &isNew, double lat, double lon,
-                     int rangeNm, bool military, RadarCentre centre, bool full) {
+                     int rangeNm, bool military, RadarCentre centre, bool airports, bool full) {
     ensureColors();
     if (full) {
         screen::clear(colorBg);
         drawHeader(military, centre);
     }
-    radarPlotDraw({aircraft, isNew, nullptr, lat, lon, rangeNm, centre, true}, full);
+    radarPlotDraw({aircraft, isNew, nullptr, lat, lon, rangeNm, centre, airports, true}, full);
     if (full) {
         screen::flush();
     }
@@ -350,13 +418,15 @@ void radarPlotDraw(const RadarScene &scene, bool full) {
     // nothing in range of the lookup falls back to home, since there is no
     // other point to centre on.
     Airport airport;
+    String centreCode;
     if (centre == RadarCentre::AIRPORT && nearestAirport(lat, lon, airport)) {
         lat = airport.lat;
         lon = airport.lon;
+        centreCode = airport.code;
         canvas.setTextSize(2);
         canvas.setTextColor(colorHome);
         canvas.setTextDatum(TC_DATUM);
-        canvas.drawString(airport.code, CENTER_X, CENTER_Y + 13);
+        canvas.drawString(airport.code, CENTER_X, CENTRE_CODE_Y);
     }
     canvas.drawLine(CENTER_X - 9, CENTER_Y, CENTER_X + 9, CENTER_Y, colorHome);
     canvas.drawLine(CENTER_X, CENTER_Y - 9, CENTER_X, CENTER_Y + 9, colorHome);
@@ -370,6 +440,12 @@ void radarPlotDraw(const RadarScene &scene, bool full) {
     LabelBox taken[MAX_LABELS];
     int takenCount = 0;
     g_blipCount = 0;
+
+    // Only around an airport: they are part of that view, and switching the
+    // centre to home takes them off along with its code.
+    if (scene.airports && centreCode.length()) {
+        drawAirports(lat, lon, rangeNm, centreCode);
+    }
 
     // Trails first, so every blip sits on top of its own and anyone else's.
     if (scene.trails != nullptr) {
@@ -449,15 +525,7 @@ void radarPlotDraw(const RadarScene &scene, bool full) {
         if (lx + lw > CENTER_X + RADIUS) {
             lx = (int)px - 9 - lw;  // would run off the plot - put it on the left
         }
-        bool clear = true;
-        for (int j = 0; j < takenCount && flash == AlertFlash::NONE; j++) {
-            const LabelBox &b = taken[j];
-            if (lx - LABEL_PAD < b.x + b.w && lx + lw + LABEL_PAD > b.x && ly - LABEL_PAD < b.y + b.h &&
-                ly + LABEL_H + LABEL_PAD > b.y) {
-                clear = false;
-                break;
-            }
-        }
+        bool clear = flash != AlertFlash::NONE || !overlapsAny(taken, takenCount, lx, ly, lw, LABEL_H);
         if (clear && (takenCount < MAX_LABELS || flash != AlertFlash::NONE)) {
             canvas.setTextColor(labelColor);
             canvas.setTextDatum(TL_DATUM);
@@ -521,6 +589,13 @@ RadarAction radarScreenHandleTouch(int x, int y, String &outHex) {
         }
     }
     return radarPlotHit(x, y, outHex) ? RadarAction::SELECT : RadarAction::NONE;
+}
+
+RadarAction radarScreenHandleHold(int x, int y) {
+    if (y >= BACK_Y && y < BACK_Y + BACK_H && x >= CENTRE_X && x < CENTRE_X + CENTRE_W) {
+        return RadarAction::TOGGLE_AIRPORTS;
+    }
+    return RadarAction::NONE;
 }
 
 bool radarPlotHit(int x, int y, String &outHex) {

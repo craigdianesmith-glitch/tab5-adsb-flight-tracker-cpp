@@ -54,6 +54,7 @@ int g_pollIntervalS = DEFAULT_POLL_INTERVAL_S;
 bool g_muted = false;
 AdsbSource g_source = DEFAULT_ADSB_SOURCE;
 RadarCentre g_radarCentre = DEFAULT_RADAR_CENTRE;  // only touched by loop()
+bool g_radarAirports = false;                       // likewise
 // Which provider actually answered the last successful poll, for the header.
 // Under AUTO that is not necessarily the one at the top of the table.
 String g_activeProvider;
@@ -518,7 +519,7 @@ void drawRadar(bool full) {
         military = (g_traffic == TrafficFilter::MILITARY);
         xSemaphoreGive(g_dataMutex);
     }
-    radarScreenDraw(aircraft, isNew, lat, lon, radius, military, g_radarCentre, full);
+    radarScreenDraw(aircraft, isNew, lat, lon, radius, military, g_radarCentre, g_radarAirports, full);
 }
 
 // Where the banner may be shown: the screens the sky is on. The others are
@@ -657,10 +658,13 @@ void openDetail(const Aircraft &ac, Screen returnTo) {
     detailScreenDraw();
 }
 
+// Whether a touch at height y lands on the banner, if it is showing.
+bool bannerOver(int y) { return g_bannerUp && g_bannerShownMs != 0 && bannerScreen(g_screen) && y < BANNER_H; }
+
 // A tap on the banner: the X closes it, anywhere else opens the aircraft -
 // as it is now if it's still in range, as it was when it alerted if not.
 bool handleBannerTouch(int x, int y) {
-    if (!g_bannerUp || g_bannerShownMs == 0 || !bannerScreen(g_screen) || y >= BANNER_H) {
+    if (!bannerOver(y)) {
         return false;
     }
     if (x >= 1280 - BANNER_CLOSE_W) {
@@ -765,6 +769,8 @@ void handleRadarTouch(int x, int y) {
     case RadarAction::TOGGLE_RECORD:
         toggleRecording();
         break;
+    case RadarAction::TOGGLE_AIRPORTS:  // only ever from a hold
+        break;
     case RadarAction::OPEN_RECORDINGS:
         // Greyed out without a card, but a tap still has another look for one.
         if (!recorder::mount()) {
@@ -790,6 +796,7 @@ void handleRecordingsTouch(int x, int y) {
     case RecordingsAction::PLAY:
         if (playbackScreenOpen(path, recordingsScreenLoadProgress)) {
             playbackScreenSetCentre(g_radarCentre);
+            playbackScreenSetAirports(g_radarAirports);
             g_screen = Screen::PLAYBACK;
             playbackScreenDraw();
         } else {
@@ -827,6 +834,8 @@ void handlePlaybackTouch(int x, int y) {
         playbackScreenSetCentre(g_radarCentre);
         playbackScreenDraw();
         break;
+    case PlaybackAction::TOGGLE_AIRPORTS:  // only ever from a hold
+        break;
     case PlaybackAction::SELECT:
         openDetail(tapped, Screen::PLAYBACK);
         break;
@@ -835,6 +844,35 @@ void handlePlaybackTouch(int x, int y) {
         break;
     case PlaybackAction::NONE:
         break;
+    }
+}
+
+// A long press on the radar's centre toggle, while it says AIRPORT, shows or
+// hides the other airports around it, here and in replays alike. On HOME it
+// does nothing: the airports are part of the airport view, so they are hidden
+// there, and a press that changed what shows on switching back would only
+// surprise. It clicks, since with no airport in range the plot itself
+// wouldn't change to say the hold registered.
+bool toggleRadarAirports() {
+    if (g_radarCentre != RadarCentre::AIRPORT) {
+        return false;
+    }
+    soundKeyClick();
+    g_radarAirports = !g_radarAirports;
+    saveRadarAirports(g_radarAirports);
+    return true;
+}
+
+void handleRadarHold(int x, int y) {
+    if (radarScreenHandleHold(x, y) == RadarAction::TOGGLE_AIRPORTS && toggleRadarAirports()) {
+        drawRadar(false);  // the header doesn't change
+    }
+}
+
+void handlePlaybackHold(int x, int y) {
+    if (playbackScreenHandleHold(x, y) == PlaybackAction::TOGGLE_AIRPORTS && toggleRadarAirports()) {
+        playbackScreenSetAirports(g_radarAirports);
+        playbackScreenDraw();
     }
 }
 
@@ -1013,6 +1051,18 @@ void handleDetailTouch(int x, int y) {
     }
 }
 
+// With the mutex held, when the location or the traffic filter changes. The
+// last poll's contacts answer the old question - somewhere else, or the other
+// filter - so they go now, rather than staying up under the new header until
+// a poll for it succeeds: a failed poll leaves the last good one showing, and
+// with the network down that is every poll. A changed range alone doesn't
+// call for it - those are still real contacts around the same place.
+void forgetContactsLocked() {
+    g_latestAircraft.clear();
+    g_latestIsNew.clear();
+    g_dataReady = true;
+}
+
 void handleLocationTouch(int x, int y) {
     double lat, lon;
     String label;
@@ -1035,6 +1085,7 @@ void handleLocationTouch(int x, int y) {
             g_resetBaseline = true;
             g_sceneChanged = true;
             g_pollNow = true;
+            forgetContactsLocked();
             xSemaphoreGive(g_dataMutex);
         }
     }
@@ -1059,6 +1110,9 @@ void handleSettingsTouch(int x, int y, bool pressed, bool clicked) {
             bool changed = (traffic != g_traffic) || (radius != g_radiusNm) || (source != g_source);
             if (traffic != g_traffic || radius != g_radiusNm) {
                 g_sceneChanged = true;  // the source doesn't alter what a recording's plot is drawn around
+            }
+            if (traffic != g_traffic) {
+                forgetContactsLocked();
             }
             g_traffic = traffic;
             g_radiusNm = radius;
@@ -1199,6 +1253,7 @@ void setup() {
     g_muted = s.muted;
     g_source = s.source;
     g_radarCentre = s.radarCentre;
+    g_radarAirports = s.radarAirports;
     g_alertMask = s.alertMask;
     g_watchlist = s.watchlist;
     g_autoRecord = s.autoRecord;
@@ -1303,8 +1358,20 @@ void loop() {
         handleSettingsTouch(tx, ty, pressed, clicked);
     } else if (M5.Touch.getCount()) {
         auto t = M5.Touch.getDetail(0);
-        if (t.wasHold() && g_screen == Screen::MAIN) {
-            handleMainHold(t.x, t.y);
+        if (t.wasHold() && !bannerOver(t.y)) {
+            switch (g_screen) {
+            case Screen::MAIN:
+                handleMainHold(t.x, t.y);
+                break;
+            case Screen::RADAR:
+                handleRadarHold(t.x, t.y);
+                break;
+            case Screen::PLAYBACK:
+                handlePlaybackHold(t.x, t.y);
+                break;
+            default:
+                break;
+            }
         } else if (t.wasClicked() && !handleBannerTouch(t.x, t.y)) {
             switch (g_screen) {
             case Screen::MAIN:

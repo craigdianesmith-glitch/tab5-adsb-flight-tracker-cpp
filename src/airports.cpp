@@ -2,6 +2,9 @@
 
 #include <math.h>
 
+#include <algorithm>
+#include <utility>
+
 namespace {
 
 struct AirportEntry {
@@ -1102,6 +1105,10 @@ double g_lastLat = 1e9, g_lastLon = 1e9;
 float g_lastMaxNm = -1.0f;
 const AirportEntry *g_lastEntry = nullptr;
 
+double g_withinLat = 1e9, g_withinLon = 1e9;
+float g_withinNm = -1.0f;
+std::vector<Airport> g_within;
+
 }  // namespace
 
 bool nearestAirport(double lat, double lon, Airport &out, float maxNm) {
@@ -1138,4 +1145,35 @@ bool nearestAirport(double lat, double lon, Airport &out, float maxNm) {
 String nearestAirportCode(double lat, double lon, float maxNm) {
     Airport a;
     return nearestAirport(lat, lon, a, maxNm) ? a.code : String("");
+}
+
+const std::vector<Airport> &airportsWithin(double lat, double lon, float rangeNm) {
+    if (lat == g_withinLat && lon == g_withinLon && rangeNm == g_withinNm) {
+        return g_within;
+    }
+    // The same flat-earth distance the radar projects with, so everything
+    // returned lands inside its outer ring.
+    double cosLat = cos(lat * M_PI / 180.0);
+    float max2 = rangeNm * rangeNm;
+    std::vector<std::pair<float, const AirportEntry *>> found;
+    for (const auto &a : AIRPORTS) {
+        float dy = (float)((a.lat - lat) * 60.0);
+        float dx = (float)((a.lon - lon) * 60.0 * cosLat);
+        float d2 = dx * dx + dy * dy;
+        if (d2 <= max2) {
+            found.push_back({d2, &a});
+        }
+    }
+    std::sort(found.begin(), found.end(),
+              [](const std::pair<float, const AirportEntry *> &a, const std::pair<float, const AirportEntry *> &b) {
+                  return a.first < b.first;
+              });
+    g_within.clear();
+    for (const auto &f : found) {
+        g_within.push_back({f.second->code, f.second->lat, f.second->lon});
+    }
+    g_withinLat = lat;
+    g_withinLon = lon;
+    g_withinNm = rangeNm;
+    return g_within;
 }
