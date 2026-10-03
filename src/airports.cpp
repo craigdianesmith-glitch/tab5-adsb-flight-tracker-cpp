@@ -1,6 +1,7 @@
 #include "airports.h"
 
 #include <math.h>
+#include <string.h>
 
 #include <algorithm>
 #include <utility>
@@ -1139,6 +1140,20 @@ bool nearestAirport(double lat, double lon, Airport &out, float maxNm) {
     out.code = g_lastEntry->code;
     out.lat = g_lastEntry->lat;
     out.lon = g_lastEntry->lon;
+    return true;
+}
+
+bool airportByCode(const String &code, Airport &out) {
+    // The table is in code order, as generated.
+    const AirportEntry *end = AIRPORTS + sizeof(AIRPORTS) / sizeof(AIRPORTS[0]);
+    const AirportEntry *a = std::lower_bound(
+        AIRPORTS, end, code.c_str(), [](const AirportEntry &e, const char *c) { return strcmp(e.code, c) < 0; });
+    if (a == end || code != a->code) {
+        return false;
+    }
+    out.code = a->code;
+    out.lat = a->lat;
+    out.lon = a->lon;
     return true;
 }
 

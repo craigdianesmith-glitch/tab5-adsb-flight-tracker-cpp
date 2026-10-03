@@ -15,6 +15,8 @@ enum class RadarAction {
     TOGGLE_AIRPORTS,  // show or hide the other airports in range
     TOGGLE_RECORD,    // start or stop a recording
     OPEN_RECORDINGS,  // the list of recordings, to play one back
+    ZOOM_AIRPORT,     // outAirport is the IATA code of the tapped airport
+    DISMISS,          // the list of targets closed without a pick; redraw to take it off
 };
 
 // What the record button shows. NO_CARD greys out Replays along with it:
@@ -37,7 +39,15 @@ void radarScreenDraw(const std::vector<Aircraft> &aircraft, const std::vector<ui
 // Contacts are identified by ICAO hex rather than by index: a poll can land
 // between the plot being drawn and the screen being tapped, and an index into
 // the old list would then point at the wrong aircraft.
-RadarAction radarScreenHandleTouch(int x, int y, String &outHex);
+//
+// An airport on the plot - the centre's, or one of the others in range - is
+// tapped by its code or its symbol, to zoom in on it.
+//
+// A tap within reach of several targets - an airport under its own ground
+// traffic, a cluster of contacts - puts up a list of them beside it, and the
+// next tap picks one (SELECT or ZOOM_AIRPORT) or dismisses it (DISMISS). The
+// list stays up over refreshes; a full draw starts without one.
+RadarAction radarScreenHandleTouch(int x, int y, String &outHex, String &outAirport);
 
 // A long press. On the centre toggle it shows or hides the airports - a tap
 // there already switches the centre - and anywhere else it does nothing.
@@ -73,6 +83,28 @@ void radarPlotDraw(const RadarScene &scene, bool full);
 
 // The contact nearest a tap on the last plot drawn, if one is within reach.
 bool radarPlotHit(int x, int y, String &outHex);
+
+// --- the airport zoom ----------------------------------------------------------
+
+// A close-up of one airport, opened by tapping it on the radar: each of its
+// runways drawn to scale from where its ends are, numbered at each end, with
+// the traffic around it - which ends are in use read off what is lined up on
+// them. Same scope, same contacts, at a few miles across rather than tens.
+
+// SELECT and DISMISS as the radar's: overlapping contacts get the same list.
+enum class ZoomAction { NONE, UNZOOM, SELECT, DISMISS };
+
+// Frames the zoom on the airport with IATA `code`: on the middle of its
+// runways, at a range that fits them with room around for traffic on final.
+// Says where and how far, for the poll to fetch the traffic around it. False
+// for a code the airport table hasn't got.
+bool radarZoomOpen(const String &code, double &lat, double &lon, float &rangeNm);
+
+// As radarScreenDraw(): `full` for arriving, without it only the plot and the
+// footer readouts are redrawn.
+void radarZoomDraw(const std::vector<Aircraft> &aircraft, bool full);
+
+ZoomAction radarZoomHandleTouch(int x, int y, String &outHex);
 
 // The radar's palette, so another screen drawing around the plot matches it.
 struct RadarPalette {

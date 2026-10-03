@@ -13,6 +13,9 @@ struct Airport {
 // maxNm - past that it says more about the dataset than about where you are.
 bool nearestAirport(double lat, double lon, Airport &out, float maxNm = 120.0f);
 
+// The airport with IATA `code`, or false if the table hasn't got it.
+bool airportByCode(const String &code, Airport &out);
+
 // Just the code, or "" where nearestAirport() would return false.
 String nearestAirportCode(double lat, double lon, float maxNm = 120.0f);
 

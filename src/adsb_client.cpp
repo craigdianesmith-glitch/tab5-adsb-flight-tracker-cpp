@@ -9,7 +9,7 @@
 
 #include "config.h"
 
-static float haversineNm(double lat1, double lon1, double lat2, double lon2) {
+float haversineNm(double lat1, double lon1, double lat2, double lon2) {
     constexpr double R_KM = 6371.0;
     double p1 = radians(lat1), p2 = radians(lat2);
     double dphi = radians(lat2 - lat1);

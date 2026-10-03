@@ -48,5 +48,9 @@ struct Aircraft {
 // usedProvider is set to the name of whichever provider actually answered,
 // which under AUTO is not necessarily the first one asked. It points into
 // ADSB_PROVIDERS and so outlives the call; it is left alone on failure.
+// Great-circle distance in nautical miles: what a contact's distNm holds,
+// measured from the point it was fetched around.
+float haversineNm(double lat1, double lon1, double lat2, double lon2);
+
 bool fetchAircraft(double lat, double lon, int radiusNm, bool military, AdsbSource source,
                    std::vector<Aircraft> &out, const char *&usedProvider);

@@ -30,7 +30,7 @@
 
 namespace {
 
-enum class Screen { MAIN, LOCATION, DETAIL, SETTINGS, WIFI, RADAR, ALERTS, WATCHLIST, RECORDINGS, PLAYBACK, SHARE };
+enum class Screen { MAIN, LOCATION, DETAIL, SETTINGS, WIFI, RADAR, ZOOM, ALERTS, WATCHLIST, RECORDINGS, PLAYBACK, SHARE };
 Screen g_screen = Screen::MAIN;
 // The detail screen is reachable from the table and from the radar, and Back
 // should land wherever you came from.
@@ -70,6 +70,22 @@ bool g_pollNow = false;  // skip the rest of the poll interval and refetch
 // change would replay the new sky against the old centre - off the plot, or
 // clipped at the old range. The poll task stops it instead.
 bool g_sceneChanged = false;
+
+// The airport zoom. While it is up - or a detail opened from it - the poll
+// task also fetches the traffic around its airport, in between the main
+// polls, into a list of its own: the table, alerts and recordings carry on
+// with the main poll's as before.
+struct ZoomPoll {
+    bool active = false;
+    uint32_t gen = 0;  // which zoom, so a fetch for one since closed is dropped
+    double lat = 0, lon = 0;
+    int radiusNm = 0;
+};
+ZoomPoll g_zoomPoll;                   // under the mutex
+std::vector<Aircraft> g_zoomAircraft;  // likewise
+bool g_zoomReady = false;              // likewise: a new list, for loop() to draw
+bool g_zoomUp = false;                 // only touched by loop(): g_zoomPoll.active, without the lock
+uint32_t g_zoomTouchedMs = 0;          // likewise: the last touch, for closing the zoom left alone
 
 // Only touched by pollTask - no locking needed since it's the sole writer/reader.
 std::map<String, uint32_t> g_seenMap;
@@ -237,7 +253,52 @@ bool ensureWifi() {
     return false;
 }
 
+// One fetch of the traffic around the zoom's airport, from the poll task.
+// Everything flying is kept, whichever traffic the table is filtered to - at
+// an airport the airliners are the point, even in military mode - and alerts
+// are evaluated only for the colours they draw in: the main poll is what
+// raises them.
+void pollZoom(const ZoomPoll &zoom, AdsbSource source) {
+    std::vector<Aircraft> fetched;
+    const char *provider = nullptr;
+    if (WiFi.status() != WL_CONNECTED ||
+        !fetchAircraft(zoom.lat, zoom.lon, zoom.radiusNm, false, source, fetched, provider)) {
+        return;  // the last list stays up, as the main poll's does
+    }
+    AlertRules rules;
+    double homeLat = 0, homeLon = 0;
+    if (xSemaphoreTake(g_dataMutex, portMAX_DELAY) == pdTRUE) {
+        rules = g_alertRules;
+        homeLat = g_lat;
+        homeLon = g_lon;
+        xSemaphoreGive(g_dataMutex);
+    }
+    if (fetched.size() > MAX_CONTACTS) {
+        fetched.erase(fetched.begin() + MAX_CONTACTS, fetched.end());  // nearest the airport first
+    }
+    for (Aircraft &a : fetched) {
+        a.alert = evaluateAlert(a, rules, true);
+        // From home, as a distance is everywhere else it shows - the detail
+        // screen, opened from the zoom - where the fetch measured it from
+        // the airport.
+        if (a.hasPos) {
+            a.distNm = haversineNm(homeLat, homeLon, a.lat, a.lon);
+        }
+    }
+    if (xSemaphoreTake(g_dataMutex, portMAX_DELAY) == pdTRUE) {
+        if (g_zoomPoll.active && g_zoomPoll.gen == zoom.gen) {
+            g_zoomAircraft = std::move(fetched);
+            g_zoomReady = true;
+        }
+        xSemaphoreGive(g_dataMutex);
+    }
+}
+
 void pollTask(void *) {
+    // When the last request of either kind went, and the last of the zoom's,
+    // for spacing them - see the wait at the bottom.
+    uint32_t lastRequestMs = 0, lastZoomMs = 0;
+    uint32_t zoomGenServed = 0;
     for (;;) {
         double lat, lon;
         TrafficFilter traffic = TrafficFilter::CIVIL;
@@ -439,16 +500,47 @@ void pollTask(void *) {
         // takes effect straight away instead of up to a poll interval later.
         // The interval is re-read each slice too, so dragging it shorter on the
         // settings screen shortens the wait already in progress.
-        for (uint32_t waited = 0; waited < intervalMs; waited += 200) {
+        //
+        // While the airport zoom is up, its fetches go in the gaps. No two
+        // requests go closer together than the shortest poll interval, which
+        // is what the providers will take, and when both are due the one
+        // that has waited longer goes first - so neither starves the other,
+        // whatever the main interval is set to. Without a zoom, this is the
+        // plain interval it always was.
+        constexpr uint32_t SPACING_MS = (uint32_t)POLL_INTERVAL_MIN_S * 1000;
+        constexpr uint32_t ZOOM_POLL_MS = (uint32_t)ZOOM_POLL_INTERVAL_S * 1000;
+        lastRequestMs = millis();
+        uint32_t waitStart = lastRequestMs;
+        for (;;) {
             vTaskDelay(pdMS_TO_TICKS(200));
             bool now = false;
+            ZoomPoll zoom;
             if (xSemaphoreTake(g_dataMutex, 0) == pdTRUE) {
                 now = g_pollNow;
                 intervalMs = (uint32_t)g_pollIntervalS * 1000;
+                zoom = g_zoomPoll;
                 xSemaphoreGive(g_dataMutex);
             }
             if (now) {
                 break;
+            }
+            uint32_t t = millis();
+            if (t - lastRequestMs < SPACING_MS) {
+                continue;
+            }
+            int32_t mainLate = (int32_t)(t - waitStart - intervalMs);
+            int32_t zoomLate = INT32_MIN;
+            if (zoom.active) {
+                // A zoom just opened has waited longest of all.
+                zoomLate = zoom.gen != zoomGenServed ? INT32_MAX : (int32_t)(t - lastZoomMs - ZOOM_POLL_MS);
+            }
+            if (mainLate >= 0 && mainLate >= zoomLate) {
+                break;
+            }
+            if (zoomLate >= 0) {
+                pollZoom(zoom, source);
+                zoomGenServed = zoom.gen;
+                lastZoomMs = lastRequestMs = millis();
             }
         }
     }
@@ -522,10 +614,67 @@ void drawRadar(bool full) {
     radarScreenDraw(aircraft, isNew, lat, lon, radius, military, g_radarCentre, g_radarAirports, full);
 }
 
+void drawZoom(bool full) {
+    std::vector<Aircraft> aircraft;
+    if (xSemaphoreTake(g_dataMutex, portMAX_DELAY) == pdTRUE) {
+        aircraft = g_zoomAircraft;
+        xSemaphoreGive(g_dataMutex);
+    }
+    radarZoomDraw(aircraft, full);
+}
+
+// Zooms in on an airport tapped on the radar. Until the zoom's own first
+// fetch lands, the radar's contacts stand in: around an airport inside the
+// radius they are the same aircraft, a poll older.
+bool openZoom(const String &code) {
+    double lat, lon;
+    float rangeNm;
+    if (!radarZoomOpen(code, lat, lon, rangeNm)) {
+        return false;
+    }
+    if (xSemaphoreTake(g_dataMutex, portMAX_DELAY) == pdTRUE) {
+        g_zoomPoll.active = true;
+        g_zoomPoll.gen++;
+        g_zoomPoll.lat = lat;
+        g_zoomPoll.lon = lon;
+        g_zoomPoll.radiusNm = (int)ceilf(rangeNm) + ZOOM_FETCH_EXTRA_NM;
+        g_zoomAircraft = g_latestAircraft;
+        g_zoomReady = false;
+        xSemaphoreGive(g_dataMutex);
+    }
+    g_zoomUp = true;
+    g_zoomTouchedMs = millis();
+    g_screen = Screen::ZOOM;
+    drawZoom(true);
+    return true;
+}
+
+// Stops the zoom's fetches. Called whichever way it was left - see loop().
+void endZoom() {
+    if (!g_zoomUp) {
+        return;
+    }
+    g_zoomUp = false;
+    if (xSemaphoreTake(g_dataMutex, portMAX_DELAY) == pdTRUE) {
+        g_zoomPoll.active = false;
+        g_zoomAircraft.clear();
+        g_zoomReady = false;
+        xSemaphoreGive(g_dataMutex);
+    }
+}
+
+void closeZoom() {
+    endZoom();
+    g_screen = Screen::RADAR;
+    drawRadar(true);
+}
+
 // Where the banner may be shown: the screens the sky is on. The others are
 // either being typed into or are a replay, where a live alert drawn over the
 // top would read as part of what was recorded.
-bool bannerScreen(Screen s) { return s == Screen::MAIN || s == Screen::RADAR || s == Screen::DETAIL; }
+bool bannerScreen(Screen s) {
+    return s == Screen::MAIN || s == Screen::RADAR || s == Screen::ZOOM || s == Screen::DETAIL;
+}
 
 // The screen overlay: drawn by screen::flush() over whatever is up.
 bool drawBanner(M5Canvas &canvas) {
@@ -591,6 +740,9 @@ void repaintCurrentScreen() {
         break;
     case Screen::RADAR:
         drawRadar(true);
+        break;
+    case Screen::ZOOM:
+        drawZoom(true);
         break;
     case Screen::DETAIL:
         detailScreenDraw();
@@ -733,8 +885,8 @@ String alertSummary() {
 }
 
 void handleRadarTouch(int x, int y) {
-    String hex;
-    switch (radarScreenHandleTouch(x, y, hex)) {
+    String hex, airport;
+    switch (radarScreenHandleTouch(x, y, hex, airport)) {
     case RadarAction::BACK:
         g_screen = Screen::MAIN;
         displayInvalidate();
@@ -758,9 +910,14 @@ void handleRadarTouch(int x, int y) {
         }
         if (found) {
             openDetail(tapped, Screen::RADAR);
+        } else {
+            drawRadar(true);  // gone since: at least take the list off, if it was picked from one
         }
         break;
     }
+    case RadarAction::DISMISS:
+        drawRadar(true);
+        break;
     case RadarAction::TOGGLE_CENTRE:
         g_radarCentre = (g_radarCentre == RadarCentre::HOME) ? RadarCentre::AIRPORT : RadarCentre::HOME;
         saveRadarCentre(g_radarCentre);
@@ -781,7 +938,46 @@ void handleRadarTouch(int x, int y) {
         g_screen = Screen::RECORDINGS;
         recordingsScreenEnter();
         break;
+    case RadarAction::ZOOM_AIRPORT:
+        if (!openZoom(airport)) {
+            drawRadar(true);
+        }
+        break;
     case RadarAction::NONE:
+        break;
+    }
+}
+
+void handleZoomTouch(int x, int y) {
+    String hex;
+    switch (radarZoomHandleTouch(x, y, hex)) {
+    case ZoomAction::UNZOOM:
+        closeZoom();
+        break;
+    case ZoomAction::SELECT: {
+        Aircraft tapped;
+        bool found = false;
+        if (xSemaphoreTake(g_dataMutex, portMAX_DELAY) == pdTRUE) {
+            for (const Aircraft &a : g_zoomAircraft) {
+                if (a.hex == hex) {
+                    tapped = a;
+                    found = true;
+                    break;
+                }
+            }
+            xSemaphoreGive(g_dataMutex);
+        }
+        if (found) {
+            openDetail(tapped, Screen::ZOOM);
+        } else {
+            drawZoom(true);
+        }
+        break;
+    }
+    case ZoomAction::DISMISS:
+        drawZoom(true);
+        break;
+    case ZoomAction::NONE:
         break;
     }
 }
@@ -1038,6 +1234,11 @@ void handleDetailTouch(int x, int y) {
         drawRadar(true);
         return;
     }
+    if (g_detailReturnTo == Screen::ZOOM) {
+        g_screen = Screen::ZOOM;
+        drawZoom(true);
+        return;
+    }
     if (g_detailReturnTo == Screen::PLAYBACK) {
         g_screen = Screen::PLAYBACK;
         playbackScreenDraw();
@@ -1195,7 +1396,8 @@ void handleWifiTouch(int x, int y) {
 // doesn't need the network, and being snatched away from either would be
 // worse than the wait. The flag keeps until one of them is back up.
 void checkWifiGaveUp() {
-    if (g_screen != Screen::MAIN && g_screen != Screen::RADAR && g_screen != Screen::DETAIL) {
+    if (g_screen != Screen::MAIN && g_screen != Screen::RADAR && g_screen != Screen::ZOOM &&
+        g_screen != Screen::DETAIL) {
         return;
     }
     if (g_screen == Screen::DETAIL && g_detailReturnTo == Screen::PLAYBACK) {
@@ -1358,6 +1560,9 @@ void loop() {
         handleSettingsTouch(tx, ty, pressed, clicked);
     } else if (M5.Touch.getCount()) {
         auto t = M5.Touch.getDetail(0);
+        if (g_zoomUp) {
+            g_zoomTouchedMs = millis();  // being looked at, so not to be closed
+        }
         if (t.wasHold() && !bannerOver(t.y)) {
             switch (g_screen) {
             case Screen::MAIN:
@@ -1388,6 +1593,9 @@ void loop() {
                 break;
             case Screen::RADAR:
                 handleRadarTouch(t.x, t.y);
+                break;
+            case Screen::ZOOM:
+                handleZoomTouch(t.x, t.y);
                 break;
             case Screen::ALERTS:
                 handleAlertsTouch(t.x, t.y);
@@ -1440,8 +1648,8 @@ void loop() {
     soundTick();
     tickAlerts();
 
-    // Each step of a callsign flash is a redraw of whichever of the two
-    // screens showing callsigns is up, from the data it already has.
+    // Each step of a callsign flash is a redraw of whichever of the screens
+    // showing callsigns is up, from the data it already has.
     static uint32_t shownFlashStep = 0;
     uint32_t flashStep = alertFlashStep();
     if (flashStep != shownFlashStep) {
@@ -1449,6 +1657,10 @@ void loop() {
         if ((g_screen == Screen::MAIN || g_screen == Screen::RADAR) &&
             xSemaphoreTake(g_dataMutex, portMAX_DELAY) == pdTRUE) {
             g_dataReady = true;
+            xSemaphoreGive(g_dataMutex);
+        }
+        if (g_screen == Screen::ZOOM && xSemaphoreTake(g_dataMutex, portMAX_DELAY) == pdTRUE) {
+            g_zoomReady = true;
             xSemaphoreGive(g_dataMutex);
         }
     }
@@ -1473,6 +1685,34 @@ void loop() {
         if (fresh) {
             drawRadar(false);
         }
+    }
+
+    // The zoom is a temporary view, and its extra fetches go with it: left
+    // untouched, it closes itself - and from a detail opened from it, Back
+    // then goes to the radar instead.
+    if (g_zoomUp && millis() - g_zoomTouchedMs > ZOOM_TIMEOUT_MS) {
+        if (g_screen == Screen::ZOOM) {
+            closeZoom();
+        } else if (g_screen == Screen::DETAIL && g_detailReturnTo == Screen::ZOOM) {
+            g_detailReturnTo = Screen::RADAR;
+        }
+    }
+    if (g_screen == Screen::ZOOM) {
+        bool fresh = false;
+        if (xSemaphoreTake(g_dataMutex, 0) == pdTRUE) {
+            fresh = g_zoomReady;
+            g_zoomReady = false;
+            xSemaphoreGive(g_dataMutex);
+        }
+        if (fresh) {
+            drawZoom(false);
+        }
+    }
+    // The zoom's fetches stop as soon as neither it nor a detail opened from
+    // it is up, however it was left - Unzoom, the timeout, or the WiFi screen
+    // taking over.
+    if (g_zoomUp && g_screen != Screen::ZOOM && !(g_screen == Screen::DETAIL && g_detailReturnTo == Screen::ZOOM)) {
+        endZoom();
     }
 
     if (g_screen == Screen::MAIN) {

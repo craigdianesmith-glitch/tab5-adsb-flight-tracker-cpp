@@ -26,6 +26,20 @@ constexpr int DEFAULT_POLL_INTERVAL_S = 30;
 
 constexpr uint32_t FORGET_AFTER_MS = 120000;
 
+// The airport zoom fetches the traffic around its airport this often, on top
+// of the main poll. Faster than the main poll's default, since at a couple of
+// miles across an airliner on final covers a third of the plot in thirty
+// seconds - but only while the zoom is up, which closes itself once left
+// untouched for ZOOM_TIMEOUT_MS, and for a radius of a few miles, a far
+// smaller answer than the main poll's. The two never go closer together than
+// POLL_INTERVAL_MIN_S, so a provider sees no more than it would of one device
+// polling at the shortest interval.
+constexpr int ZOOM_POLL_INTERVAL_S = 5;
+constexpr uint32_t ZOOM_TIMEOUT_MS = 5UL * 60 * 1000;
+// Fetched past the zoom's range, so traffic a few miles out on final is in
+// the list: off the plot, but it says which runway is in use before it lands.
+constexpr int ZOOM_FETCH_EXTRA_NM = 4;
+
 // How long a cell that just changed value stays shaded.
 constexpr uint32_t CELL_HIGHLIGHT_MS = 2000;
 
