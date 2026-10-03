@@ -2,10 +2,12 @@
 
 #include <SD.h>
 #include <algorithm>
+#include <map>
 #include <esp_heap_caps.h>
 #include <math.h>
 
 #include "config.h"
+#include "follow.h"
 #include "psram_alloc.h"
 
 namespace replay {
@@ -20,12 +22,28 @@ struct Frame {
     uint32_t offset;  // of its F line in the file
     uint32_t ms;
     uint32_t epoch;
+    View view;
+    uint8_t provider;  // which answered it, as an index into g_providers; 0 for not known
 };
 
 struct Fix {
     uint32_t key;  // the aircraft, from keyOf()
     uint32_t ms;
     float lat, lon;
+    uint32_t frame;  // which poll
+    // The rest of the report, for estimating where it went once the feed
+    // lost it - see Gap.
+    FollowSample s;
+    char callsign[9];
+};
+
+// A low contact the feed lost - a landing below the receivers' horizon, a
+// take-off roll before it climbs into their view - from its last current
+// position until the next, or ESTIMATE_LOST_MS: where the replay puts it
+// where it is estimated to be, as the live screens do.
+struct Gap {
+    size_t fix;  // its last current position, in g_fixes
+    uint32_t startMs, endMs;
 };
 
 // Reads lines through a buffer of its own: File::read a byte at a time goes
@@ -86,6 +104,13 @@ std::vector<Frame> g_frames;
 // PSRAM, where there is room for it, rather than the internal RAM that the
 // WiFi and TLS stacks need.
 std::vector<Fix, PsramAllocator<Fix>> g_fixes;  // sorted by key, then time
+std::vector<Gap, PsramAllocator<Gap>> g_gaps;
+// For each aircraft followed, one per poll that reported it while it was: a
+// few hundred over a landing at the zoom's ten seconds, so small enough to
+// keep anywhere.
+std::map<String, std::vector<FollowSample>> g_heights;
+std::vector<String> g_providers;  // the names the polls give, in the order first met
+bool g_hasHome = false;
 
 // The two polls either side of the moment last asked for, kept so that a
 // playback ticking through one gap doesn't reread them from the card each time.
@@ -100,6 +125,128 @@ uint32_t keyOf(const String &hex) {
         return 0x1000000u | (uint32_t)strtoul(hex.c_str() + 1, nullptr, 16);
     }
     return (uint32_t)strtoul(hex.c_str(), nullptr, 16);
+}
+
+String hexOf(uint32_t key) {
+    char buf[12];
+    snprintf(buf, sizeof(buf), (key & 0x1000000u) ? "~%06lx" : "%06lx", (unsigned long)(key & 0xFFFFFFu));
+    return String(buf);
+}
+
+// An F line's view token - see recorder.h - including an older following
+// recording's bare `-` or airport code, whose aircraft the header names.
+View parseView(const char *tok) {
+    View v;
+    if (!tok[0] || strcmp(tok, "H") == 0) {
+        return v;
+    }
+    if (tok[0] == '-') {
+        v.kind = View::FOLLOW;
+        strlcpy(v.hex, tok[1] ? tok + 1 : g_header.followHex.c_str(), sizeof(v.hex));
+        return v;
+    }
+    v.kind = View::ZOOM;
+    const char *slash = strchr(tok, '/');
+    if (slash) {
+        size_t n = std::min<size_t>(slash - tok, sizeof(v.code) - 1);
+        memcpy(v.code, tok, n);
+        v.code[n] = 0;
+        strlcpy(v.hex, slash + 1, sizeof(v.hex));
+    } else {
+        strlcpy(v.code, tok, sizeof(v.code));
+        strlcpy(v.hex, g_header.followHex.c_str(), sizeof(v.hex));
+    }
+    return v;
+}
+
+// Low enough that a gap in the feed is the ground's doing, not its leaving.
+bool low(const FollowSample &s) { return s.ground || (s.hasAlt && s.altFt < ESTIMATE_MAX_FT); }
+
+// Where each contact went missing that the feed lost - rather than one that
+// flew out of the poll's reach - from the sorted fixes: a current position
+// whose next current one, if there is one, is in a later poll than the very
+// next. Lost, that is, if it was low, where the receivers lose them; or at
+// any height, if the poll it went missing from was answered by a different
+// provider, which may simply not have had it. Not where the view changed
+// between the two polls, as from a zoom to the radar: the poll's reach
+// changed with it.
+void findGaps() {
+    g_gaps.clear();
+    size_t lastFrame = g_frames.empty() ? 0 : g_frames.size() - 1;
+    for (size_t i = 0; i < g_fixes.size(); i++) {
+        const Fix &f = g_fixes[i];
+        if (f.s.posStale || f.frame >= lastFrame) {
+            continue;
+        }
+        const Frame &was = g_frames[f.frame], &then = g_frames[f.frame + 1];
+        bool otherProvider = was.provider && then.provider && was.provider != then.provider;
+        if (!(low(f.s) || otherProvider) || was.view.kind != then.view.kind ||
+            strcmp(was.view.code, then.view.code) != 0) {
+            continue;
+        }
+        size_t next = i + 1;
+        while (next < g_fixes.size() && g_fixes[next].key == f.key && g_fixes[next].s.posStale) {
+            next++;
+        }
+        bool haveNext = next < g_fixes.size() && g_fixes[next].key == f.key;
+        if (haveNext ? g_fixes[next].frame <= f.frame + 1 : f.frame >= lastFrame) {
+            continue;  // seen again at the next poll, or the recording ended
+        }
+        uint32_t end = f.ms + ESTIMATE_LOST_MS;
+        if (haveNext) {
+            end = std::min(end, g_fixes[next].ms);
+        }
+        g_gaps.push_back({i, f.ms, end});
+    }
+}
+
+// The contacts lost at `abs`, put into `aircraft` where they are estimated
+// to be, in place of any stale position the poll had for them. The aircraft
+// followed then is left to the playback screen, which keeps it longer.
+void fillGaps(uint32_t abs, const char *followed, std::vector<Aircraft> &aircraft) {
+    for (const Gap &g : g_gaps) {
+        if (abs < g.startMs || abs >= g.endMs) {
+            continue;
+        }
+        const Fix &f = g_fixes[g.fix];
+        String hex = hexOf(f.key);
+        if (hex == followed) {
+            continue;
+        }
+        // Its reports in the minutes before, to tell a take-off from a landing.
+        std::vector<FollowSample> before;
+        for (size_t j = g.fix; j-- > 0 && g_fixes[j].key == f.key && f.ms - g_fixes[j].ms <= 180000;) {
+            before.push_back(g_fixes[j].s);
+        }
+        std::reverse(before.begin(), before.end());  // oldest first, as the estimate reads them
+        FollowEstimate e = estimateFollowed(f.s, (abs - f.ms) / 1000.0f, before);
+        Aircraft ghost;
+        for (auto it = aircraft.begin(); it != aircraft.end(); ++it) {
+            if (it->hex == hex) {
+                ghost = *it;
+                aircraft.erase(it);
+                break;
+            }
+        }
+        ghost.hex = hex;
+        if (!ghost.callsign.length()) {
+            ghost.callsign = f.callsign;
+            ghost.type = "----";
+        }
+        ghost.hasPos = true;
+        ghost.posStale = true;
+        ghost.lat = e.lat;
+        ghost.lon = e.lon;
+        ghost.hasTrack = true;
+        ghost.track = e.track;
+        ghost.altStr = e.ground ? String("GND") : String(e.altFt);
+        ghost.speedStr = String(e.gsKt);
+        ghost.status = e.ground                           ? (e.gsKt > 2 ? "TAXI" : "GROUND")
+                       : e.vsFpm >= CLIMB_THRESHOLD_FPM   ? "CLIMB"
+                       : e.vsFpm <= DESCEND_THRESHOLD_FPM ? "DESCEND"
+                                                          : "LEVEL";
+        aircraft.push_back(ghost);
+    }
 }
 
 bool readFrame(size_t i, std::vector<Aircraft> &out) {
@@ -177,12 +324,34 @@ bool load(const String &path, LoadProgress progress) {
         if (g_line[0] == 'F') {
             char *end = nullptr;
             frameMs = strtoul(g_line + 2, &end, 10);
-            uint32_t epoch = strtoul(end, nullptr, 10);
-            g_frames.push_back({offset, frameMs, epoch});
+            uint32_t epoch = strtoul(end, &end, 10);
+            Frame f = {offset, frameMs, epoch, View(), 0};
+            char viewTok[24] = "", providerTok[24] = "";
+            sscanf(end, "%23s %23s", viewTok, providerTok);
+            f.view = parseView(viewTok);
+            g_hasHome = g_hasHome || f.view.kind == View::HOME;
+            if (providerTok[0] && strcmp(providerTok, "?") != 0) {
+                auto it = std::find(g_providers.begin(), g_providers.end(), String(providerTok));
+                if (it == g_providers.end()) {
+                    g_providers.push_back(providerTok);
+                    it = g_providers.end() - 1;
+                }
+                f.provider = (uint8_t)(it - g_providers.begin() + 1);
+            }
+            g_frames.push_back(f);
         } else if (g_line[0] == 'A' && !g_frames.empty()) {
             Aircraft a;
-            if (recorder::parseAircraftLine(g_line, a) && a.hasPos) {
-                g_fixes.push_back({keyOf(a.hex), frameMs, a.lat, a.lon});
+            if (recorder::parseAircraftLine(g_line, a)) {
+                if (a.hasPos) {
+                    Fix fix = {keyOf(a.hex), frameMs, a.lat, a.lon, (uint32_t)(g_frames.size() - 1),
+                               followSampleOf(a, frameMs), ""};
+                    strlcpy(fix.callsign, a.callsign.c_str(), sizeof(fix.callsign));
+                    g_fixes.push_back(fix);
+                }
+                const char *followed = g_frames.back().view.hex;
+                if (followed[0] && a.hex == followed) {
+                    g_heights[a.hex].push_back(followSampleOf(a, frameMs - g_frames.front().ms));
+                }
             }
         }
     }
@@ -192,9 +361,10 @@ bool load(const String &path, LoadProgress progress) {
     std::sort(g_fixes.begin(), g_fixes.end(), [](const Fix &a, const Fix &b) {
         return a.key != b.key ? a.key < b.key : a.ms < b.ms;
     });
+    findGaps();
     g_loaded = true;
-    Serial.printf("[replay] %s: %u polls, %u fixes, %lus\n", path.c_str(), (unsigned)g_frames.size(),
-                  (unsigned)g_fixes.size(), (unsigned long)(durationMs() / 1000));
+    Serial.printf("[replay] %s: %u polls, %u fixes, %u gaps filled, %lus\n", path.c_str(), (unsigned)g_frames.size(),
+                  (unsigned)g_fixes.size(), (unsigned)g_gaps.size(), (unsigned long)(durationMs() / 1000));
     return true;
 }
 
@@ -210,6 +380,11 @@ void unload() {
     g_frames.shrink_to_fit();
     g_fixes.clear();
     g_fixes.shrink_to_fit();
+    g_gaps.clear();
+    g_gaps.shrink_to_fit();
+    g_heights.clear();
+    g_providers.clear();
+    g_hasHome = false;
     g_cur.clear();
     g_next.clear();
     g_curIdx = g_nextIdx = SIZE_MAX;
@@ -244,6 +419,93 @@ uint32_t epochAt(uint32_t t) {
         return 0;
     }
     return f.epoch + (g_frames.front().ms + t - f.ms) / 1000;
+}
+
+const std::vector<FollowSample> &followHeights(const String &hex) {
+    static const std::vector<FollowSample> none;
+    auto it = g_heights.find(hex);
+    return it == g_heights.end() ? none : it->second;
+}
+
+bool followedAt(uint32_t t, Aircraft &out) {
+    if (g_frames.empty()) {
+        return false;
+    }
+    size_t i = frameIndexAt(t);
+    const char *hex = g_frames[i].view.hex;
+    if (!hex[0]) {
+        return false;
+    }
+    ensureCached(i, g_curIdx, g_cur);
+    for (const Aircraft &a : g_cur) {
+        if (a.hex == hex) {
+            out = a;
+            return true;
+        }
+    }
+    return false;
+}
+
+String departedFrom(uint32_t t) {
+    if (g_frames.empty()) {
+        return String();
+    }
+    size_t i = frameIndexAt(t);
+    const View &v = g_frames[i].view;
+    if (v.kind != View::FOLLOW || !v.hex[0]) {
+        return String();
+    }
+    // Back through the polls following it, to the zoom it was in before.
+    for (size_t j = i; j-- > 0;) {
+        const View &w = g_frames[j].view;
+        if (strcmp(w.hex, v.hex) != 0) {
+            break;
+        }
+        if (w.kind != View::ZOOM) {
+            continue;
+        }
+        uint32_t then = frameMs(j);
+        for (const FollowSample &s : followHeights(v.hex)) {
+            if (s.ms <= then && s.ground) {
+                return String(w.code);  // on the ground there: it departed from it
+            }
+        }
+        break;  // in the air there: a go-around, not a departure
+    }
+    return String();
+}
+
+String callsignOf(const String &hex) {
+    uint32_t key = keyOf(hex);
+    auto lo = std::lower_bound(g_fixes.begin(), g_fixes.end(), key,
+                               [](const Fix &f, uint32_t k) { return f.key < k; });
+    for (auto it = lo; it != g_fixes.end() && it->key == key; ++it) {
+        if (it->callsign[0]) {
+            return String(it->callsign);
+        }
+    }
+    return hex;
+}
+
+View viewAt(uint32_t t) { return g_frames.empty() ? View() : g_frames[frameIndexAt(t)].view; }
+
+bool hasHomeView() { return g_hasHome; }
+
+bool lastFixOf(const String &hex, uint32_t t, float &lat, float &lon) {
+    if (g_frames.empty()) {
+        return false;
+    }
+    uint32_t key = keyOf(hex);
+    uint32_t abs = g_frames.front().ms + t;
+    auto lo = std::lower_bound(g_fixes.begin(), g_fixes.end(), key,
+                               [](const Fix &f, uint32_t k) { return f.key < k; });
+    bool found = false;
+    for (auto it = lo; it != g_fixes.end() && it->key == key && it->ms <= abs; ++it) {
+        lat = it->lat;
+        lon = it->lon;
+        found = true;
+    }
+    return found;
 }
 
 void sceneAt(uint32_t t, std::vector<Aircraft> &aircraft, std::vector<TrailPoint> &trails) {
@@ -281,6 +543,8 @@ void sceneAt(uint32_t t, std::vector<Aircraft> &aircraft, std::vector<TrailPoint
             }
         }
     }
+
+    fillGaps(abs, g_frames[i].view.hex, aircraft);
 
     // Trails only for the aircraft on the plot now: those that have left took
     // their trails with them, which keeps a long recording's plot readable.

@@ -13,16 +13,29 @@ namespace {
 
 bool colorsReady = false;
 
-constexpr int BACK_X = 1140, BACK_Y = 8, BACK_W = 124, BACK_H = 44;
-// The centre toggle sits beside Back, the same size, and is labelled with
-// what the plot is centred on now.
-constexpr int CENTRE_W = 124;
-constexpr int CENTRE_X = BACK_X - 12 - CENTRE_W;
-// Recording and playback follow along the same row.
-constexpr int REC_W = 124;
-constexpr int REC_X = CENTRE_X - 12 - REC_W;
-constexpr int REPLAY_W = 124;
-constexpr int REPLAY_X = REC_X - 12 - REPLAY_W;
+// The buttons stand in a column down the right-hand edge, in the margin
+// beside the plot, grouped by what they do: Back; the centre and the
+// airports, which are one choice of three; follow me; then recording. Each is its own button doing one
+// thing on a tap - there is no long press anywhere on the screen.
+constexpr int BTN_W = 150, BTN_H = 50;
+constexpr int BTN_X = 1280 - 16 - BTN_W;
+constexpr int BTN_GAP = 10, GROUP_GAP = 26;
+enum Button { BTN_BACK, BTN_HOME, BTN_AIRPORT, BTN_ALL, BTN_FOLLOW, BTN_REC, BTN_REPLAYS, BTN_COUNT };
+constexpr int BACK_Y = 8;
+constexpr int HOME_Y = BACK_Y + BTN_H + GROUP_GAP;
+constexpr int AIRPORT_Y = HOME_Y + BTN_H + BTN_GAP;
+constexpr int ALL_Y = AIRPORT_Y + BTN_H + BTN_GAP;
+constexpr int FOLLOW_Y = ALL_Y + BTN_H + GROUP_GAP;
+constexpr int REC_Y = FOLLOW_Y + BTN_H + GROUP_GAP;
+constexpr int REPLAY_Y = REC_Y + BTN_H + BTN_GAP;
+constexpr int BTN_Y[BTN_COUNT] = {BACK_Y, HOME_Y, AIRPORT_Y, ALL_Y, FOLLOW_Y, REC_Y, REPLAY_Y};
+// A tap counts for a button from anywhere in the margin to its left and
+// halfway into the gaps around it, so one that lands a little off still
+// gets it rather than nothing.
+constexpr int BTN_REACH_X = BTN_X - 24;
+// The title's band, above the plot and left of the column, repainted when
+// following starts or stops.
+constexpr int TITLE_H = 56;
 // The plot is as large as the 720px height allows. The compass letters sit
 // just inside the outer ring rather than outside it - outside, they were what
 // capped the radius, and "S" ran off the bottom of the screen.
@@ -51,6 +64,7 @@ constexpr int PLOT_L = CENTER_X - RADIUS - 16, PLOT_R = CENTER_X + RADIUS + 16;
 constexpr int PLOT_T = 56, PLOT_B = 720;
 constexpr int FOOT_L = PLOT_R, FOOT_R = 1280;
 constexpr int FOOT_T = FOOTER_Y - LEGEND_OFFSET - BOX_PAD_Y, FOOT_B = FOOTER_Y - BOX_PAD_Y + BOX_H;
+constexpr int RANGE_BOX_T = FOOTER_Y - BOX_PAD_Y;  // the range readout, bottom left
 
 constexpr int MAX_LABELS = 64;
 constexpr int LABEL_H = 16;  // Font0 at size 2
@@ -159,6 +173,7 @@ void ensureColors() {
 // Rings on round numbers rather than thirds of the range, so the labels read
 // as distances instead of arbitrary fractions.
 int ringStep(int rangeNm) {
+    if (rangeNm <= 5) return 1;  // following one down to an airport
     if (rangeNm <= 15) return 5;
     if (rangeNm <= 30) return 10;
     if (rangeNm <= 60) return 20;
@@ -269,7 +284,10 @@ void drawAirfield(int x, int y, uint16_t color) {
 // first and one that would overlap another is left off, keeping the symbol,
 // so a cluster of airfields still shows as one. Contacts' callsigns don't
 // check against them: the traffic is what the plot is for.
-void drawAirports(double lat, double lon, int rangeNm, const String &centreCode) {
+//
+// `originCode`, while following a departure, is the airport it took off from:
+// drawn brighter and always labelled, so where it came from stays on show.
+void drawAirports(double lat, double lon, int rangeNm, const String &centreCode, const String &originCode) {
     auto &canvas = screen::canvas();
     double nmPerDegLon = 60.0 * cos(lat * M_PI / 180.0);
     canvas.setTextSize(2);
@@ -287,7 +305,8 @@ void drawAirports(double lat, double lon, int rangeNm, const String &centreCode)
         }
         int x = CENTER_X + (int)lroundf((float)((a.lon - lon) * nmPerDegLon / rangeNm * RADIUS));
         int y = CENTER_Y - (int)lroundf((float)((a.lat - lat) * 60.0 / rangeNm * RADIUS));
-        drawAirfield(x, y, colorFaint);
+        bool origin = originCode.length() && a.code == originCode;
+        drawAirfield(x, y, origin ? colorHome : colorFaint);
         constexpr int T1 = AIRPORT_R + AIRPORT_TICK;
 
         // Under the symbol unless that runs off the bottom of the plot, and
@@ -300,7 +319,8 @@ void drawAirports(double lat, double lon, int rangeNm, const String &centreCode)
             ly = y - T1 - 3 - LABEL_H;
         }
         LabelBox label = {(int16_t)lx, (int16_t)ly, 0, (int16_t)LABEL_H};
-        if (takenCount < MAX_AIRPORT_LABELS && !overlapsAny(taken, takenCount, lx, ly, w, LABEL_H)) {
+        if (origin || (takenCount < MAX_AIRPORT_LABELS && !overlapsAny(taken, takenCount, lx, ly, w, LABEL_H))) {
+            canvas.setTextColor(origin ? colorHome : colorFaint);
             canvas.drawString(a.code, lx, ly);
             label.w = (int16_t)w;
             taken[takenCount++] = label;
@@ -309,53 +329,53 @@ void drawAirports(double lat, double lon, int rangeNm, const String &centreCode)
     }
 }
 
-// A button with nothing behind it: outlined rather than filled, its label
-// in grey, so it reads as there but unavailable.
-void drawDisabledButton(int x, int w, const char *label) {
+// A button's three looks: an ordinary one filled; a lit one - the centre in
+// use, the airports on, following - filled brighter with dark text, so the
+// column reads as a set of switches at a glance; and one with nothing behind
+// it outlined, its label in grey, so it reads as there but unavailable.
+enum class Look { PLAIN, LIT, GREYED };
+
+void drawButtonFrame(int y, Look look) {
     auto &canvas = screen::canvas();
-    canvas.fillRect(x, BACK_Y, w, BACK_H, colorBg);
-    canvas.drawRoundRect(x, BACK_Y, w, BACK_H, 6, colorDisabled);
+    canvas.fillRect(BTN_X, y, BTN_W, BTN_H, colorBg);
+    if (look == Look::GREYED) {
+        canvas.drawRoundRect(BTN_X, y, BTN_W, BTN_H, 6, colorDisabled);
+    } else {
+        canvas.fillRoundRect(BTN_X, y, BTN_W, BTN_H, 6, look == Look::LIT ? colorMuted : colorBtnBg);
+    }
     canvas.setFont(&fonts::Font0);
     canvas.setTextSize(2);
     canvas.setTextDatum(MC_DATUM);
-    canvas.setTextColor(colorDisabled);
-    canvas.drawString(label, x + w / 2, BACK_Y + BACK_H / 2);
-    screen::markDirty(x, BACK_Y, w, BACK_H);
+    canvas.setTextColor(look == Look::GREYED ? colorDisabled : look == Look::LIT ? colorBg : colorText);
+    screen::markDirty(BTN_X, y, BTN_W, BTN_H);
+}
+
+void drawButton(int y, const char *label, Look look) {
+    drawButtonFrame(y, look);
+    screen::canvas().drawString(label, BTN_X + BTN_W / 2, y + BTN_H / 2);
 }
 
 void drawReplaysButton() {
-    if (g_recState == RecButton::NO_CARD) {
-        drawDisabledButton(REPLAY_X, REPLAY_W, "Replays");
-        return;
-    }
-    auto &canvas = screen::canvas();
-    canvas.fillRect(REPLAY_X, BACK_Y, REPLAY_W, BACK_H, colorBg);
-    canvas.fillRoundRect(REPLAY_X, BACK_Y, REPLAY_W, BACK_H, 6, colorBtnBg);
-    canvas.setFont(&fonts::Font0);
-    canvas.setTextSize(2);
-    canvas.setTextDatum(MC_DATUM);
-    canvas.setTextColor(colorText);
-    canvas.drawString("Replays", REPLAY_X + REPLAY_W / 2, BACK_Y + BACK_H / 2);
-    screen::markDirty(REPLAY_X, BACK_Y, REPLAY_W, BACK_H);
+    drawButton(REPLAY_Y, "Replays", g_recState == RecButton::NO_CARD ? Look::GREYED : Look::PLAIN);
 }
 
 // Idle, it is a red dot and REC, the way every recorder has said it. Running,
 // it turns red and counts, with a stop square: what a tap will now do.
 void drawRecButton() {
     if (g_recState == RecButton::NO_CARD) {
-        drawDisabledButton(REC_X, REC_W, "NO SD");
+        drawButton(REC_Y, "NO SD", Look::GREYED);
         return;
     }
     auto &canvas = screen::canvas();
-    canvas.fillRect(REC_X, BACK_Y, REC_W, BACK_H, colorBg);
     bool running = (g_recState == RecButton::RECORDING);
-    canvas.fillRoundRect(REC_X, BACK_Y, REC_W, BACK_H, 6, running ? colorRec : colorBtnBg);
-    canvas.setFont(&fonts::Font0);
-    canvas.setTextSize(2);
-    canvas.setTextDatum(MC_DATUM);
-    int midY = BACK_Y + BACK_H / 2;
+    drawButtonFrame(REC_Y, Look::PLAIN);
     if (running) {
-        canvas.fillRect(REC_X + 16, midY - 6, 12, 12, colorText);
+        canvas.fillRoundRect(BTN_X, REC_Y, BTN_W, BTN_H, 6, colorRec);
+    }
+    int midY = REC_Y + BTN_H / 2;
+    canvas.setTextColor(colorText);
+    if (running) {
+        canvas.fillRect(BTN_X + 20, midY - 6, 12, 12, colorText);
         uint32_t s = g_recElapsedS;
         char buf[12];
         if (s >= 36000) {
@@ -369,20 +389,46 @@ void drawRecButton() {
         } else {
             snprintf(buf, sizeof(buf), "%02lu:%02lu", (unsigned long)(s / 60), (unsigned long)(s % 60));
         }
-        canvas.setTextColor(colorText);
-        canvas.drawString(buf, REC_X + 78, midY);
+        canvas.drawString(buf, BTN_X + 88, midY);
     } else {
-        canvas.fillCircle(REC_X + 34, midY, 7, colorEmergency);
-        canvas.setTextColor(colorText);
-        canvas.drawString("REC", REC_X + 74, midY);
+        canvas.fillCircle(BTN_X + 46, midY, 7, colorEmergency);
+        canvas.drawString("REC", BTN_X + 86, midY);
     }
-    screen::markDirty(REC_X, BACK_Y, REC_W, BACK_H);
 }
 
-// Title and buttons: drawn on a full repaint only, since nothing in them
-// changes while the screen is up.
-void drawHeader(bool military, RadarCentre centre) {
+// --- the controls -------------------------------------------------------------
+
+RadarCentre g_centre = DEFAULT_RADAR_CENTRE;
+bool g_airportsOn = false;
+FollowButton g_follow = FollowButton::OFF;
+String g_followHex, g_followCallsign;
+String g_followOrigin;  // a followed departure's airport
+std::vector<FollowSample> g_heights;  // the followed aircraft's, for its telemetry
+uint32_t g_lostS = 0;
+
+// Where the live radar and zoom put the telemetry: the margin left of the
+// plot, under the title, which is otherwise empty.
+constexpr int LIVE_TEL_X = 16, LIVE_TEL_Y = 80;
+
+void drawCentreButtons() {
+    bool following = (g_follow == FollowButton::ON);
+    bool home = !following && g_centre == RadarCentre::HOME;
+    bool airport = !following && g_centre == RadarCentre::AIRPORT;
+    drawButton(HOME_Y, "HOME", home ? Look::LIT : Look::PLAIN);
+    drawButton(AIRPORT_Y, "AIRPORT", airport && !g_airportsOn ? Look::LIT : Look::PLAIN);
+    drawButton(ALL_Y, "ALL", airport && g_airportsOn ? Look::LIT : Look::PLAIN);
+}
+
+void drawFollowButton() {
+    drawButton(FOLLOW_Y, g_follow == FollowButton::PICKING ? "TAP PLANE" : "FOLLOW",
+               g_follow == FollowButton::OFF ? Look::PLAIN : Look::LIT);
+}
+
+// "Radar - CIV -", and then what following is doing: asking for an aircraft
+// to be tapped, or naming the one followed.
+void drawTitle(bool military) {
     auto &canvas = screen::canvas();
+    canvas.fillRect(0, 0, BTN_REACH_X, TITLE_H, colorBg);
     // Set here rather than trusted from whatever drew last: the table leaves
     // its cells' FreeSans selected, and at size 3 the title came out huge.
     canvas.setFont(&fonts::Font0);
@@ -390,22 +436,49 @@ void drawHeader(bool military, RadarCentre centre) {
     canvas.setTextDatum(ML_DATUM);
     canvas.setTextColor(colorText);
     const char *title = "Radar";
-    canvas.drawString(title, 16, 35);
+    int x = 16;
+    canvas.drawString(title, x, 35);
+    x += canvas.textWidth(title);
     canvas.setTextColor(colorMuted);
-    canvas.drawString(military ? " - MIL -" : " - CIV -", 16 + canvas.textWidth(title), 35);
+    String sub = military ? " - MIL -" : " - CIV -";
+    canvas.drawString(sub, x, 35);
+    x += canvas.textWidth(sub);
+    if (g_follow == FollowButton::PICKING) {
+        canvas.drawString("  tap a plane to follow", x, 35);
+    } else if (g_follow == FollowButton::ON) {
+        const char *what = "  following ";
+        canvas.drawString(what, x, 35);
+        canvas.setTextColor(colorHome);
+        canvas.drawString(g_followCallsign, x + canvas.textWidth(what), 35);
+    }
+    screen::markDirty(0, 0, BTN_REACH_X, TITLE_H);
+}
 
-    canvas.fillRoundRect(BACK_X, BACK_Y, BACK_W, BACK_H, 6, colorBtnBg);
-    canvas.setTextSize(2);
-    canvas.setTextDatum(MC_DATUM);
-    canvas.setTextColor(colorText);
-    canvas.drawString("Back", BACK_X + BACK_W / 2, BACK_Y + BACK_H / 2);
+bool g_military = false;
 
-    canvas.fillRoundRect(CENTRE_X, BACK_Y, CENTRE_W, BACK_H, 6, colorBtnBg);
-    canvas.drawString(centre == RadarCentre::HOME ? "HOME" : "AIRPORT", CENTRE_X + CENTRE_W / 2,
-                      BACK_Y + BACK_H / 2);
-
-    drawReplaysButton();
+// Title and buttons: drawn on a full repaint, and again in part as the
+// controls change.
+void drawHeader(bool military) {
+    g_military = military;
+    drawTitle(military);
+    drawButton(BACK_Y, "Back", Look::PLAIN);
+    drawCentreButtons();
+    drawFollowButton();
     drawRecButton();
+    drawReplaysButton();
+}
+
+// Which button a tap at (x, y) is for, or BTN_COUNT for none.
+int buttonAt(int x, int y) {
+    if (x < BTN_REACH_X) {
+        return BTN_COUNT;
+    }
+    for (int i = 0; i < BTN_COUNT; i++) {
+        if (y >= BTN_Y[i] - BTN_GAP / 2 && y < BTN_Y[i] + BTN_H + BTN_GAP / 2) {
+            return i;
+        }
+    }
+    return BTN_COUNT;
 }
 
 // --- choosing between targets ------------------------------------------------
@@ -568,24 +641,33 @@ Target tapTarget(int x, int y, bool withAirports, String &outId) {
 }  // namespace
 
 void radarScreenDraw(const std::vector<Aircraft> &aircraft, const std::vector<uint8_t> &isNew, double lat, double lon,
-                     int rangeNm, bool military, RadarCentre centre, bool airports, bool full) {
+                     int rangeNm, bool military, bool full) {
     ensureColors();
     if (full) {
         g_choiceCount = 0;
         screen::clear(colorBg);
-        drawHeader(military, centre);
+        drawHeader(military);
     }
     // With a list up, a refresh is drawn under it and pushed along with it.
-    radarPlotDraw({aircraft, isNew, nullptr, lat, lon, rangeNm, centre, airports, true, g_choiceCount == 0}, full);
+    bool following = (g_follow == FollowButton::ON);
+    radarPlotDraw({aircraft, isNew, nullptr, lat, lon, rangeNm, following ? RadarCentre::HOME : g_centre, g_airportsOn,
+                   true, g_choiceCount == 0, following ? g_followHex : String(),
+                   following ? g_followOrigin : String()},
+                  full);
+    if (following) {
+        radarTelemetryDraw(LIVE_TEL_X, LIVE_TEL_Y, g_heights, millis(), INT32_MIN, g_lostS);
+    }
     if (g_choiceCount) {
         drawChooser();
     }
-    if (full || g_choiceCount) {
+    // Following, the telemetry goes in a push of its own: with the plot's,
+    // flush() would send the margin between them too.
+    if (full || g_choiceCount || following) {
         screen::flush();
     }
 }
 
-void radarScreenSetRecording(RecButton state, uint32_t elapsedS, bool onScreen) {
+void radarScreenSetRecording(RecButton state, uint32_t elapsedS, bool onScreen, bool zoom) {
     if (state == g_recState && elapsedS == g_recElapsedS) {
         return;
     }
@@ -596,12 +678,38 @@ void radarScreenSetRecording(RecButton state, uint32_t elapsedS, bool onScreen) 
     g_recElapsedS = elapsedS;
     if (onScreen) {
         ensureColors();
-        if (stateChanged) {
+        if (stateChanged && !zoom) {
             drawReplaysButton();
         }
         drawRecButton();
         screen::flush();
     }
+}
+
+void radarScreenSetControls(RadarCentre centre, bool airports, FollowButton follow, const String &followHex,
+                            const String &followCallsign, const String &followOrigin, bool onScreen) {
+    g_followOrigin = followOrigin;
+    // Following unlights the centre, so starting or stopping it changes those too.
+    bool wasFollowing = (g_follow == FollowButton::ON), following = (follow == FollowButton::ON);
+    bool centreChanged = (centre != g_centre || airports != g_airportsOn || following != wasFollowing);
+    bool followChanged = (follow != g_follow || followCallsign != g_followCallsign);
+    g_centre = centre;
+    g_airportsOn = airports;
+    g_follow = follow;
+    g_followHex = followHex;
+    g_followCallsign = followCallsign;
+    if (!onScreen || (!centreChanged && !followChanged)) {
+        return;
+    }
+    ensureColors();
+    if (centreChanged) {
+        drawCentreButtons();
+    }
+    if (followChanged) {
+        drawFollowButton();
+        drawTitle(g_military);
+    }
+    screen::flush();
 }
 
 const RadarPalette &radarPalette() {
@@ -621,6 +729,7 @@ struct ContactView {
     // callsign: at an airport, which contacts are down and how high the rest
     // are is most of what there is to see.
     bool zoomed;
+    const String &followHex;  // ringed, and always labelled; empty for none
 };
 
 // Trails, then contacts with their vectors and callsigns, each one noted for
@@ -678,10 +787,13 @@ void drawContacts(const std::vector<Aircraft> &aircraft, const std::vector<uint8
         plotted++;
 
         bool isNewHere = (i < isNew.size()) && isNew[i];
-        uint16_t color = (ac.alert & ALERT_EMERGENCY) ? colorEmergency
-                         : ac.alert                   ? colorAlert
-                         : isNewHere                  ? colorNewBlip
-                                                      : colorBlip;
+        // A position the feed has lost, kept from the last it had, dimmed to
+        // the trails' shade: where it was, as near as anyone can say.
+        uint16_t color = ac.posStale                  ? colorTrail
+                         : (ac.alert & ALERT_EMERGENCY) ? colorEmergency
+                         : ac.alert                     ? colorAlert
+                         : isNewHere                    ? colorNewBlip
+                                                        : colorBlip;
 
         if (ac.hasTrack) {
             // How far it will fly in the lead time at its current groundspeed,
@@ -704,6 +816,12 @@ void drawContacts(const std::vector<Aircraft> &aircraft, const std::vector<uint8
             canvas.fillCircle((int)px, (int)py, 5, color);
         }
         drawTrend((int)px, (int)py, ac.status, color);
+        bool followed = v.followHex.length() && ac.hex == v.followHex;
+        if (followed) {
+            // Clear of the trend chevrons, which reach 15px above and below.
+            canvas.drawCircle((int)px, (int)py, 17, colorHome);
+            canvas.drawCircle((int)px, (int)py, 18, colorHome);
+        }
         if (g_blipCount < MAX_BLIPS) {
             String label = ac.callsign;
             if (ac.type.length() && ac.type != "----") {
@@ -717,10 +835,12 @@ void drawContacts(const std::vector<Aircraft> &aircraft, const std::vector<uint8
 
         // The label flashes between red and an ordinary contact's colour. A
         // flashing one is drawn even where it would collide with another
-        // label: it's the one being drawn attention to.
+        // label: it's the one being drawn attention to - as is the one being
+        // followed.
         AlertFlash flash = flashing ? alertFlash(ac.hex) : AlertFlash::NONE;
         uint16_t labelColor = flash == AlertFlash::RED ? colorEmergency
                               : flash == AlertFlash::OFF ? (isNewHere ? colorNewBlip : colorBlip)
+                              : ac.posStale              ? colorFaint
                                                          : color;
 
         String sub;
@@ -730,13 +850,15 @@ void drawContacts(const std::vector<Aircraft> &aircraft, const std::vector<uint8
         canvas.setTextSize(2);
         int lw = std::max(canvas.textWidth(ac.callsign), sub.length() ? canvas.textWidth(sub) : 0);
         int lh = sub.length() ? 2 * LABEL_H + 2 : LABEL_H;
-        int lx = (int)px + 9;
-        int ly = (int)py + 7;
+        // The followed one's goes outside its ring.
+        int lx = (int)px + (followed ? 21 : 9);
+        int ly = (int)py + (followed ? 12 : 7);
         if (lx + lw > CENTER_X + RADIUS) {
-            lx = (int)px - 9 - lw;  // would run off the plot - put it on the left
+            lx = (int)px - (followed ? 21 : 9) - lw;  // would run off the plot - put it on the left
         }
-        bool clear = flash != AlertFlash::NONE || !overlapsAny(taken, takenCount, lx, ly, lw, lh);
-        if (clear && (takenCount < MAX_LABELS || flash != AlertFlash::NONE)) {
+        bool forced = followed || flash != AlertFlash::NONE;
+        bool clear = forced || !overlapsAny(taken, takenCount, lx, ly, lw, lh);
+        if (clear && (takenCount < MAX_LABELS || forced)) {
             canvas.setTextColor(labelColor);
             canvas.setTextDatum(TL_DATUM);
             canvas.drawString(ac.callsign, lx, ly);
@@ -760,13 +882,17 @@ void pushPlot(bool push, int footTop) {
         // Marked rather than pushed: the plot was by its fill, the footer
         // wasn't, and whoever pushes next has to take both.
         screen::markDirty(FOOT_L, footTop, FOOT_R - FOOT_L, FOOT_B - footTop);
+        screen::markDirty(0, RANGE_BOX_T, PLOT_L, BOX_H);
         return;
     }
     // Two flushes rather than one: marked together, flush() would judge the
     // two regions close enough to send as their bounding box, which takes in
-    // the empty margin between the plot and the right edge.
+    // the empty margin between the plot and the right edge. The range
+    // readout's end in the left margin goes with the footer, a strip too thin
+    // beside it to be merged into a box with it.
     screen::flush();
     screen::markDirty(FOOT_L, footTop, FOOT_R - FOOT_L, FOOT_B - footTop);
+    screen::markDirty(0, RANGE_BOX_T, PLOT_L, BOX_H);
     screen::flush();
 }
 
@@ -795,7 +921,8 @@ void radarPlotDraw(const RadarScene &scene, bool full) {
     g_airportHitCount = 0;
     Airport airport;
     String centreCode;
-    if (centre == RadarCentre::AIRPORT && nearestAirport(lat, lon, airport)) {
+    bool following = scene.followHex.length() > 0;
+    if (!following && centre == RadarCentre::AIRPORT && nearestAirport(lat, lon, airport)) {
         lat = airport.lat;
         lon = airport.lon;
         centreCode = airport.code;
@@ -807,21 +934,26 @@ void radarPlotDraw(const RadarScene &scene, bool full) {
         noteAirportHit(airport.code, CENTER_X, CENTER_Y,
                        {(int16_t)(CENTER_X - w / 2), (int16_t)CENTRE_CODE_Y, (int16_t)w, (int16_t)LABEL_H});
     }
-    canvas.drawLine(CENTER_X - 9, CENTER_Y, CENTER_X + 9, CENTER_Y, colorHome);
-    canvas.drawLine(CENTER_X, CENTER_Y - 9, CENTER_X, CENTER_Y + 9, colorHome);
+    // Following, the centre is the aircraft, ringed where it is drawn.
+    if (!following) {
+        canvas.drawLine(CENTER_X - 9, CENTER_Y, CENTER_X + 9, CENTER_Y, colorHome);
+        canvas.drawLine(CENTER_X, CENTER_Y - 9, CENTER_X, CENTER_Y + 9, colorHome);
+    }
 
     // --- contacts ---------------------------------------------------------
     canvas.setClipRect(PLOT_L, PLOT_T, PLOT_R - PLOT_L, PLOT_B - PLOT_T);
 
-    // Only around an airport: they are part of that view, and switching the
-    // centre to home takes them off along with its code.
-    if (scene.airports && centreCode.length()) {
-        drawAirports(lat, lon, rangeNm, centreCode);
+    // Part of the airport view, so centred on home they are off, as they are
+    // on a replay switched to HOME. Following, they say where it might be
+    // going - and following a departure, where it came from, whether the
+    // airports are on or not.
+    if ((scene.airports && (centreCode.length() || following)) || (following && scene.originCode.length())) {
+        drawAirports(lat, lon, rangeNm, centreCode, following ? scene.originCode : String());
     }
 
     int plotted = 0, labelled = 0;
     drawContacts(scene.aircraft, scene.isNew, scene.trails, scene.flash,
-                 {lat, lon, (float)RADIUS / rangeNm, 60.0f, false}, plotted, labelled);
+                 {lat, lon, (float)RADIUS / rangeNm, 60.0f, false, scene.followHex}, plotted, labelled);
 
     canvas.clearClipRect();
 
@@ -831,13 +963,13 @@ void radarPlotDraw(const RadarScene &scene, bool full) {
     // to the range line reached x=664, well inside it. Boxed from the right
     // edge, every one of them starts beyond the widest part of the circle at
     // the height it sits at.
-    // The range readout doesn't change while the screen is up, but the plot
-    // square cuts across it; on a refresh only the part inside is redrawn.
+    // The range readout reaches from the margin into the plot square. Following
+    // changes the range as it goes, so a refresh redraws all of it - the part
+    // in the margin erased first, and pushed with the footer.
     if (!full) {
-        canvas.setClipRect(PLOT_L, PLOT_T, PLOT_R - PLOT_L, PLOT_B - PLOT_T);
+        canvas.fillRect(0, RANGE_BOX_T, PLOT_L, BOX_H, colorBg);
     }
     footerBox(String(rangeNm) + " nm range   rings every " + String(step) + " nm", 16, FOOTER_Y, false);
-    canvas.clearClipRect();
     footerBox("^ climb   v descent", 1264, FOOTER_Y - LEGEND_OFFSET, true);
     footerBox(String(plotted) + " contacts" + (labelled < plotted ? "   " + String(labelled) + " labelled" : ""), 1264,
               FOOTER_Y, true);
@@ -886,23 +1018,65 @@ struct ZoomFrame {
     int runwayCount = 0;  // no more than MAX_ZOOM_RUNWAYS
 };
 ZoomFrame g_zoom;
+String g_zoomFollowHex, g_zoomFollowCallsign;
+bool g_zoomPicking = false;
 
-// A point in the zoom's flat-earth frame, in nm east and north of its middle.
+// A point in a zoom's flat-earth frame, in nm east and north of its middle.
 struct Vec {
     float x, y;
 };
 
-Vec toLocal(float lat, float lon) {
-    double nmPerDegLon = 60.0 * cos(g_zoom.lat * M_PI / 180.0);
-    return {(float)((lon - g_zoom.lon) * nmPerDegLon), (float)((lat - g_zoom.lat) * 60.0)};
+Vec toLocal(const ZoomFrame &f, float lat, float lon) {
+    double nmPerDegLon = 60.0 * cos(f.lat * M_PI / 180.0);
+    return {(float)((lon - f.lon) * nmPerDegLon), (float)((lat - f.lat) * 60.0)};
+}
+
+// The zoom on the airport with `code`, framed - false where the airport table
+// hasn't got it.
+bool frameZoom(const String &code, ZoomFrame &f) {
+    Airport airport;
+    if (!airportByCode(code, airport)) {
+        return false;
+    }
+    f = ZoomFrame();
+    f.code = airport.code;
+    f.lat = airport.lat;
+    f.lon = airport.lon;
+    f.runways = runwaysAt(airport.code, f.runwayCount);
+    f.runwayCount = std::min(f.runwayCount, MAX_ZOOM_RUNWAYS);
+    if (f.runwayCount) {
+        // The middle of the runways rather than the airport's own point, which
+        // can sit well off to one side of them.
+        float minLat = 90, maxLat = -90, minLon = 180, maxLon = -180;
+        for (int r = 0; r < f.runwayCount; r++) {
+            for (const RunwayEnd &e : f.runways[r].end) {
+                minLat = std::min(minLat, e.lat);
+                maxLat = std::max(maxLat, e.lat);
+                minLon = std::min(minLon, e.lon);
+                maxLon = std::max(maxLon, e.lon);
+            }
+        }
+        f.lat = (minLat + maxLat) / 2.0;
+        f.lon = (minLon + maxLon) / 2.0;
+        float furthest = 0;
+        for (int r = 0; r < f.runwayCount; r++) {
+            for (const RunwayEnd &e : f.runways[r].end) {
+                Vec v = toLocal(f, e.lat, e.lon);
+                furthest = std::max(furthest, hypotf(v.x, v.y));
+            }
+        }
+        float range = ceilf(furthest * ZOOM_MARGIN * 2.0f) / 2.0f;
+        f.rangeNm = std::min(std::max(range, ZOOM_MIN_NM), ZOOM_MAX_NM);
+    }
+    return true;
 }
 
 // Which way each runway end is being used, from the contacts lined up on it.
 // A contact counts for one end at most - the one whose centreline it is
 // nearest - so a pair of close parallels doesn't light up together for the
 // one aircraft.
-void runwaysInUse(const std::vector<Aircraft> &aircraft, bool inUse[][2]) {
-    for (int r = 0; r < g_zoom.runwayCount; r++) {
+void runwaysInUse(const ZoomFrame &f, const std::vector<Aircraft> &aircraft, bool inUse[][2]) {
+    for (int r = 0; r < f.runwayCount; r++) {
         inUse[r][0] = inUse[r][1] = false;
     }
     for (const Aircraft &ac : aircraft) {
@@ -913,15 +1087,15 @@ void runwaysInUse(const std::vector<Aircraft> &aircraft, bool inUse[][2]) {
         if (onGround && ac.speedStr.toFloat() < IN_USE_ROLL_KT) {
             continue;  // taxiing, or holding short
         }
-        Vec p = toLocal(ac.lat, ac.lon);
+        Vec p = toLocal(f, ac.lat, ac.lon);
         int bestR = -1, bestK = 0;
         float bestOffset = 1e9f;
-        for (int r = 0; r < g_zoom.runwayCount; r++) {
-            const Runway &rw = g_zoom.runways[r];
+        for (int r = 0; r < f.runwayCount; r++) {
+            const Runway &rw = f.runways[r];
             if (rw.closed || (!onGround && ac.altStr.toInt() - rw.elevationFt > IN_USE_MAX_AGL_FT)) {
                 continue;
             }
-            Vec ends[2] = {toLocal(rw.end[0].lat, rw.end[0].lon), toLocal(rw.end[1].lat, rw.end[1].lon)};
+            Vec ends[2] = {toLocal(f, rw.end[0].lat, rw.end[0].lon), toLocal(f, rw.end[1].lat, rw.end[1].lon)};
             float len = hypotf(ends[1].x - ends[0].x, ends[1].y - ends[0].y);
             if (len <= 0) {
                 continue;
@@ -989,9 +1163,9 @@ float toRing(float x, float y, float ux, float uy) {
 // A closed runway is drawn as a chart draws one: outlined rather than filled
 // and crossed out, without numbers or an approach - and under the open ones,
 // which it often crosses.
-void drawRunways(const bool inUse[][2]) {
+void drawRunways(const ZoomFrame &f, const bool inUse[][2]) {
     auto &canvas = screen::canvas();
-    float pxPerNm = RADIUS / g_zoom.rangeNm;
+    float pxPerNm = RADIUS / f.rangeNm;
     canvas.setTextSize(2);
     canvas.setTextDatum(MC_DATUM);
 
@@ -1007,9 +1181,9 @@ void drawRunways(const bool inUse[][2]) {
     bool drawn[MAX_ZOOM_RUNWAYS];
     LabelBox placed[MAX_ZOOM_RUNWAYS * 2];
     int placedCount = 0;
-    for (int r = 0; r < g_zoom.runwayCount; r++) {
-        const Runway &rw = g_zoom.runways[r];
-        Vec a = toLocal(rw.end[0].lat, rw.end[0].lon), b = toLocal(rw.end[1].lat, rw.end[1].lon);
+    for (int r = 0; r < f.runwayCount; r++) {
+        const Runway &rw = f.runways[r];
+        Vec a = toLocal(f, rw.end[0].lat, rw.end[0].lon), b = toLocal(f, rw.end[1].lat, rw.end[1].lon);
         float ax = CENTER_X + a.x * pxPerNm, ay = CENTER_Y - a.y * pxPerNm;
         float bx = CENTER_X + b.x * pxPerNm, by = CENTER_Y - b.y * pxPerNm;
         float len = hypotf(bx - ax, by - ay);
@@ -1059,8 +1233,8 @@ void drawRunways(const bool inUse[][2]) {
         }
     }
 
-    for (int r = 0; r < g_zoom.runwayCount; r++) {
-        if (!drawn[r] || g_zoom.runways[r].closed) {
+    for (int r = 0; r < f.runwayCount; r++) {
+        if (!drawn[r] || f.runways[r].closed) {
             continue;
         }
         for (int k = 0; k < 2; k++) {
@@ -1074,14 +1248,14 @@ void drawRunways(const bool inUse[][2]) {
 
     // The closed ones first, so the open ones lie over them.
     for (int pass = 0; pass < 2; pass++) {
-        for (int r = 0; r < g_zoom.runwayCount; r++) {
-            bool closed = g_zoom.runways[r].closed;
+        for (int r = 0; r < f.runwayCount; r++) {
+            bool closed = f.runways[r].closed;
             if (!drawn[r] || closed != (pass == 0)) {
                 continue;
             }
             const EndPx &a = ends[r][0], &b = ends[r][1];
             float ux = b.ox, uy = b.oy;  // end 0 to end 1
-            float halfW = std::max(g_zoom.runways[r].widthFt * 0.3048f / 1852.0f * pxPerNm / 2.0f, 2.0f);
+            float halfW = std::max(f.runways[r].widthFt * 0.3048f / 1852.0f * pxPerNm / 2.0f, 2.0f);
             float nx = -uy * halfW, ny = ux * halfW;
             int x0 = (int)lroundf(a.x + nx), y0 = (int)lroundf(a.y + ny);
             int x1 = (int)lroundf(b.x + nx), y1 = (int)lroundf(b.y + ny);
@@ -1115,23 +1289,24 @@ void drawRunways(const bool inUse[][2]) {
         }
     }
 
-    for (int r = 0; r < g_zoom.runwayCount; r++) {
-        if (!drawn[r] || g_zoom.runways[r].closed) {
+    for (int r = 0; r < f.runwayCount; r++) {
+        if (!drawn[r] || f.runways[r].closed) {
             continue;
         }
         for (int k = 0; k < 2; k++) {
             const EndPx &e = ends[r][k];
             canvas.setTextColor(inUse[r][k] ? colorText : colorMuted);
-            canvas.drawString(g_zoom.runways[r].end[k].ident, e.labelX, e.labelY);
+            canvas.drawString(f.runways[r].end[k].ident, e.labelX, e.labelY);
         }
     }
 }
 
 // A magnifier with a minus in it, then the word: what the button undoes.
+// Where the radar's Back is.
 void drawUnzoomButton() {
     auto &canvas = screen::canvas();
-    canvas.fillRoundRect(BACK_X, BACK_Y, BACK_W, BACK_H, 6, colorBtnBg);
-    int cx = BACK_X + 24, cy = BACK_Y + BACK_H / 2 - 3;
+    canvas.fillRoundRect(BTN_X, BACK_Y, BTN_W, BTN_H, 6, colorBtnBg);
+    int cx = BTN_X + 30, cy = BACK_Y + BTN_H / 2 - 3;
     canvas.drawCircle(cx, cy, 8, colorText);
     canvas.drawCircle(cx, cy, 7, colorText);
     canvas.drawFastHLine(cx - 4, cy, 9, colorText);
@@ -1141,7 +1316,7 @@ void drawUnzoomButton() {
     canvas.setTextSize(2);
     canvas.setTextDatum(ML_DATUM);
     canvas.setTextColor(colorText);
-    canvas.drawString("Unzoom", BACK_X + 44, BACK_Y + BACK_H / 2);
+    canvas.drawString("Unzoom", BTN_X + 52, BACK_Y + BTN_H / 2);
 }
 
 void drawZoomHeader() {
@@ -1162,46 +1337,44 @@ void drawZoomHeader() {
     if (closed) {
         what += ", " + String(closed) + " closed";
     }
-    canvas.drawString(what, 16 + canvas.textWidth(g_zoom.code), 35);
+    int x = 16 + canvas.textWidth(g_zoom.code);
+    canvas.drawString(what, x, 35);
+    // FOLLOW where the radar has it, working the same way: a tap, then a
+    // contact - one at the gate, say, to follow it out - with what it is
+    // doing said in the title. Before Unzoom, which leaves the text size
+    // smaller than the title's.
+    x += canvas.textWidth(what);
+    canvas.setTextColor(colorMuted);
+    if (g_zoomFollowHex.length()) {
+        const char *following = "  following ";
+        canvas.drawString(following, x, 35);
+        canvas.setTextColor(colorHome);
+        canvas.drawString(g_zoomFollowCallsign, x + canvas.textWidth(following), 35);
+    } else if (g_zoomPicking) {
+        canvas.drawString("  tap a plane", x, 35);
+    }
+    drawButton(FOLLOW_Y, g_zoomPicking ? "TAP PLANE" : "FOLLOW",
+               g_zoomFollowHex.length() || g_zoomPicking ? Look::LIT : Look::PLAIN);
+    drawRecButton();
     drawUnzoomButton();
 }
 
 }  // namespace
 
-bool radarZoomOpen(const String &code, double &lat, double &lon, float &rangeNm) {
-    Airport airport;
-    if (!airportByCode(code, airport)) {
+bool radarZoomFrame(const String &code, double &lat, double &lon, float &rangeNm) {
+    ZoomFrame f;
+    if (!frameZoom(code, f)) {
         return false;
     }
-    g_zoom = ZoomFrame();
-    g_zoom.code = airport.code;
-    g_zoom.lat = airport.lat;
-    g_zoom.lon = airport.lon;
-    g_zoom.runways = runwaysAt(airport.code, g_zoom.runwayCount);
-    g_zoom.runwayCount = std::min(g_zoom.runwayCount, MAX_ZOOM_RUNWAYS);
-    if (g_zoom.runwayCount) {
-        // The middle of the runways rather than the airport's own point, which
-        // can sit well off to one side of them.
-        float minLat = 90, maxLat = -90, minLon = 180, maxLon = -180;
-        for (int r = 0; r < g_zoom.runwayCount; r++) {
-            for (const RunwayEnd &e : g_zoom.runways[r].end) {
-                minLat = std::min(minLat, e.lat);
-                maxLat = std::max(maxLat, e.lat);
-                minLon = std::min(minLon, e.lon);
-                maxLon = std::max(maxLon, e.lon);
-            }
-        }
-        g_zoom.lat = (minLat + maxLat) / 2.0;
-        g_zoom.lon = (minLon + maxLon) / 2.0;
-        float furthest = 0;
-        for (int r = 0; r < g_zoom.runwayCount; r++) {
-            for (const RunwayEnd &e : g_zoom.runways[r].end) {
-                Vec v = toLocal(e.lat, e.lon);
-                furthest = std::max(furthest, hypotf(v.x, v.y));
-            }
-        }
-        float range = ceilf(furthest * ZOOM_MARGIN * 2.0f) / 2.0f;
-        g_zoom.rangeNm = std::min(std::max(range, ZOOM_MIN_NM), ZOOM_MAX_NM);
+    lat = f.lat;
+    lon = f.lon;
+    rangeNm = f.rangeNm;
+    return true;
+}
+
+bool radarZoomOpen(const String &code, double &lat, double &lon, float &rangeNm) {
+    if (!frameZoom(code, g_zoom)) {
+        return false;
     }
     lat = g_zoom.lat;
     lon = g_zoom.lon;
@@ -1209,44 +1382,52 @@ bool radarZoomOpen(const String &code, double &lat, double &lon, float &rangeNm)
     return true;
 }
 
-void radarZoomDraw(const std::vector<Aircraft> &aircraft, bool full) {
-    ensureColors();
+void radarZoomSetFollow(const String &hex, const String &callsign, bool picking) {
+    g_zoomPicking = picking;
+    g_zoomFollowHex = hex;
+    g_zoomFollowCallsign = callsign;
+}
+
+namespace {
+
+// The zoom's plot and footer readouts, for frame `f`: what the live zoom and
+// a replay of one both draw. As radarPlotDraw(): with `full` the caller has
+// cleared the screen and flushes; without it, only the plot and the footer
+// are erased and redrawn, and pushed as `push` says.
+void zoomPlot(const ZoomFrame &f, const std::vector<Aircraft> &aircraft,
+              const std::vector<replay::TrailPoint> *trails, bool flash, const String &followHex, bool full,
+              bool push) {
     auto &canvas = screen::canvas();
-    if (full) {
-        g_choiceCount = 0;
-        screen::clear(colorBg);
-        drawZoomHeader();
-    } else {
+    if (!full) {
         screen::fillRect(PLOT_L, PLOT_T, PLOT_R - PLOT_L, PLOT_B - PLOT_T, colorBg);
         canvas.fillRect(FOOT_L, ZOOM_FOOT_T, FOOT_R - FOOT_L, FOOT_B - ZOOM_FOOT_T, colorBg);
     }
     canvas.setFont(&fonts::Font0);
 
-    float range = g_zoom.rangeNm;
+    float range = f.rangeNm;
     float step = range > 3.0f ? 1.0f : 0.5f;
     drawScope(range, step);
 
     canvas.setClipRect(PLOT_L, PLOT_T, PLOT_R - PLOT_L, PLOT_B - PLOT_T);
     bool inUse[MAX_ZOOM_RUNWAYS][2];
-    runwaysInUse(aircraft, inUse);
-    drawRunways(inUse);
+    runwaysInUse(f, aircraft, inUse);
+    drawRunways(f, inUse);
     static const std::vector<uint8_t> noneNew;  // the radar marks new contacts; here they are all just traffic
     int plotted = 0, labelled = 0;
-    drawContacts(aircraft, noneNew, nullptr, true, {g_zoom.lat, g_zoom.lon, RADIUS / range, ZOOM_LEAD_S, true},
+    drawContacts(aircraft, noneNew, trails, flash, {f.lat, f.lon, RADIUS / range, ZOOM_LEAD_S, true, followHex},
                  plotted, labelled);
     canvas.clearClipRect();
 
     // As the radar's, with the runways in use on top when there are any.
     if (!full) {
-        canvas.setClipRect(PLOT_L, PLOT_T, PLOT_R - PLOT_L, PLOT_B - PLOT_T);
+        canvas.fillRect(0, RANGE_BOX_T, PLOT_L, BOX_H, colorBg);
     }
     footerBox(nmText(range) + " nm range   rings every " + nmText(step) + " nm", 16, FOOTER_Y, false);
-    canvas.clearClipRect();
     String used;
-    for (int r = 0; r < g_zoom.runwayCount; r++) {
+    for (int r = 0; r < f.runwayCount; r++) {
         for (int k = 0; k < 2; k++) {
             if (inUse[r][k]) {
-                used += String(" ") + g_zoom.runways[r].end[k].ident;
+                used += String(" ") + f.runways[r].end[k].ident;
             }
         }
     }
@@ -1257,22 +1438,60 @@ void radarZoomDraw(const std::vector<Aircraft> &aircraft, bool full) {
     footerBox(String(plotted) + " contacts" + (labelled < plotted ? "   " + String(labelled) + " labelled" : ""), 1264,
               FOOTER_Y, true);
 
+    if (!full) {
+        pushPlot(push, ZOOM_FOOT_T);
+    }
+}
+
+// The frame a replay last drew its zoom in, kept apart from the live zoom's.
+ZoomFrame g_replayZoom;
+
+}  // namespace
+
+void radarZoomDraw(const std::vector<Aircraft> &aircraft, bool full) {
+    ensureColors();
     if (full) {
-        screen::flush();
-        return;
+        g_choiceCount = 0;
+        screen::clear(colorBg);
+        drawZoomHeader();
+    }
+    // With a list up, a refresh is drawn under it and pushed along with it.
+    zoomPlot(g_zoom, aircraft, nullptr, true, g_zoomFollowHex, full, g_choiceCount == 0);
+    // Following into the zoom, its height against the field's.
+    bool following = g_zoomFollowHex.length() > 0;
+    if (following) {
+        radarTelemetryDraw(LIVE_TEL_X, LIVE_TEL_Y, g_heights, millis(),
+                           g_zoom.runwayCount ? g_zoom.runways[0].elevationFt : INT32_MIN, g_lostS);
     }
     if (g_choiceCount) {
-        pushPlot(false, ZOOM_FOOT_T);
         drawChooser();
-        screen::flush();
-        return;
     }
-    pushPlot(true, ZOOM_FOOT_T);
+    if (full || g_choiceCount || following) {
+        screen::flush();
+    }
+}
+
+bool radarZoomPlotDraw(const RadarScene &scene, const String &code, bool full) {
+    ensureColors();
+    if (g_replayZoom.code != code && !frameZoom(code, g_replayZoom)) {
+        return false;
+    }
+    zoomPlot(g_replayZoom, scene.aircraft, scene.trails, scene.flash, scene.followHex, full, scene.push);
+    return true;
 }
 
 ZoomAction radarZoomHandleTouch(int x, int y, String &outHex) {
-    if (!g_choiceCount && y >= BACK_Y && y < BACK_Y + BACK_H && x >= BACK_X && x < BACK_X + BACK_W) {
-        return ZoomAction::UNZOOM;
+    if (!g_choiceCount) {
+        int b = buttonAt(x, y);
+        if (b == BTN_BACK) {
+            return ZoomAction::UNZOOM;
+        }
+        if (b == BTN_FOLLOW) {
+            return ZoomAction::TOGGLE_FOLLOW;
+        }
+        if (b == BTN_REC) {
+            return ZoomAction::TOGGLE_RECORD;
+        }
     }
     switch (tapTarget(x, y, false, outHex)) {
     case Target::AIRCRAFT:
@@ -1286,18 +1505,24 @@ ZoomAction radarZoomHandleTouch(int x, int y, String &outHex) {
 
 RadarAction radarScreenHandleTouch(int x, int y, String &outHex, String &outAirport) {
     // With the list up, every tap is the list's: outside it is a dismissal.
-    if (!g_choiceCount && y >= BACK_Y && y < BACK_Y + BACK_H) {
-        if (x >= BACK_X && x < BACK_X + BACK_W) {
+    if (!g_choiceCount) {
+        switch (buttonAt(x, y)) {
+        case BTN_BACK:
             return RadarAction::BACK;
-        }
-        if (x >= CENTRE_X && x < CENTRE_X + CENTRE_W) {
-            return RadarAction::TOGGLE_CENTRE;
-        }
-        if (x >= REC_X && x < REC_X + REC_W) {
+        case BTN_HOME:
+            return RadarAction::CENTRE_HOME;
+        case BTN_AIRPORT:
+            return RadarAction::CENTRE_AIRPORT;
+        case BTN_ALL:
+            return RadarAction::CENTRE_ALL;
+        case BTN_FOLLOW:
+            return RadarAction::TOGGLE_FOLLOW;
+        case BTN_REC:
             return RadarAction::TOGGLE_RECORD;
-        }
-        if (x >= REPLAY_X && x < REPLAY_X + REPLAY_W) {
+        case BTN_REPLAYS:
             return RadarAction::OPEN_RECORDINGS;
+        default:
+            break;
         }
     }
     String id;
@@ -1312,13 +1537,6 @@ RadarAction radarScreenHandleTouch(int x, int y, String &outHex, String &outAirp
         return RadarAction::DISMISS;
     case Target::NONE:
         break;
-    }
-    return RadarAction::NONE;
-}
-
-RadarAction radarScreenHandleHold(int x, int y) {
-    if (y >= BACK_Y && y < BACK_Y + BACK_H && x >= CENTRE_X && x < CENTRE_X + CENTRE_W) {
-        return RadarAction::TOGGLE_AIRPORTS;
     }
     return RadarAction::NONE;
 }
@@ -1342,4 +1560,192 @@ bool radarPlotHit(int x, int y, String &outHex) {
         return true;
     }
     return false;
+}
+
+// --- the followed aircraft's height --------------------------------------------
+
+namespace {
+
+// 12,345: an altitude reads at a glance with its thousands marked.
+String withCommas(int32_t v) {
+    char buf[16];
+    snprintf(buf, sizeof(buf), "%ld", (long)(v < 0 ? -v : v));
+    String digits(buf), out;
+    for (int i = 0; i < (int)digits.length(); i++) {
+        if (i && (digits.length() - i) % 3 == 0) {
+            out += ',';
+        }
+        out += digits[i];
+    }
+    return v < 0 ? "-" + out : out;
+}
+
+// The top of the chart: the highest it shows rounded up to a step that keeps
+// the scale readable, and never less than a circuit's height, so a take-off
+// roll has somewhere to climb into.
+int32_t chartTop(int32_t highest) {
+    int32_t step = highest > 10000 ? 5000 : 1000;
+    int32_t top = (std::max(highest, (int32_t)1000) + step - 1) / step * step;
+    return std::max(top, (int32_t)2000);
+}
+
+constexpr int TEL_LABEL_H = 16;
+constexpr int TEL_VALUE_Y = 20;   // the altitude, large, under its label
+constexpr int TEL_ROWS_Y = 64;    // the readouts under it, a row each
+constexpr int TEL_ROW_H = 22;
+constexpr int TEL_CHART_Y = 140;  // from the top of the box
+constexpr int TEL_CHART_H = 166;
+// Two polls further apart than this aren't joined: the line between them
+// would claim a climb or descent nobody saw.
+constexpr uint32_t TEL_GAP_MS = 180000;
+
+}  // namespace
+
+void radarSetHeights(const std::vector<FollowSample> &samples, uint32_t lostS) {
+    g_heights = samples;
+    g_lostS = lostS;
+}
+
+void radarTelemetryDraw(int x, int y, const std::vector<FollowSample> &samples, uint32_t nowMs, int32_t fieldFt,
+                        uint32_t lostS) {
+    ensureColors();
+    auto &canvas = screen::canvas();
+    canvas.fillRect(x, y, TELEMETRY_W, TELEMETRY_H, colorBg);
+    screen::markDirty(x, y, TELEMETRY_W, TELEMETRY_H);
+    canvas.setFont(&fonts::Font0);
+
+    // The latest report by now, and the window of them the chart covers.
+    uint32_t from = nowMs > TELEMETRY_WINDOW_MS ? nowMs - TELEMETRY_WINDOW_MS : 0;
+    const FollowSample *latest = nullptr;
+    int32_t highest = fieldFt == INT32_MIN ? 0 : fieldFt;
+    for (const FollowSample &s : samples) {
+        if (s.ms > nowMs) {
+            break;
+        }
+        latest = &s;
+        if (s.ms >= from && s.hasAlt) {
+            highest = std::max(highest, s.altFt);
+        }
+    }
+
+    // --- readouts ---
+    canvas.setTextDatum(TL_DATUM);
+    canvas.setTextSize(2);
+    canvas.setTextColor(colorFaint);
+    canvas.drawString("ALTITUDE", x, y);
+    if (lostS) {
+        canvas.setTextColor(colorAlert);
+        canvas.drawString("lost " + String(lostS) + "s", x + canvas.textWidth("ALTITUDE  "), y);
+    }
+    String alt = "-", vs = "-", gs = "-", agl;
+    if (latest != nullptr) {
+        if (latest->ground) {
+            alt = "GND";
+        } else if (latest->hasAlt) {
+            alt = withCommas(latest->altFt);
+        }
+        if (latest->hasVs) {
+            vs = (latest->vsFpm > 0 ? "+" : "") + withCommas(latest->vsFpm) + " fpm";
+        } else if (latest->ground) {
+            vs = "on the ground";
+        }
+        if (latest->hasGs) {
+            gs = String(latest->gsKt) + " kt";
+        }
+        if (fieldFt != INT32_MIN && latest->hasAlt) {
+            agl = latest->ground ? String("0 ft") : withCommas(latest->altFt - fieldFt) + " ft";
+        }
+    }
+    canvas.setTextSize(4);
+    canvas.setTextColor(colorHome);
+    canvas.drawString(alt, x, y + TEL_VALUE_Y);
+    if (alt != "GND" && alt != "-") {
+        canvas.setTextSize(2);
+        canvas.setTextColor(colorMuted);
+        canvas.drawString("ft", x + 4 * 6 * (int)alt.length() + 8, y + TEL_VALUE_Y + 14);
+    }
+    canvas.setTextSize(2);
+    const char *names[] = {"V/S", "GS", "AGL"};
+    const String *values[] = {&vs, &gs, &agl};
+    int rows = agl.length() ? 3 : 2;
+    for (int i = 0; i < rows; i++) {
+        int ry = y + TEL_ROWS_Y + i * TEL_ROW_H;
+        canvas.setTextColor(colorFaint);
+        canvas.drawString(names[i], x, ry);
+        canvas.setTextColor(colorText);
+        canvas.drawString(*values[i], x + 60, ry);
+    }
+
+    // --- the chart ---
+    int cx = x, cy = y + TEL_CHART_Y, cw = TELEMETRY_W, ch = TEL_CHART_H;
+    canvas.drawRect(cx, cy, cw, ch, colorRing);
+    int32_t top = chartTop(highest);
+    auto px = [&](uint32_t ms) { return cx + 1 + (int)((int64_t)(cw - 3) * (int64_t)(ms - from) / TELEMETRY_WINDOW_MS); };
+    auto py = [&](int32_t ft) {
+        int32_t clamped = std::min(std::max(ft, (int32_t)0), top);
+        return cy + ch - 2 - (int)((int64_t)(ch - 4) * clamped / top);
+    };
+    // Gridlines a step apart, faint, with the top one labelled.
+    int32_t grid = top > 10000 ? 5000 : top > 4000 ? 2000 : 1000;
+    for (int32_t ft = grid; ft < top; ft += grid) {
+        int gy = py(ft);
+        for (int gx = cx + 2; gx < cx + cw - 2; gx += 6) {
+            canvas.drawPixel(gx, gy, colorRing);
+        }
+    }
+    canvas.setTextSize(1);
+    canvas.setTextColor(colorRingText);
+    canvas.setTextDatum(TL_DATUM);
+    canvas.drawString(withCommas(top) + " ft", cx + 4, cy + 4);
+    if (fieldFt != INT32_MIN) {
+        int fy = py(fieldFt);
+        for (int gx = cx + 2; gx < cx + cw - 2; gx += 4) {
+            canvas.drawFastHLine(gx, fy, 2, colorRunway);
+        }
+        canvas.setTextDatum(BR_DATUM);
+        canvas.drawString("field " + withCommas(fieldFt), cx + cw - 4, fy - 2);
+        canvas.setTextDatum(TL_DATUM);
+    }
+
+    canvas.setClipRect(cx + 1, cy + 1, cw - 2, ch - 2);
+    const FollowSample *prev = nullptr;
+    for (const FollowSample &s : samples) {
+        if (s.ms > nowMs) {
+            break;
+        }
+        if (s.ms < from || !s.hasAlt) {
+            continue;
+        }
+        int sx = px(s.ms), sy = py(s.altFt);
+        if (prev != nullptr && s.ms - prev->ms <= TEL_GAP_MS) {
+            int qx = px(prev->ms), qy = py(prev->altFt);
+            canvas.drawLine(qx, qy, sx, sy, colorBlip);
+            canvas.drawLine(qx, qy - 1, sx, sy - 1, colorBlip);
+            // Between the air and the ground: a touchdown or a take-off,
+            // marked where it was first seen.
+            if (prev->ground != s.ground) {
+                for (int my = cy + 14; my < cy + ch - 2; my += 6) {
+                    canvas.drawFastVLine(sx, my, 3, colorFaint);
+                }
+                canvas.setTextColor(colorText);
+                canvas.setTextDatum(TC_DATUM);
+                canvas.drawString(s.ground ? "TD" : "TO", sx, cy + 4);
+                canvas.setTextDatum(TL_DATUM);
+            }
+        }
+        if (s.ground) {
+            canvas.drawCircle(sx, sy, 2, colorBlip);
+        } else {
+            canvas.fillCircle(sx, sy, 2, colorBlip);
+        }
+        prev = &s;
+    }
+    canvas.clearClipRect();
+
+    canvas.setTextSize(2);
+    canvas.setTextColor(colorFaint);
+    canvas.setTextDatum(TL_DATUM);
+    canvas.drawString("-" + String(TELEMETRY_WINDOW_MS / 60000) + "m", cx, cy + ch + 6);
+    canvas.setTextDatum(TR_DATUM);
+    canvas.drawString("now", cx + cw, cy + ch + 6);
 }

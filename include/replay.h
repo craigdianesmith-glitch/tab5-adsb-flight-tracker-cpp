@@ -5,6 +5,7 @@
 
 #include "adsb_client.h"
 #include "recorder.h"
+#include "telemetry.h"
 
 // Reads a recording back for playback. Loading indexes the file - where each
 // poll starts, and every position each aircraft reported - so that any moment
@@ -35,6 +36,48 @@ size_t frameIndexAt(uint32_t t);
 uint32_t frameMs(size_t i);
 // Wall-clock UTC seconds at `t`, or 0 if the clock wasn't set when recording.
 uint32_t epochAt(uint32_t t);
+
+// What a poll was showing - see recorder.h: the radar around home, the radar
+// centred on a followed aircraft, or an airport's zoom with or without one.
+struct View {
+    enum Kind : uint8_t { HOME, FOLLOW, ZOOM };
+    Kind kind = HOME;
+    char code[4] = "";  // ZOOM's airport
+    char hex[8] = "";   // the aircraft followed, in either FOLLOW or ZOOM; "" for none
+    bool sameAs(const View &o) const {
+        return kind == o.kind && strcmp(code, o.code) == 0 && strcmp(hex, o.hex) == 0;
+    }
+};
+
+// The view of the poll latest at `t`.
+View viewAt(uint32_t t);
+
+// Whether any of its polls are of the radar around home, which is all an
+// older recording has: for the replay to offer its HOME and AIRPORT centres.
+bool hasHomeView();
+
+// Where the aircraft with ICAO `hex` was last reported by `t` ms in, for
+// centring on one that is missing from the poll at that point. False if it
+// hadn't been reported yet.
+bool lastFixOf(const String &hex, uint32_t t, float &lat, float &lon);
+
+// Where the aircraft followed at `t` - on the radar, having left a zoom it
+// was on the ground in - took off from: that zoom's airport, or "" for none.
+String departedFrom(uint32_t t);
+
+// The callsign the recording has for the aircraft with ICAO `hex`, or `hex`
+// itself where it has none.
+String callsignOf(const String &hex);
+
+// An aircraft followed in the recording: its height and speed at each poll
+// that reported it while it was being followed, timed in ms into the
+// recording as `t` is. Empty for one never followed.
+const std::vector<FollowSample> &followHeights(const String &hex);
+
+// The aircraft followed at `t`, as the poll latest at `t` reported it - not
+// glided towards the next, so what is worked out from it changes at a poll,
+// as it did live. False where nothing is followed or that poll lacks it.
+bool followedAt(uint32_t t, Aircraft &out);
 
 // The scene `t` ms into the recording: the aircraft of the latest poll at
 // that point, each moved part of the way toward where the next poll found it

@@ -1101,45 +1101,93 @@ const AirportEntry AIRPORTS[] = {
     {"ZUH", 22.0064f, 113.3760f}, {"ZYI", 27.8107f, 107.2472f}, {"ZYL", 24.9640f, 91.8647f},
 };
 
-// Cached, because the answer only changes when the location does.
-double g_lastLat = 1e9, g_lastLon = 1e9;
-float g_lastMaxNm = -1.0f;
-const AirportEntry *g_lastEntry = nullptr;
+// The scans below are of the whole table, 3244 entries, and are asked for
+// by the radar about its centre, by following about the aircraft, by the
+// estimates about every low contact and by the ground's elevation - each
+// about a different point, often in turn. So each keeps a few answers rather
+// than one, and the scans are done in float: the P4's FPU is single precision,
+// and double arithmetic in software made a scan take 6.7ms. Float carries a
+// latitude to a metre or two, far below what any of this cares about.
+constexpr int CACHE_SLOTS = 4;
 
-double g_withinLat = 1e9, g_withinLon = 1e9;
-float g_withinNm = -1.0f;
-std::vector<Airport> g_within;
+struct NearestCache {
+    double lat = 1e9, lon = 1e9;
+    float maxNm = -1.0f;
+    const AirportEntry *entry = nullptr;
+    uint32_t used = 0;
+};
+NearestCache g_nearest[CACHE_SLOTS];
+
+struct WithinCache {
+    double lat = 1e9, lon = 1e9;
+    float rangeNm = -1.0f;
+    std::vector<Airport> airports;
+    uint32_t used = 0;
+};
+WithinCache g_within[CACHE_SLOTS];
+uint32_t g_cacheUse = 0;
+
+// The slot to use for a new answer: the one asked for least recently.
+template <typename T> T &oldest(T (&slots)[CACHE_SLOTS]) {
+    T *o = &slots[0];
+    for (T &s : slots) {
+        if (s.used < o->used) {
+            o = &s;
+        }
+    }
+    return *o;
+}
+
+// Squared distance in nm, flat-earth - or past `max2` without finishing the
+// sum, from the latitude alone, which rules out nearly all of the table.
+inline float dist2(const AirportEntry &a, float lat, float lon, float cosLat, float max2) {
+    float dy = (a.lat - lat) * 60.0f;
+    float dy2 = dy * dy;
+    if (dy2 > max2) {
+        return dy2;
+    }
+    float dx = (a.lon - lon) * 60.0f * cosLat;
+    return dx * dx + dy2;
+}
 
 }  // namespace
 
 bool nearestAirport(double lat, double lon, Airport &out, float maxNm) {
-    if (lat != g_lastLat || lon != g_lastLon || maxNm != g_lastMaxNm) {
-        // Equirectangular rather than haversine: over the tens of miles that
+    NearestCache *hit = nullptr;
+    for (NearestCache &c : g_nearest) {
+        if (c.lat == lat && c.lon == lon && c.maxNm == maxNm) {
+            hit = &c;
+            break;
+        }
+    }
+    if (hit == nullptr) {
+        // Flat-earth rather than haversine: over the tens of miles that
         // decide the nearest airport the difference is far below the precision
         // that matters, and it keeps this to a few flops per entry.
-        double cosLat = cos(lat * M_PI / 180.0);
+        float flat = (float)lat, flon = (float)lon;
+        float cosLat = cosf(flat * (float)M_PI / 180.0f);
         float best = maxNm * maxNm;
         const AirportEntry *bestEntry = nullptr;
         for (const auto &a : AIRPORTS) {
-            float dy = (float)((a.lat - lat) * 60.0);
-            float dx = (float)((a.lon - lon) * 60.0 * cosLat);
-            float d2 = dx * dx + dy * dy;
+            float d2 = dist2(a, flat, flon, cosLat, best);
             if (d2 < best) {
                 best = d2;
                 bestEntry = &a;
             }
         }
-        g_lastLat = lat;
-        g_lastLon = lon;
-        g_lastMaxNm = maxNm;
-        g_lastEntry = bestEntry;
+        hit = &oldest(g_nearest);
+        hit->lat = lat;
+        hit->lon = lon;
+        hit->maxNm = maxNm;
+        hit->entry = bestEntry;
     }
-    if (g_lastEntry == nullptr) {
+    hit->used = ++g_cacheUse;
+    if (hit->entry == nullptr) {
         return false;
     }
-    out.code = g_lastEntry->code;
-    out.lat = g_lastEntry->lat;
-    out.lon = g_lastEntry->lon;
+    out.code = hit->entry->code;
+    out.lat = hit->entry->lat;
+    out.lon = hit->entry->lon;
     return true;
 }
 
@@ -1163,18 +1211,20 @@ String nearestAirportCode(double lat, double lon, float maxNm) {
 }
 
 const std::vector<Airport> &airportsWithin(double lat, double lon, float rangeNm) {
-    if (lat == g_withinLat && lon == g_withinLon && rangeNm == g_withinNm) {
-        return g_within;
+    for (WithinCache &c : g_within) {
+        if (c.lat == lat && c.lon == lon && c.rangeNm == rangeNm) {
+            c.used = ++g_cacheUse;
+            return c.airports;
+        }
     }
     // The same flat-earth distance the radar projects with, so everything
     // returned lands inside its outer ring.
-    double cosLat = cos(lat * M_PI / 180.0);
+    float flat = (float)lat, flon = (float)lon;
+    float cosLat = cosf(flat * (float)M_PI / 180.0f);
     float max2 = rangeNm * rangeNm;
     std::vector<std::pair<float, const AirportEntry *>> found;
     for (const auto &a : AIRPORTS) {
-        float dy = (float)((a.lat - lat) * 60.0);
-        float dx = (float)((a.lon - lon) * 60.0 * cosLat);
-        float d2 = dx * dx + dy * dy;
+        float d2 = dist2(a, flat, flon, cosLat, max2);
         if (d2 <= max2) {
             found.push_back({d2, &a});
         }
@@ -1183,12 +1233,14 @@ const std::vector<Airport> &airportsWithin(double lat, double lon, float rangeNm
               [](const std::pair<float, const AirportEntry *> &a, const std::pair<float, const AirportEntry *> &b) {
                   return a.first < b.first;
               });
-    g_within.clear();
+    WithinCache &c = oldest(g_within);
+    c.airports.clear();
     for (const auto &f : found) {
-        g_within.push_back({f.second->code, f.second->lat, f.second->lon});
+        c.airports.push_back({f.second->code, f.second->lat, f.second->lon});
     }
-    g_withinLat = lat;
-    g_withinLon = lon;
-    g_withinNm = rangeNm;
-    return g_within;
+    c.lat = lat;
+    c.lon = lon;
+    c.rangeNm = rangeNm;
+    c.used = ++g_cacheUse;
+    return c.airports;
 }

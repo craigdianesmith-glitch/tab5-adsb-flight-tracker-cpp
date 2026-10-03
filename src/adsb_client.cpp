@@ -46,6 +46,10 @@ static void buildFilter(JsonDocument &filter, const char *arrayKey) {
                             "category", "track", "alt_geom", "baro_rate", "geom_rate"}) {
         ac[key] = true;
     }
+    JsonObject last = ac["lastPosition"].to<JsonObject>();
+    last["lat"] = true;
+    last["lon"] = true;
+    last["seen_pos"] = true;
 }
 
 // {lat}/{lon}/{radius} substitution rather than a printf format held in the
@@ -231,6 +235,22 @@ static void parseInto(JsonDocument &doc, const AdsbEndpoint &ep, bool military, 
         JsonVariantConst latV = ac["lat"], lonV = ac["lon"];
         a.speedStr = gsV.isNull() ? "?" : String((long)lround(gsV.as<float>()));
 
+        // A position gone stale - most often at a touchdown, as the aircraft
+        // drops below the receivers' horizon and switches to the ground's
+        // messages - leaves the feed with its last one instead. Recent, that
+        // still says where it is better than nothing does: the plot keeps it,
+        // dimmed, rather than having it vanish until a receiver picks it up
+        // taxiing.
+        a.posStale = false;
+        if (latV.isNull() || lonV.isNull()) {
+            JsonObjectConst last = ac["lastPosition"];
+            if (!last.isNull() && !last["lat"].isNull() && !last["lon"].isNull() &&
+                (last["seen_pos"] | 1e9f) <= STALE_POSITION_MAX_S) {
+                latV = last["lat"];
+                lonV = last["lon"];
+                a.posStale = true;
+            }
+        }
         if (!latV.isNull() && !lonV.isNull()) {
             double acLat = latV.as<double>(), acLon = lonV.as<double>();
             a.hasDist = true;

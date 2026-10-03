@@ -31,6 +31,7 @@ AppSettings loadSettings() {
     s.alertMask = prefs.getUChar("alerts", ALERT_ALL) & ALERT_ALL;
     s.watchlist = prefs.isKey("watch") ? prefs.getString("watch") : String("");
     s.autoRecord = prefs.getBool("autorec", false);
+    s.autoFollow = prefs.getBool("autofollow", false);
     // isKey() first: getString() on a missing key logs an ESP error line, and
     // an unconfigured device would print two of them on every boot.
     s.wifiSsid = prefs.isKey("ssid") ? prefs.getString("ssid") : String("");
@@ -113,11 +114,12 @@ void saveWifi(const String &ssid, const String &pass) {
     prefs.end();
 }
 
-void saveAlerts(uint8_t alertMask, const String &watchlist, bool autoRecord) {
+void saveAlerts(uint8_t alertMask, const String &watchlist, bool autoRecord, bool autoFollow) {
     Preferences prefs;
     prefs.begin(NAMESPACE, false);
     prefs.putUChar("alerts", alertMask);
     prefs.putString("watch", watchlist);
     prefs.putBool("autorec", autoRecord);
+    prefs.putBool("autofollow", autoFollow);
     prefs.end();
 }

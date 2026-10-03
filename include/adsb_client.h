@@ -36,6 +36,9 @@ struct Aircraft {
     int altGeom = 0;      // ft
     bool hasPos = false;
     float lat = 0, lon = 0;  // aircraft's own position
+    // The position is the last one the feed had rather than a current one:
+    // drawn dimmed. See STALE_POSITION_MAX_S.
+    bool posStale = false;
 };
 
 // Fetches aircraft near (lat, lon) within radiusNm from `source`, asking that

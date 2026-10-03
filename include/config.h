@@ -32,13 +32,51 @@ constexpr uint32_t FORGET_AFTER_MS = 120000;
 // seconds - but only while the zoom is up, which closes itself once left
 // untouched for ZOOM_TIMEOUT_MS, and for a radius of a few miles, a far
 // smaller answer than the main poll's. The two never go closer together than
-// POLL_INTERVAL_MIN_S, so a provider sees no more than it would of one device
-// polling at the shortest interval.
-constexpr int ZOOM_POLL_INTERVAL_S = 5;
+// POLL_INTERVAL_MIN_S. Ten seconds rather than five: at five, sustained over
+// a landing, adsb.lol began answering 429 and the poll fell back to adsb.fi.
+constexpr int ZOOM_POLL_INTERVAL_S = 10;
+// Between its polls the zoom - and the radar too - is redrawn this many
+// times more, each contact moved on from where the last poll put it by its
+// speed and track, and a followed aircraft by the estimate that takes it down
+// a runway: so it moves in steps of a few seconds rather than jumping at each
+// poll. At least every TWEEN_MAX_MS, so the radar's half-minute polls get
+// more of them than the zoom's ten seconds. Not past two polls' worth: a feed
+// that has stopped answering doesn't send the sky sailing on without it.
+constexpr int TWEEN_FRAMES = 2;
+constexpr uint32_t TWEEN_MAX_MS = 5000;
 constexpr uint32_t ZOOM_TIMEOUT_MS = 5UL * 60 * 1000;
 // Fetched past the zoom's range, so traffic a few miles out on final is in
 // the list: off the plot, but it says which runway is in use before it lands.
 constexpr int ZOOM_FETCH_EXTRA_NM = 4;
+
+// Follow me: the radar centred on one aircraft, at this range, fetched around
+// it by the zoom's extra poll wherever it goes, in or out of the radius. On
+// the radar that goes at the main poll's interval, so following costs one
+// more request per poll; only once it is handed to an airport's zoom does it
+// go at ZOOM_POLL_INTERVAL_S.
+constexpr int FOLLOW_RANGE_NM = 20;
+// Coming down to an airport, the range closes in on it a step at a time -
+// and the fetch around the aircraft with it, so the answers shrink too. Below
+// this height, and only then, an airport ahead is taken for its destination.
+constexpr int FOLLOW_RANGE_STEPS_NM[] = {5, 10, 15};
+constexpr int FOLLOW_APPROACH_MAX_FT = 12000;
+// Level rather than descending, only this low: above it, an airport ahead is
+// one it is passing over.
+constexpr int FOLLOW_APPROACH_LEVEL_FT = 5000;
+// Handed to an airport's zoom once it is low near one and on the zoom's plot:
+// within this height of the field, not climbing, and inside the zoom's range
+// of its middle - or will be by the next fetch, at the speed it is doing. On
+// the ground counts too, so a departure starts there.
+constexpr int FOLLOW_ZOOM_AGL_FT = 2500;
+constexpr float FOLLOW_ZOOM_SEARCH_NM = 10.0f;  // how far off an airport may be, to be considered
+// And back to the radar once it is airborne and flying off the zoom's plot,
+// or whichever way it is going, this many zoom ranges out.
+constexpr float FOLLOW_UNZOOM_RANGES = 1.5f;
+// Gone from the feed this long - transponder off at the gate, or out of
+// every receiver's reach - and following stops.
+constexpr uint32_t FOLLOW_LOST_MS = 90000;
+// While it is lost, how often the estimate of where it is is redrawn.
+constexpr uint32_t FOLLOW_ESTIMATE_DRAW_MS = 1000;
 
 // How long a cell that just changed value stays shaded.
 constexpr uint32_t CELL_HIGHLIGHT_MS = 2000;
@@ -83,6 +121,17 @@ constexpr uint32_t RECORDING_SPLIT_BYTES = 4UL * 1024 * 1024;
 constexpr const char *VIDEO_DIR = "/videos";
 // How far back a contact's trail reaches during playback.
 constexpr uint32_t REPLAY_TRAIL_MS = 10 * 60 * 1000;
+
+// How old a last-known position may be and still be plotted, dimmed, when
+// the feed has lost the current one.
+constexpr float STALE_POSITION_MAX_S = 60.0f;
+// Any contact this low - landing, taking off, on the ground - that the feed
+// loses is drawn where it is estimated to be, dimmed, for up to this long:
+// the same estimate as a followed aircraft's (see follow.h), which follows
+// one the longer FOLLOW_LOST_MS. Higher up, a contact that goes missing has
+// most likely flown out of range, and is let go.
+constexpr int ESTIMATE_MAX_FT = 4000;
+constexpr uint32_t ESTIMATE_LOST_MS = 90000;
 
 constexpr int CLIMB_THRESHOLD_FPM = 150;
 constexpr int DESCEND_THRESHOLD_FPM = -150;

@@ -29,7 +29,8 @@ constexpr int WATCH_X = COL2_X, WATCH_Y = 112, WATCH_W = COL_W, WATCH_H = 140;
 
 constexpr int REC_LABEL_Y = 284;
 constexpr int AUTOREC_Y = 312;
-constexpr int REC_NOTE_Y = AUTOREC_Y + TOGGLE_H + 16;
+constexpr int AUTOFOLLOW_Y = AUTOREC_Y + TOGGLE_STEP;
+constexpr int REC_NOTE_Y = AUTOFOLLOW_Y + TOGGLE_H + 14;
 
 struct AlertToggle {
     uint8_t bit;
@@ -45,6 +46,7 @@ const AlertToggle TOGGLES[ALERT_COUNT] = {
 
 uint8_t g_mask = ALERT_ALL;
 bool g_autoRecord = false;
+bool g_autoFollow = false;
 bool g_cardPresent = true;
 String g_watchlist;
 
@@ -114,6 +116,10 @@ void drawAutoRecord() {
                g_autoRecord, g_cardPresent);
 }
 
+void drawAutoFollow() {
+    drawToggle(COL2_X, AUTOFOLLOW_Y, "Auto-follow alerts", "Follows the alerted flight on the radar", g_autoFollow);
+}
+
 // The entries themselves, wrapped onto as many lines as the button holds, so
 // what is being watched for can be seen without opening the editor.
 void drawWatchButton() {
@@ -163,13 +169,15 @@ void drawRecordingNote() {
     canvas.setTextSize(2);
     canvas.setTextDatum(TL_DATUM);
     canvas.setTextColor(colorDim);
+    // Auto-record alone records the radar until a minute after the last
+    // alerted aircraft has gone; with auto-follow, it follows the one alerted
+    // and stops once it has landed or left the radius.
     const char *lines[] = {
-        "Starts when an alert fires and stops a",
-        "minute after the last alerted aircraft",
-        "has gone. Recordings are played back",
-        "from Replays on the radar screen.",
+        "Records until the alerted flight has gone,",
+        "or with auto-follow, landed or left. Play",
+        "them from Replays on the radar screen.",
     };
-    for (int i = 0; i < 4; i++) {
+    for (int i = 0; i < 3; i++) {
         canvas.drawString(lines[i], COL2_X, REC_NOTE_Y + i * 26);
     }
 
@@ -183,7 +191,7 @@ void drawRecordingNote() {
         card = "SD card: none found";
         canvas.setTextColor(M5.Display.color565(0xF3, 0x9C, 0x12));
     }
-    canvas.drawString(card, COL2_X, REC_NOTE_Y + 4 * 26 + 18);
+    canvas.drawString(card, COL2_X, REC_NOTE_Y + 3 * 26 + 10);
 }
 
 bool inside(int x, int y, int rx, int ry, int rw, int rh) { return x >= rx && x < rx + rw && y >= ry && y < ry + rh; }
@@ -192,9 +200,10 @@ bool inside(int x, int y, int rx, int ry, int rw, int rh) { return x >= rx && x 
 
 void alertsScreenSetCard(bool present) { g_cardPresent = present; }
 
-void alertsScreenSet(uint8_t alertMask, bool autoRecord, const String &watchlist) {
+void alertsScreenSet(uint8_t alertMask, bool autoRecord, bool autoFollow, const String &watchlist) {
     g_mask = alertMask;
     g_autoRecord = autoRecord;
+    g_autoFollow = autoFollow;
     g_watchlist = watchlist;
 }
 
@@ -231,8 +240,9 @@ void alertsScreenDraw() {
 
     sectionLabel("WATCHLIST", COL2_X, WATCH_LABEL_Y);
     drawWatchButton();
-    sectionLabel("RECORDING", COL2_X, REC_LABEL_Y);
+    sectionLabel("RECORDING AND FOLLOWING", COL2_X, REC_LABEL_Y);
     drawAutoRecord();
+    drawAutoFollow();
     drawRecordingNote();
 
     screen::flush();
@@ -256,6 +266,12 @@ AlertsAction alertsScreenHandleTouch(int x, int y) {
         screen::flush();
         return AlertsAction::NONE;
     }
+    if (inside(x, y, COL2_X, AUTOFOLLOW_Y, COL_W, TOGGLE_H)) {
+        g_autoFollow = !g_autoFollow;
+        drawAutoFollow();
+        screen::flush();
+        return AlertsAction::NONE;
+    }
     if (inside(x, y, WATCH_X, WATCH_Y, WATCH_W, WATCH_H)) {
         return AlertsAction::OPEN_WATCHLIST;
     }
@@ -264,4 +280,5 @@ AlertsAction alertsScreenHandleTouch(int x, int y) {
 
 uint8_t alertsScreenMask() { return g_mask; }
 bool alertsScreenAutoRecord() { return g_autoRecord; }
+bool alertsScreenAutoFollow() { return g_autoFollow; }
 String alertsScreenWatchlist() { return g_watchlist; }

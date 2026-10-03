@@ -6,8 +6,11 @@
 #include <time.h>
 #include <vector>
 
+#include "follow.h"
+#include "telemetry.h"
 #include "radar_screen.h"
 #include "replay.h"
+#include "runways.h"
 #include "screen.h"
 #include "video_writer.h"
 
@@ -20,8 +23,10 @@ constexpr int CENTRE_X = BACK_X - 12 - CENTRE_W;
 constexpr int EXPORT_W = 124;
 constexpr int EXPORT_X = CENTRE_X - 12 - EXPORT_W;
 
-// The controls take the margin left of the plot, which the live radar leaves
-// empty: the plot itself is drawn exactly as it is live.
+// The controls take the margin left of the plot, where the live radar puts a
+// followed aircraft's telemetry: the plot itself is drawn exactly as it is
+// live. A replay of one has its telemetry on the right instead, under the
+// buttons.
 constexpr int PANEL_X = 16, PANEL_W = 274;
 constexpr int CLOCK_LABEL_Y = 76, CLOCK_Y = 100;
 constexpr int ELAPSED_Y = 146;
@@ -32,6 +37,7 @@ constexpr int STEP_W = (PANEL_W - 2 * STEP_GAP) / 3;
 constexpr int BAR_Y = 378, BAR_H = 40;
 constexpr int BAR_TOUCH_PAD = 14;  // a finger is wider than the bar is tall
 constexpr int FRAME_Y = 436;
+constexpr int TEL_X = 1264 - TELEMETRY_W, TEL_Y = 70;
 // What a tick repaints: the clock and elapsed lines, and the bar with its
 // caption. The buttons only change when they are pressed.
 constexpr int DYN1_Y = CLOCK_Y - 4, DYN1_H = NOTE_Y - DYN1_Y - 6;
@@ -76,6 +82,18 @@ bool g_airports = false;
 std::vector<Aircraft> g_scene;
 std::vector<replay::TrailPoint> g_trails;
 const std::vector<uint8_t> g_noneNew;  // nothing is "new" in a replay
+// For a recording that follows an aircraft, the view last drawn: the airport
+// zoom's code, or "" for the radar centred on the aircraft. A change between
+// them is a full redraw, since their footers and the note above differ.
+replay::View g_view;  // the view last drawn
+int g_followRange = FOLLOW_RANGE_NM;  // the radar view's, as last worked out
+// How long the followed aircraft had been lost at g_t, as the live screen
+// counted it, or 0: set by keepFollowedInScene() for the telemetry.
+uint32_t g_lostS = 0;
+
+// Whether the recording has polls of the radar around home, for the HOME and
+// AIRPORT centre to apply to.
+bool hasHome() { return replay::hasHomeView(); }
 
 String clockText(uint32_t ms) {
     uint32_t s = ms / 1000;
@@ -234,9 +252,13 @@ void drawHeader(bool forVideo) {
     canvas.setTextColor(p.text);
     canvas.fillRoundRect(BACK_X, BACK_Y, BACK_W, BACK_H, 6, p.btnBg);
     canvas.drawString("Back", BACK_X + BACK_W / 2, BACK_Y + BACK_H / 2);
-    canvas.fillRoundRect(CENTRE_X, BACK_Y, CENTRE_W, BACK_H, 6, p.btnBg);
-    canvas.drawString(g_centre == RadarCentre::HOME ? "HOME" : "AIRPORT", CENTRE_X + CENTRE_W / 2,
-                      BACK_Y + BACK_H / 2);
+    // A followed aircraft's polls were fetched around it, not home, so there
+    // is no other centre to switch to.
+    if (hasHome()) {
+        canvas.fillRoundRect(CENTRE_X, BACK_Y, CENTRE_W, BACK_H, 6, p.btnBg);
+        canvas.drawString(g_centre == RadarCentre::HOME ? "HOME" : "AIRPORT", CENTRE_X + CENTRE_W / 2,
+                          BACK_Y + BACK_H / 2);
+    }
     drawExportButton();
 }
 
@@ -250,9 +272,17 @@ void drawStaticPanel(bool forVideo) {
     canvas.setTextColor(p.faint);
     canvas.drawString(replay::epochAt(0) ? "TIME" : "ELAPSED", PANEL_X, CLOCK_LABEL_Y);
 
-    String note = h.trigger == recorder::Trigger::AUTO ? "Auto: " + h.note : String("Manual recording");
+    String note = h.trigger == recorder::Trigger::AUTO     ? "Auto: " + h.note
+                  : h.trigger == recorder::Trigger::FOLLOW ? "Follow: " + h.note
+                  : h.note.length()                        ? "Manual: " + h.note
+                                                           : String("Manual recording");
     if (h.part > 1) {
         note += " (part " + String(h.part) + ")";
+    }
+    if (g_view.kind == replay::View::ZOOM) {
+        note += String(" at ") + g_view.code;
+    } else if (g_view.kind == replay::View::FOLLOW && h.followHex != g_view.hex) {
+        note += String(" - following ") + g_view.hex;
     }
     // Allowed the margin between the panel and the plot as well: a typical
     // auto note ("Auto: EZY13MG WATCHLIST") overran the panel by two pixels
@@ -332,10 +362,153 @@ void waitForRelease() {
     M5.update();
 }
 
-void drawScene(bool full) {
-    replay::sceneAt(g_t, g_scene, g_trails);
+// The plot at g_t, from the scene already taken from the recording, drawn
+// the way that poll was seen live: the radar around home, centred as chosen
+// here; the radar centred on a followed aircraft; or an airport's zoom.
+void drawViewPlot(RadarScene &scene, bool full);
+
+void drawPlot(bool full, bool push) {
     const recorder::Header &h = replay::header();
-    radarPlotDraw({g_scene, g_noneNew, &g_trails, h.lat, h.lon, h.radiusNm, g_centre, g_airports}, full);
+    RadarScene scene{g_scene, g_noneNew, &g_trails, h.lat, h.lon, h.radiusNm, g_centre, g_airports};
+    scene.push = push;
+    if (g_view.kind == replay::View::HOME) {
+        radarPlotDraw(scene, full);
+        return;
+    }
+    drawViewPlot(scene, full);
+    if (!g_view.hex[0]) {
+        return;  // a zoom with nobody followed in it
+    }
+    // The followed aircraft's height to the moment shown, against the field's
+    // in a zoom. Pushed apart from the plot, which flush() would otherwise
+    // send the margin between them with.
+    int32_t fieldFt = INT32_MIN;
+    if (g_view.kind == replay::View::ZOOM) {
+        int count = 0;
+        const Runway *runways = runwaysAt(g_view.code, count);
+        if (count) {
+            fieldFt = runways[0].elevationFt;
+        }
+    }
+    radarTelemetryDraw(TEL_X, TEL_Y, replay::followHeights(g_view.hex), g_t, fieldFt, g_lostS);
+    if (!full && push) {
+        screen::flush();
+    }
+}
+
+// The followed aircraft, lost by the feed at g_t - missing from the poll, or
+// there with only its last position - put where it is estimated to be from
+// its last current one, dimmed, as the live plot puts it: for up to as long
+// as following would have waited for it.
+void keepFollowedInScene() {
+    const String hex = g_view.hex;
+    g_lostS = 0;
+    for (const Aircraft &a : g_scene) {
+        if (a.hex == hex && a.hasPos && !a.posStale) {
+            return;
+        }
+    }
+    const std::vector<FollowSample> &heights = replay::followHeights(hex);
+    const FollowSample *fresh = nullptr;
+    for (const FollowSample &s : heights) {
+        if (s.ms > g_t) {
+            break;
+        }
+        if (s.hasPos && !s.posStale) {
+            fresh = &s;
+        }
+    }
+    if (fresh == nullptr || g_t - fresh->ms > FOLLOW_LOST_MS) {
+        return;
+    }
+    g_lostS = (g_t - fresh->ms) / 1000 + 1;
+    FollowEstimate e = estimateFollowed(*fresh, (g_t - fresh->ms) / 1000.0f, heights);
+    Aircraft ghost;
+    for (const Aircraft &a : g_scene) {
+        if (a.hex == hex) {
+            ghost = a;  // its callsign, type and the rest, as the poll had them
+        }
+    }
+    g_scene.erase(std::remove_if(g_scene.begin(), g_scene.end(), [&](const Aircraft &a) { return a.hex == hex; }),
+                  g_scene.end());
+    ghost.hex = hex;
+    if (!ghost.callsign.length()) {
+        ghost.callsign = replay::callsignOf(hex);
+    }
+    ghost.hasPos = true;
+    ghost.posStale = true;
+    ghost.lat = e.lat;
+    ghost.lon = e.lon;
+    ghost.hasTrack = true;
+    ghost.track = e.track;
+    ghost.altStr = e.ground ? String("GND") : String(e.altFt);
+    ghost.speedStr = String(e.gsKt);
+    ghost.status = e.ground                           ? (e.gsKt > 2 ? "TAXI" : "GROUND")
+                   : e.vsFpm >= CLIMB_THRESHOLD_FPM   ? "CLIMB"
+                   : e.vsFpm <= DESCEND_THRESHOLD_FPM ? "DESCEND"
+                                                      : "LEVEL";
+    g_scene.push_back(ghost);
+}
+
+void drawViewPlot(RadarScene &scene, bool full) {
+    scene.followHex = g_view.hex;
+    if (g_view.hex[0]) {
+        keepFollowedInScene();
+    } else {
+        g_lostS = 0;
+    }
+    if (g_view.kind == replay::View::ZOOM && radarZoomPlotDraw(scene, g_view.code, full)) {
+        return;
+    }
+    // Where it is now, glided between polls as the rest are - or, missing
+    // from this one, where it was last reported.
+    bool found = false;
+    for (const Aircraft &a : g_scene) {
+        if (a.hex == g_view.hex && a.hasPos) {
+            scene.lat = a.lat;
+            scene.lon = a.lon;
+            found = true;
+            break;
+        }
+    }
+    float lat, lon;
+    if (!found && replay::lastFixOf(g_view.hex, g_t, lat, lon)) {
+        scene.lat = lat;
+        scene.lon = lon;
+    }
+    // At the range it was shown at live, worked out the same way from the same
+    // poll - and from a poll missing it, the range it last had, as live.
+    Aircraft followed;
+    if (replay::followedAt(g_t, followed)) {
+        g_followRange = followRangeFor(followed);
+    }
+    scene.rangeNm = g_followRange;
+    scene.centre = RadarCentre::HOME;
+    scene.originCode = replay::departedFrom(g_t);  // a departure's airport, marked as it climbs away
+    radarPlotDraw(scene, full);
+}
+
+// Whether the view at g_t is a different one from the last drawn, and so
+// wants a full redraw - its header, panel note and footers differ. Takes it
+// as the one shown.
+bool viewChanges() {
+    replay::View view = replay::viewAt(g_t);
+    if (view.sameAs(g_view)) {
+        return false;
+    }
+    g_view = view;
+    return true;
+}
+
+void drawWhole();
+
+void drawScene() {
+    replay::sceneAt(g_t, g_scene, g_trails);
+    if (viewChanges()) {
+        drawWhole();
+        return;
+    }
+    drawPlot(false, true);
     drawDynamic();
     screen::flush();
 }
@@ -354,6 +527,8 @@ bool playbackScreenOpen(const String &path, replay::LoadProgress progress) {
     g_t = 0;
     g_playing = false;
     g_dirty = false;
+    g_view = replay::View();
+    g_followRange = FOLLOW_RANGE_NM;
     g_path = path;
     g_resultLine = g_resultDetail = "";
     checkVideo();
@@ -371,19 +546,28 @@ void playbackScreenSetCentre(RadarCentre centre) { g_centre = centre; }
 void playbackScreenSetAirports(bool airports) { g_airports = airports; }
 
 void playbackScreenDraw() {
+    replay::sceneAt(g_t, g_scene, g_trails);
+    viewChanges();
+    drawWhole();
+    g_lastTickMs = millis();
+}
+
+namespace {
+
+// The whole screen, from the scene already taken.
+void drawWhole() {
     const RadarPalette &p = radarPalette();
     screen::clear(p.bg);
     drawHeader(false);
     drawStaticPanel(false);
-    replay::sceneAt(g_t, g_scene, g_trails);
-    const recorder::Header &h = replay::header();
-    radarPlotDraw({g_scene, g_noneNew, &g_trails, h.lat, h.lon, h.radiusNm, g_centre, g_airports}, true);
+    drawPlot(true, true);
     drawDynamic();
     screen::flush();
     g_lastDrawMs = millis();
-    g_lastTickMs = millis();
     g_dirty = false;
 }
+
+}  // namespace
 
 void playbackScreenTick() {
     uint32_t now = millis();
@@ -400,7 +584,7 @@ void playbackScreenTick() {
 
     uint32_t frameMs = (SPEEDS[g_speedIdx] == 1) ? FRAME_MS_SLOW : FRAME_MS_FAST;
     if (g_dirty && (!g_playing || now - g_lastDrawMs >= frameMs)) {
-        drawScene(false);
+        drawScene();
         g_lastDrawMs = now;
         g_dirty = false;
     }
@@ -411,7 +595,7 @@ PlaybackAction playbackScreenHandleTouch(int x, int y, Aircraft &outAircraft) {
         if (x >= BACK_X && x < BACK_X + BACK_W) {
             return PlaybackAction::BACK;
         }
-        if (x >= CENTRE_X && x < CENTRE_X + CENTRE_W) {
+        if (x >= CENTRE_X && x < CENTRE_X + CENTRE_W && hasHome()) {
             return PlaybackAction::TOGGLE_CENTRE;
         }
         if (x >= EXPORT_X && x < EXPORT_X + EXPORT_W && !g_videoExists) {
@@ -472,16 +656,8 @@ PlaybackAction playbackScreenHandleTouch(int x, int y, Aircraft &outAircraft) {
     return PlaybackAction::NONE;
 }
 
-PlaybackAction playbackScreenHandleHold(int x, int y) {
-    if (y >= BACK_Y && y < BACK_Y + BACK_H && x >= CENTRE_X && x < CENTRE_X + CENTRE_W) {
-        return PlaybackAction::TOGGLE_AIRPORTS;
-    }
-    return PlaybackAction::NONE;
-}
-
 void playbackScreenExport() {
     const RadarPalette &p = radarPalette();
-    const recorder::Header &h = replay::header();
     int speed = SPEEDS[g_speedIdx];
     uint32_t dur = replay::durationMs();
     // How far into the recording each frame of video moves on.
@@ -510,22 +686,23 @@ void playbackScreenExport() {
         uint32_t r0 = micros();
         g_t = std::min(k * stepMs, dur);
         replay::sceneAt(g_t, g_scene, g_trails);
-        if (k == 0) {
-            // The first frame is the whole picture; after it only the plot and
-            // the panel's moving parts change.
+        bool newView = viewChanges();
+        if (k == 0 || newView) {
+            // The first frame is the whole picture, as is the first of each
+            // change of view; after it only the plot and the panel's moving
+            // parts change.
             screen::clear(p.bg);
             drawHeader(true);
             drawStaticPanel(true);
-            radarPlotDraw({g_scene, g_noneNew, &g_trails, h.lat, h.lon, h.radiusNm, g_centre, g_airports}, true);
+            drawPlot(true, false);
+            overlay = false;
         } else {
             if (overlay) {
                 canvas.fillRect(PANEL_X, CTRL_Y, PANEL_W, CTRL_H, p.bg);  // the progress is no part of the video
                 screen::markDirty(PANEL_X, CTRL_Y, PANEL_W, CTRL_H);
                 overlay = false;
             }
-            RadarScene scene{g_scene, g_noneNew, &g_trails, h.lat, h.lon, h.radiusNm, g_centre, g_airports};
-            scene.push = false;
-            radarPlotDraw(scene, false);
+            drawPlot(false, false);
         }
         drawDynamic();
         renderUs += micros() - r0;

@@ -11,6 +11,12 @@ namespace {
 
 constexpr const char *DIR = "/overhead";
 constexpr const char *MAGIC = "OVERHEAD-RECORDING 1";
+
+// As the header's trigger line has it. An older build reads "follow" as
+// manual, which is near enough: nobody pressed anything, but nothing alerted.
+const char *triggerName(Trigger t) {
+    return t == Trigger::AUTO ? "auto" : t == Trigger::FOLLOW ? "follow" : "manual";
+}
 // The card is wired for 4-bit SDIO, but SPI mode on the same pins is what
 // M5Stack's own Tab5 examples use, and a few KB per poll needs nothing faster.
 constexpr uint32_t SD_SPI_HZ = 25000000;
@@ -186,11 +192,17 @@ bool openPartLocked(const Header &h) {
         return false;
     }
     String note = field(h.note, 80);
-    char buf[256];
+    // Only a following recording has the follow line, so an older build
+    // reads any other exactly as before.
+    char follow[40] = "";
+    if (h.followHex.length()) {
+        snprintf(follow, sizeof(follow), "follow %s %d\n", field(h.followHex, 8).c_str(), h.followRangeNm);
+    }
+    char buf[320];
     int n = snprintf(buf, sizeof(buf),
-                     "%s\nstart %lu\ntrigger %s\nnote %s\nhome %.5f %.5f\nradius %d\ntraffic %s\npart %d\nend-header\n",
-                     MAGIC, (unsigned long)h.startEpoch, h.trigger == Trigger::AUTO ? "auto" : "manual", note.c_str(),
-                     h.lat, h.lon, h.radiusNm, h.military ? "military" : "civil", h.part);
+                     "%s\nstart %lu\ntrigger %s\nnote %s\nhome %.5f %.5f\nradius %d\ntraffic %s\npart %d\n%send-header\n",
+                     MAGIC, (unsigned long)h.startEpoch, triggerName(h.trigger), note.c_str(),
+                     h.lat, h.lon, h.radiusNm, h.military ? "military" : "civil", h.part, follow);
     size_t want = std::min<size_t>(n, sizeof(buf) - 1);
     size_t wrote = g_file.write((const uint8_t *)buf, want);
     g_file.flush();
@@ -243,7 +255,7 @@ bool start(const Header &h) {
     g_active = true;
     g_trigger = h.trigger;
     g_startMs = millis();
-    Serial.printf("[rec] started %s (%s)\n", g_path.c_str(), h.trigger == Trigger::AUTO ? "auto" : "manual");
+    Serial.printf("[rec] started %s (%s)\n", g_path.c_str(), triggerName(h.trigger));
     return true;
 }
 
@@ -267,7 +279,7 @@ String activePath() {
     return g_path;
 }
 
-void addFrame(const std::vector<Aircraft> &aircraft) {
+void addFrame(const std::vector<Aircraft> &aircraft, const String &view, const char *provider) {
     Lock lock;
     if (!g_active) {
         return;
@@ -282,8 +294,13 @@ void addFrame(const std::vector<Aircraft> &aircraft) {
     out.reserve(32 + aircraft.size() * 96);
     char line[256];
     time_t now = time(nullptr);
-    snprintf(line, sizeof(line), "F %lu %lu\n", (unsigned long)(millis() - g_fileStartMs),
-             (unsigned long)(now > 1700000000 ? now : 0));
+    // The view and provider go last, where an older build's reading of the
+    // line stops short of them. Neither may hold a space.
+    String v = field(view, 16), p = field(provider ? String(provider) : String("?"), 16);
+    v.replace(' ', '_');
+    p.replace(' ', '_');
+    snprintf(line, sizeof(line), "F %lu %lu %s %s\n", (unsigned long)(millis() - g_fileStartMs),
+             (unsigned long)(now > 1700000000 ? now : 0), v.c_str(), p.c_str());
     out += line;
     for (const Aircraft &a : aircraft) {
         char track[12] = "", lat[16] = "", lon[16] = "", vrate[12] = "", altGeom[12] = "", dist[12] = "";
@@ -295,7 +312,7 @@ void addFrame(const std::vector<Aircraft> &aircraft) {
         if (a.hasVertRate) snprintf(vrate, sizeof(vrate), "%.0f", a.vertRate);
         if (a.hasAltGeom) snprintf(altGeom, sizeof(altGeom), "%d", a.altGeom);
         if (a.hasDist) snprintf(dist, sizeof(dist), "%.1f", a.distNm);
-        int flags = (a.military ? 1 : 0) | (a.dbInteresting ? 2 : 0);
+        int flags = (a.military ? 1 : 0) | (a.dbInteresting ? 2 : 0) | (a.posStale ? 4 : 0);
         snprintf(line, sizeof(line), "A %s|%s|%s|%s|%s|%s|%d|%d|%s|%s|%s|%s|%s|%s|%s|%s|%s\n",
                  field(a.hex, 8).c_str(), field(a.callsign, 12).c_str(), field(a.type, 8).c_str(),
                  field(a.altStr, 12).c_str(), field(a.speedStr, 8).c_str(), field(a.status, 12).c_str(), flags,
@@ -430,7 +447,9 @@ bool parseHeaderLine(const char *line, Header &h) {
     if ((v = after(line, "start"))) {
         h.startEpoch = strtoul(v, nullptr, 10);
     } else if ((v = after(line, "trigger"))) {
-        h.trigger = (strcmp(v, "auto") == 0) ? Trigger::AUTO : Trigger::MANUAL;
+        h.trigger = strcmp(v, "auto") == 0     ? Trigger::AUTO
+                    : strcmp(v, "follow") == 0 ? Trigger::FOLLOW
+                                               : Trigger::MANUAL;
     } else if ((v = after(line, "note"))) {
         h.note = v;
     } else if ((v = after(line, "home"))) {
@@ -443,6 +462,10 @@ bool parseHeaderLine(const char *line, Header &h) {
         h.military = (strcmp(v, "military") == 0);
     } else if ((v = after(line, "part"))) {
         h.part = std::max(1, atoi(v));
+    } else if ((v = after(line, "follow"))) {
+        const char *space = strchr(v, ' ');
+        h.followHex = space ? String(v).substring(0, space - v) : String(v);
+        h.followRangeNm = space ? atoi(space + 1) : 0;
     } else {
         return false;
     }
@@ -480,6 +503,7 @@ bool parseAircraftLine(char *line, Aircraft &a) {
     int flags = atoi(f[6]);
     a.military = (flags & 1) != 0;
     a.dbInteresting = (flags & 2) != 0;
+    a.posStale = (flags & 4) != 0;
     a.alert = (uint8_t)atoi(f[7]);
     a.hasTrack = f[8][0] != 0;
     a.track = a.hasTrack ? strtof(f[8], nullptr) : 0;

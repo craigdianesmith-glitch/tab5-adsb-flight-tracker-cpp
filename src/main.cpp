@@ -1,6 +1,7 @@
 #include <M5Unified.h>
 #include <WiFi.h>
 #include <esp32-hal-hosted.h>
+#include <esp_heap_caps.h>
 #include <algorithm>
 #include <map>
 #include <time.h>
@@ -14,17 +15,20 @@
 #include "config.h"
 #include "detail_screen.h"
 #include "display.h"
+#include "follow.h"
 #include "location_screen.h"
 #include "playback_screen.h"
 #include "radar_screen.h"
 #include "recorder.h"
 #include "recordings_screen.h"
+#include "runways.h"
 #include "screen.h"
 #include "secrets.h"
 #include "settings.h"
 #include "settings_screen.h"
 #include "share_screen.h"
 #include "sound.h"
+#include "telemetry.h"
 #include "watchlist_screen.h"
 #include "wifi_screen.h"
 
@@ -44,6 +48,8 @@ std::vector<Aircraft> g_latestAircraft;
 std::vector<uint8_t> g_latestIsNew;
 bool g_dataReady = false;
 bool g_newFlightPending = false;  // set by pollTask, consumed by loop() to beep
+uint32_t g_latestSeq = 0;         // counts the main poll's lists, for loop() to time their arrival
+uint32_t g_latestDataMs = 0;      // only touched by loop(): when the latest of them arrived
 
 double g_lat, g_lon;
 String g_label;
@@ -73,19 +79,98 @@ bool g_sceneChanged = false;
 
 // The airport zoom. While it is up - or a detail opened from it - the poll
 // task also fetches the traffic around its airport, in between the main
-// polls, into a list of its own: the table, alerts and recordings carry on
-// with the main poll's as before.
+// polls, into a list of its own: the table and alerts carry on with the main
+// poll's, and a recording takes this one's polls instead, it being what is
+// on show. Following an aircraft uses the same poll, aimed at the aircraft
+// rather than an airport.
 struct ZoomPoll {
     bool active = false;
     uint32_t gen = 0;  // which zoom, so a fetch for one since closed is dropped
     double lat = 0, lon = 0;
     int radiusNm = 0;
+    // Aimed at a followed aircraft on the radar rather than at the zoom: then
+    // it goes at the main poll's interval, as the radar refreshes, rather than
+    // the zoom's quicker one.
+    bool follow = false;
+    String code;       // the zoom's airport, when it isn't following
+    String followHex;  // the aircraft being followed, in either view; empty for none
 };
 ZoomPoll g_zoomPoll;                   // under the mutex
 std::vector<Aircraft> g_zoomAircraft;  // likewise
 bool g_zoomReady = false;              // likewise: a new list, for loop() to draw
+String g_zoomProvider;                 // likewise: who answered for it
+uint32_t g_zoomSeq = 0;                // likewise: counts the lists, for following to look through each once
 bool g_zoomUp = false;                 // only touched by loop(): g_zoomPoll.active, without the lock
 uint32_t g_zoomTouchedMs = 0;          // likewise: the last touch, for closing the zoom left alone
+uint32_t g_zoomDataMs = 0;             // likewise: when its list last arrived, to move it on from
+uint32_t g_zoomDrawnMs = 0;            // and when it was last drawn
+uint32_t g_radarDrawnMs = 0;           // likewise, the radar
+String g_zoomCode;                     // likewise: the airport it is on
+float g_zoomRangeNm = 0;               // and how far its plot reaches from g_zoomPoll's middle
+
+// Follow me. Only touched by loop(). FOLLOW on the radar, then a tap on a
+// contact, and the radar is centred on that aircraft wherever it goes; low
+// near an airport it is handed to that airport's zoom, to watch it land or
+// take off, and back to the radar as it leaves.
+struct Follow {
+    bool picking = false;  // FOLLOW tapped; the next contact tapped is the one
+    bool active = false;
+    String hex, callsign;
+    Aircraft last;         // as last seen, with a position
+    uint32_t seenMs = 0;   // when
+    uint32_t seq = 0;      // the last of the extra poll's lists looked through
+    // Seen in the air, so a stop on the ground after it is an arrival rather
+    // than where it was sitting when picked, or holding short to depart.
+    bool airborne = false;
+    // Seen on the ground and then in the air: a departure, followed until it
+    // leaves the radius - see tickFollow().
+    bool seenGround = false;
+    bool departed = false;
+    String originCode;  // the airport it departed from, marked on the radar as it climbs away
+    bool recording = false;  // it started the recording running now
+    bool inZoom = false;     // has been on the zoom's plot since it opened
+    // The zoom up is one following handed it to, or it was picked in - not
+    // one tapped open on some other airport, whose poll doesn't reach it.
+    bool zoomIsItsOwn = false;
+    float zoomDistNm = -1;   // how far from the zoom's middle it was at the last poll, -1 for not yet
+    String skipZoom;         // Unzoomed from while following: not handed back to
+    std::vector<FollowSample> heights;  // each report, for the telemetry's chart
+    int rangeNm = FOLLOW_RANGE_NM;      // the radar's, closing in as it comes down
+    // Its last report with a current position, and when: what is estimated
+    // from while the feed has lost it - `lost` from the first poll without a
+    // current position for it to the next with one.
+    bool haveFresh = false;
+    FollowSample fresh;
+    uint32_t freshMs = 0;
+    bool lost = false;
+};
+Follow g_follow;
+
+// --- where the time goes ------------------------------------------------------
+// A line a minute over serial: how long the radar and zoom take to draw, the
+// longest pass of loop() - the gap in which a tap can go unseen - and how
+// much internal RAM is left, which WiFi and TLS need. Only touched by loop().
+struct PerfStat {
+    uint32_t count = 0;
+    uint64_t totalUs = 0;
+    uint32_t maxUs = 0;
+    void add(uint32_t us) {
+        count++;
+        totalUs += us;
+        maxUs = std::max(maxUs, us);
+    }
+    String text() const {
+        return count ? String(count) + "x avg " + String((uint32_t)(totalUs / count / 1000)) + " max " +
+                           String(maxUs / 1000) + "ms"
+                     : String("-");
+    }
+};
+PerfStat g_perfRadar, g_perfZoom, g_perfTracks, g_perfLoop;
+
+// A touch the radar or the zoom has already acted on, as it landed. The rest
+// of it - its release, or its turning into a hold - is ignored, so a tap that
+// opens another screen doesn't go on to press whatever is under it there.
+bool g_touchSpent = false;
 
 // Only touched by pollTask - no locking needed since it's the sole writer/reader.
 std::map<String, uint32_t> g_seenMap;
@@ -97,6 +182,9 @@ bool g_baseline = true;
 // starts a recording. Set from the alerts screen, so read under the mutex.
 AlertRules g_alertRules;
 bool g_autoRecord = false;
+// Whether an alert starts following the aircraft it is for. Only touched by
+// loop().
+bool g_autoFollow = false;
 // The same, as the alerts screen edits them. Only touched by loop().
 uint8_t g_alertMask = ALERT_ALL;
 String g_watchlist;
@@ -253,7 +341,8 @@ bool ensureWifi() {
     return false;
 }
 
-// One fetch of the traffic around the zoom's airport, from the poll task.
+// One fetch of the traffic around the zoom's airport - or the aircraft being
+// followed - from the poll task.
 // Everything flying is kept, whichever traffic the table is filtered to - at
 // an airport the airliners are the point, even in military mode - and alerts
 // are evaluated only for the colours they draw in: the main poll is what
@@ -285,12 +374,25 @@ void pollZoom(const ZoomPoll &zoom, AdsbSource source) {
             a.distNm = haversineNm(homeLat, homeLon, a.lat, a.lon);
         }
     }
+    bool current = false;
+    ZoomPoll now;
     if (xSemaphoreTake(g_dataMutex, portMAX_DELAY) == pdTRUE) {
-        if (g_zoomPoll.active && g_zoomPoll.gen == zoom.gen) {
-            g_zoomAircraft = std::move(fetched);
+        current = g_zoomPoll.active && g_zoomPoll.gen == zoom.gen;
+        if (current) {
+            g_zoomAircraft = fetched;
             g_zoomReady = true;
+            g_zoomSeq++;
+            g_zoomProvider = provider != nullptr ? provider : "";
+            now = g_zoomPoll;  // who is being followed now, rather than when the fetch went
         }
         xSemaphoreGive(g_dataMutex);
+    }
+    // While this poll is up, a recording is made of it rather than the main
+    // poll's - it is what the screens are showing - each marked with the view
+    // it was for, so a replay shows it the way it was seen.
+    if (current && recorder::active()) {
+        String view = now.follow ? "-" + now.followHex : now.code + "/" + now.followHex;
+        recorder::addFrame(fetched, view, provider);
     }
 }
 
@@ -463,7 +565,16 @@ void pollTask(void *) {
                        now - g_lastAlertedMs > AUTO_RECORD_TAIL_MS) {
                 recorder::stop();
             }
-            recorder::addFrame(aircraft);
+            // The radar around home - unless the zoom's poll is up, following
+            // or zoomed in, which is then what is on show and recorded instead.
+            bool extraUp = false;
+            if (xSemaphoreTake(g_dataMutex, portMAX_DELAY) == pdTRUE) {
+                extraUp = g_zoomPoll.active;
+                xSemaphoreGive(g_dataMutex);
+            }
+            if (!extraUp) {
+                recorder::addFrame(aircraft, "H", provider);
+            }
 
             if (xSemaphoreTake(g_dataMutex, portMAX_DELAY) == pdTRUE) {
                 if (best != nullptr) {
@@ -474,6 +585,10 @@ void pollTask(void *) {
                 }
                 g_latestAircraft = std::move(aircraft);
                 g_latestIsNew = std::move(isNew);
+                g_latestSeq++;
+                if (provider != nullptr) {
+                    g_activeProvider = provider;  // with the list, for loop() to take the two together
+                }
                 g_dataReady = true;
                 // One blip per poll however many arrived, and never on the
                 // first poll after a start or a location change, where
@@ -505,8 +620,10 @@ void pollTask(void *) {
         // requests go closer together than the shortest poll interval, which
         // is what the providers will take, and when both are due the one
         // that has waited longer goes first - so neither starves the other,
-        // whatever the main interval is set to. Without a zoom, this is the
-        // plain interval it always was.
+        // whatever the main interval is set to. Following on the radar, the
+        // fetch around the aircraft goes at the main interval instead: it is
+        // only the zoom that wants the sky any fresher. Without either, this
+        // is the plain interval it always was.
         constexpr uint32_t SPACING_MS = (uint32_t)POLL_INTERVAL_MIN_S * 1000;
         constexpr uint32_t ZOOM_POLL_MS = (uint32_t)ZOOM_POLL_INTERVAL_S * 1000;
         lastRequestMs = millis();
@@ -532,7 +649,8 @@ void pollTask(void *) {
             int32_t zoomLate = INT32_MIN;
             if (zoom.active) {
                 // A zoom just opened has waited longest of all.
-                zoomLate = zoom.gen != zoomGenServed ? INT32_MAX : (int32_t)(t - lastZoomMs - ZOOM_POLL_MS);
+                uint32_t every = zoom.follow ? intervalMs : ZOOM_POLL_MS;
+                zoomLate = zoom.gen != zoomGenServed ? INT32_MAX : (int32_t)(t - lastZoomMs - every);
             }
             if (mainLate >= 0 && mainLate >= zoomLate) {
                 break;
@@ -593,52 +711,327 @@ void connectWifi(const String &ssid, const String &password) {
 
 void updateRecButton(bool onScreen);
 
+void setRadarControls(bool onScreen);
+
+// Where the followed aircraft is estimated to be now, from its last report
+// with a current position.
+FollowEstimate followEstimateNow() {
+    return estimateFollowed(g_follow.fresh, (millis() - g_follow.freshMs) / 1000.0f, g_follow.heights);
+}
+
+// The status an estimate draws with: its trend chevron, and ring or dot.
+String estimateStatus(const FollowEstimate &e) {
+    if (e.ground) {
+        return e.gsKt > 2 ? "TAXI" : "GROUND";
+    }
+    return e.vsFpm >= CLIMB_THRESHOLD_FPM ? "CLIMB" : e.vsFpm <= DESCEND_THRESHOLD_FPM ? "DESCEND" : "LEVEL";
+}
+
+// Seconds since the followed aircraft's last current position, while it is
+// lost; 0 while it isn't.
+uint32_t followLostS() {
+    return g_follow.lost && g_follow.haveFresh ? (millis() - g_follow.freshMs) / 1000 + 1 : 0;
+}
+
+// `base` - an aircraft as last reported - where estimate `e` puts it, dimmed
+// as a lost position is, in place of whatever `aircraft` has for it.
+void putEstimate(std::vector<Aircraft> &aircraft, const Aircraft &base, const FollowEstimate &e) {
+    Aircraft ghost = base;
+    ghost.hasPos = true;
+    ghost.posStale = true;
+    ghost.lat = e.lat;
+    ghost.lon = e.lon;
+    ghost.hasTrack = true;
+    ghost.track = e.track;
+    ghost.altStr = e.ground ? String("GND") : String(e.altFt);
+    ghost.speedStr = String(e.gsKt);
+    ghost.status = estimateStatus(e);
+    // In its place where the list has it, so the radar's new-contact marks,
+    // which go by position in the list, stay with the contacts they are for.
+    for (Aircraft &a : aircraft) {
+        if (a.hex == base.hex) {
+            a = ghost;
+            return;
+        }
+    }
+    aircraft.push_back(ghost);
+}
+
+// The followed aircraft, while the feed has lost it - missing from the poll,
+// or there with only its last position - put where it is estimated to be
+// from its last current one, until a poll has it again or following gives
+// up on it. At a touchdown the feed can lose it for a minute or more, and the
+// ring freezing in the air just as it lands was the one moment it was there
+// to show.
+void keepFollowedOnPlot(std::vector<Aircraft> &aircraft) {
+    radarSetHeights(g_follow.heights, followLostS());
+    if (!g_follow.lost || !g_follow.haveFresh) {
+        return;
+    }
+    putEstimate(aircraft, g_follow.last, followEstimateNow());
+}
+
+// --- every contact -----------------------------------------------------------
+// What a followed aircraft gets, every contact gets too: its recent reports
+// kept, and while the feed has lost it, an estimate of where it is in its
+// place - for ESTIMATE_LOST_MS rather than following's longer wait. Lost,
+// that is, if it was low, where the receivers lose them near the ground; or
+// at any height, if the list it is missing from came from a different
+// provider than the last that had it - one rate-limited, the other answering
+// with a fraction of the sky. Otherwise one that goes missing has most likely
+// flown out of range, and is let go.
+
+struct Track {
+    // The last few minutes, to tell a take-off from a landing and which way
+    // one was going - kept only while it is low, where that matters, and to
+    // TRACK_HISTORY_MAX of them: there can be a hundred tracks, and these
+    // live in the internal RAM that WiFi and TLS need.
+    std::vector<FollowSample> recent;
+    FollowSample fresh;                // its last report with a current position
+    Aircraft last;                     // as then, for its callsign and the rest
+    uint32_t freshMs = 0;
+    // When a list of each kind last had it current: a lost contact is only
+    // put back into the kind of list it went missing from.
+    uint32_t inMainMs = 0, inZoomMs = 0;
+    String provider;  // who answered the list that last had it current
+};
+std::map<String, Track> g_tracks;  // only touched by loop()
+constexpr uint32_t TRACK_HISTORY_MS = 180000;
+constexpr size_t TRACK_HISTORY_MAX = 12;
+
+bool lowSample(const FollowSample &s) { return s.ground || (s.hasAlt && s.altFt < ESTIMATE_MAX_FT); }
+
+// Takes in a list that has just arrived - the main poll's, or the zoom's -
+// and who answered it.
+void noteTracks(const std::vector<Aircraft> &list, bool zoomList, const String &provider) {
+    uint32_t now = millis();
+    for (const Aircraft &a : list) {
+        if (!a.hasPos) {
+            continue;
+        }
+        FollowSample s = followSampleOf(a, now);
+        Track &t = g_tracks[a.hex];
+        if (lowSample(s)) {
+            t.recent.push_back(s);
+            while (!t.recent.empty() && (now - t.recent.front().ms > TRACK_HISTORY_MS ||
+                                         t.recent.size() > TRACK_HISTORY_MAX)) {
+                t.recent.erase(t.recent.begin());
+            }
+        } else if (!t.recent.empty()) {
+            std::vector<FollowSample>().swap(t.recent);  // climbed away: its room back
+        }
+        if (!a.posStale) {
+            t.fresh = s;
+            t.last = a;
+            t.freshMs = now;
+            t.provider = provider;
+            (zoomList ? t.inZoomMs : t.inMainMs) = now;
+        }
+    }
+    // Past ESTIMATE_LOST_MS without a current position, it can't be put back
+    // into any list, so there is nothing left to keep it for.
+    for (auto it = g_tracks.begin(); it != g_tracks.end();) {
+        if (now - it->second.freshMs > ESTIMATE_LOST_MS) {
+            it = g_tracks.erase(it);
+        } else {
+            ++it;
+        }
+    }
+}
+
+// `maxAgeS` caps how far on it is taken - see moveOnToNow().
+FollowEstimate trackEstimate(const Track &t, float maxAgeS = 1e9f) {
+    return estimateFollowed(t.fresh, std::min((millis() - t.freshMs) / 1000.0f, maxAgeS), t.recent);
+}
+
+// Puts each contact `aircraft` - a list of the kind `zoomList` says, which
+// `provider` answered - has lost since it last had it where it is estimated
+// to be. The followed one is keepFollowedOnPlot()'s.
+void fillLost(std::vector<Aircraft> &aircraft, bool zoomList, const String &provider) {
+    uint32_t now = millis();
+    for (const auto &kv : g_tracks) {
+        const Track &t = kv.second;
+        uint32_t inList = zoomList ? t.inZoomMs : t.inMainMs;
+        if (inList == 0 || now - inList > ESTIMATE_LOST_MS || (g_follow.active && kv.first == g_follow.hex)) {
+            continue;
+        }
+        bool otherProvider = t.provider.length() && provider.length() && t.provider != provider;
+        if (!lowSample(t.fresh) && !otherProvider) {
+            continue;  // most likely flown out of range
+        }
+        bool current = false;
+        for (const Aircraft &a : aircraft) {
+            if (a.hex == kv.first) {
+                current = a.hasPos && !a.posStale;
+                break;
+            }
+        }
+        if (!current) {
+            putEstimate(aircraft, t.last, trackEstimate(t));
+        }
+    }
+}
+
+// Where the radar centres while following: where the aircraft is estimated
+// to be by now - moved on between polls as its blip is, and on through a gap
+// in the feed.
+void followCentre(double &lat, double &lon) {
+    lat = g_follow.last.lat;
+    lon = g_follow.last.lon;
+    if (g_follow.haveFresh) {
+        FollowEstimate e = followEstimateNow();
+        lat = e.lat;
+        lon = e.lon;
+    }
+}
+
+// Moves contacts on from where the poll that arrived at `dataMs` put them, to
+// now: each along its track at its groundspeed, and a followed one by the
+// estimate, which knows to bring it down a runway rather than straight on.
+// Not past two of the poll's intervals, `intervalS`: a feed that has stopped
+// answering doesn't send the sky sailing on without it. Between polls the
+// radar and the zoom are redrawn with it every tweenMs(), so the traffic
+// moves in steps of a few seconds rather than jumping at each poll.
+void moveOnToNow(std::vector<Aircraft> &aircraft, uint32_t dataMs, int intervalS) {
+    float ageS = std::min((millis() - dataMs) / 1000.0f, 2.0f * intervalS);
+    for (Aircraft &a : aircraft) {
+        if (!a.hasPos || a.posStale) {
+            continue;  // a lost one is the estimate's, already moved on
+        }
+        if (g_follow.active && a.hex == g_follow.hex && g_follow.haveFresh) {
+            FollowEstimate e = followEstimateNow();
+            a.lat = e.lat;
+            a.lon = e.lon;
+            continue;
+        }
+        // Low, by the estimate too: one rolling out slows down the runway
+        // rather than carrying on at its touchdown speed.
+        auto track = g_tracks.find(a.hex);
+        if (track != g_tracks.end() && track->second.freshMs >= dataMs) {
+            FollowEstimate e = trackEstimate(track->second, 2.0f * intervalS);
+            a.lat = e.lat;
+            a.lon = e.lon;
+            continue;
+        }
+        if (!a.hasTrack) {
+            continue;
+        }
+        float d = std::max(a.speedStr.toFloat(), 0.0f) * ageS / 3600.0f;
+        float t = a.track * (float)M_PI / 180.0f;
+        a.lat += cosf(t) * d / 60.0f;
+        a.lon += sinf(t) * d / (60.0f * cosf(a.lat * (float)M_PI / 180.0f));
+    }
+}
+
+// How often a view polled every `intervalS` is redrawn between its polls:
+// TWEEN_FRAMES times between each, but at least every TWEEN_MAX_MS, so the
+// radar's half-minute polls get more of them than the zoom's ten seconds.
+uint32_t tweenMs(int intervalS) {
+    return std::min((uint32_t)intervalS * 1000 / (TWEEN_FRAMES + 1), TWEEN_MAX_MS);
+}
+
 void drawRadar(bool full) {
+    uint32_t t0 = micros();
     if (full) {
-        updateRecButton(false);  // so the header is drawn showing the state as it is now
+        // So the header is drawn showing the state as it is now.
+        updateRecButton(false);
+        setRadarControls(false);
     }
     std::vector<Aircraft> aircraft;
     std::vector<uint8_t> isNew;
     double lat = 0, lon = 0;
     int radius = DEFAULT_RADIUS_NM;
     bool military = false;
+    String provider;
     if (xSemaphoreTake(g_dataMutex, portMAX_DELAY) == pdTRUE) {
-        aircraft = g_latestAircraft;
-        isNew = g_latestIsNew;
+        provider = g_follow.active ? g_zoomProvider : g_activeProvider;
+        // Following, the plot is the list fetched around the aircraft,
+        // centred on where it is reckoned to be. Nothing in that list is
+        // marked new: the marks belong to the main poll's.
+        aircraft = g_follow.active ? g_zoomAircraft : g_latestAircraft;
+        if (!g_follow.active) {
+            isNew = g_latestIsNew;
+        }
         lat = g_lat;
         lon = g_lon;
         radius = g_radiusNm;
         military = (g_traffic == TrafficFilter::MILITARY);
         xSemaphoreGive(g_dataMutex);
     }
-    radarScreenDraw(aircraft, isNew, lat, lon, radius, military, g_radarCentre, g_radarAirports, full);
+    if (g_follow.active) {
+        followCentre(lat, lon);
+        radius = g_follow.rangeNm;
+        keepFollowedOnPlot(aircraft);
+    }
+    fillLost(aircraft, g_follow.active, provider);
+    // Following, the list is the extra poll's, which on the radar goes at the
+    // main poll's interval too.
+    moveOnToNow(aircraft, g_follow.active ? g_zoomDataMs : g_latestDataMs, g_pollIntervalS);
+    g_radarDrawnMs = millis();
+    radarScreenDraw(aircraft, isNew, lat, lon, radius, military, full);
+    g_perfRadar.add(micros() - t0);
+}
+
+// The radar's buttons, from the state here.
+void setRadarControls(bool onScreen) {
+    FollowButton follow = g_follow.active ? FollowButton::ON : g_follow.picking ? FollowButton::PICKING : FollowButton::OFF;
+    radarScreenSetControls(g_radarCentre, g_radarAirports, follow, g_follow.hex, g_follow.callsign,
+                           g_follow.originCode, onScreen);
 }
 
 void drawZoom(bool full) {
+    uint32_t t0 = micros();
+    if (full) {
+        updateRecButton(false);  // so REC is drawn showing the state as it is now
+    }
     std::vector<Aircraft> aircraft;
+    String provider;
     if (xSemaphoreTake(g_dataMutex, portMAX_DELAY) == pdTRUE) {
         aircraft = g_zoomAircraft;
+        provider = g_zoomProvider;
         xSemaphoreGive(g_dataMutex);
     }
+    if (g_follow.active) {
+        keepFollowedOnPlot(aircraft);
+    }
+    fillLost(aircraft, true, provider);
+    moveOnToNow(aircraft, g_zoomDataMs, ZOOM_POLL_INTERVAL_S);
+    g_zoomDrawnMs = millis();
     radarZoomDraw(aircraft, full);
+    g_perfZoom.add(micros() - t0);
 }
 
-// Zooms in on an airport tapped on the radar. Until the zoom's own first
-// fetch lands, the radar's contacts stand in: around an airport inside the
-// radius they are the same aircraft, a poll older.
-bool openZoom(const String &code) {
+// Zooms in on an airport tapped on the radar, or one the followed aircraft
+// is coming down to. Until the zoom's own first fetch lands, the radar's
+// contacts stand in: around an airport inside the radius they are the same
+// aircraft, a poll older - and following, those fetched around the aircraft
+// are, the airport being near it.
+bool openZoom(const String &code, bool forFollowed = false) {
     double lat, lon;
     float rangeNm;
     if (!radarZoomOpen(code, lat, lon, rangeNm)) {
         return false;
     }
+    g_zoomCode = code;
+    g_zoomRangeNm = rangeNm;
+    g_follow.picking = false;
+    g_follow.inZoom = false;
+    g_follow.zoomDistNm = -1;
+    g_follow.zoomIsItsOwn = forFollowed;
+    radarZoomSetFollow(g_follow.active ? g_follow.hex : String(), g_follow.callsign, false);
     if (xSemaphoreTake(g_dataMutex, portMAX_DELAY) == pdTRUE) {
         g_zoomPoll.active = true;
+        g_zoomPoll.follow = false;
+        g_zoomPoll.code = code;
+        g_zoomPoll.followHex = g_follow.active ? g_follow.hex : String();
         g_zoomPoll.gen++;
         g_zoomPoll.lat = lat;
         g_zoomPoll.lon = lon;
         g_zoomPoll.radiusNm = (int)ceilf(rangeNm) + ZOOM_FETCH_EXTRA_NM;
-        g_zoomAircraft = g_latestAircraft;
+        if (!g_follow.active) {
+            g_zoomAircraft = g_latestAircraft;
+            g_zoomDataMs = g_latestDataMs;  // moved on between polls from when it really arrived
+        }
         g_zoomReady = false;
         xSemaphoreGive(g_dataMutex);
     }
@@ -649,12 +1042,41 @@ bool openZoom(const String &code) {
     return true;
 }
 
-// Stops the zoom's fetches. Called whichever way it was left - see loop().
+void followCentre(double &lat, double &lon);
+
+// Aims the extra poll at the aircraft being followed. `fresh` for a new aim -
+// following just started, or back from a zoom - which is fetched straight
+// away; without it, the poll is only moved along with the aircraft.
+void aimFollowPoll(bool fresh) {
+    // Where it is reckoned to be by now, which after a while in a zoom of
+    // some other airport can be a long way from where it was last seen.
+    double lat, lon;
+    followCentre(lat, lon);
+    if (xSemaphoreTake(g_dataMutex, portMAX_DELAY) == pdTRUE) {
+        g_zoomPoll.active = true;
+        g_zoomPoll.follow = true;
+        g_zoomPoll.followHex = g_follow.hex;
+        if (fresh) {
+            g_zoomPoll.gen++;
+        }
+        g_zoomPoll.lat = lat;
+        g_zoomPoll.lon = lon;
+        g_zoomPoll.radiusNm = g_follow.rangeNm + ZOOM_FETCH_EXTRA_NM;
+        xSemaphoreGive(g_dataMutex);
+    }
+}
+
+// Stops the zoom's fetches - or, following, aims them back at the aircraft.
+// Called whichever way it was left - see loop().
 void endZoom() {
     if (!g_zoomUp) {
         return;
     }
     g_zoomUp = false;
+    if (g_follow.active) {
+        aimFollowPoll(true);  // the zoom's list stands in until the first fetch lands
+        return;
+    }
     if (xSemaphoreTake(g_dataMutex, portMAX_DELAY) == pdTRUE) {
         g_zoomPoll.active = false;
         g_zoomAircraft.clear();
@@ -664,6 +1086,9 @@ void endZoom() {
 }
 
 void closeZoom() {
+    if (!g_follow.active) {
+        g_follow.picking = false;  // tapped in the zoom, it was for the zoom's contacts
+    }
     endZoom();
     g_screen = Screen::RADAR;
     drawRadar(true);
@@ -765,6 +1190,8 @@ void dismissBanner() {
 }
 
 // Picks up an alert the poll task has raised, and times the banner out.
+void autoFollow(const Aircraft &ac);
+
 void tickAlerts() {
     bool fresh = false;
     std::vector<String> flash;
@@ -788,6 +1215,9 @@ void tickAlerts() {
         g_bannerUp = true;
         g_bannerShownMs = 0;
         soundAlert((g_bannerAc.alert & ALERT_EMERGENCY) != 0);
+        if (g_autoFollow) {
+            autoFollow(g_bannerAc);
+        }
     }
     if (!g_bannerUp || !bannerScreen(g_screen)) {
         return;
@@ -846,7 +1276,8 @@ void updateRecButton(bool onScreen) {
                       : !recorder::mounted() ? RecButton::NO_CARD
                                              : RecButton::IDLE;
     uint32_t elapsed = active ? (millis() - recorder::activeSinceMs()) / 1000 : 0;
-    radarScreenSetRecording(state, elapsed, onScreen);
+    bool zoom = (g_screen == Screen::ZOOM);
+    radarScreenSetRecording(state, elapsed, onScreen && (zoom || g_screen == Screen::RADAR), zoom);
 }
 
 void toggleRecording() {
@@ -859,10 +1290,17 @@ void toggleRecording() {
         }
         recorder::stop();
     } else {
+        // By hand, it runs until REC is tapped again, of whatever is on show
+        // as it goes - see recorder.h - and while following, it says who.
         recorder::Header h;
         time_t wall = time(nullptr);
         h.startEpoch = wall > 1700000000 ? (uint32_t)wall : 0;
         h.trigger = recorder::Trigger::MANUAL;
+        if (g_follow.active) {
+            h.note = g_follow.callsign;
+            h.followHex = g_follow.hex;
+            h.followRangeNm = FOLLOW_RANGE_NM;
+        }
         if (xSemaphoreTake(g_dataMutex, portMAX_DELAY) == pdTRUE) {
             h.lat = g_lat;
             h.lon = g_lon;
@@ -884,10 +1322,407 @@ String alertSummary() {
            (!g_autoRecord ? "off" : recorder::mounted() ? "on" : "on (no SD card)");
 }
 
+bool onGround(const Aircraft &ac) { return ac.status == "GROUND" || ac.status == "TAXI"; }
+
+// An aircraft drawn where it is estimated to be, which no list has any more:
+// as it was last reported, for its details to be shown.
+bool lastReported(const String &hex, Aircraft &out) {
+    if (g_follow.active && hex == g_follow.hex) {
+        out = g_follow.last;
+        return true;
+    }
+    auto it = g_tracks.find(hex);
+    if (it == g_tracks.end()) {
+        return false;
+    }
+    out = it->second.last;
+    return true;
+}
+
+// The aircraft with ICAO `hex` in the list the radar is showing - the main
+// poll's, or following, the one fetched around the followed aircraft.
+bool findShown(const String &hex, Aircraft &out) {
+    bool found = false;
+    if (xSemaphoreTake(g_dataMutex, portMAX_DELAY) == pdTRUE) {
+        for (const Aircraft &a : g_follow.active ? g_zoomAircraft : g_latestAircraft) {
+            if (a.hex == hex) {
+                out = a;
+                found = true;
+                break;
+            }
+        }
+        xSemaphoreGive(g_dataMutex);
+    }
+    return found || lastReported(hex, out);
+}
+
+// Following starts a recording when auto-record is on; it stops once the
+// aircraft has come to rest on the ground, or following does. One started by
+// hand is left to run, since it was asked for. One an alert started gives way
+// - more often than not it is of this very aircraft, a watchlist entry being
+// what makes one worth following, and it would only ever show it around home
+// - and auto-record is held off, as it is when one is stopped by hand, so it
+// doesn't start another once following's stops with the alert still about.
+//
+// One started by hand, with REC, is the user's: it runs until REC is tapped
+// again, through following or not.
+void startFollowRecording() {
+    if (!g_autoRecord) {
+        return;
+    }
+    if (recorder::active()) {
+        if (recorder::activeTrigger() != recorder::Trigger::AUTO) {
+            return;
+        }
+        if (xSemaphoreTake(g_dataMutex, portMAX_DELAY) == pdTRUE) {
+            g_autoRecordHeld = true;
+            xSemaphoreGive(g_dataMutex);
+        }
+        Serial.println("[follow] taking over from the alert's recording");
+        recorder::stop();
+    }
+    recorder::Header h;
+    time_t wall = time(nullptr);
+    h.startEpoch = wall > 1700000000 ? (uint32_t)wall : 0;
+    h.trigger = recorder::Trigger::FOLLOW;
+    h.note = g_follow.callsign;
+    h.followHex = g_follow.hex;
+    h.followRangeNm = FOLLOW_RANGE_NM;
+    if (xSemaphoreTake(g_dataMutex, portMAX_DELAY) == pdTRUE) {
+        h.lat = g_lat;
+        h.lon = g_lon;
+        h.radiusNm = g_radiusNm;
+        h.military = (g_traffic == TrafficFilter::MILITARY);
+        xSemaphoreGive(g_dataMutex);
+    }
+    g_follow.recording = recorder::start(h);
+}
+
+// Whether the recording following started is still the one running: REC
+// may have stopped it, and another been started since.
+bool followRecording() {
+    return g_follow.recording && recorder::active() && recorder::activeTrigger() == recorder::Trigger::FOLLOW;
+}
+
+void stopFollowRecording() {
+    if (followRecording()) {
+        recorder::stop();
+    }
+    g_follow.recording = false;
+}
+
+// Adds a report to the telemetry's history, dropping what has scrolled off
+// the chart.
+void noteHeight(const Aircraft &ac) {
+    uint32_t now = millis();
+    std::vector<FollowSample> &h = g_follow.heights;
+    h.push_back(followSampleOf(ac, now));
+    while (!h.empty() && now - h.front().ms > TELEMETRY_WINDOW_MS) {
+        h.erase(h.begin());
+    }
+    if (!ac.posStale && ac.hasPos) {
+        g_follow.fresh = h.back();
+        g_follow.freshMs = now;
+        g_follow.haveFresh = true;
+    }
+}
+
+void startFollow(const Aircraft &ac) {
+    g_follow = Follow();
+    g_follow.active = true;
+    g_follow.hex = ac.hex;
+    g_follow.callsign = ac.callsign;
+    g_follow.last = ac;
+    g_follow.seenMs = millis();
+    g_follow.airborne = !onGround(ac);
+    g_follow.seenGround = onGround(ac);
+    g_follow.rangeNm = followRangeFor(ac);
+    noteHeight(ac);
+    Serial.printf("[follow] %s (%s)\n", ac.callsign.c_str(), ac.hex.c_str());
+    if (xSemaphoreTake(g_dataMutex, portMAX_DELAY) == pdTRUE) {
+        // What the radar shows now stands in until the first fetch around it
+        // lands, a few seconds from now.
+        if (g_zoomAircraft.empty()) {
+            g_zoomAircraft = g_latestAircraft;
+            g_zoomDataMs = g_latestDataMs;
+        }
+        g_follow.seq = g_zoomSeq;
+        g_zoomPoll.followHex = ac.hex;  // for the zoom's polls, if it is up, to be recorded as following it
+        xSemaphoreGive(g_dataMutex);
+    }
+    startFollowRecording();  // first, so the fetch about to go is its first poll
+    // Picked in a zoom, the zoom's poll around its airport already has it.
+    if (!g_zoomUp) {
+        aimFollowPoll(true);
+    }
+}
+
+// Back to the radar's own centre. The zoom, if following had it up, stays up
+// as an ordinary one - closing itself once left alone, from now.
+void stopFollow() {
+    if (!g_follow.active) {
+        g_follow.picking = false;
+        return;
+    }
+    Serial.printf("[follow] stopped following %s\n", g_follow.callsign.c_str());
+    stopFollowRecording();
+    g_follow = Follow();
+    radarZoomSetFollow(String(), String(), false);
+    if (xSemaphoreTake(g_dataMutex, portMAX_DELAY) == pdTRUE) {
+        g_zoomPoll.followHex = "";
+        if (!g_zoomUp) {
+            g_zoomPoll.active = false;
+            g_zoomAircraft.clear();
+            g_zoomReady = false;
+        }
+        xSemaphoreGive(g_dataMutex);
+    }
+    if (g_zoomUp) {
+        g_zoomTouchedMs = millis();
+    }
+}
+
+// The airport the followed aircraft should be handed to the zoom of, if any:
+// one it is low near and not climbing away from - coming in to land, or
+// still on the ground to take off - and close enough to be on its zoom's plot
+// by the time it is next fetched. The radar fetches it only as often as the
+// main poll, which at thirty seconds would otherwise see it well down final
+// - or on the runway - before the zoom, at ten, took over.
+//
+// Every airport near it is a candidate, nearest first, not only the nearest:
+// on final to one, it can pass closer to another.
+bool followZoomTarget(const Aircraft &ac, String &code) {
+    if (!ac.hasPos || ac.status == "CLIMB") {
+        return false;
+    }
+    float leadNm = std::max(ac.speedStr.toFloat(), 0.0f) * g_pollIntervalS / 3600.0f;
+    for (const Airport &airport : airportsWithin(ac.lat, ac.lon, FOLLOW_ZOOM_SEARCH_NM)) {
+        if (airport.code == g_follow.skipZoom) {
+            continue;
+        }
+        if (!onGround(ac)) {
+            int count = 0;
+            const Runway *runways = runwaysAt(airport.code, count);
+            int fieldFt = count ? runways[0].elevationFt : 0;
+            if (ac.altStr == "?" || ac.altStr.toInt() - fieldFt > FOLLOW_ZOOM_AGL_FT) {
+                continue;
+            }
+        }
+        double lat, lon;
+        float rangeNm;
+        if (radarZoomFrame(airport.code, lat, lon, rangeNm) &&
+            haversineNm(lat, lon, ac.lat, ac.lon) <= rangeNm + leadNm) {
+            code = airport.code;
+            return true;
+        }
+    }
+    return false;
+}
+
+// Keeps following up to date with each list fetched around the aircraft:
+// where it is, whether it has landed, and which view it belongs in.
+void tickFollow() {
+    if (!g_follow.active) {
+        return;
+    }
+    Aircraft ac;
+    bool fresh = false, found = false;
+    if (xSemaphoreTake(g_dataMutex, 0) == pdTRUE) {
+        if (g_zoomSeq != g_follow.seq) {
+            g_follow.seq = g_zoomSeq;
+            fresh = true;
+            for (const Aircraft &a : g_zoomAircraft) {
+                if (a.hex == g_follow.hex) {
+                    ac = a;
+                    found = a.hasPos;
+                    break;
+                }
+            }
+        }
+        xSemaphoreGive(g_dataMutex);
+    }
+    uint32_t now = millis();
+    // In a zoom tapped open on some other airport, its poll doesn't reach the
+    // aircraft, and its absence from it says nothing: following carries on,
+    // the radar centred on it again from the moment the zoom closes.
+    if (g_zoomUp && !g_follow.zoomIsItsOwn && !found) {
+        g_follow.seenMs = now;
+        return;
+    }
+    if (found) {
+        g_follow.last = ac;
+        g_follow.seenMs = now;
+        noteHeight(ac);
+        if (ac.callsign.length() && ac.callsign != g_follow.callsign) {
+            g_follow.callsign = ac.callsign;  // one picked before its callsign came through
+            setRadarControls(g_screen == Screen::RADAR);
+        }
+        if (onGround(ac)) {
+            g_follow.seenGround = true;
+        } else {
+            g_follow.airborne = true;
+            if (g_follow.seenGround && !g_follow.departed) {
+                g_follow.departed = true;
+                // The zoom it is in, or the airport nearest where it lifted off.
+                Airport from;
+                if (g_zoomUp && g_follow.zoomIsItsOwn) {
+                    g_follow.originCode = g_zoomCode;
+                } else if (nearestAirport(ac.lat, ac.lon, from, 5.0f)) {
+                    g_follow.originCode = from.code;
+                }
+                setRadarControls(false);  // drawn with it from the next redraw
+                Serial.printf("[follow] %s is off from %s\n", g_follow.callsign.c_str(),
+                              g_follow.originCode.length() ? g_follow.originCode.c_str() : "?");
+            }
+        }
+    } else if (now - g_follow.seenMs > FOLLOW_LOST_MS) {
+        Serial.printf("[follow] lost %s\n", g_follow.callsign.c_str());
+        stopFollow();
+        if (g_screen == Screen::RADAR) {
+            drawRadar(true);
+        } else if (g_screen == Screen::ZOOM) {
+            drawZoom(true);
+        }
+        return;
+    }
+    if (fresh) {
+        bool wasLost = g_follow.lost;
+        g_follow.lost = !found || ac.posStale;
+        if (g_follow.lost != wasLost) {
+            if (g_follow.lost && g_follow.haveFresh) {
+                const FollowSample &f = g_follow.fresh;
+                FollowEstimate e = followEstimateNow();
+                Serial.printf("[follow] %s lost - estimating from %s %d kt%s track %s: %s\n",
+                              g_follow.callsign.c_str(), f.ground ? "GND" : String(f.altFt).c_str(), f.gsKt,
+                              f.ground ? "" : " ft", f.hasTrack ? String((int)f.track).c_str() : "none", e.how);
+            } else {
+                Serial.printf(g_follow.lost ? "[follow] %s lost - nothing to estimate from\n"
+                                            : "[follow] %s found again\n",
+                              g_follow.callsign.c_str());
+            }
+        }
+    }
+    if (!found) {
+        if (fresh) {
+            Serial.printf("[follow] %s not in this poll - last seen %lus ago\n", g_follow.callsign.c_str(),
+                          (unsigned long)((now - g_follow.seenMs) / 1000));
+        }
+        return;
+    }
+
+    // Down and stopped - or stopped saying how fast it is, as many do once
+    // they are parked - after having been seen moving: it has arrived.
+    bool stopped = ac.speedStr == "?" || ac.speedStr.toInt() == 0;
+    if (followRecording() && g_follow.airborne && !g_follow.departed && onGround(ac) && stopped) {
+        Serial.printf("[follow] %s has stopped on the ground - ending its recording\n", g_follow.callsign.c_str());
+        stopFollowRecording();
+        updateRecButton(true);
+    }
+
+    // A departure is followed until it is beyond the radius, where the rest
+    // of the radar's sky stops: by then it is on its way to somewhere else.
+    if (g_follow.departed && !g_follow.lost && haversineNm(g_lat, g_lon, ac.lat, ac.lon) > g_radiusNm) {
+        Serial.printf("[follow] %s has left the %d nm radius - done following it\n", g_follow.callsign.c_str(),
+                      g_radiusNm);
+        stopFollow();
+        if (g_screen == Screen::RADAR) {
+            drawRadar(true);
+        } else if (g_screen == Screen::ZOOM) {
+            drawZoom(true);
+        }
+        return;
+    }
+
+    if (g_zoomUp) {
+        // Back to the radar once it has been on the zoom's plot and is
+        // flying off it - climbing out, or gone around: in the air, further
+        // out than at the last poll, and off the plot by the next at the
+        // speed it is going. Or, whichever way it is going, well clear.
+        double d = haversineNm(g_zoomPoll.lat, g_zoomPoll.lon, ac.lat, ac.lon);
+        if (d <= g_zoomRangeNm) {
+            g_follow.inZoom = true;
+        }
+        float leadNm = std::max(ac.speedStr.toFloat(), 0.0f) * ZOOM_POLL_INTERVAL_S / 3600.0f;
+        bool leaving = g_follow.zoomDistNm >= 0 && d > g_follow.zoomDistNm && d + leadNm > g_zoomRangeNm;
+        g_follow.zoomDistNm = d;
+        Serial.printf("[follow] %s %s ft %s kt %s%s, %.1f nm from %s's middle\n", g_follow.callsign.c_str(),
+                      ac.altStr.c_str(), ac.speedStr.c_str(), ac.status.c_str(), ac.posStale ? " (last position)" : "",
+                      d, g_zoomCode.c_str());
+        if (g_screen == Screen::ZOOM && g_follow.inZoom && !onGround(ac) &&
+            (leaving || d > g_zoomRangeNm * FOLLOW_UNZOOM_RANGES)) {
+            Serial.printf("[follow] %s has left %s\n", g_follow.callsign.c_str(), g_zoomCode.c_str());
+            g_follow.rangeNm = followRangeFor(ac);  // what it had coming down is no use climbing away
+            // Departed, it isn't handed back to the airport it left - one
+            // levelling off low in the circuit would go back and forth. Gone
+            // around, it may be, for its next approach.
+            if (g_follow.departed) {
+                g_follow.skipZoom = g_zoomCode;
+            }
+            closeZoom();
+        }
+        return;
+    }
+    // Closing in on its destination, the range and the fetch around it with
+    // it: the plot keeps the airport on it, and the answers get smaller.
+    int range = followRangeFor(ac);
+    if (range != g_follow.rangeNm) {
+        Serial.printf("[follow] %s range %d -> %d nm\n", g_follow.callsign.c_str(), g_follow.rangeNm, range);
+        g_follow.rangeNm = range;
+    }
+    aimFollowPoll(false);
+    String code;
+    bool handOff = followZoomTarget(ac, code);
+    // A line a poll, so a landing that wasn't handed to its zoom can be
+    // worked out afterwards from the serial log.
+    Airport dest;
+    float destNm = 0;
+    bool haveDest = followDestination(ac, dest, destNm);
+    Serial.printf("[follow] %s %s ft %s kt %s, %s %.1f nm, range %d, screen %d%s%s\n", g_follow.callsign.c_str(),
+                  ac.altStr.c_str(), ac.speedStr.c_str(), ac.status.c_str(), haveDest ? dest.code.c_str() : "-",
+                  destNm, g_follow.rangeNm, (int)g_screen, handOff ? ", zoom " : "", handOff ? code.c_str() : "");
+    if (handOff && g_screen == Screen::RADAR) {
+        openZoom(code, true);
+    }
+}
+
+// Auto-follow: an alert just fired for `ac`, so it is followed - unless
+// something is already, which is left alone. From the table, the radar or a
+// zoom, the radar comes up centred on it, a zoom closing first - following
+// hands it to its airport's zoom again if that is where it is. Anywhere else
+// it is followed out of sight, with the radar ready on return, and recorded
+// with auto-record on, as any following is.
+void autoFollow(const Aircraft &ac) {
+    if (g_follow.active || !ac.hasPos) {
+        return;
+    }
+    Serial.printf("[follow] auto-following %s\n", ac.callsign.c_str());
+    bool showRadar = (g_screen == Screen::MAIN || g_screen == Screen::RADAR || g_screen == Screen::ZOOM);
+    if (g_zoomUp) {
+        // A zoom on some other airport's poll would keep it from the
+        // aircraft's: it goes, and a detail opened from it goes back to the
+        // radar instead.
+        if (g_screen == Screen::DETAIL && g_detailReturnTo == Screen::ZOOM) {
+            g_detailReturnTo = Screen::RADAR;
+        }
+        g_follow.picking = false;
+        endZoom();
+    }
+    g_follow.picking = false;
+    startFollow(ac);
+    if (showRadar) {
+        g_screen = Screen::RADAR;
+        drawRadar(true);
+    }
+}
+
 void handleRadarTouch(int x, int y) {
     String hex, airport;
-    switch (radarScreenHandleTouch(x, y, hex, airport)) {
+    RadarAction action = radarScreenHandleTouch(x, y, hex, airport);
+    switch (action) {
     case RadarAction::BACK:
+        // Following carries on - and records, if it is - with the radar out
+        // of sight. FOLLOW is how it stops.
+        g_follow.picking = false;
         g_screen = Screen::MAIN;
         displayInvalidate();
         if (xSemaphoreTake(g_dataMutex, portMAX_DELAY) == pdTRUE) {
@@ -897,18 +1732,13 @@ void handleRadarTouch(int x, int y) {
         break;
     case RadarAction::SELECT: {
         Aircraft tapped;
-        bool found = false;
-        if (xSemaphoreTake(g_dataMutex, portMAX_DELAY) == pdTRUE) {
-            for (const Aircraft &a : g_latestAircraft) {
-                if (a.hex == hex) {
-                    tapped = a;
-                    found = true;
-                    break;
-                }
-            }
-            xSemaphoreGive(g_dataMutex);
-        }
-        if (found) {
+        bool found = findShown(hex, tapped);
+        if (found && g_follow.picking) {
+            stopFollow();  // whoever was followed before, if anyone
+            startFollow(tapped);
+            setRadarControls(true);
+            drawRadar(true);  // full: the range readout changes, and only part of it is in the plot
+        } else if (found) {
             openDetail(tapped, Screen::RADAR);
         } else {
             drawRadar(true);  // gone since: at least take the list off, if it was picked from one
@@ -918,15 +1748,44 @@ void handleRadarTouch(int x, int y) {
     case RadarAction::DISMISS:
         drawRadar(true);
         break;
-    case RadarAction::TOGGLE_CENTRE:
-        g_radarCentre = (g_radarCentre == RadarCentre::HOME) ? RadarCentre::AIRPORT : RadarCentre::HOME;
-        saveRadarCentre(g_radarCentre);
-        drawRadar(true);
+    // Each button is lit as soon as it is tapped, so the tap shows it
+    // registered before the plot - the slower part - is redrawn under it.
+    case RadarAction::CENTRE_HOME:
+    case RadarAction::CENTRE_AIRPORT:
+    case RadarAction::CENTRE_ALL: {
+        RadarCentre centre = (action == RadarAction::CENTRE_HOME) ? RadarCentre::HOME : RadarCentre::AIRPORT;
+        bool airports = (action == RadarAction::CENTRE_ALL);
+        bool wasFollowing = g_follow.active;
+        stopFollow();  // a view of its own is the end of following, or of picking
+        bool changed = wasFollowing || centre != g_radarCentre || airports != g_radarAirports;
+        if (centre != g_radarCentre) {
+            g_radarCentre = centre;
+            saveRadarCentre(g_radarCentre);
+        }
+        if (airports != g_radarAirports) {
+            g_radarAirports = airports;
+            saveRadarAirports(g_radarAirports);
+        }
+        setRadarControls(true);
+        if (wasFollowing) {
+            drawRadar(true);  // the range changes back too
+        } else if (changed) {
+            drawRadar(false);
+        }
+        break;
+    }
+    case RadarAction::TOGGLE_FOLLOW:
+        if (g_follow.active) {
+            stopFollow();
+            setRadarControls(true);
+            drawRadar(true);
+        } else {
+            g_follow.picking = !g_follow.picking;
+            setRadarControls(true);
+        }
         break;
     case RadarAction::TOGGLE_RECORD:
         toggleRecording();
-        break;
-    case RadarAction::TOGGLE_AIRPORTS:  // only ever from a hold
         break;
     case RadarAction::OPEN_RECORDINGS:
         // Greyed out without a card, but a tap still has another look for one.
@@ -935,6 +1794,7 @@ void handleRadarTouch(int x, int y) {
             updateRecButton(true);
             break;
         }
+        g_follow.picking = false;
         g_screen = Screen::RECORDINGS;
         recordingsScreenEnter();
         break;
@@ -952,7 +1812,24 @@ void handleZoomTouch(int x, int y) {
     String hex;
     switch (radarZoomHandleTouch(x, y, hex)) {
     case ZoomAction::UNZOOM:
+        // Following, back to the radar centred on it - and not handed to
+        // this airport's zoom again, which would undo the tap.
+        if (g_follow.active) {
+            g_follow.skipZoom = g_zoomCode;
+        }
         closeZoom();
+        break;
+    case ZoomAction::TOGGLE_RECORD:
+        toggleRecording();
+        break;
+    case ZoomAction::TOGGLE_FOLLOW:
+        if (g_follow.active) {
+            stopFollow();
+        } else {
+            g_follow.picking = !g_follow.picking;
+            radarZoomSetFollow(String(), String(), g_follow.picking);
+        }
+        drawZoom(true);
         break;
     case ZoomAction::SELECT: {
         Aircraft tapped;
@@ -967,7 +1844,15 @@ void handleZoomTouch(int x, int y) {
             }
             xSemaphoreGive(g_dataMutex);
         }
-        if (found) {
+        found = found || lastReported(hex, tapped);
+        if (found && g_follow.picking) {
+            // Followed from here, the zoom stays on its airport: the aircraft
+            // is handed back to the radar once it has flown clear of it.
+            startFollow(tapped);
+            g_follow.zoomIsItsOwn = true;
+            radarZoomSetFollow(g_follow.hex, g_follow.callsign, false);
+            drawZoom(true);
+        } else if (found) {
             openDetail(tapped, Screen::ZOOM);
         } else {
             drawZoom(true);
@@ -1030,8 +1915,6 @@ void handlePlaybackTouch(int x, int y) {
         playbackScreenSetCentre(g_radarCentre);
         playbackScreenDraw();
         break;
-    case PlaybackAction::TOGGLE_AIRPORTS:  // only ever from a hold
-        break;
     case PlaybackAction::SELECT:
         openDetail(tapped, Screen::PLAYBACK);
         break;
@@ -1040,35 +1923,6 @@ void handlePlaybackTouch(int x, int y) {
         break;
     case PlaybackAction::NONE:
         break;
-    }
-}
-
-// A long press on the radar's centre toggle, while it says AIRPORT, shows or
-// hides the other airports around it, here and in replays alike. On HOME it
-// does nothing: the airports are part of the airport view, so they are hidden
-// there, and a press that changed what shows on switching back would only
-// surprise. It clicks, since with no airport in range the plot itself
-// wouldn't change to say the hold registered.
-bool toggleRadarAirports() {
-    if (g_radarCentre != RadarCentre::AIRPORT) {
-        return false;
-    }
-    soundKeyClick();
-    g_radarAirports = !g_radarAirports;
-    saveRadarAirports(g_radarAirports);
-    return true;
-}
-
-void handleRadarHold(int x, int y) {
-    if (radarScreenHandleHold(x, y) == RadarAction::TOGGLE_AIRPORTS && toggleRadarAirports()) {
-        drawRadar(false);  // the header doesn't change
-    }
-}
-
-void handlePlaybackHold(int x, int y) {
-    if (playbackScreenHandleHold(x, y) == PlaybackAction::TOGGLE_AIRPORTS && toggleRadarAirports()) {
-        playbackScreenSetAirports(g_radarAirports);
-        playbackScreenDraw();
     }
 }
 
@@ -1122,7 +1976,7 @@ void handleMainHold(int x, int y) {
     }
 
     g_watchlist = list;
-    saveAlerts(g_alertMask, g_watchlist, g_autoRecord);
+    saveAlerts(g_alertMask, g_watchlist, g_autoRecord, g_autoFollow);
     if (xSemaphoreTake(g_dataMutex, portMAX_DELAY) == pdTRUE) {
         g_alertRules.watch = parseWatchlist(g_watchlist);
         g_pollNow = true;  // so the row changes colour now rather than an interval on
@@ -1140,8 +1994,9 @@ void handleAlertsTouch(int x, int y) {
     case AlertsAction::BACK: {
         g_alertMask = alertsScreenMask();
         g_autoRecord = alertsScreenAutoRecord();
+        g_autoFollow = alertsScreenAutoFollow();
         g_watchlist = alertsScreenWatchlist();
-        saveAlerts(g_alertMask, g_watchlist, g_autoRecord);
+        saveAlerts(g_alertMask, g_watchlist, g_autoRecord, g_autoFollow);
         if (xSemaphoreTake(g_dataMutex, portMAX_DELAY) == pdTRUE) {
             g_alertRules.enabled = g_alertMask;
             g_alertRules.watch = parseWatchlist(g_watchlist);
@@ -1336,7 +2191,7 @@ void handleSettingsTouch(int x, int y, bool pressed, bool clicked) {
         locationScreenDraw();
         break;
     case SettingsAction::OPEN_ALERTS:
-        alertsScreenSet(g_alertMask, g_autoRecord, g_watchlist);
+        alertsScreenSet(g_alertMask, g_autoRecord, g_autoFollow, g_watchlist);
         alertsScreenSetCard(recorder::mount());  // one look for a card put in since
         g_screen = Screen::ALERTS;
         alertsScreenDraw();
@@ -1459,6 +2314,7 @@ void setup() {
     g_alertMask = s.alertMask;
     g_watchlist = s.watchlist;
     g_autoRecord = s.autoRecord;
+    g_autoFollow = s.autoFollow;
     g_alertRules.enabled = g_alertMask;
     g_alertRules.watch = parseWatchlist(g_watchlist);
     soundSetMuted(g_muted);
@@ -1533,7 +2389,28 @@ void setup() {
     }
 }
 
+namespace {
+
+void reportPerf() {
+    static uint32_t lastMs = 0;
+    if (millis() - lastMs < 60000) {
+        return;
+    }
+    lastMs = millis();
+    Serial.printf("[perf] radar %s, zoom %s, tracks %s (%u), loop max %ums; internal RAM %uKB free, %uKB "
+                  "lowest, %uKB largest block\n",
+                  g_perfRadar.text().c_str(), g_perfZoom.text().c_str(), g_perfTracks.text().c_str(),
+                  (unsigned)g_tracks.size(), (unsigned)(g_perfLoop.maxUs / 1000),
+                  (unsigned)(heap_caps_get_free_size(MALLOC_CAP_INTERNAL) / 1024),
+                  (unsigned)(heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL) / 1024),
+                  (unsigned)(heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL) / 1024));
+    g_perfRadar = g_perfZoom = g_perfTracks = g_perfLoop = PerfStat();
+}
+
+}  // namespace
+
 void loop() {
+    uint32_t loopStart = micros();
     M5.update();
 
     // 'S' over serial sends the screen back, for tools/screenshot.py.
@@ -1558,24 +2435,39 @@ void loop() {
             clicked = t.wasClicked();
         }
         handleSettingsTouch(tx, ty, pressed, clicked);
-    } else if (M5.Touch.getCount()) {
+    } else if (M5.Touch.getCount() == 0) {
+        g_touchSpent = false;
+    } else {
         auto t = M5.Touch.getDetail(0);
         if (g_zoomUp) {
             g_zoomTouchedMs = millis();  // being looked at, so not to be closed
         }
-        if (t.wasHold() && !bannerOver(t.y)) {
-            switch (g_screen) {
-            case Screen::MAIN:
+        // The radar and the zoom act on a touch as it lands. Elsewhere a tap
+        // is a click, which comes as it lifts - and only if it lifted within
+        // half a second of landing and less than 8px from where it landed;
+        // otherwise it was a hold or a flick, and nothing. With a finger on
+        // a glass panel, enough taps strayed past one limit or the other
+        // that the radar's buttons felt laggy, or missed taps altogether.
+        // Nothing on either screen drags or holds, so nothing is lost by it.
+        bool onLanding = (g_screen == Screen::RADAR || g_screen == Screen::ZOOM);
+        if (g_touchSpent) {
+            if (!t.isPressed()) {
+                g_touchSpent = false;
+            }
+        } else if (onLanding) {
+            if (t.wasPressed()) {
+                g_touchSpent = true;
+                if (!handleBannerTouch(t.x, t.y)) {
+                    if (g_screen == Screen::RADAR) {
+                        handleRadarTouch(t.x, t.y);
+                    } else {
+                        handleZoomTouch(t.x, t.y);
+                    }
+                }
+            }
+        } else if (t.wasHold() && !bannerOver(t.y)) {
+            if (g_screen == Screen::MAIN) {
                 handleMainHold(t.x, t.y);
-                break;
-            case Screen::RADAR:
-                handleRadarHold(t.x, t.y);
-                break;
-            case Screen::PLAYBACK:
-                handlePlaybackHold(t.x, t.y);
-                break;
-            default:
-                break;
             }
         } else if (t.wasClicked() && !handleBannerTouch(t.x, t.y)) {
             switch (g_screen) {
@@ -1590,12 +2482,6 @@ void loop() {
                 break;
             case Screen::WIFI:
                 handleWifiTouch(t.x, t.y);
-                break;
-            case Screen::RADAR:
-                handleRadarTouch(t.x, t.y);
-                break;
-            case Screen::ZOOM:
-                handleZoomTouch(t.x, t.y);
                 break;
             case Screen::ALERTS:
                 handleAlertsTouch(t.x, t.y);
@@ -1665,7 +2551,7 @@ void loop() {
         }
     }
 
-    if (g_screen == Screen::RADAR) {
+    if (g_screen == Screen::RADAR || g_screen == Screen::ZOOM) {
         updateRecButton(true);
     }
     if (g_screen == Screen::PLAYBACK) {
@@ -1675,22 +2561,70 @@ void loop() {
         shareScreenTick();
     }
 
+    // When each poll's list arrived, to move its contacts on from between
+    // polls. Timed here rather than as each is drawn, so a view opened since
+    // still knows how old what it is drawing is.
+    static uint32_t seenLatestSeq = 0, seenZoomSeq = 0;
+    std::vector<Aircraft> arrivedMain, arrivedZoom;
+    String mainProvider, zoomProvider;
+    bool mainArrived = false, zoomArrived = false;
+    if (xSemaphoreTake(g_dataMutex, 0) == pdTRUE) {
+        if (g_latestSeq != seenLatestSeq) {
+            seenLatestSeq = g_latestSeq;
+            g_latestDataMs = millis();
+            arrivedMain = g_latestAircraft;
+            mainProvider = g_activeProvider;
+            mainArrived = true;
+        }
+        if (g_zoomSeq != seenZoomSeq) {
+            seenZoomSeq = g_zoomSeq;
+            g_zoomDataMs = millis();
+            arrivedZoom = g_zoomAircraft;
+            zoomProvider = g_zoomProvider;
+            zoomArrived = true;
+        }
+        xSemaphoreGive(g_dataMutex);
+    }
+    if (mainArrived || zoomArrived) {
+        uint32_t t0 = micros();
+        if (mainArrived) {
+            noteTracks(arrivedMain, false, mainProvider);
+        }
+        if (zoomArrived) {
+            noteTracks(arrivedZoom, true, zoomProvider);
+        }
+        g_perfTracks.add(micros() - t0);
+    }
+
+    tickFollow();
+
     if (g_screen == Screen::RADAR) {
+        // Following, the plot is drawn from the extra poll's list rather
+        // than the main poll's - but a flash step still asks for a redraw
+        // through g_dataReady.
         bool fresh = false;
         if (xSemaphoreTake(g_dataMutex, 0) == pdTRUE) {
-            fresh = g_dataReady;
+            fresh = g_dataReady || (g_follow.active && g_zoomReady);
             g_dataReady = false;
+            if (g_follow.active) {
+                g_zoomReady = false;
+            }
             xSemaphoreGive(g_dataMutex);
         }
+        uint32_t dataMs = g_follow.active ? g_zoomDataMs : g_latestDataMs;
         if (fresh) {
             drawRadar(false);
+        } else if (millis() - g_radarDrawnMs >= tweenMs(g_pollIntervalS) &&
+                   millis() - dataMs < 2UL * g_pollIntervalS * 1000) {
+            drawRadar(false);  // a frame between polls
         }
     }
 
     // The zoom is a temporary view, and its extra fetches go with it: left
     // untouched, it closes itself - and from a detail opened from it, Back
-    // then goes to the radar instead.
-    if (g_zoomUp && millis() - g_zoomTouchedMs > ZOOM_TIMEOUT_MS) {
+    // then goes to the radar instead. Not while following, which put it up
+    // and takes it down again.
+    if (g_zoomUp && !g_follow.active && millis() - g_zoomTouchedMs > ZOOM_TIMEOUT_MS) {
         if (g_screen == Screen::ZOOM) {
             closeZoom();
         } else if (g_screen == Screen::DETAIL && g_detailReturnTo == Screen::ZOOM) {
@@ -1706,6 +2640,22 @@ void loop() {
         }
         if (fresh) {
             drawZoom(false);
+        } else if (millis() - g_zoomDrawnMs >= tweenMs(ZOOM_POLL_INTERVAL_S) &&
+                   millis() - g_zoomDataMs < 2UL * ZOOM_POLL_INTERVAL_S * 1000) {
+            drawZoom(false);  // a frame between polls
+        }
+    }
+
+    // While the followed aircraft is lost, its estimate moves on between
+    // polls: redrawn every second, so it is seen to roll out rather than
+    // jump between polls.
+    // Timed from the last draw of either kind, so a poll drawn this pass
+    // isn't drawn again straight after.
+    if (g_follow.active && g_follow.lost) {
+        if (g_screen == Screen::ZOOM && millis() - g_zoomDrawnMs >= FOLLOW_ESTIMATE_DRAW_MS) {
+            drawZoom(false);
+        } else if (g_screen == Screen::RADAR && millis() - g_radarDrawnMs >= FOLLOW_ESTIMATE_DRAW_MS) {
+            drawRadar(false);
         }
     }
     // The zoom's fetches stop as soon as neither it nor a detail opened from
@@ -1762,5 +2712,7 @@ void loop() {
         displayTickStatus();
     }
 
+    g_perfLoop.add(micros() - loopStart);
+    reportPerf();
     delay(10);
 }

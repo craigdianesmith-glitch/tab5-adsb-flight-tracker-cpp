@@ -147,13 +147,19 @@ void drawRow(int i) {
     } else if (!row.ok) {
         detail = "Not a recording this version can read";
     } else {
-        detail = row.header.trigger == recorder::Trigger::AUTO
-                     ? "Auto" + (row.header.note.length() ? " - " + row.header.note : String(""))
-                     : String("Manual");
+        String note = row.header.note.length() ? " - " + row.header.note : String("");
+        detail = row.header.trigger == recorder::Trigger::AUTO     ? "Auto" + note
+                 : row.header.trigger == recorder::Trigger::FOLLOW ? "Follow" + note
+                 : note.length()                                    ? "Manual" + note
+                                                                   : String("Manual");
         if (row.header.part > 1) {
             detail += ", part " + String(row.header.part);  // carries on from the one below it
         }
-        detail += "    " + String(row.header.radiusNm) + " nm " + (row.header.military ? "military" : "civil");
+        if (row.header.followHex.length()) {
+            detail += "    " + String(row.header.followRangeNm) + " nm around it";  // not home's radius
+        } else {
+            detail += "    " + String(row.header.radiusNm) + " nm " + (row.header.military ? "military" : "civil");
+        }
         detail += "    " + sizeText(row.bytes);
     }
     bool armed = (g_confirmRow == i);

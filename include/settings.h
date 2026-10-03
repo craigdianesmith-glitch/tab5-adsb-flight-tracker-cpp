@@ -25,6 +25,7 @@ struct AppSettings {
     uint8_t alertMask;  // which AlertReasons raise an alert
     String watchlist;   // as typed: entries separated by spaces or commas
     bool autoRecord;    // record the radar while an alerted aircraft is about
+    bool autoFollow;    // follow an alerted aircraft on the radar as its alert fires
 
     // Empty ssid means "use the credentials compiled in from secrets.h", so a
     // device that's never had WiFi set on-screen behaves exactly as before.
@@ -40,4 +41,4 @@ void saveMuted(bool muted);
 void saveRadarCentre(RadarCentre centre);
 void saveRadarAirports(bool airports);
 void saveWifi(const String &ssid, const String &pass);
-void saveAlerts(uint8_t alertMask, const String &watchlist, bool autoRecord);
+void saveAlerts(uint8_t alertMask, const String &watchlist, bool autoRecord, bool autoFollow);
