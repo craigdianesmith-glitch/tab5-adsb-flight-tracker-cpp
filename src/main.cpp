@@ -101,7 +101,6 @@ bool g_zoomReady = false;              // likewise: a new list, for loop() to dr
 String g_zoomProvider;                 // likewise: who answered for it
 uint32_t g_zoomSeq = 0;                // likewise: counts the lists, for following to look through each once
 bool g_zoomUp = false;                 // only touched by loop(): g_zoomPoll.active, without the lock
-uint32_t g_zoomTouchedMs = 0;          // likewise: the last touch, for closing the zoom left alone
 uint32_t g_zoomDataMs = 0;             // likewise: when its list last arrived, to move it on from
 uint32_t g_zoomDrawnMs = 0;            // and when it was last drawn
 uint32_t g_radarDrawnMs = 0;           // likewise, the radar
@@ -1029,7 +1028,6 @@ bool openZoom(const String &code, bool forFollowed = false) {
         xSemaphoreGive(g_dataMutex);
     }
     g_zoomUp = true;
-    g_zoomTouchedMs = millis();
     g_screen = Screen::ZOOM;
     drawZoom(true);
     return true;
@@ -1447,7 +1445,7 @@ void startFollow(const Aircraft &ac) {
 }
 
 // Back to the radar's own centre. The zoom, if following had it up, stays up
-// as an ordinary one - closing itself once left alone, from now.
+// as an ordinary one.
 void stopFollow() {
     if (!g_follow.active) {
         g_follow.picking = false;
@@ -1465,9 +1463,6 @@ void stopFollow() {
             g_zoomReady = false;
         }
         xSemaphoreGive(g_dataMutex);
-    }
-    if (g_zoomUp) {
-        g_zoomTouchedMs = millis();
     }
 }
 
@@ -2435,9 +2430,6 @@ void loop() {
         g_touchSpent = false;
     } else {
         auto t = M5.Touch.getDetail(0);
-        if (g_zoomUp) {
-            g_zoomTouchedMs = millis();  // being looked at, so not to be closed
-        }
         // The radar and the zoom act on a touch as it lands. Elsewhere a tap
         // is a click, which comes as it lifts - and only if it lifted within
         // half a second of landing and less than 8px from where it landed;
@@ -2616,17 +2608,6 @@ void loop() {
         }
     }
 
-    // The zoom is a temporary view, and its extra fetches go with it: left
-    // untouched, it closes itself - and from a detail opened from it, Back
-    // then goes to the radar instead. Not while following, which put it up
-    // and takes it down again.
-    if (g_zoomUp && !g_follow.active && millis() - g_zoomTouchedMs > ZOOM_TIMEOUT_MS) {
-        if (g_screen == Screen::ZOOM) {
-            closeZoom();
-        } else if (g_screen == Screen::DETAIL && g_detailReturnTo == Screen::ZOOM) {
-            g_detailReturnTo = Screen::RADAR;
-        }
-    }
     if (g_screen == Screen::ZOOM) {
         bool fresh = false;
         if (xSemaphoreTake(g_dataMutex, 0) == pdTRUE) {
