@@ -104,6 +104,9 @@ constexpr uint32_t ALERT_BANNER_MS = 20000;
 // gone, so a contact that drops out for a poll or two doesn't split one
 // sighting into several files.
 constexpr uint32_t AUTO_RECORD_TAIL_MS = 60000;
+// An alert's recording that following takes over within this long of its
+// start is removed rather than kept: the follow's own recording has it all.
+constexpr uint32_t ALERT_STUB_MS = 60000;
 // Room for a dozen or so entries; it is typed on the on-screen keyboard.
 constexpr size_t WATCHLIST_MAX_LEN = 160;
 // A recording carries on in a new file - its next part - once the one it is

@@ -1370,7 +1370,16 @@ void startFollowRecording() {
             xSemaphoreGive(g_dataMutex);
         }
         Serial.println("[follow] taking over from the alert's recording");
+        // Auto-follow follows an alert's aircraft from the poll that raised
+        // it, which has started the alert's recording already: just begun,
+        // it is a frame or two that the following one carries on from, and
+        // left on the card it was a recording of next to nothing.
+        bool stub = millis() - recorder::activeSinceMs() < ALERT_STUB_MS;
+        String path = recorder::activePath();
         recorder::stop();
+        if (stub && recorder::remove(path)) {
+            Serial.printf("[rec] removed %s - the follow's recording takes over from it\n", path.c_str());
+        }
     }
     recorder::Header h;
     time_t wall = time(nullptr);
