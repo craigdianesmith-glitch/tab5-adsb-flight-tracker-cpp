@@ -190,6 +190,12 @@ esp_err_t sendFile(httpd_req_t *req, const String &path, const char *type, bool 
         ok = got > 0 && sendAll(req, buf, got);
         sent += got;
         setCurrent(name.c_str(), sent, length);
+        // The card is read over SPI, which waits for each byte rather than
+        // sleeping, and a fast phone takes each piece as soon as it is sent:
+        // this task, above core 0's idle task, could go a whole large video
+        // without giving it a turn, and the task watchdog reset the tracker
+        // five seconds into it. A tick per piece costs nothing next to WiFi.
+        vTaskDelay(1);
     }
     {
         recorder::CardLock lock;
