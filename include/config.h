@@ -132,6 +132,10 @@ constexpr float STALE_POSITION_MAX_S = 60.0f;
 // most likely flown out of range, and is let go.
 constexpr int ESTIMATE_MAX_FT = 4000;
 constexpr uint32_t ESTIMATE_LOST_MS = 90000;
+// One whose take-off or landing is being simulated (see RunwaySim) is kept
+// longer: stopped at the end of its rollout, it can be minutes before a
+// receiver picks it up taxiing in.
+constexpr uint32_t RUNWAY_SIM_LOST_MS = 180000;
 
 constexpr int CLIMB_THRESHOLD_FPM = 150;
 constexpr int DESCEND_THRESHOLD_FPM = -150;

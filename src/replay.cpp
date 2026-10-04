@@ -112,6 +112,20 @@ std::map<String, std::vector<FollowSample>> g_heights;
 std::vector<String> g_providers;  // the names the polls give, in the order first met
 bool g_hasHome = false;
 
+// Each low contact's RunwaySim, fed its fixes up to the moment last shown
+// as the live screens feed theirs at each poll, so that a take-off or
+// landing plays back as it was shown live. Fed on from where it was as the
+// playback moves on, and started again - from SIM_WARMUP_MS before - when
+// it goes back, or has gathered too many.
+struct SimFeed {
+    RunwaySim sim;
+    size_t next;  // the next of its fixes to feed it, in g_fixes
+};
+std::map<uint32_t, SimFeed> g_sims;
+uint32_t g_simsAt = 0;
+constexpr uint32_t SIM_WARMUP_MS = 300000;
+constexpr size_t SIMS_MAX = 64;
+
 // The two polls either side of the moment last asked for, kept so that a
 // playback ticking through one gap doesn't reread them from the card each time.
 size_t g_curIdx = SIZE_MAX, g_nextIdx = SIZE_MAX;
@@ -162,6 +176,50 @@ View parseView(const char *tok) {
 // Low enough that a gap in the feed is the ground's doing, not its leaving.
 bool low(const FollowSample &s) { return s.ground || (s.hasAlt && s.altFt < ESTIMATE_MAX_FT); }
 
+bool low(const Aircraft &a) {
+    return a.status == "GROUND" || a.status == "TAXI" || a.altStr == "GND" ||
+           (a.altStr != "?" && a.altStr.toInt() < ESTIMATE_MAX_FT);
+}
+
+// The aircraft with `key`'s simulation, fed its fixes up to `abs`. Only good
+// until the next call: that can start them all again.
+const RunwaySim &simFor(uint32_t key, uint32_t abs) {
+    if (abs < g_simsAt || g_sims.size() > SIMS_MAX) {
+        g_sims.clear();
+    }
+    g_simsAt = abs;
+    auto it = g_sims.find(key);
+    if (it == g_sims.end()) {
+        auto f = std::lower_bound(g_fixes.begin(), g_fixes.end(), key,
+                                  [](const Fix &f, uint32_t k) { return f.key < k; });
+        while (f != g_fixes.end() && f->key == key && f->ms + SIM_WARMUP_MS < abs) {
+            ++f;
+        }
+        it = g_sims.emplace(key, SimFeed{RunwaySim(), (size_t)(f - g_fixes.begin())}).first;
+    }
+    SimFeed &feed = it->second;
+    while (feed.next < g_fixes.size() && g_fixes[feed.next].key == key && g_fixes[feed.next].ms <= abs) {
+        feed.sim.report(g_fixes[feed.next].s);
+        feed.next++;
+    }
+    return feed.sim;
+}
+
+// `a` where `e` puts it, as the live screens draw it.
+void showEstimate(Aircraft &a, const FollowEstimate &e) {
+    a.hasPos = true;
+    a.lat = e.lat;
+    a.lon = e.lon;
+    a.hasTrack = true;
+    a.track = e.track;
+    a.altStr = e.ground ? String("GND") : String(e.altFt);
+    a.speedStr = String(e.gsKt);
+    a.status = e.ground                           ? (e.gsKt > 2 ? "TAXI" : "GROUND")
+               : e.vsFpm >= CLIMB_THRESHOLD_FPM   ? "CLIMB"
+               : e.vsFpm <= DESCEND_THRESHOLD_FPM ? "DESCEND"
+                                                  : "LEVEL";
+}
+
 // Where each contact went missing that the feed lost - rather than one that
 // flew out of the poll's reach - from the sorted fixes: a current position
 // whose next current one, if there is one, is in a later poll than the very
@@ -192,7 +250,9 @@ void findGaps() {
         if (haveNext ? g_fixes[next].frame <= f.frame + 1 : f.frame >= lastFrame) {
             continue;  // seen again at the next poll, or the recording ended
         }
-        uint32_t end = f.ms + ESTIMATE_LOST_MS;
+        // As long as the longest it could be kept: whether it is, is up to
+        // its simulation, at the time.
+        uint32_t end = f.ms + std::max(ESTIMATE_LOST_MS, RUNWAY_SIM_LOST_MS);
         if (haveNext) {
             end = std::min(end, g_fixes[next].ms);
         }
@@ -213,13 +273,11 @@ void fillGaps(uint32_t abs, const char *followed, std::vector<Aircraft> &aircraf
         if (hex == followed) {
             continue;
         }
-        // Its reports in the minutes before, to tell a take-off from a landing.
-        std::vector<FollowSample> before;
-        for (size_t j = g.fix; j-- > 0 && g_fixes[j].key == f.key && f.ms - g_fixes[j].ms <= 180000;) {
-            before.push_back(g_fixes[j].s);
+        const RunwaySim &sim = simFor(f.key, abs);
+        if (!sim.haveFresh() || abs - sim.fresh().ms > sim.keepMs()) {
+            continue;
         }
-        std::reverse(before.begin(), before.end());  // oldest first, as the estimate reads them
-        FollowEstimate e = estimateFollowed(f.s, (abs - f.ms) / 1000.0f, before);
+        FollowEstimate e = sim.at(abs);
         Aircraft ghost;
         for (auto it = aircraft.begin(); it != aircraft.end(); ++it) {
             if (it->hex == hex) {
@@ -233,18 +291,8 @@ void fillGaps(uint32_t abs, const char *followed, std::vector<Aircraft> &aircraf
             ghost.callsign = f.callsign;
             ghost.type = "----";
         }
-        ghost.hasPos = true;
+        showEstimate(ghost, e);
         ghost.posStale = true;
-        ghost.lat = e.lat;
-        ghost.lon = e.lon;
-        ghost.hasTrack = true;
-        ghost.track = e.track;
-        ghost.altStr = e.ground ? String("GND") : String(e.altFt);
-        ghost.speedStr = String(e.gsKt);
-        ghost.status = e.ground                           ? (e.gsKt > 2 ? "TAXI" : "GROUND")
-                       : e.vsFpm >= CLIMB_THRESHOLD_FPM   ? "CLIMB"
-                       : e.vsFpm <= DESCEND_THRESHOLD_FPM ? "DESCEND"
-                                                          : "LEVEL";
         aircraft.push_back(ghost);
     }
 }
@@ -383,6 +431,8 @@ void unload() {
     g_gaps.clear();
     g_gaps.shrink_to_fit();
     g_heights.clear();
+    g_sims.clear();
+    g_simsAt = 0;
     g_providers.clear();
     g_hasHome = false;
     g_cur.clear();
@@ -425,6 +475,20 @@ const std::vector<FollowSample> &followHeights(const String &hex) {
     static const std::vector<FollowSample> none;
     auto it = g_heights.find(hex);
     return it == g_heights.end() ? none : it->second;
+}
+
+bool estimateAt(const String &hex, uint32_t t, FollowEstimate &out, uint32_t &lostMs) {
+    if (g_frames.empty()) {
+        return false;
+    }
+    uint32_t abs = g_frames.front().ms + t;
+    const RunwaySim &sim = simFor(keyOf(hex), abs);
+    if (!sim.haveFresh() || abs - sim.fresh().ms > std::max(FOLLOW_LOST_MS, sim.keepMs())) {
+        return false;
+    }
+    out = sim.at(abs);
+    lostMs = abs - sim.fresh().ms;
+    return true;
 }
 
 bool followedAt(uint32_t t, Aircraft &out) {
@@ -541,6 +605,18 @@ void sceneAt(uint32_t t, std::vector<Aircraft> &aircraft, std::vector<TrailPoint
                 a.lon += (n.lon - a.lon) * frac;
                 break;
             }
+        }
+    }
+
+    // Taking off or landing, where it was shown live rather than glided
+    // between its reports.
+    for (Aircraft &a : aircraft) {
+        if (!a.hasPos || a.posStale || !low(a)) {
+            continue;
+        }
+        const RunwaySim &sim = simFor(keyOf(a.hex), abs);
+        if (sim.simulating(abs)) {
+            showEstimate(a, sim.at(abs));
         }
     }
 

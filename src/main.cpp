@@ -136,12 +136,12 @@ struct Follow {
     String skipZoom;         // Unzoomed from while following: not handed back to
     std::vector<FollowSample> heights;  // each report, for the telemetry's chart
     int rangeNm = FOLLOW_RANGE_NM;      // the radar's, closing in as it comes down
-    // Its last report with a current position, and when: what is estimated
-    // from while the feed has lost it - `lost` from the first poll without a
-    // current position for it to the next with one.
-    bool haveFresh = false;
-    FollowSample fresh;
-    uint32_t freshMs = 0;
+    // Its reports, for where it is shown - simulated down the runway when
+    // it is taking off or landing, and estimated from its last current
+    // position while the feed has lost it: `lost` from the first poll
+    // without a current position for it to the next with one.
+    RunwaySim sim;
+    const char *simPhase = "none";  // as last logged
     bool lost = false;
 };
 Follow g_follow;
@@ -713,11 +713,8 @@ void updateRecButton(bool onScreen);
 
 void setRadarControls(bool onScreen);
 
-// Where the followed aircraft is estimated to be now, from its last report
-// with a current position.
-FollowEstimate followEstimateNow() {
-    return estimateFollowed(g_follow.fresh, (millis() - g_follow.freshMs) / 1000.0f, g_follow.heights);
-}
+// Where the followed aircraft is shown now: see RunwaySim.
+FollowEstimate followEstimateNow() { return g_follow.sim.at(millis()); }
 
 // The status an estimate draws with: its trend chevron, and ring or dot.
 String estimateStatus(const FollowEstimate &e) {
@@ -730,7 +727,7 @@ String estimateStatus(const FollowEstimate &e) {
 // Seconds since the followed aircraft's last current position, while it is
 // lost; 0 while it isn't.
 uint32_t followLostS() {
-    return g_follow.lost && g_follow.haveFresh ? (millis() - g_follow.freshMs) / 1000 + 1 : 0;
+    return g_follow.lost && g_follow.sim.haveFresh() ? (millis() - g_follow.sim.fresh().ms) / 1000 + 1 : 0;
 }
 
 // `base` - an aircraft as last reported - where estimate `e` puts it, dimmed
@@ -765,7 +762,7 @@ void putEstimate(std::vector<Aircraft> &aircraft, const Aircraft &base, const Fo
 // to show.
 void keepFollowedOnPlot(std::vector<Aircraft> &aircraft) {
     radarSetHeights(g_follow.heights, followLostS());
-    if (!g_follow.lost || !g_follow.haveFresh) {
+    if (!g_follow.lost || !g_follow.sim.haveFresh()) {
         return;
     }
     putEstimate(aircraft, g_follow.last, followEstimateNow());
@@ -782,22 +779,18 @@ void keepFollowedOnPlot(std::vector<Aircraft> &aircraft) {
 // flown out of range, and is let go.
 
 struct Track {
-    // The last few minutes, to tell a take-off from a landing and which way
-    // one was going - kept only while it is low, where that matters, and to
-    // TRACK_HISTORY_MAX of them: there can be a hundred tracks, and these
-    // live in the internal RAM that WiFi and TLS need.
-    std::vector<FollowSample> recent;
-    FollowSample fresh;                // its last report with a current position
-    Aircraft last;                     // as then, for its callsign and the rest
-    uint32_t freshMs = 0;
+    // Its reports, for where it is shown: see RunwaySim. Their history is
+    // kept only while it is low, where it matters - there can be a hundred
+    // tracks, and these live in the internal RAM that WiFi and TLS need.
+    RunwaySim sim;
+    Aircraft last;      // as at its last current position, for its callsign and the rest
+    uint32_t freshMs = 0;  // when that was
     // When a list of each kind last had it current: a lost contact is only
     // put back into the kind of list it went missing from.
     uint32_t inMainMs = 0, inZoomMs = 0;
     String provider;  // who answered the list that last had it current
 };
 std::map<String, Track> g_tracks;  // only touched by loop()
-constexpr uint32_t TRACK_HISTORY_MS = 180000;
-constexpr size_t TRACK_HISTORY_MAX = 12;
 
 bool lowSample(const FollowSample &s) { return s.ground || (s.hasAlt && s.altFt < ESTIMATE_MAX_FT); }
 
@@ -809,29 +802,19 @@ void noteTracks(const std::vector<Aircraft> &list, bool zoomList, const String &
         if (!a.hasPos) {
             continue;
         }
-        FollowSample s = followSampleOf(a, now);
         Track &t = g_tracks[a.hex];
-        if (lowSample(s)) {
-            t.recent.push_back(s);
-            while (!t.recent.empty() && (now - t.recent.front().ms > TRACK_HISTORY_MS ||
-                                         t.recent.size() > TRACK_HISTORY_MAX)) {
-                t.recent.erase(t.recent.begin());
-            }
-        } else if (!t.recent.empty()) {
-            std::vector<FollowSample>().swap(t.recent);  // climbed away: its room back
-        }
+        t.sim.report(followSampleOf(a, now));
         if (!a.posStale) {
-            t.fresh = s;
             t.last = a;
             t.freshMs = now;
             t.provider = provider;
             (zoomList ? t.inZoomMs : t.inMainMs) = now;
         }
     }
-    // Past ESTIMATE_LOST_MS without a current position, it can't be put back
-    // into any list, so there is nothing left to keep it for.
+    // Past how long it is kept for without a current position, it can't be
+    // put back into any list, so there is nothing left to keep it for.
     for (auto it = g_tracks.begin(); it != g_tracks.end();) {
-        if (now - it->second.freshMs > ESTIMATE_LOST_MS) {
+        if (now - it->second.freshMs > it->second.sim.keepMs()) {
             it = g_tracks.erase(it);
         } else {
             ++it;
@@ -840,9 +823,7 @@ void noteTracks(const std::vector<Aircraft> &list, bool zoomList, const String &
 }
 
 // `maxAgeS` caps how far on it is taken - see moveOnToNow().
-FollowEstimate trackEstimate(const Track &t, float maxAgeS = 1e9f) {
-    return estimateFollowed(t.fresh, std::min((millis() - t.freshMs) / 1000.0f, maxAgeS), t.recent);
-}
+FollowEstimate trackEstimate(const Track &t, float maxAgeS = 1e9f) { return t.sim.at(millis(), maxAgeS); }
 
 // Puts each contact `aircraft` - a list of the kind `zoomList` says, which
 // `provider` answered - has lost since it last had it where it is estimated
@@ -852,11 +833,12 @@ void fillLost(std::vector<Aircraft> &aircraft, bool zoomList, const String &prov
     for (const auto &kv : g_tracks) {
         const Track &t = kv.second;
         uint32_t inList = zoomList ? t.inZoomMs : t.inMainMs;
-        if (inList == 0 || now - inList > ESTIMATE_LOST_MS || (g_follow.active && kv.first == g_follow.hex)) {
+        if (inList == 0 || now - inList > t.sim.keepMs() || !t.sim.haveFresh() ||
+            (g_follow.active && kv.first == g_follow.hex)) {
             continue;
         }
         bool otherProvider = t.provider.length() && provider.length() && t.provider != provider;
-        if (!lowSample(t.fresh) && !otherProvider) {
+        if (!lowSample(t.sim.fresh()) && !otherProvider) {
             continue;  // most likely flown out of range
         }
         bool current = false;
@@ -878,10 +860,25 @@ void fillLost(std::vector<Aircraft> &aircraft, bool zoomList, const String &prov
 void followCentre(double &lat, double &lon) {
     lat = g_follow.last.lat;
     lon = g_follow.last.lon;
-    if (g_follow.haveFresh) {
+    if (g_follow.sim.haveFresh()) {
         FollowEstimate e = followEstimateNow();
         lat = e.lat;
         lon = e.lon;
+    }
+}
+
+// `a`, as the poll has it, where `e` puts it - and, while `sim` has it taking
+// off or landing, pointing and climbing or rolling as it is shown doing, so
+// its blip lifts off or touches down where it is seen to.
+void showAt(Aircraft &a, const RunwaySim &sim, const FollowEstimate &e) {
+    a.lat = e.lat;
+    a.lon = e.lon;
+    if (sim.simulating(millis())) {
+        a.hasTrack = true;
+        a.track = e.track;
+        a.altStr = e.ground ? String("GND") : String(e.altFt);
+        a.speedStr = String(e.gsKt);
+        a.status = estimateStatus(e);
     }
 }
 
@@ -898,19 +895,15 @@ void moveOnToNow(std::vector<Aircraft> &aircraft, uint32_t dataMs, int intervalS
         if (!a.hasPos || a.posStale) {
             continue;  // a lost one is the estimate's, already moved on
         }
-        if (g_follow.active && a.hex == g_follow.hex && g_follow.haveFresh) {
-            FollowEstimate e = followEstimateNow();
-            a.lat = e.lat;
-            a.lon = e.lon;
+        if (g_follow.active && a.hex == g_follow.hex && g_follow.sim.haveFresh()) {
+            showAt(a, g_follow.sim, followEstimateNow());
             continue;
         }
         // Low, by the estimate too: one rolling out slows down the runway
         // rather than carrying on at its touchdown speed.
         auto track = g_tracks.find(a.hex);
         if (track != g_tracks.end() && track->second.freshMs >= dataMs) {
-            FollowEstimate e = trackEstimate(track->second, 2.0f * intervalS);
-            a.lat = e.lat;
-            a.lon = e.lon;
+            showAt(a, track->second.sim, trackEstimate(track->second, 2.0f * intervalS));
             continue;
         }
         if (!a.hasTrack) {
@@ -1420,11 +1413,7 @@ void noteHeight(const Aircraft &ac) {
     while (!h.empty() && now - h.front().ms > TELEMETRY_WINDOW_MS) {
         h.erase(h.begin());
     }
-    if (!ac.posStale && ac.hasPos) {
-        g_follow.fresh = h.back();
-        g_follow.freshMs = now;
-        g_follow.haveFresh = true;
-    }
+    g_follow.sim.report(h.back());
 }
 
 void startFollow(const Aircraft &ac) {
@@ -1553,6 +1542,11 @@ void tickFollow() {
         g_follow.last = ac;
         g_follow.seenMs = now;
         noteHeight(ac);
+        if (strcmp(g_follow.sim.phase(), g_follow.simPhase) != 0) {
+            Serial.printf("[follow] %s: %s -> %s\n", g_follow.callsign.c_str(), g_follow.simPhase,
+                          g_follow.sim.phase());
+            g_follow.simPhase = g_follow.sim.phase();
+        }
         if (ac.callsign.length() && ac.callsign != g_follow.callsign) {
             g_follow.callsign = ac.callsign;  // one picked before its callsign came through
             setRadarControls(g_screen == Screen::RADAR);
@@ -1575,7 +1569,7 @@ void tickFollow() {
                               g_follow.originCode.length() ? g_follow.originCode.c_str() : "?");
             }
         }
-    } else if (now - g_follow.seenMs > FOLLOW_LOST_MS) {
+    } else if (now - g_follow.seenMs > std::max(FOLLOW_LOST_MS, g_follow.sim.keepMs())) {
         Serial.printf("[follow] lost %s\n", g_follow.callsign.c_str());
         stopFollow();
         if (g_screen == Screen::RADAR) {
@@ -1589,12 +1583,13 @@ void tickFollow() {
         bool wasLost = g_follow.lost;
         g_follow.lost = !found || ac.posStale;
         if (g_follow.lost != wasLost) {
-            if (g_follow.lost && g_follow.haveFresh) {
-                const FollowSample &f = g_follow.fresh;
+            if (g_follow.lost && g_follow.sim.haveFresh()) {
+                const FollowSample &f = g_follow.sim.fresh();
                 FollowEstimate e = followEstimateNow();
-                Serial.printf("[follow] %s lost - estimating from %s %d kt%s track %s: %s\n",
+                Serial.printf("[follow] %s lost - estimating from %s %d kt%s track %s: %s (%s)\n",
                               g_follow.callsign.c_str(), f.ground ? "GND" : String(f.altFt).c_str(), f.gsKt,
-                              f.ground ? "" : " ft", f.hasTrack ? String((int)f.track).c_str() : "none", e.how);
+                              f.ground ? "" : " ft", f.hasTrack ? String((int)f.track).c_str() : "none", e.how,
+                              g_follow.sim.phase());
             } else {
                 Serial.printf(g_follow.lost ? "[follow] %s lost - nothing to estimate from\n"
                                             : "[follow] %s found again\n",

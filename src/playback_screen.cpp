@@ -398,7 +398,7 @@ void drawPlot(bool full, bool push) {
 
 // The followed aircraft, lost by the feed at g_t - missing from the poll, or
 // there with only its last position - put where it is estimated to be from
-// its last current one, dimmed, as the live plot puts it: for up to as long
+// its reports, dimmed, as the live plot puts it: for up to as long
 // as following would have waited for it.
 void keepFollowedInScene() {
     const String hex = g_view.hex;
@@ -408,21 +408,12 @@ void keepFollowedInScene() {
             return;
         }
     }
-    const std::vector<FollowSample> &heights = replay::followHeights(hex);
-    const FollowSample *fresh = nullptr;
-    for (const FollowSample &s : heights) {
-        if (s.ms > g_t) {
-            break;
-        }
-        if (s.hasPos && !s.posStale) {
-            fresh = &s;
-        }
-    }
-    if (fresh == nullptr || g_t - fresh->ms > FOLLOW_LOST_MS) {
+    FollowEstimate e;
+    uint32_t lostMs;
+    if (!replay::estimateAt(hex, g_t, e, lostMs)) {
         return;
     }
-    g_lostS = (g_t - fresh->ms) / 1000 + 1;
-    FollowEstimate e = estimateFollowed(*fresh, (g_t - fresh->ms) / 1000.0f, heights);
+    g_lostS = lostMs / 1000 + 1;
     Aircraft ghost;
     for (const Aircraft &a : g_scene) {
         if (a.hex == hex) {
