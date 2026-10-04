@@ -15,12 +15,14 @@ bool colorsReady = false;
 
 // The buttons stand in a column down the right-hand edge, in the margin
 // beside the plot, grouped by what they do: Back; the centre and the
-// airports, which are one choice of three; follow me; then recording. Each is its own button doing one
-// thing on a tap - there is no long press anywhere on the screen.
+// airports, which are one choice of three; follow me; then recording; then
+// the range. Each is its own button doing one thing on a tap - there is no
+// long press anywhere on the screen.
 constexpr int BTN_W = 150, BTN_H = 50;
 constexpr int BTN_X = 1280 - 16 - BTN_W;
 constexpr int BTN_GAP = 10, GROUP_GAP = 26;
-enum Button { BTN_BACK, BTN_HOME, BTN_AIRPORT, BTN_ALL, BTN_FOLLOW, BTN_REC, BTN_REPLAYS, BTN_COUNT };
+enum Button { BTN_BACK, BTN_HOME, BTN_AIRPORT, BTN_ALL, BTN_FOLLOW, BTN_REC, BTN_REPLAYS, BTN_ZOOM_IN, BTN_ZOOM_OUT,
+              BTN_COUNT };
 constexpr int BACK_Y = 8;
 constexpr int HOME_Y = BACK_Y + BTN_H + GROUP_GAP;
 constexpr int AIRPORT_Y = HOME_Y + BTN_H + BTN_GAP;
@@ -28,7 +30,10 @@ constexpr int ALL_Y = AIRPORT_Y + BTN_H + BTN_GAP;
 constexpr int FOLLOW_Y = ALL_Y + BTN_H + GROUP_GAP;
 constexpr int REC_Y = FOLLOW_Y + BTN_H + GROUP_GAP;
 constexpr int REPLAY_Y = REC_Y + BTN_H + BTN_GAP;
-constexpr int BTN_Y[BTN_COUNT] = {BACK_Y, HOME_Y, AIRPORT_Y, ALL_Y, FOLLOW_Y, REC_Y, REPLAY_Y};
+// Clear of the footer readouts below them, on the radar; the zoom has none.
+constexpr int ZOOM_IN_Y = REPLAY_Y + BTN_H + GROUP_GAP;
+constexpr int ZOOM_OUT_Y = ZOOM_IN_Y + BTN_H + BTN_GAP;
+constexpr int BTN_Y[BTN_COUNT] = {BACK_Y, HOME_Y, AIRPORT_Y, ALL_Y, FOLLOW_Y, REC_Y, REPLAY_Y, ZOOM_IN_Y, ZOOM_OUT_Y};
 // A tap counts for a button from anywhere in the margin to its left and
 // halfway into the gaps around it, so one that lands a little off still
 // gets it rather than nothing.
@@ -425,6 +430,13 @@ void drawCentreButtons() {
     drawButton(ALL_Y, "ALL", airport && g_airportsOn ? Look::LIT : Look::PLAIN);
 }
 
+bool g_canZoomIn = false, g_canZoomOut = false;
+
+void drawZoomButtons() {
+    drawButton(ZOOM_IN_Y, "ZOOM IN", g_canZoomIn ? Look::PLAIN : Look::GREYED);
+    drawButton(ZOOM_OUT_Y, "ZOOM OUT", g_canZoomOut ? Look::PLAIN : Look::GREYED);
+}
+
 void drawFollowButton() {
     drawButton(FOLLOW_Y, g_follow == FollowButton::PICKING ? "TAP PLANE" : "FOLLOW",
                g_follow == FollowButton::OFF ? Look::PLAIN : Look::LIT);
@@ -472,6 +484,7 @@ void drawHeader(bool military) {
     drawFollowButton();
     drawRecButton();
     drawReplaysButton();
+    drawZoomButtons();
 }
 
 // Which button a tap at (x, y) is for, or BTN_COUNT for none.
@@ -691,6 +704,19 @@ void radarScreenSetRecording(RecButton state, uint32_t elapsedS, bool onScreen, 
             drawReplaysButton();
         }
         drawRecButton();
+        screen::flush();
+    }
+}
+
+void radarScreenSetZoom(bool canIn, bool canOut, bool onScreen) {
+    if (canIn == g_canZoomIn && canOut == g_canZoomOut) {
+        return;
+    }
+    g_canZoomIn = canIn;
+    g_canZoomOut = canOut;
+    if (onScreen) {
+        ensureColors();
+        drawZoomButtons();
         screen::flush();
     }
 }
@@ -1557,6 +1583,10 @@ RadarAction radarScreenHandleTouch(int x, int y, String &outHex, String &outAirp
             return RadarAction::TOGGLE_RECORD;
         case BTN_REPLAYS:
             return RadarAction::OPEN_RECORDINGS;
+        case BTN_ZOOM_IN:
+            return g_canZoomIn ? RadarAction::ZOOM_IN : RadarAction::NONE;
+        case BTN_ZOOM_OUT:
+            return g_canZoomOut ? RadarAction::ZOOM_OUT : RadarAction::NONE;
         default:
             break;
         }

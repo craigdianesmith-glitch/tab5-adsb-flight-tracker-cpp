@@ -19,6 +19,8 @@ enum class RadarAction {
     TOGGLE_FOLLOW,    // pick an aircraft to follow, or stop following one
     TOGGLE_RECORD,    // start or stop a recording
     OPEN_RECORDINGS,  // the list of recordings, to play one back
+    ZOOM_IN,          // show a shorter range
+    ZOOM_OUT,         // show a longer one
     ZOOM_AIRPORT,     // outAirport is the IATA code of the tapped airport
     DISMISS,          // the list of targets closed without a pick; redraw to take it off
 };
@@ -39,6 +41,10 @@ enum class FollowButton { OFF, PICKING, ON };
 // it and the title to name it. Repaints what changed when `onScreen`.
 void radarScreenSetControls(RadarCentre centre, bool airports, FollowButton follow, const String &followHex,
                             const String &followCallsign, const String &followOrigin, bool onScreen);
+
+// Whether ZOOM IN and ZOOM OUT have a range to go to - neither has while
+// following, which sets its own. Repaints them if they changed and `onScreen`.
+void radarScreenSetZoom(bool canIn, bool canOut, bool onScreen);
 
 // A plan-position plot centred on (lat, lon) - the configured location, the
 // airport nearest it, or the aircraft being followed, as the controls say:

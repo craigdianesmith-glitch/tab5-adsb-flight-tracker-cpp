@@ -28,6 +28,7 @@ AppSettings loadSettings() {
                         ? RadarCentre::HOME
                         : RadarCentre::AIRPORT;
     s.radarAirports = prefs.getBool("radarapt", false);
+    s.radarRangeNm = prefs.getUShort("radarrng", 0);
     s.alertMask = prefs.getUChar("alerts", ALERT_ALL) & ALERT_ALL;
     s.watchlist = prefs.isKey("watch") ? prefs.getString("watch") : String("");
     s.autoRecord = prefs.getBool("autorec", false);
@@ -103,6 +104,13 @@ void saveRadarAirports(bool airports) {
     Preferences prefs;
     prefs.begin(NAMESPACE, false);
     prefs.putBool("radarapt", airports);
+    prefs.end();
+}
+
+void saveRadarRange(int rangeNm) {
+    Preferences prefs;
+    prefs.begin(NAMESPACE, false);
+    prefs.putUShort("radarrng", (uint16_t)rangeNm);
     prefs.end();
 }
 

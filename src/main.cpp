@@ -61,6 +61,9 @@ bool g_muted = false;
 AdsbSource g_source = DEFAULT_ADSB_SOURCE;
 RadarCentre g_radarCentre = DEFAULT_RADAR_CENTRE;  // only touched by loop()
 bool g_radarAirports = false;                       // likewise
+// The range ZOOM IN and OUT have chosen for the radar: one of
+// RADAR_RANGE_STEPS_NM, or 0 for the whole poll radius. Likewise.
+int g_radarRangeNm = 0;
 // Which provider actually answered the last successful poll, for the header.
 // Under AUTO that is not necessarily the one at the top of the table.
 String g_activeProvider;
@@ -922,6 +925,13 @@ uint32_t tweenMs(int intervalS) {
     return std::min((uint32_t)intervalS * 1000 / (TWEEN_FRAMES + 1), TWEEN_MAX_MS);
 }
 
+// How far the radar shows when not following: the range ZOOM IN and OUT
+// chose, inside the poll radius - which a range chosen before the radius was
+// brought in under it falls back to.
+int radarRangeShown() {
+    return g_radarRangeNm > 0 && g_radarRangeNm < g_radiusNm ? g_radarRangeNm : g_radiusNm;
+}
+
 void drawRadar(bool full) {
     uint32_t t0 = micros();
     if (full) {
@@ -954,6 +964,8 @@ void drawRadar(bool full) {
         followCentre(lat, lon);
         radius = g_follow.rangeNm;
         keepFollowedOnPlot(aircraft);
+    } else {
+        radius = radarRangeShown();
     }
     fillLost(aircraft, g_follow.active, provider);
     // Following, the list is the extra poll's, which on the radar goes at the
@@ -969,6 +981,38 @@ void setRadarControls(bool onScreen) {
     FollowButton follow = g_follow.active ? FollowButton::ON : g_follow.picking ? FollowButton::PICKING : FollowButton::OFF;
     radarScreenSetControls(g_radarCentre, g_radarAirports, follow, g_follow.hex, g_follow.callsign,
                            g_follow.originCode, onScreen);
+    // Following sets its own range.
+    int shown = radarRangeShown();
+    radarScreenSetZoom(!g_follow.active && shown > RADAR_RANGE_STEPS_NM[0], !g_follow.active && shown < g_radiusNm,
+                       onScreen);
+}
+
+// ZOOM IN or OUT: the next of the steps in that direction from the range
+// shown now, the poll radius being the widest of them.
+void zoomRadar(bool in) {
+    int shown = radarRangeShown(), next = g_radiusNm;
+    if (in) {
+        next = 0;
+        for (int r : RADAR_RANGE_STEPS_NM) {
+            if (r < shown) {
+                next = r;
+            }
+        }
+        if (next == 0) {
+            return;  // in as far as it goes
+        }
+    } else {
+        for (int r : RADAR_RANGE_STEPS_NM) {
+            if (r > shown && r < g_radiusNm) {
+                next = r;
+                break;
+            }
+        }
+    }
+    g_radarRangeNm = next >= g_radiusNm ? 0 : next;
+    saveRadarRange(g_radarRangeNm);
+    setRadarControls(true);
+    drawRadar(true);  // full: the range readout is outside the plot's part
 }
 
 void drawZoom(bool full) {
@@ -1802,6 +1846,10 @@ void handleRadarTouch(int x, int y) {
             drawRadar(true);
         }
         break;
+    case RadarAction::ZOOM_IN:
+    case RadarAction::ZOOM_OUT:
+        zoomRadar(action == RadarAction::ZOOM_IN);
+        break;
     case RadarAction::NONE:
         break;
     }
@@ -2310,6 +2358,7 @@ void setup() {
     g_source = s.source;
     g_radarCentre = s.radarCentre;
     g_radarAirports = s.radarAirports;
+    g_radarRangeNm = s.radarRangeNm;
     g_alertMask = s.alertMask;
     g_watchlist = s.watchlist;
     g_autoRecord = s.autoRecord;
