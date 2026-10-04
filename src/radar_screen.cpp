@@ -552,11 +552,14 @@ void drawChooser() {
 }
 
 // Puts the list up beside a tap at (x, y): to its right where there's room,
-// otherwise its left, level with it as far as the screen allows.
+// otherwise its left, level with it as far as the screen allows - and never
+// over the buttons, which repaint on their own: REC's count, every second
+// while recording, painted over a list that reached across the column.
 void openChooser(int x, int y) {
+    constexpr int RIGHT = BTN_X - 16;
     g_choiceH = 2 * CHOICE_PAD + CHOICE_TITLE_H + (g_choiceCount + 1) * (CHOICE_ROW_H + CHOICE_GAP) - CHOICE_GAP;
-    g_choiceX = (x + CHOICE_OFFSET + CHOICE_W <= 1264) ? x + CHOICE_OFFSET : x - CHOICE_OFFSET - CHOICE_W;
-    g_choiceX = std::min(std::max(g_choiceX, 16), 1264 - CHOICE_W);
+    g_choiceX = (x + CHOICE_OFFSET + CHOICE_W <= RIGHT) ? x + CHOICE_OFFSET : x - CHOICE_OFFSET - CHOICE_W;
+    g_choiceX = std::min(std::max(g_choiceX, 16), RIGHT - CHOICE_W);
     g_choiceY = std::min(std::max(y - g_choiceH / 2, PLOT_T + 4), 720 - 8 - g_choiceH);
     drawChooser();
     screen::flush();
