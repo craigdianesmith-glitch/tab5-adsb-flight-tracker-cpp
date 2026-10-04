@@ -963,10 +963,10 @@ void radarPlotDraw(const RadarScene &scene, bool full) {
     canvas.setClipRect(PLOT_L, PLOT_T, PLOT_R - PLOT_L, PLOT_B - PLOT_T);
 
     // Part of the airport view, so centred on home they are off, as they are
-    // on a replay switched to HOME. Following, they say where it might be
-    // going - and following a departure, where it came from, whether the
-    // airports are on or not.
-    if ((scene.airports && (centreCode.length() || following)) || (following && scene.originCode.length())) {
+    // on a replay switched to HOME. Following, they are always on, whichever
+    // view it was picked from: they say where it might be going - and
+    // following a departure, where it came from.
+    if ((scene.airports && centreCode.length()) || following) {
         drawAirports(lat, lon, rangeNm, centreCode, following ? scene.originCode : String());
     }
 

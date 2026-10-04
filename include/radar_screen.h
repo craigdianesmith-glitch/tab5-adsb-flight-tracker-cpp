@@ -34,7 +34,7 @@ enum class FollowButton { OFF, PICKING, ON };
 // What the buttons down the right-hand edge show, besides recording: which
 // view is chosen - HOME, AIRPORT, or ALL for the airport centre with
 // `airports` on - and following. While following, none of the three is lit -
-// the plot is centred on the aircraft, with the airports marked if ALL was -
+// the plot is centred on the aircraft, with the airports marked whichever was -
 // and `followHex` and `followCallsign` say which it is, for the plot to mark
 // it and the title to name it. Repaints what changed when `onScreen`.
 void radarScreenSetControls(RadarCentre centre, bool airports, FollowButton follow, const String &followHex,
@@ -44,7 +44,7 @@ void radarScreenSetControls(RadarCentre centre, bool airports, FollowButton foll
 // airport nearest it, or the aircraft being followed, as the controls say:
 // range rings, bearing marks, and every aircraft that reported a position as
 // a blip with a vector showing where it'll be a minute from now. With the
-// airports on, and centred on the airport or following, every other airport
+// airports on and centred on the airport, or following, every other airport
 // within the range is marked on it as well.
 //
 // `full` repaints the whole screen, for arriving at it. Without it only the
@@ -82,7 +82,7 @@ struct RadarScene {
     double lat, lon;  // home
     int rangeNm;
     RadarCentre centre;
-    bool airports;       // mark the other airports in range, centred on one or following
+    bool airports;       // mark the other airports in range, centred on one - following, they always are
     bool flash = false;  // live alerts' callsign flash - never for a replay
     // A refresh normally pushes what it drew to the panel. A video export
     // draws frames to encode, not to show, so it says when to push instead.
