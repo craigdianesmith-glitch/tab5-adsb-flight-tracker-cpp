@@ -58,10 +58,12 @@ constexpr int FOLLOW_RANGE_NM = 20;
 // and the fetch around the aircraft with it, so the answers shrink too. Below
 // this height, and only then, an airport ahead is taken for its destination.
 constexpr int FOLLOW_RANGE_STEPS_NM[] = {5, 10, 15};
-// The radar's ZOOM IN and OUT step through these, and the poll radius as the
-// widest - so at the default 25nm, the same 5, 10, 15 and 20 as following
-// closes in through on a landing. Only what is shown: the poll, the table and
-// the alerts go on covering the whole radius.
+// The radar's ZOOM IN and OUT step through these - so at the default 25nm,
+// the same 5, 10, 15 and 20 as following closes in through on a landing.
+// Inside the poll radius only what is shown changes, the poll, the table and
+// the alerts going on covering the whole radius; out past it the radius
+// itself widens, to the settings' ceiling; in from the closest is the
+// airport's own zoom.
 constexpr int RADAR_RANGE_STEPS_NM[] = {5, 10, 15, 20, 30, 40, 60, 80, 100, 120};
 constexpr int FOLLOW_APPROACH_MAX_FT = 12000;
 // Level rather than descending, only this low: above it, an airport ahead is

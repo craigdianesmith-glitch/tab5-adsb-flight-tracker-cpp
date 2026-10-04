@@ -932,6 +932,39 @@ int radarRangeShown() {
     return g_radarRangeNm > 0 && g_radarRangeNm < g_radiusNm ? g_radarRangeNm : g_radiusNm;
 }
 
+// The widest the poll radius may be, as the settings screen's slider allows
+// for the traffic chosen.
+int maxRadiusNow() {
+    return g_traffic == TrafficFilter::MILITARY ? MILITARY_MAX_RADIUS_NM : CIVIL_MAX_RADIUS_NM;
+}
+
+// Widens the poll radius from the radar's ZOOM OUT, as the settings screen
+// would: saved, the sky refetched, and a recording of the narrower one ended.
+void setPollRadius(int radiusNm) {
+    saveFilters(g_traffic, radiusNm, g_showRefresh, g_pollIntervalS, g_source);
+    if (xSemaphoreTake(g_dataMutex, portMAX_DELAY) == pdTRUE) {
+        g_radiusNm = radiusNm;
+        g_sceneChanged = true;
+        g_resetBaseline = true;
+        g_pollNow = true;
+        xSemaphoreGive(g_dataMutex);
+    }
+}
+
+// The airport ZOOM IN goes on to from the closest range: the one at the
+// radar's centre - or, centred on home, the nearest on the plot at that range.
+bool radarZoomTarget(String &code) {
+    Airport a;
+    float withinNm = g_radarCentre == RadarCentre::AIRPORT ? 120.0f : (float)RADAR_RANGE_STEPS_NM[0];
+    double lat, lon;
+    float rangeNm;
+    if (!nearestAirport(g_lat, g_lon, a, withinNm) || !radarZoomFrame(a.code, lat, lon, rangeNm)) {
+        return false;
+    }
+    code = a.code;
+    return true;
+}
+
 void drawRadar(bool full) {
     uint32_t t0 = micros();
     if (full) {
@@ -983,33 +1016,54 @@ void setRadarControls(bool onScreen) {
                            g_follow.originCode, onScreen);
     // Following sets its own range.
     int shown = radarRangeShown();
-    radarScreenSetZoom(!g_follow.active && shown > RADAR_RANGE_STEPS_NM[0], !g_follow.active && shown < g_radiusNm,
-                       onScreen);
+    String code;
+    bool canIn = shown > RADAR_RANGE_STEPS_NM[0] || radarZoomTarget(code);
+    bool canOut = shown < g_radiusNm || g_radiusNm < maxRadiusNow();
+    radarScreenSetZoom(!g_follow.active && canIn, !g_follow.active && canOut, onScreen);
 }
 
+bool openZoom(const String &code, bool forFollowed = false);
+
 // ZOOM IN or OUT: the next of the steps in that direction from the range
-// shown now, the poll radius being the widest of them.
+// shown now. In from the closest, the airport's own zoom; out past the poll
+// radius, the radius itself, as far as the settings allow.
 void zoomRadar(bool in) {
-    int shown = radarRangeShown(), next = g_radiusNm;
+    int shown = radarRangeShown();
     if (in) {
-        next = 0;
+        int next = 0;
         for (int r : RADAR_RANGE_STEPS_NM) {
             if (r < shown) {
                 next = r;
             }
         }
         if (next == 0) {
-            return;  // in as far as it goes
+            String code;
+            if (radarZoomTarget(code)) {
+                openZoom(code);  // Unzoom comes back to the radar at this range
+            }
+            return;
         }
-    } else {
+        g_radarRangeNm = next;
+    } else if (shown < g_radiusNm) {
+        int next = g_radiusNm;
         for (int r : RADAR_RANGE_STEPS_NM) {
             if (r > shown && r < g_radiusNm) {
                 next = r;
                 break;
             }
         }
+        g_radarRangeNm = next >= g_radiusNm ? 0 : next;
+    } else {
+        int next = maxRadiusNow();
+        for (int r : RADAR_RANGE_STEPS_NM) {
+            if (r > g_radiusNm && r < next) {
+                next = r;
+                break;
+            }
+        }
+        setPollRadius(next);
+        g_radarRangeNm = 0;
     }
-    g_radarRangeNm = next >= g_radiusNm ? 0 : next;
     saveRadarRange(g_radarRangeNm);
     setRadarControls(true);
     drawRadar(true);  // full: the range readout is outside the plot's part
@@ -1042,7 +1096,7 @@ void drawZoom(bool full) {
 // contacts stand in: around an airport inside the radius they are the same
 // aircraft, a poll older - and following, those fetched around the aircraft
 // are, the airport being near it.
-bool openZoom(const String &code, bool forFollowed = false) {
+bool openZoom(const String &code, bool forFollowed) {
     double lat, lon;
     float rangeNm;
     if (!radarZoomOpen(code, lat, lon, rangeNm)) {
