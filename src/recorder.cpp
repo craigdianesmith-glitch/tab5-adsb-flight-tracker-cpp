@@ -279,7 +279,7 @@ String activePath() {
     return g_path;
 }
 
-void addFrame(const std::vector<Aircraft> &aircraft, const String &view, const char *provider) {
+void addFrame(const std::vector<Aircraft> &aircraft, const String &view, const char *provider, float rangeNm) {
     Lock lock;
     if (!g_active) {
         return;
@@ -299,8 +299,12 @@ void addFrame(const std::vector<Aircraft> &aircraft, const String &view, const c
     String v = field(view, 16), p = field(provider ? String(provider) : String("?"), 16);
     v.replace(' ', '_');
     p.replace(' ', '_');
-    snprintf(line, sizeof(line), "F %lu %lu %s %s\n", (unsigned long)(millis() - g_fileStartMs),
-             (unsigned long)(now > 1700000000 ? now : 0), v.c_str(), p.c_str());
+    char range[16] = "";
+    if (rangeNm > 0) {
+        snprintf(range, sizeof(range), " %g", rangeNm);
+    }
+    snprintf(line, sizeof(line), "F %lu %lu %s %s%s\n", (unsigned long)(millis() - g_fileStartMs),
+             (unsigned long)(now > 1700000000 ? now : 0), v.c_str(), p.c_str(), range);
     out += line;
     for (const Aircraft &a : aircraft) {
         char track[12] = "", lat[16] = "", lon[16] = "", vrate[12] = "", altGeom[12] = "", dist[12] = "";

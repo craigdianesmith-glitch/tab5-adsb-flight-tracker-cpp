@@ -100,6 +100,9 @@ struct RadarScene {
     // Following a departure, the airport it took off from: the airports are
     // drawn around it, that one brighter. Empty for none.
     String originCode;
+    // For radarZoomPlotDraw(), the range the zoom was showing, as recorded;
+    // 0 for its framing.
+    float zoomRangeNm = 0;
 };
 
 // Draws the plot, and the footer readouts at the bottom right. With `full`
@@ -146,6 +149,10 @@ void radarZoomDraw(const std::vector<Aircraft> &aircraft, bool full);
 // than on its runways - zoomed in past its framing while following - so that
 // it moves with it, to be redrawn as often as a lost one is.
 bool radarZoomOnFollowed();
+
+// The range the zoom shows, as ZOOM IN and OUT have it, for a recording to
+// say - or 0 at its framing.
+float radarZoomViewNm();
 
 // The zoom's plot on its own, for a replay of a followed aircraft: the
 // airport with IATA `code` as the live zoom frames it, and the scene's

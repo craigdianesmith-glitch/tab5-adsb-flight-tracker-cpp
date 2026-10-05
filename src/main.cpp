@@ -63,7 +63,8 @@ AdsbSource g_source = DEFAULT_ADSB_SOURCE;
 RadarCentre g_radarCentre = DEFAULT_RADAR_CENTRE;  // only touched by loop()
 bool g_radarAirports = false;                       // likewise
 // The range ZOOM IN and OUT have chosen for the radar: one of
-// RADAR_RANGE_STEPS_NM, or 0 for the whole poll radius. Likewise.
+// RADAR_RANGE_STEPS_NM, or 0 for the whole poll radius. Written by loop()
+// under the mutex, for the poll task to record it.
 int g_radarRangeNm = 0;
 // Which provider actually answered the last successful poll, for the header.
 // Under AUTO that is not necessarily the one at the top of the table.
@@ -98,6 +99,7 @@ struct ZoomPoll {
     bool follow = false;
     String code;       // the zoom's airport, when it isn't following
     String followHex;  // the aircraft being followed, in either view; empty for none
+    float viewNm = 0;  // the zoom's range as ZOOM IN has it, for the recording; 0 for its framing
 };
 ZoomPoll g_zoomPoll;                   // under the mutex
 std::vector<Aircraft> g_zoomAircraft;  // likewise
@@ -395,7 +397,7 @@ void pollZoom(const ZoomPoll &zoom, AdsbSource source) {
     // it was for, so a replay shows it the way it was seen.
     if (current && recorder::active()) {
         String view = now.follow ? "-" + now.followHex : now.code + "/" + now.followHex;
-        recorder::addFrame(fetched, view, provider);
+        recorder::addFrame(fetched, view, provider, now.follow ? 0.0f : now.viewNm);
     }
 }
 
@@ -571,12 +573,14 @@ void pollTask(void *) {
             // The radar around home - unless the zoom's poll is up, following
             // or zoomed in, which is then what is on show and recorded instead.
             bool extraUp = false;
+            int shownNm = 0;  // the radar's range as ZOOM IN has it, inside the radius
             if (xSemaphoreTake(g_dataMutex, portMAX_DELAY) == pdTRUE) {
                 extraUp = g_zoomPoll.active;
+                shownNm = g_radarRangeNm > 0 && g_radarRangeNm < g_radiusNm ? g_radarRangeNm : 0;
                 xSemaphoreGive(g_dataMutex);
             }
             if (!extraUp) {
-                recorder::addFrame(aircraft, "H", provider);
+                recorder::addFrame(aircraft, "H", provider, (float)shownNm);
             }
 
             if (xSemaphoreTake(g_dataMutex, portMAX_DELAY) == pdTRUE) {
@@ -1029,7 +1033,7 @@ bool openZoom(const String &code, bool forFollowed = false);
 // shown now. In from the closest, the airport's own zoom; out past the poll
 // radius, the radius itself, as far as the settings allow.
 void zoomRadar(bool in) {
-    int shown = radarRangeShown();
+    int shown = radarRangeShown(), chosen = 0;
     if (in) {
         int next = 0;
         for (int r : RADAR_RANGE_STEPS_NM) {
@@ -1044,7 +1048,7 @@ void zoomRadar(bool in) {
             }
             return;
         }
-        g_radarRangeNm = next;
+        chosen = next;
     } else if (shown < g_radiusNm) {
         int next = g_radiusNm;
         for (int r : RADAR_RANGE_STEPS_NM) {
@@ -1053,7 +1057,7 @@ void zoomRadar(bool in) {
                 break;
             }
         }
-        g_radarRangeNm = next >= g_radiusNm ? 0 : next;
+        chosen = next >= g_radiusNm ? 0 : next;
     } else {
         int next = maxRadiusNow();
         for (int r : RADAR_RANGE_STEPS_NM) {
@@ -1063,11 +1067,23 @@ void zoomRadar(bool in) {
             }
         }
         setPollRadius(next);
-        g_radarRangeNm = 0;
+    }
+    if (xSemaphoreTake(g_dataMutex, portMAX_DELAY) == pdTRUE) {
+        g_radarRangeNm = chosen;
+        xSemaphoreGive(g_dataMutex);
     }
     saveRadarRange(g_radarRangeNm);
     setRadarControls(true);
     drawRadar(true);  // full: the range readout is outside the plot's part
+}
+
+// The zoom's range as ZOOM IN and OUT have it, for its polls' frames to be
+// recorded with.
+void shareZoomView() {
+    if (xSemaphoreTake(g_dataMutex, portMAX_DELAY) == pdTRUE) {
+        g_zoomPoll.viewNm = radarZoomViewNm();
+        xSemaphoreGive(g_dataMutex);
+    }
 }
 
 void drawZoom(bool full) {
@@ -1119,6 +1135,7 @@ bool openZoom(const String &code, bool forFollowed) {
         g_zoomPoll.lat = lat;
         g_zoomPoll.lon = lon;
         g_zoomPoll.radiusNm = (int)ceilf(rangeNm) + ZOOM_FETCH_EXTRA_NM;
+        g_zoomPoll.viewNm = 0;  // opened at its framing
         if (!g_follow.active) {
             g_zoomAircraft = g_latestAircraft;
             g_zoomDataMs = g_latestDataMs;  // moved on between polls from when it really arrived
@@ -1965,8 +1982,11 @@ void handleZoomTouch(int x, int y) {
         }
         break;
     }
-    case ZoomAction::DISMISS:
     case ZoomAction::REDRAW:
+        shareZoomView();
+        drawZoom(true);
+        break;
+    case ZoomAction::DISMISS:
         drawZoom(true);
         break;
     case ZoomAction::NONE:

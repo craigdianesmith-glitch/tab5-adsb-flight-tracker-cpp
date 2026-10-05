@@ -22,6 +22,10 @@
 //   F <ms> <epoch> -<hex> <provider>      centred on aircraft <hex>
 //   F <ms> <epoch> GLA/<hex> <provider>   GLA's zoom, following <hex> if given
 //
+// - and after the provider, where ZOOM IN had the radar around home or a
+// zoom closer in than its own range, the range shown, in nm: `... adsb.lol
+// 0.5`. A build that predates it reads the line as it always did, at the
+// view's own range -
 // - so that a replay shows each poll the way it was seen, and can tell an
 // aircraft that dropped out of a poll because a different provider answered
 // it from one the feed lost. Older files end the line at the epoch, or have a
@@ -80,8 +84,10 @@ String activePath();  // the part being written now
 // One poll's worth of contacts, appended if a recording is running. Called
 // from the poll task, which is the one place a write can take its time.
 // `view` is the `F` line's view token, as above, and `provider` the name of
-// the source that answered.
-void addFrame(const std::vector<Aircraft> &aircraft, const String &view, const char *provider);
+// the source that answered. `rangeNm`, when not 0, is the range ZOOM IN had
+// the view at - the radar around home, or a zoom - written after them.
+void addFrame(const std::vector<Aircraft> &aircraft, const String &view, const char *provider,
+              float rangeNm = 0);
 
 // Every recording on the card, newest first.
 std::vector<String> list();

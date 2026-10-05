@@ -859,6 +859,11 @@ void drawContacts(const std::vector<Aircraft> &aircraft, const std::vector<uint8
             if (len < 14.0f) {
                 len = 14.0f;
             }
+            // And a ceiling, so one passing over at speed at a close range -
+            // a jet across a zoom at half a mile - says which way it is going
+            // without a line across the whole plot. Nothing at the radar's
+            // usual ranges comes near it.
+            len = std::min(len, RADIUS / 2.0f);
             float a = ac.track * (float)M_PI / 180.0f;
             canvas.drawLine((int)px, (int)py, (int)(px + sinf(a) * len), (int)(py - cosf(a) * len), color);
         }
@@ -1079,7 +1084,8 @@ constexpr float IN_USE_ROLL_KT = 40.0f;
 struct ZoomFrame {
     String code;
     double lat = 0, lon = 0;  // the middle of its runways, or the airport where it has none
-    float rangeNm = ZOOM_NO_RUNWAYS_NM;
+    float rangeNm = ZOOM_NO_RUNWAYS_NM;   // the range shown: framedNm, or closer in by ZOOM IN
+    float framedNm = ZOOM_NO_RUNWAYS_NM;  // the range it is framed at, to fit its runways
     const Runway *runways = nullptr;
     int runwayCount = 0;  // no more than MAX_ZOOM_RUNWAYS
 };
@@ -1136,6 +1142,7 @@ bool frameZoom(const String &code, ZoomFrame &f) {
         float range = ceilf(furthest * ZOOM_MARGIN * 2.0f) / 2.0f;
         f.rangeNm = std::min(std::max(range, ZOOM_MIN_NM), ZOOM_MAX_NM);
     }
+    f.framedNm = f.rangeNm;
     return true;
 }
 
@@ -1439,6 +1446,8 @@ void drawZoomHeader() {
 
 bool radarZoomOnFollowed() { return g_zoomOnFollowed; }
 
+float radarZoomViewNm() { return g_zoomViewNm < g_zoom.framedNm - 0.01f ? g_zoomViewNm : 0.0f; }
+
 bool radarZoomFrame(const String &code, double &lat, double &lon, float &rangeNm) {
     ZoomFrame f;
     if (!frameZoom(code, f)) {
@@ -1473,11 +1482,29 @@ namespace {
 // a replay of one both draw. As radarPlotDraw(): with `full` the caller has
 // cleared the screen and flushes; without it, only the plot and the footer
 // are erased and redrawn, and pushed as `push` says.
-void zoomPlot(const ZoomFrame &f, const std::vector<Aircraft> &aircraft,
+//
+// Zoomed in past its framing with an aircraft followed, it is the aircraft
+// that stays in the middle - touching down, rolling out and taxiing to its
+// stand at a range where the runways' middle would have lost it - with the
+// runways passing under it, as the radar keeps one in the air there. True
+// where it was.
+bool zoomPlot(const ZoomFrame &framed, const std::vector<Aircraft> &aircraft,
               const std::vector<replay::TrailPoint> *trails, bool flash, const String &followHex, bool full,
               bool push) {
     auto &canvas = screen::canvas();
     uint32_t t0 = micros();
+    ZoomFrame f = framed;
+    bool onFollowed = false;
+    if (followHex.length() && f.rangeNm < f.framedNm - 0.01f) {
+        for (const Aircraft &a : aircraft) {
+            if (a.hex == followHex && a.hasPos) {
+                f.lat = a.lat;
+                f.lon = a.lon;
+                onFollowed = true;
+                break;
+            }
+        }
+    }
     if (!full) {
         screen::fillRect(PLOT_L, PLOT_T, PLOT_R - PLOT_L, PLOT_B - PLOT_T, colorBg);
         canvas.fillRect(FOOT_L, FOOT_T, FOOT_R - FOOT_L, FOOT_B - FOOT_T, colorBg);
@@ -1495,8 +1522,11 @@ void zoomPlot(const ZoomFrame &f, const std::vector<Aircraft> &aircraft,
     static const std::vector<uint8_t> noneNew;  // the radar marks new contacts; here they are all just traffic
     int plotted = 0, labelled = 0;
     uint32_t t1 = micros();
-    drawContacts(aircraft, noneNew, trails, flash, {f.lat, f.lon, RADIUS / range, ZOOM_LEAD_S, true, followHex},
-                 plotted, labelled);
+    // The lead in proportion to the range, so closer in the vectors are no
+    // longer on the plot than at the framing.
+    float leadS = ZOOM_LEAD_S * std::min(1.0f, range / f.framedNm);
+    drawContacts(aircraft, noneNew, trails, flash, {f.lat, f.lon, RADIUS / range, leadS, true, followHex}, plotted,
+                 labelled);
     uint32_t t2 = micros();
     g_backgroundUs += t1 - t0;
     g_contactsUs += t2 - t1;
@@ -1528,6 +1558,7 @@ void zoomPlot(const ZoomFrame &f, const std::vector<Aircraft> &aircraft,
         pushPlot(push, IN_USE_BOX_T);
         g_pushUs += micros() - t3;
     }
+    return onFollowed;
 }
 
 // The frame a replay last drew its zoom in, kept apart from the live zoom's.
@@ -1545,22 +1576,7 @@ void radarZoomDraw(const std::vector<Aircraft> &aircraft, bool full) {
     // With a list up, a refresh is drawn under it and pushed along with it.
     ZoomFrame view = g_zoom;
     view.rangeNm = g_zoomViewNm;
-    // Following, and zoomed in past the framing, it is the aircraft that
-    // stays in the middle - touching down, rolling out and taxiing to its
-    // stand at a range where the runways' middle would have lost it - with
-    // the runways passing under it, as the radar keeps one in the air there.
-    g_zoomOnFollowed = false;
-    if (g_zoomFollowHex.length() && g_zoomViewNm < g_zoom.rangeNm - 0.01f) {
-        for (const Aircraft &a : aircraft) {
-            if (a.hex == g_zoomFollowHex && a.hasPos) {
-                view.lat = a.lat;
-                view.lon = a.lon;
-                g_zoomOnFollowed = true;
-                break;
-            }
-        }
-    }
-    zoomPlot(view, aircraft, nullptr, true, g_zoomFollowHex, full, g_choiceCount == 0);
+    g_zoomOnFollowed = zoomPlot(view, aircraft, nullptr, true, g_zoomFollowHex, full, g_choiceCount == 0);
     // Following into the zoom, its height against the field's.
     bool following = g_zoomFollowHex.length() > 0;
     if (following) {
@@ -1580,7 +1596,11 @@ bool radarZoomPlotDraw(const RadarScene &scene, const String &code, bool full) {
     if (g_replayZoom.code != code && !frameZoom(code, g_replayZoom)) {
         return false;
     }
-    zoomPlot(g_replayZoom, scene.aircraft, scene.trails, scene.flash, scene.followHex, full, scene.push);
+    ZoomFrame view = g_replayZoom;
+    if (scene.zoomRangeNm > 0) {
+        view.rangeNm = std::min(scene.zoomRangeNm, view.framedNm);
+    }
+    zoomPlot(view, scene.aircraft, scene.trails, scene.flash, scene.followHex, full, scene.push);
     return true;
 }
 
@@ -1607,13 +1627,13 @@ ZoomAction radarZoomHandleTouch(int x, int y, String &outHex) {
             return ZoomAction::REDRAW;
         }
         if (b == BTN_ZOOM_OUT) {
-            if (g_zoomViewNm >= g_zoom.rangeNm - 0.01f) {
+            if (g_zoomViewNm >= g_zoom.framedNm - 0.01f) {
                 return ZoomAction::UNZOOM;
             }
-            float next = g_zoom.rangeNm;
+            float next = g_zoom.framedNm;
             for (float r : ZOOM_VIEW_STEPS_NM) {
                 if (r > g_zoomViewNm + 0.01f) {
-                    next = std::min(r, g_zoom.rangeNm);
+                    next = std::min(r, g_zoom.framedNm);
                     break;
                 }
             }

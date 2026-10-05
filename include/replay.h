@@ -45,8 +45,11 @@ struct View {
     Kind kind = HOME;
     char code[4] = "";  // ZOOM's airport
     char hex[8] = "";   // the aircraft followed, in either FOLLOW or ZOOM; "" for none
+    // HOME's or ZOOM's range as ZOOM IN had it; 0 for the view's own - the
+    // recording's radius, or the zoom's framing.
+    float rangeNm = 0;
     bool sameAs(const View &o) const {
-        return kind == o.kind && strcmp(code, o.code) == 0 && strcmp(hex, o.hex) == 0;
+        return kind == o.kind && strcmp(code, o.code) == 0 && strcmp(hex, o.hex) == 0 && rangeNm == o.rangeNm;
     }
 };
 

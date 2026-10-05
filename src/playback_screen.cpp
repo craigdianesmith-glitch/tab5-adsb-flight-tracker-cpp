@@ -377,6 +377,11 @@ void drawPlot(bool full, bool push) {
     const recorder::Header &h = replay::header();
     RadarScene scene{g_scene, g_noneNew, &g_trails, h.lat, h.lon, h.radiusNm, g_centre, g_airports};
     scene.push = push;
+    // At the range ZOOM IN had it at live, where it did.
+    if (g_view.rangeNm > 0 && g_view.kind == replay::View::HOME) {
+        scene.rangeNm = std::max(1, (int)lroundf(g_view.rangeNm));
+    }
+    scene.zoomRangeNm = g_view.kind == replay::View::ZOOM ? g_view.rangeNm : 0.0f;
     if (g_view.kind == replay::View::HOME) {
         radarPlotDraw(scene, full);
         return;

@@ -374,9 +374,10 @@ bool load(const String &path, LoadProgress progress) {
             frameMs = strtoul(g_line + 2, &end, 10);
             uint32_t epoch = strtoul(end, &end, 10);
             Frame f = {offset, frameMs, epoch, View(), 0};
-            char viewTok[24] = "", providerTok[24] = "";
-            sscanf(end, "%23s %23s", viewTok, providerTok);
+            char viewTok[24] = "", providerTok[24] = "", rangeTok[16] = "";
+            sscanf(end, "%23s %23s %15s", viewTok, providerTok, rangeTok);
             f.view = parseView(viewTok);
+            f.view.rangeNm = rangeTok[0] ? std::max(0.0f, strtof(rangeTok, nullptr)) : 0.0f;
             g_hasHome = g_hasHome || f.view.kind == View::HOME;
             if (providerTok[0] && strcmp(providerTok, "?") != 0) {
                 auto it = std::find(g_providers.begin(), g_providers.end(), String(providerTok));
