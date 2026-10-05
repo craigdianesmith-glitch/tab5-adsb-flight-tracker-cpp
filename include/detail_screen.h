@@ -2,8 +2,13 @@
 
 #include "adsb_client.h"
 
-void detailScreenSet(const Aircraft &ac);
+// What FOLLOW beside Back offers for the aircraft shown: to follow it, to
+// stop following it - it is the one followed already - or nothing, for one
+// out of a replay, or with no position to follow it from.
+enum class DetailFollow { NONE, FOLLOW, UNFOLLOW };
+
+void detailScreenSet(const Aircraft &ac, DetailFollow follow);
 void detailScreenDraw();
 
-// Returns true if the back button was tapped.
-bool detailScreenHandleTouch(int x, int y);
+enum class DetailAction { NONE, BACK, FOLLOW, UNFOLLOW };
+DetailAction detailScreenHandleTouch(int x, int y);

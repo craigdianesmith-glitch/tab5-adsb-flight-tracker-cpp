@@ -39,6 +39,7 @@ Screen g_screen = Screen::MAIN;
 // The detail screen is reachable from the table and from the radar, and Back
 // should land wherever you came from.
 Screen g_detailReturnTo = Screen::MAIN;
+Aircraft g_detailAc;  // the aircraft the detail screen shows, for its FOLLOW
 // The WiFi screen is normally reached from settings, but a device with no
 // credentials opens it straight from boot - where Back belongs on the table.
 Screen g_wifiReturnTo = Screen::SETTINGS;
@@ -1323,7 +1324,11 @@ void tickAlerts() {
 }
 
 void openDetail(const Aircraft &ac, Screen returnTo) {
-    detailScreenSet(ac);
+    DetailFollow follow = returnTo == Screen::PLAYBACK || !ac.hasPos ? DetailFollow::NONE
+                          : g_follow.active && g_follow.hex == ac.hex ? DetailFollow::UNFOLLOW
+                                                                      : DetailFollow::FOLLOW;
+    detailScreenSet(ac, follow);
+    g_detailAc = ac;
     g_detailReturnTo = returnTo;
     g_screen = Screen::DETAIL;
     detailScreenDraw();
@@ -2182,9 +2187,42 @@ void handleMainTouch(int x, int y) {
     }
 }
 
-void handleDetailTouch(int x, int y) {
-    if (!detailScreenHandleTouch(x, y)) {
+// FOLLOW on the detail screen: followed as a tap on it after FOLLOW would
+// have - in the zoom it was opened from, if it was, and otherwise on the
+// radar centred on it, as auto-follow brings it up - from its latest report
+// rather than the one the details were opened on.
+void followFromDetail() {
+    Aircraft ac = g_detailAc;
+    lastReported(ac.hex, ac);
+    stopFollow();  // whoever was followed before, if anyone
+    g_follow.picking = false;
+    if (g_detailReturnTo == Screen::ZOOM && g_zoomUp) {
+        startFollow(ac);
+        g_follow.zoomIsItsOwn = true;
+        radarZoomSetFollow(g_follow.hex, g_follow.callsign, false);
+        g_screen = Screen::ZOOM;
+        drawZoom(true);
         return;
+    }
+    if (g_zoomUp) {
+        endZoom();  // a zoom's poll is around its airport, not the aircraft
+    }
+    startFollow(ac);
+    g_screen = Screen::RADAR;
+    drawRadar(true);
+}
+
+void handleDetailTouch(int x, int y) {
+    DetailAction action = detailScreenHandleTouch(x, y);
+    if (action == DetailAction::NONE) {
+        return;
+    }
+    if (action == DetailAction::FOLLOW) {
+        followFromDetail();
+        return;
+    }
+    if (action == DetailAction::UNFOLLOW) {
+        stopFollow();  // and then back, as Back would go
     }
     if (g_detailReturnTo == Screen::RADAR) {
         g_screen = Screen::RADAR;

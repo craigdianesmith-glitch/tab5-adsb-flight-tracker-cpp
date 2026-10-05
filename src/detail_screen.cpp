@@ -11,6 +11,7 @@ namespace {
 bool colorsReady = false;
 
 constexpr int BACK_X = 1140, BACK_Y = 8, BACK_W = 124, BACK_H = 44;
+constexpr int FOLLOW_W = 124, FOLLOW_X = BACK_X - 12 - FOLLOW_W;
 // Label column widened to fit the bigger label font (e.g. "ALTITUDE (BARO)"
 // at size 3); value width capped so long values (e.g. "Cessna Citation CJ2")
 // can't run into the next column - field() shrinks the font if it doesn't fit.
@@ -20,6 +21,7 @@ constexpr int ROW0_Y = 120, ROW_H = 80;
 
 Aircraft g_ac;
 bool g_hasAc = false;
+DetailFollow g_follow = DetailFollow::NONE;
 
 uint16_t colorBg, colorWhite, colorGrey, colorBtnBg, colorClimb, colorDescend, colorLevel;
 
@@ -62,9 +64,10 @@ void field(int labelX, int valueX, int maxValueW, int y, const char *label, cons
 
 }  // namespace
 
-void detailScreenSet(const Aircraft &ac) {
+void detailScreenSet(const Aircraft &ac, DetailFollow follow) {
     g_ac = ac;
     g_hasAc = true;
+    g_follow = follow;
 }
 
 void detailScreenDraw() {
@@ -101,6 +104,13 @@ void detailScreenDraw() {
     canvas.setTextSize(2);
     canvas.setTextDatum(MC_DATUM);
     canvas.drawString("Back", BACK_X + BACK_W / 2, BACK_Y + BACK_H / 2);
+    // Follow it from here as from the radar: no need to go back and find it
+    // among the rest.
+    if (g_follow != DetailFollow::NONE) {
+        canvas.fillRoundRect(FOLLOW_X, BACK_Y, FOLLOW_W, BACK_H, 6, colorBtnBg);
+        canvas.drawString(g_follow == DetailFollow::FOLLOW ? "FOLLOW" : "UNFOLLOW", FOLLOW_X + FOLLOW_W / 2,
+                          BACK_Y + BACK_H / 2);
+    }
 
     // Livery banner: no real logo/image assets available, so this is the
     // airline's actual brand colour as a drawn band, not a bitmap.
@@ -161,6 +171,15 @@ void detailScreenDraw() {
     screen::flush();
 }
 
-bool detailScreenHandleTouch(int x, int y) {
-    return x >= BACK_X && x < BACK_X + BACK_W && y >= BACK_Y && y < BACK_Y + BACK_H;
+DetailAction detailScreenHandleTouch(int x, int y) {
+    if (y < BACK_Y || y >= BACK_Y + BACK_H) {
+        return DetailAction::NONE;
+    }
+    if (x >= BACK_X && x < BACK_X + BACK_W) {
+        return DetailAction::BACK;
+    }
+    if (x >= FOLLOW_X && x < FOLLOW_X + FOLLOW_W && g_follow != DetailFollow::NONE) {
+        return g_follow == DetailFollow::FOLLOW ? DetailAction::FOLLOW : DetailAction::UNFOLLOW;
+    }
+    return DetailAction::NONE;
 }
