@@ -2738,10 +2738,11 @@ void loop() {
 
     // While the followed aircraft is lost, its estimate moves on between
     // polls: redrawn every second, so it is seen to roll out rather than
-    // jump between polls.
+    // jump between polls. And in a zoom centred on it, which moves with it,
+    // whether lost or not: the runways would otherwise jump past under it.
     // Timed from the last draw of either kind, so a poll drawn this pass
     // isn't drawn again straight after.
-    if (g_follow.active && g_follow.lost) {
+    if (g_follow.active && (g_follow.lost || (g_screen == Screen::ZOOM && radarZoomOnFollowed()))) {
         if (g_screen == Screen::ZOOM && millis() - g_zoomDrawnMs >= FOLLOW_ESTIMATE_DRAW_MS) {
             drawZoom(false);
         } else if (g_screen == Screen::RADAR && millis() - g_radarDrawnMs >= FOLLOW_ESTIMATE_DRAW_MS) {

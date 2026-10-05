@@ -142,6 +142,11 @@ void radarZoomSetFollow(const String &hex, const String &callsign, bool picking)
 // footer readouts are redrawn.
 void radarZoomDraw(const std::vector<Aircraft> &aircraft, bool full);
 
+// Whether the zoom's last draw was centred on the aircraft followed rather
+// than on its runways - zoomed in past its framing while following - so that
+// it moves with it, to be redrawn as often as a lost one is.
+bool radarZoomOnFollowed();
+
 // The zoom's plot on its own, for a replay of a followed aircraft: the
 // airport with IATA `code` as the live zoom frames it, and the scene's
 // contacts, trails and followed aircraft on it - its centre, range and

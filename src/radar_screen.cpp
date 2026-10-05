@@ -1085,6 +1085,7 @@ struct ZoomFrame {
 };
 ZoomFrame g_zoom;
 float g_zoomViewNm = ZOOM_NO_RUNWAYS_NM;  // the range the live zoom shows: see ZOOM_VIEW_STEPS_NM
+bool g_zoomOnFollowed = false;            // its last draw was centred on the aircraft followed
 String g_zoomFollowHex, g_zoomFollowCallsign;
 bool g_zoomPicking = false;
 
@@ -1436,6 +1437,8 @@ void drawZoomHeader() {
 
 }  // namespace
 
+bool radarZoomOnFollowed() { return g_zoomOnFollowed; }
+
 bool radarZoomFrame(const String &code, double &lat, double &lon, float &rangeNm) {
     ZoomFrame f;
     if (!frameZoom(code, f)) {
@@ -1542,6 +1545,21 @@ void radarZoomDraw(const std::vector<Aircraft> &aircraft, bool full) {
     // With a list up, a refresh is drawn under it and pushed along with it.
     ZoomFrame view = g_zoom;
     view.rangeNm = g_zoomViewNm;
+    // Following, and zoomed in past the framing, it is the aircraft that
+    // stays in the middle - touching down, rolling out and taxiing to its
+    // stand at a range where the runways' middle would have lost it - with
+    // the runways passing under it, as the radar keeps one in the air there.
+    g_zoomOnFollowed = false;
+    if (g_zoomFollowHex.length() && g_zoomViewNm < g_zoom.rangeNm - 0.01f) {
+        for (const Aircraft &a : aircraft) {
+            if (a.hex == g_zoomFollowHex && a.hasPos) {
+                view.lat = a.lat;
+                view.lon = a.lon;
+                g_zoomOnFollowed = true;
+                break;
+            }
+        }
+    }
     zoomPlot(view, aircraft, nullptr, true, g_zoomFollowHex, full, g_choiceCount == 0);
     // Following into the zoom, its height against the field's.
     bool following = g_zoomFollowHex.length() > 0;
