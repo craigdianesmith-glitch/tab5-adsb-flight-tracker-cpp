@@ -101,8 +101,10 @@ struct RadarScene {
     // drawn around it, that one brighter. Empty for none.
     String originCode;
     // For radarZoomPlotDraw(), the range the zoom was showing, as recorded;
-    // 0 for its framing.
+    // 0 for its framing. And the moment shown, in ms on any clock that runs
+    // forward through a replay, for the runways lately in use.
     float zoomRangeNm = 0;
+    uint32_t nowMs = 0;
 };
 
 // Draws the plot, and the footer readouts at the bottom right. With `full`

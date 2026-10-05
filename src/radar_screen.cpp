@@ -1093,6 +1093,39 @@ struct ZoomFrame {
     int runwayCount = 0;  // no more than MAX_ZOOM_RUNWAYS
 };
 ZoomFrame g_zoom;
+
+// When each runway end of one airport was last in use, so a zoom in a lull
+// still shows which way the airport is working: airports seldom turn round
+// more than a few times a day. On the clock its zoom is drawn on - the live
+// zoom's millis(), a replay's own time - and forgotten when that runs
+// backwards, as a replay going back does, or the airport changes.
+struct InUseMemory {
+    String code;
+    uint32_t lastDrawnMs = 0;
+    uint32_t ms[MAX_ZOOM_RUNWAYS][2];
+    bool seen[MAX_ZOOM_RUNWAYS][2];
+
+    // Notes the ends in use now, at `nowMs`, and says which others were
+    // within RUNWAY_IN_USE_MEMORY_MS.
+    void update(const ZoomFrame &f, const bool inUse[][2], uint32_t nowMs, bool recent[][2]) {
+        if (code != f.code || nowMs < lastDrawnMs) {
+            code = f.code;
+            memset(seen, 0, sizeof(seen));
+        }
+        lastDrawnMs = nowMs;
+        for (int r = 0; r < f.runwayCount; r++) {
+            for (int k = 0; k < 2; k++) {
+                if (inUse[r][k]) {
+                    seen[r][k] = true;
+                    ms[r][k] = nowMs;
+                }
+                recent[r][k] = !inUse[r][k] && seen[r][k] && nowMs - ms[r][k] <= RUNWAY_IN_USE_MEMORY_MS;
+            }
+        }
+    }
+};
+InUseMemory g_liveInUse, g_replayInUse;
+
 float g_zoomViewNm = ZOOM_NO_RUNWAYS_NM;  // the range the live zoom shows: see ZOOM_VIEW_STEPS_NM
 bool g_zoomOnFollowed = false;            // its last draw was centred on the aircraft followed
 String g_zoomFollowHex, g_zoomFollowCallsign;
@@ -1241,7 +1274,9 @@ float toRing(float x, float y, float ux, float uy) {
 // A closed runway is drawn as a chart draws one: outlined rather than filled
 // and crossed out, without numbers or an approach - and under the open ones,
 // which it often crosses.
-void drawRunways(const ZoomFrame &f, const bool inUse[][2]) {
+// `recent`: the ends not in use now that were lately, which keep a dimmer
+// arrow - see InUseMemory.
+void drawRunways(const ZoomFrame &f, const bool inUse[][2], const bool recent[][2]) {
     auto &canvas = screen::canvas();
     float pxPerNm = RADIUS / f.rangeNm;
     canvas.setTextSize(2);
@@ -1375,7 +1410,7 @@ void drawRunways(const ZoomFrame &f, const bool inUse[][2]) {
             const EndPx &e = ends[r][k];
             canvas.setTextColor(inUse[r][k] ? colorText : colorMuted);
             canvas.drawString(f.runways[r].end[k].ident, e.labelX, e.labelY);
-            if (!inUse[r][k]) {
+            if (!inUse[r][k] && !recent[r][k]) {
                 continue;
             }
             // An end in use is the one traffic lands over and takes off from,
@@ -1388,7 +1423,7 @@ void drawRunways(const ZoomFrame &f, const bool inUse[][2]) {
             float wx = -iy * RUNWAY_ARROW_HALF_W, wy = ix * RUNWAY_ARROW_HALF_W;
             canvas.fillTriangle((int)lroundf(tipX), (int)lroundf(tipY), (int)lroundf(baseX + wx),
                                 (int)lroundf(baseY + wy), (int)lroundf(baseX - wx), (int)lroundf(baseY - wy),
-                                colorText);
+                                inUse[r][k] ? colorText : colorMuted);
         }
     }
 }
@@ -1507,7 +1542,7 @@ namespace {
 // where it was.
 bool zoomPlot(const ZoomFrame &framed, const std::vector<Aircraft> &aircraft,
               const std::vector<replay::TrailPoint> *trails, bool flash, const String &followHex, bool full,
-              bool push) {
+              bool push, uint32_t nowMs, InUseMemory &memory) {
     auto &canvas = screen::canvas();
     uint32_t t0 = micros();
     ZoomFrame f = framed;
@@ -1533,9 +1568,10 @@ bool zoomPlot(const ZoomFrame &framed, const std::vector<Aircraft> &aircraft,
     drawScope(range, step);
 
     canvas.setClipRect(PLOT_L, PLOT_T, PLOT_R - PLOT_L, PLOT_B - PLOT_T);
-    bool inUse[MAX_ZOOM_RUNWAYS][2];
+    bool inUse[MAX_ZOOM_RUNWAYS][2], recent[MAX_ZOOM_RUNWAYS][2];
     runwaysInUse(f, aircraft, inUse);
-    drawRunways(f, inUse);
+    memory.update(f, inUse, nowMs, recent);
+    drawRunways(f, inUse, recent);
     static const std::vector<uint8_t> noneNew;  // the radar marks new contacts; here they are all just traffic
     int plotted = 0, labelled = 0;
     uint32_t t1 = micros();
@@ -1555,16 +1591,21 @@ bool zoomPlot(const ZoomFrame &framed, const std::vector<Aircraft> &aircraft,
         canvas.fillRect(0, IN_USE_BOX_T, PLOT_L, RANGE_BOX_T + BOX_H - IN_USE_BOX_T, colorBg);
     }
     footerBox(nmText(range) + " nm range   rings every " + nmText(step) + " nm", 16, FOOTER_Y, false);
-    String used;
+    // The ends in use now - or, in a lull, those lately.
+    String used, lately;
     for (int r = 0; r < f.runwayCount; r++) {
         for (int k = 0; k < 2; k++) {
             if (inUse[r][k]) {
                 used += String(" ") + f.runways[r].end[k].ident;
+            } else if (recent[r][k]) {
+                lately += String(" ") + f.runways[r].end[k].ident;
             }
         }
     }
     if (used.length()) {
         footerBox("in use:" + used, 16, FOOTER_Y - LEGEND_OFFSET, false);
+    } else if (lately.length()) {
+        footerBox("last in use:" + lately, 16, FOOTER_Y - LEGEND_OFFSET, false);
     }
     footerBox("o ground   ^ climb   v descent", 1264, FOOTER_Y - LEGEND_OFFSET, true);
     footerBox(String(plotted) + " contacts" + (labelled < plotted ? "   " + String(labelled) + " labelled" : ""), 1264,
@@ -1593,7 +1634,8 @@ void radarZoomDraw(const std::vector<Aircraft> &aircraft, bool full) {
     // With a list up, a refresh is drawn under it and pushed along with it.
     ZoomFrame view = g_zoom;
     view.rangeNm = g_zoomViewNm;
-    g_zoomOnFollowed = zoomPlot(view, aircraft, nullptr, true, g_zoomFollowHex, full, g_choiceCount == 0);
+    g_zoomOnFollowed =
+        zoomPlot(view, aircraft, nullptr, true, g_zoomFollowHex, full, g_choiceCount == 0, millis(), g_liveInUse);
     // Following into the zoom, its height against the field's.
     bool following = g_zoomFollowHex.length() > 0;
     if (following) {
@@ -1617,7 +1659,8 @@ bool radarZoomPlotDraw(const RadarScene &scene, const String &code, bool full) {
     if (scene.zoomRangeNm > 0) {
         view.rangeNm = std::min(scene.zoomRangeNm, view.framedNm);
     }
-    zoomPlot(view, scene.aircraft, scene.trails, scene.flash, scene.followHex, full, scene.push);
+    zoomPlot(view, scene.aircraft, scene.trails, scene.flash, scene.followHex, full, scene.push, scene.nowMs,
+             g_replayInUse);
     return true;
 }
 

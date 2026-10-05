@@ -382,6 +382,7 @@ void drawPlot(bool full, bool push) {
         scene.rangeNm = std::max(1, (int)lroundf(g_view.rangeNm));
     }
     scene.zoomRangeNm = g_view.kind == replay::View::ZOOM ? g_view.rangeNm : 0.0f;
+    scene.nowMs = g_t;
     if (g_view.kind == replay::View::HOME) {
         radarPlotDraw(scene, full);
         return;
