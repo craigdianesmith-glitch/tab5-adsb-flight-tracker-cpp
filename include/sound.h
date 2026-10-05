@@ -1,5 +1,6 @@
 #pragma once
 
+#include <Arduino.h>
 #include <stdint.h>
 
 // Feedback beeps through the Tab5's built-in speaker.
@@ -21,9 +22,10 @@ void soundKeyClick();
 // A rising three-note chime for an interesting flight, or for an emergency
 // squawk a two-tone warble that can't be mistaken for it - and then, spoken,
 // what it is: "Emergency", "Watchlist", "Rare aircraft" or "Military", for
-// the reason the banner names, out of the AlertReason bits in `reasons`.
+// the reason the banner names, out of the AlertReason bits in `reasons`; and
+// `callsign` spelt out in the phonetic alphabet, "Echo Zulu Yankee one two".
 // Returns at once: it is played out by soundTick().
-void soundAlert(uint8_t reasons);
+void soundAlert(uint8_t reasons, const String &callsign = String());
 
 // Plays the next note of a queued alert once the one before has finished.
 // Call every loop.

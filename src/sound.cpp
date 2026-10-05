@@ -44,18 +44,33 @@ struct Clip {
 };
 #define CLIP(a) Clip{a, sizeof(a) / sizeof(a[0])}
 
-// Said once the notes are done; nullptr for nothing to say.
-const Clip *g_word = nullptr;
+// What is said once the notes are done, a clip at a time - the reason, then
+// the callsign spelt out - each with the pause to leave after it.
+struct Spoken {
+    Clip clip;
+    uint16_t pauseMs;
+};
+constexpr int MAX_SPOKEN = 12;  // the reason and an 8-character callsign, with room to spare
+constexpr uint16_t AFTER_REASON_MS = 250, BETWEEN_LETTERS_MS = 60;
+Spoken g_spoken[MAX_SPOKEN];
+int g_spokenCount = 0, g_nextSpoken = 0;
+uint32_t g_speakAtMs = 0;  // not before then: the pause after the clip before
 
 // The reason the banner names, in the same order - see alertReasonText().
-const Clip *wordFor(uint8_t reasons) {
-    static const Clip EMERGENCY = CLIP(VOICE_EMERGENCY), WATCHLIST = CLIP(VOICE_WATCHLIST), RARE = CLIP(VOICE_RARE),
-                      MILITARY = CLIP(VOICE_MILITARY);
-    if (reasons & ALERT_EMERGENCY) return &EMERGENCY;
-    if (reasons & ALERT_WATCHLIST) return &WATCHLIST;
-    if (reasons & ALERT_RARE) return &RARE;
-    if (reasons & ALERT_MILITARY) return &MILITARY;
-    return nullptr;
+bool wordFor(uint8_t reasons, Clip &out) {
+    if (reasons & ALERT_EMERGENCY) out = CLIP(VOICE_EMERGENCY);
+    else if (reasons & ALERT_WATCHLIST) out = CLIP(VOICE_WATCHLIST);
+    else if (reasons & ALERT_RARE) out = CLIP(VOICE_RARE);
+    else if (reasons & ALERT_MILITARY) out = CLIP(VOICE_MILITARY);
+    else return false;
+    return true;
+}
+
+// Queues `clip` to be said, then `pauseMs` of quiet.
+void say(const Clip &clip, uint16_t pauseMs) {
+    if (g_spokenCount < MAX_SPOKEN) {
+        g_spoken[g_spokenCount++] = {clip, pauseMs};
+    }
 }
 
 }  // namespace
@@ -99,12 +114,26 @@ void soundNewFlight() {
     M5.Speaker.tone(1568, 70, CHANNEL, false);
 }
 
-void soundAlert(uint8_t reasons) {
+void soundAlert(uint8_t reasons, const String &callsign) {
     if (!g_ready || g_muted) {
         return;
     }
     bool emergency = (reasons & ALERT_EMERGENCY) != 0;
-    g_word = wordFor(reasons);
+    g_spokenCount = g_nextSpoken = 0;
+    Clip word;
+    if (wordFor(reasons, word)) {
+        say(word, AFTER_REASON_MS);
+    }
+    // Spelt as it would be read out over the radio, a letter or digit at a
+    // time; anything else in it - a space, a hyphen - left unsaid.
+    for (size_t i = 0; i < callsign.length(); i++) {
+        char c = toupper((unsigned char)callsign[i]);
+        if (c >= 'A' && c <= 'Z') {
+            say({VOICE_LETTERS[c - 'A'], VOICE_LETTER_LENS[c - 'A']}, BETWEEN_LETTERS_MS);
+        } else if (c >= '0' && c <= '9') {
+            say({VOICE_DIGITS[c - '0'], VOICE_DIGIT_LENS[c - '0']}, BETWEEN_LETTERS_MS);
+        }
+    }
     g_notes = emergency ? WARBLE : CHIME;
     g_noteCount = emergency ? (int)(sizeof(WARBLE) / sizeof(Note)) : (int)(sizeof(CHIME) / sizeof(Note));
     g_nextNote = 0;
@@ -115,11 +144,17 @@ void soundTick() {
         return;
     }
     if (g_nextNote >= g_noteCount || g_muted) {
-        // The notes done, what it is - unless muted since.
-        if (g_word != nullptr && !g_muted) {
-            M5.Speaker.playRaw(g_word->samples, g_word->count, VOICE_RATE, false, 1, ALERT_CHANNEL, true);
+        // The notes done, what it is, a clip at a time - unless muted since.
+        if (g_nextSpoken < g_spokenCount && !g_muted) {
+            if ((int32_t)(millis() - g_speakAtMs) < 0) {
+                return;  // the pause after the clip before
+            }
+            const Spoken &s = g_spoken[g_nextSpoken++];
+            M5.Speaker.playRaw(s.clip.samples, s.clip.count, VOICE_RATE, false, 1, ALERT_CHANNEL, true);
+            g_speakAtMs = millis() + s.clip.count * 1000 / VOICE_RATE + s.pauseMs;
+            return;
         }
-        g_word = nullptr;
+        g_spokenCount = g_nextSpoken = 0;
         g_notes = nullptr;
         return;
     }

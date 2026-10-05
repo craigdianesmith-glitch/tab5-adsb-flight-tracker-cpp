@@ -1321,7 +1321,7 @@ void tickAlerts() {
                       alertReasonText(g_bannerAc, g_bannerAc.alert).c_str(), g_bannerMore);
         g_bannerUp = true;
         g_bannerShownMs = 0;
-        soundAlert(g_bannerAc.alert);
+        soundAlert(g_bannerAc.alert, g_bannerAc.callsign);
         if (g_autoFollow) {
             autoFollow(g_bannerAc);
         }
@@ -2576,23 +2576,24 @@ void loop() {
     M5.update();
 
     // 'S' over serial sends the screen back, for tools/screenshot.py; 'E',
-    // 'W', 'R' and 'M' sound an alert of each kind, to hear what it says.
+    // 'W', 'R' and 'M' sound an alert of each kind, for a made-up callsign,
+    // to hear what it says.
     while (Serial.available()) {
         switch (Serial.read()) {
         case 'S':
             screen::dumpToSerial();
             break;
         case 'E':
-            soundAlert(ALERT_EMERGENCY);
+            soundAlert(ALERT_EMERGENCY, "EZY12AB");
             break;
         case 'W':
-            soundAlert(ALERT_WATCHLIST);
+            soundAlert(ALERT_WATCHLIST, "GSGTS");
             break;
         case 'R':
-            soundAlert(ALERT_RARE);
+            soundAlert(ALERT_RARE, "N747NA");
             break;
         case 'M':
-            soundAlert(ALERT_MILITARY);
+            soundAlert(ALERT_MILITARY, "RCH21");
             break;
         }
     }
