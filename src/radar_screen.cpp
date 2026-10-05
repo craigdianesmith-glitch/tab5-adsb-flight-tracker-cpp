@@ -1070,6 +1070,9 @@ constexpr float ZOOM_VIEW_STEPS_NM[] = {0.5f, 1.0f, 1.5f, 2.0f, 3.0f, 4.0f, 5.0f
 // Between the end of a runway and its number, and its number and its
 // extended centreline.
 constexpr float RUNWAY_LABEL_GAP = 5.0f;
+// The arrowhead on a runway end in use: how far in from the end it starts,
+// where the centreline's dashes do, and its size, in pixels.
+constexpr float RUNWAY_ARROW_INSET = 10.0f, RUNWAY_ARROW_LEN = 18.0f, RUNWAY_ARROW_HALF_W = 8.0f;
 
 // An end is in use while something is lined up on it going the way that end
 // faces: rolling along the runway at take-off or landing speed, or in the air
@@ -1372,6 +1375,20 @@ void drawRunways(const ZoomFrame &f, const bool inUse[][2]) {
             const EndPx &e = ends[r][k];
             canvas.setTextColor(inUse[r][k] ? colorText : colorMuted);
             canvas.drawString(f.runways[r].end[k].ident, e.labelX, e.labelY);
+            if (!inUse[r][k]) {
+                continue;
+            }
+            // An end in use is the one traffic lands over and takes off from,
+            // heading for the other: an arrowhead on the runway just inside
+            // it, pointing that way, says which way it is being used at a
+            // glance - and at an airport using a runway both ways, shows both.
+            float ix = -e.ox, iy = -e.oy;  // into the runway, from this end
+            float baseX = e.x + ix * RUNWAY_ARROW_INSET, baseY = e.y + iy * RUNWAY_ARROW_INSET;
+            float tipX = baseX + ix * RUNWAY_ARROW_LEN, tipY = baseY + iy * RUNWAY_ARROW_LEN;
+            float wx = -iy * RUNWAY_ARROW_HALF_W, wy = ix * RUNWAY_ARROW_HALF_W;
+            canvas.fillTriangle((int)lroundf(tipX), (int)lroundf(tipY), (int)lroundf(baseX + wx),
+                                (int)lroundf(baseY + wy), (int)lroundf(baseX - wx), (int)lroundf(baseY - wy),
+                                colorText);
         }
     }
 }
