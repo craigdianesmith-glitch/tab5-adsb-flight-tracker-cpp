@@ -1340,11 +1340,18 @@ void tickAlerts() {
     }
 }
 
+String watchableCallsign(String callsign);
+bool onWatchlist(const String &callsign);
+
 void openDetail(const Aircraft &ac, Screen returnTo) {
     DetailFollow follow = returnTo == Screen::PLAYBACK || !ac.hasPos ? DetailFollow::NONE
                           : g_follow.active && g_follow.hex == ac.hex ? DetailFollow::UNFOLLOW
                                                                       : DetailFollow::FOLLOW;
-    detailScreenSet(ac, follow);
+    String callsign = watchableCallsign(ac.callsign);
+    DetailWatch watch = returnTo == Screen::PLAYBACK || !callsign.length() ? DetailWatch::NONE
+                        : onWatchlist(callsign)                            ? DetailWatch::UNWATCH
+                                                                           : DetailWatch::WATCH;
+    detailScreenSet(ac, follow, watch);
     g_detailAc = ac;
     g_detailReturnTo = returnTo;
     g_screen = Screen::DETAIL;
@@ -2053,30 +2060,32 @@ void handlePlaybackTouch(int x, int y) {
     }
 }
 
-// A long press on a table row puts that flight's callsign on the watchlist,
-// or takes it off if it is already there.
-void handleMainHold(int x, int y) {
-    int row;
-    if (!displayHitRow(x, y, row)) {
-        return;
-    }
-    String callsign;
-    if (xSemaphoreTake(g_dataMutex, portMAX_DELAY) == pdTRUE) {
-        if (row < (int)g_latestAircraft.size()) {
-            callsign = g_latestAircraft[row].callsign;
-        }
-        xSemaphoreGive(g_dataMutex);
-    }
+// A callsign as the watchlist has it: trimmed and upper-cased - or "" where
+// it can't go on it, held to the same rules as a typed entry so a feed's
+// oddity can't put something on the list that the editor would then refuse
+// to save.
+String watchableCallsign(String callsign) {
     callsign.trim();
     callsign.toUpperCase();
-    soundKeyClick();
-    // Held to the same rules as a typed entry, so a feed's oddity can't put
-    // something on the list that the editor would then refuse to save.
     if (callsign.length() == 0 || callsign == "UNKNOWN" || watchlistProblem(callsign).length()) {
-        displayShowNotice("This flight has no callsign to watch for");
-        return;
+        return String();
     }
+    return callsign;
+}
 
+bool onWatchlist(const String &callsign) {
+    for (const String &e : parseWatchlist(g_watchlist)) {
+        if (e == callsign) {
+            return true;
+        }
+    }
+    return false;
+}
+
+// Puts `callsign`, a watchableCallsign(), on the watchlist, or takes it off
+// if it is already there - from a long press on its table row, or WATCH on
+// its details. What happened, for a notice to say.
+String toggleWatchlist(const String &callsign) {
     // Rebuilt from the parsed list rather than edited as typed, so a callsign
     // is found however it was separated - at the cost of commas becoming
     // spaces, which the parser reads the same.
@@ -2098,8 +2107,7 @@ void handleMainHold(int x, int y) {
         list += (list.length() ? " " : "") + e;
     }
     if (list.length() > WATCHLIST_MAX_LEN) {
-        displayShowNotice("The watchlist is full - remove something in Settings first");
-        return;
+        return "The watchlist is full - remove something in Settings first";
     }
 
     g_watchlist = list;
@@ -2113,7 +2121,31 @@ void handleMainHold(int x, int y) {
     if (!removed && !(g_alertMask & ALERT_WATCHLIST)) {
         notice += " - but watchlist alerts are switched off";
     }
-    displayShowNotice(notice);
+    Serial.printf("[watch] %s\n", notice.c_str());
+    return notice;
+}
+
+// A long press on a table row puts that flight's callsign on the watchlist,
+// or takes it off if it is already there.
+void handleMainHold(int x, int y) {
+    int row;
+    if (!displayHitRow(x, y, row)) {
+        return;
+    }
+    String callsign;
+    if (xSemaphoreTake(g_dataMutex, portMAX_DELAY) == pdTRUE) {
+        if (row < (int)g_latestAircraft.size()) {
+            callsign = g_latestAircraft[row].callsign;
+        }
+        xSemaphoreGive(g_dataMutex);
+    }
+    soundKeyClick();
+    callsign = watchableCallsign(callsign);
+    if (!callsign.length()) {
+        displayShowNotice("This flight has no callsign to watch for");
+        return;
+    }
+    displayShowNotice(toggleWatchlist(callsign));
 }
 
 void handleAlertsTouch(int x, int y) {
@@ -2239,6 +2271,14 @@ void handleDetailTouch(int x, int y) {
     }
     if (action == DetailAction::FOLLOW) {
         followFromDetail();
+        return;
+    }
+    if (action == DetailAction::WATCH) {
+        // Said on the table's status line, for when it is back there; here
+        // the button turning to UNWATCH says it.
+        soundKeyClick();
+        displayShowNotice(toggleWatchlist(watchableCallsign(g_detailAc.callsign)));
+        openDetail(g_detailAc, g_detailReturnTo);
         return;
     }
     if (action == DetailAction::UNFOLLOW) {

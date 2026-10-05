@@ -12,6 +12,7 @@ bool colorsReady = false;
 
 constexpr int BACK_X = 1140, BACK_Y = 8, BACK_W = 124, BACK_H = 44;
 constexpr int FOLLOW_W = 124, FOLLOW_X = BACK_X - 12 - FOLLOW_W;
+constexpr int WATCH_W = 124, WATCH_X = FOLLOW_X - 12 - WATCH_W;
 // Label column widened to fit the bigger label font (e.g. "ALTITUDE (BARO)"
 // at size 3); value width capped so long values (e.g. "Cessna Citation CJ2")
 // can't run into the next column - field() shrinks the font if it doesn't fit.
@@ -22,6 +23,7 @@ constexpr int ROW0_Y = 120, ROW_H = 80;
 Aircraft g_ac;
 bool g_hasAc = false;
 DetailFollow g_follow = DetailFollow::NONE;
+DetailWatch g_watch = DetailWatch::NONE;
 
 uint16_t colorBg, colorWhite, colorGrey, colorBtnBg, colorClimb, colorDescend, colorLevel;
 
@@ -64,10 +66,11 @@ void field(int labelX, int valueX, int maxValueW, int y, const char *label, cons
 
 }  // namespace
 
-void detailScreenSet(const Aircraft &ac, DetailFollow follow) {
+void detailScreenSet(const Aircraft &ac, DetailFollow follow, DetailWatch watch) {
     g_ac = ac;
     g_hasAc = true;
     g_follow = follow;
+    g_watch = watch;
 }
 
 void detailScreenDraw() {
@@ -109,6 +112,11 @@ void detailScreenDraw() {
     if (g_follow != DetailFollow::NONE) {
         canvas.fillRoundRect(FOLLOW_X, BACK_Y, FOLLOW_W, BACK_H, 6, colorBtnBg);
         canvas.drawString(g_follow == DetailFollow::FOLLOW ? "FOLLOW" : "UNFOLLOW", FOLLOW_X + FOLLOW_W / 2,
+                          BACK_Y + BACK_H / 2);
+    }
+    if (g_watch != DetailWatch::NONE) {
+        canvas.fillRoundRect(WATCH_X, BACK_Y, WATCH_W, BACK_H, 6, colorBtnBg);
+        canvas.drawString(g_watch == DetailWatch::WATCH ? "WATCH" : "UNWATCH", WATCH_X + WATCH_W / 2,
                           BACK_Y + BACK_H / 2);
     }
 
@@ -180,6 +188,9 @@ DetailAction detailScreenHandleTouch(int x, int y) {
     }
     if (x >= FOLLOW_X && x < FOLLOW_X + FOLLOW_W && g_follow != DetailFollow::NONE) {
         return g_follow == DetailFollow::FOLLOW ? DetailAction::FOLLOW : DetailAction::UNFOLLOW;
+    }
+    if (x >= WATCH_X && x < WATCH_X + WATCH_W && g_watch != DetailWatch::NONE) {
+        return DetailAction::WATCH;
     }
     return DetailAction::NONE;
 }
