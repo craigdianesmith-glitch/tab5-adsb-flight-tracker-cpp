@@ -1961,6 +1961,7 @@ void handleZoomTouch(int x, int y) {
         break;
     }
     case ZoomAction::DISMISS:
+    case ZoomAction::REDRAW:
         drawZoom(true);
         break;
     case ZoomAction::NONE:

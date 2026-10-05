@@ -120,7 +120,9 @@ bool radarPlotHit(int x, int y, String &outHex);
 // SELECT and DISMISS as the radar's: overlapping contacts get the same list.
 // TOGGLE_FOLLOW and TOGGLE_RECORD are the FOLLOW and REC buttons, as the
 // radar's and where the radar has them.
-enum class ZoomAction { NONE, UNZOOM, TOGGLE_FOLLOW, TOGGLE_RECORD, SELECT, DISMISS };
+// REDRAW: ZOOM IN or OUT changed the range shown, for a full redraw. ZOOM OUT
+// from the widest is UNZOOM.
+enum class ZoomAction { NONE, UNZOOM, TOGGLE_FOLLOW, TOGGLE_RECORD, SELECT, DISMISS, REDRAW };
 
 // Where the zoom on the airport with IATA `code` would be framed: on the
 // middle of its runways, at a range that fits them with room around for

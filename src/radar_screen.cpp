@@ -38,13 +38,14 @@ constexpr int BTN_Y[BTN_COUNT] = {BACK_Y, HOME_Y, AIRPORT_Y, ALL_Y, FOLLOW_Y, RE
 // halfway into the gaps around it, so one that lands a little off still
 // gets it rather than nothing.
 constexpr int BTN_REACH_X = BTN_X - 24;
-// The title's band, above the plot and left of the column, repainted when
-// following starts or stops.
-constexpr int TITLE_H = 56;
-// The plot is as large as the 720px height allows. The compass letters sit
-// just inside the outer ring rather than outside it - outside, they were what
-// capped the radius, and "S" ran off the bottom of the screen.
-constexpr int CENTER_X = 640, CENTER_Y = 392, RADIUS = 318;
+// The plot is as large as the 720px height allows: the full height, the
+// outer ring's label just fitting above it, with the title in the corner to
+// its left rather than in a band across the top. Its sides are what the
+// replay's panels either side leave, and the follow telemetry and the button
+// column the live screens have. The compass letters sit just inside the
+// outer ring rather than outside it - outside, they were what capped the
+// radius, and "S" ran off the bottom of the screen.
+constexpr int CENTER_X = 640, CENTER_Y = 362, RADIUS = 342;
 constexpr int COMPASS_INSET = 26;
 
 // Labels are placed nearest-first and one may not overlap another already
@@ -59,17 +60,24 @@ constexpr int BOX_GAP = 10;
 constexpr int LEGEND_OFFSET = BOX_H + BOX_GAP;
 
 // What a data refresh repaints, where entering the screen repaints the lot:
-// the plot square, with room at its edges for a blip's chevron and callsign,
-// down to the bottom of the canvas; and, separately, the footer readouts to
-// its right. The header and the margins either side of the plot never change
+// the plot's column, with a little room at its sides for a blip's chevron,
+// the full height of the canvas; and, separately, the footer readouts to its
+// right. The title and the margins either side of the plot never change
 // while the screen is up, and pushing them again was two-thirds of a refresh.
-// Contacts are clipped to the square so nothing is drawn outside what gets
+// Contacts are clipped to the column so nothing is drawn outside what gets
 // erased - a vector at short range can otherwise reach well past the ring.
-constexpr int PLOT_L = CENTER_X - RADIUS - 16, PLOT_R = CENTER_X + RADIUS + 16;
-constexpr int PLOT_T = 56, PLOT_B = 720;
+constexpr int PLOT_L = CENTER_X - RADIUS - 6, PLOT_R = CENTER_X + RADIUS + 6;
+constexpr int PLOT_T = 0, PLOT_B = 720;
+// The title, in the corner left of the plot: a line at the size it always
+// was, and up to two smaller ones under it saying what is going on.
+constexpr int TITLE_Y = 24, TITLE_LINE2_Y = 56, TITLE_LINE3_Y = 78;
+constexpr int TITLE_BLOCK_H = 90;
 constexpr int FOOT_L = PLOT_R, FOOT_R = 1280;
 constexpr int FOOT_T = FOOTER_Y - LEGEND_OFFSET - BOX_PAD_Y, FOOT_B = FOOTER_Y - BOX_PAD_Y + BOX_H;
 constexpr int RANGE_BOX_T = FOOTER_Y - BOX_PAD_Y;  // the range readout, bottom left
+// And over it in the zoom, the runways in use - moved there from the stack
+// at the bottom right, which the zoom's ZOOM buttons now come down to.
+constexpr int IN_USE_BOX_T = RANGE_BOX_T - LEGEND_OFFSET;
 
 constexpr int MAX_LABELS = 64;
 constexpr int LABEL_H = 16;  // Font0 at size 2
@@ -192,9 +200,12 @@ int ringStep(int rangeNm) {
 }
 
 // A distance as a ring label: whole miles bare, the zoom's half miles to one
-// decimal place.
+// decimal place and its quarters to two.
 String nmText(float nm) {
-    return nm == floorf(nm) ? String((int)nm) : String(nm, 1);
+    if (nm == floorf(nm)) {
+        return String((int)nm);
+    }
+    return String(nm, nm * 2 == floorf(nm * 2) ? 1 : 2);
 }
 
 // The scope itself: a ring every stepNm with its distance on it, the outer
@@ -419,7 +430,7 @@ uint32_t g_lostS = 0;
 
 // Where the live radar and zoom put the telemetry: the margin left of the
 // plot, under the title, which is otherwise empty.
-constexpr int LIVE_TEL_X = 16, LIVE_TEL_Y = 80;
+constexpr int LIVE_TEL_X = 16, LIVE_TEL_Y = 96;
 
 void drawCentreButtons() {
     bool following = (g_follow == FollowButton::ON);
@@ -442,11 +453,11 @@ void drawFollowButton() {
                g_follow == FollowButton::OFF ? Look::PLAIN : Look::LIT);
 }
 
-// "Radar - CIV -", and then what following is doing: asking for an aircraft
-// to be tapped, or naming the one followed.
+// "Radar - CIV -", and under it what following is doing: asking for an
+// aircraft to be tapped, or naming the one followed.
 void drawTitle(bool military) {
     auto &canvas = screen::canvas();
-    canvas.fillRect(0, 0, BTN_REACH_X, TITLE_H, colorBg);
+    canvas.fillRect(0, 0, PLOT_L, TITLE_BLOCK_H, colorBg);
     // Set here rather than trusted from whatever drew last: the table leaves
     // its cells' FreeSans selected, and at size 3 the title came out huge.
     canvas.setFont(&fonts::Font0);
@@ -454,22 +465,19 @@ void drawTitle(bool military) {
     canvas.setTextDatum(ML_DATUM);
     canvas.setTextColor(colorText);
     const char *title = "Radar";
-    int x = 16;
-    canvas.drawString(title, x, 35);
-    x += canvas.textWidth(title);
+    canvas.drawString(title, 16, TITLE_Y);
     canvas.setTextColor(colorMuted);
-    String sub = military ? " - MIL -" : " - CIV -";
-    canvas.drawString(sub, x, 35);
-    x += canvas.textWidth(sub);
+    canvas.drawString(military ? " - MIL -" : " - CIV -", 16 + canvas.textWidth(title), TITLE_Y);
+    canvas.setTextSize(2);
     if (g_follow == FollowButton::PICKING) {
-        canvas.drawString("  tap a plane to follow", x, 35);
+        canvas.drawString("tap a plane to follow", 16, TITLE_LINE2_Y);
     } else if (g_follow == FollowButton::ON) {
-        const char *what = "  following ";
-        canvas.drawString(what, x, 35);
+        const char *what = "following ";
+        canvas.drawString(what, 16, TITLE_LINE2_Y);
         canvas.setTextColor(colorHome);
-        canvas.drawString(g_followCallsign, x + canvas.textWidth(what), 35);
+        canvas.drawString(g_followCallsign, 16 + canvas.textWidth(what), TITLE_LINE2_Y);
     }
-    screen::markDirty(0, 0, BTN_REACH_X, TITLE_H);
+    screen::markDirty(0, 0, PLOT_L, TITLE_BLOCK_H);
 }
 
 bool g_military = false;
@@ -922,14 +930,16 @@ void drawContacts(const std::vector<Aircraft> &aircraft, const std::vector<uint8
     }
 }
 
-// Pushes a plot redrawn on a refresh: the plot square, marked by its fill,
-// and the footer readouts in (FOOT_L, footTop) to the bottom right.
-void pushPlot(bool push, int footTop) {
+// Pushes a plot redrawn on a refresh: the plot's column, marked by its fill,
+// the footer readouts to the bottom right, and the readouts from `leftTop`
+// down in the bottom left - the range, and over it the zoom's runways in use.
+void pushPlot(bool push, int leftTop) {
+    int leftH = RANGE_BOX_T + BOX_H - leftTop;
     if (!push) {
         // Marked rather than pushed: the plot was by its fill, the footer
         // wasn't, and whoever pushes next has to take both.
-        screen::markDirty(FOOT_L, footTop, FOOT_R - FOOT_L, FOOT_B - footTop);
-        screen::markDirty(0, RANGE_BOX_T, PLOT_L, BOX_H);
+        screen::markDirty(FOOT_L, FOOT_T, FOOT_R - FOOT_L, FOOT_B - FOOT_T);
+        screen::markDirty(0, leftTop, PLOT_L, leftH);
         return;
     }
     // Two flushes rather than one: marked together, flush() would judge the
@@ -938,8 +948,8 @@ void pushPlot(bool push, int footTop) {
     // readout's end in the left margin goes with the footer, a strip too thin
     // beside it to be merged into a box with it.
     screen::flush();
-    screen::markDirty(FOOT_L, footTop, FOOT_R - FOOT_L, FOOT_B - footTop);
-    screen::markDirty(0, RANGE_BOX_T, PLOT_L, BOX_H);
+    screen::markDirty(FOOT_L, FOOT_T, FOOT_R - FOOT_L, FOOT_B - FOOT_T);
+    screen::markDirty(0, leftTop, PLOT_L, leftH);
     screen::flush();
 }
 
@@ -1030,7 +1040,7 @@ void radarPlotDraw(const RadarScene &scene, bool full) {
     if (full) {
         return;  // the caller flushes, once it has drawn the rest of the screen
     }
-    pushPlot(scene.push, FOOT_T);
+    pushPlot(scene.push, RANGE_BOX_T);
     g_pushUs += micros() - t2;
 }
 
@@ -1048,8 +1058,10 @@ constexpr float ZOOM_NO_RUNWAYS_NM = 3.0f;
 // A minute's flying would reach across the whole plot from most of it.
 constexpr float ZOOM_LEAD_S = 20.0f;
 constexpr int MAX_ZOOM_RUNWAYS = 16;  // O'Hare has the most, at 11 with its closed ones
-// The footer stacks one box higher than the radar's, for the runways in use.
-constexpr int ZOOM_FOOT_T = FOOT_T - LEGEND_OFFSET;
+// The live zoom's ZOOM IN and OUT step its range through these, from the
+// frame's own: in to taxiway level, where a crowded apron's contacts come
+// apart, and out to the frame's range - past which ZOOM OUT is Unzoom.
+constexpr float ZOOM_VIEW_STEPS_NM[] = {0.5f, 1.0f, 1.5f, 2.0f, 3.0f, 4.0f, 5.0f, 6.0f};
 // Between the end of a runway and its number, and its number and its
 // extended centreline.
 constexpr float RUNWAY_LABEL_GAP = 5.0f;
@@ -1072,6 +1084,7 @@ struct ZoomFrame {
     int runwayCount = 0;  // no more than MAX_ZOOM_RUNWAYS
 };
 ZoomFrame g_zoom;
+float g_zoomViewNm = ZOOM_NO_RUNWAYS_NM;  // the range the live zoom shows: see ZOOM_VIEW_STEPS_NM
 String g_zoomFollowHex, g_zoomFollowCallsign;
 bool g_zoomPicking = false;
 
@@ -1373,44 +1386,52 @@ void drawUnzoomButton() {
     canvas.drawString("Unzoom", BTN_X + 52, BACK_Y + BTN_H / 2);
 }
 
+bool zoomCanIn() { return g_zoomViewNm > ZOOM_VIEW_STEPS_NM[0] + 0.01f; }
+
+// Where the radar has its ZOOM buttons, working the same way. ZOOM OUT always
+// goes somewhere: at the frame's range, back to the radar.
+void drawZoomViewButtons() {
+    drawButton(ZOOM_IN_Y, "ZOOM IN", zoomCanIn() ? Look::PLAIN : Look::GREYED);
+    drawButton(ZOOM_OUT_Y, "ZOOM OUT", Look::PLAIN);
+}
+
 void drawZoomHeader() {
     auto &canvas = screen::canvas();
+    canvas.fillRect(0, 0, PLOT_L, TITLE_BLOCK_H, colorBg);
     canvas.setFont(&fonts::Font0);
     canvas.setTextSize(3);
     canvas.setTextDatum(ML_DATUM);
     canvas.setTextColor(colorText);
-    canvas.drawString(g_zoom.code, 16, 35);
+    canvas.drawString(g_zoom.code, 16, TITLE_Y);
     canvas.setTextColor(colorMuted);
+    canvas.setTextSize(2);
     int closed = 0;
     for (int r = 0; r < g_zoom.runwayCount; r++) {
         closed += g_zoom.runways[r].closed ? 1 : 0;
     }
     int open = g_zoom.runwayCount - closed;
-    String what = g_zoom.runwayCount == 0 ? String(" - no runway data")
-                                          : " - " + String(open) + (open == 1 ? " runway" : " runways");
+    String what = g_zoom.runwayCount == 0 ? String("no runway data")
+                                          : String(open) + (open == 1 ? " runway" : " runways");
     if (closed) {
         what += ", " + String(closed) + " closed";
     }
-    int x = 16 + canvas.textWidth(g_zoom.code);
-    canvas.drawString(what, x, 35);
+    canvas.drawString(what, 16, TITLE_LINE2_Y);
     // FOLLOW where the radar has it, working the same way: a tap, then a
     // contact - one at the gate, say, to follow it out - with what it is
-    // doing said in the title. Before Unzoom, which leaves the text size
-    // smaller than the title's.
-    x += canvas.textWidth(what);
-    canvas.setTextColor(colorMuted);
+    // doing said under the title.
     if (g_zoomFollowHex.length()) {
-        const char *following = "  following ";
-        canvas.drawString(following, x, 35);
+        const char *following = "following ";
+        canvas.drawString(following, 16, TITLE_LINE3_Y);
         canvas.setTextColor(colorHome);
-        canvas.drawString(g_zoomFollowCallsign, x + canvas.textWidth(following), 35);
+        canvas.drawString(g_zoomFollowCallsign, 16 + canvas.textWidth(following), TITLE_LINE3_Y);
     } else if (g_zoomPicking) {
-        canvas.drawString("  tap a plane", x, 35);
+        canvas.drawString("tap a plane", 16, TITLE_LINE3_Y);
     }
     drawButton(FOLLOW_Y, g_zoomPicking ? "TAP PLANE" : "FOLLOW",
                g_zoomFollowHex.length() || g_zoomPicking ? Look::LIT : Look::PLAIN);
     drawRecButton();
     drawUnzoomButton();
+    drawZoomViewButtons();
 }
 
 }  // namespace
@@ -1430,6 +1451,7 @@ bool radarZoomOpen(const String &code, double &lat, double &lon, float &rangeNm)
     if (!frameZoom(code, g_zoom)) {
         return false;
     }
+    g_zoomViewNm = g_zoom.rangeNm;
     lat = g_zoom.lat;
     lon = g_zoom.lon;
     rangeNm = g_zoom.rangeNm;
@@ -1455,12 +1477,12 @@ void zoomPlot(const ZoomFrame &f, const std::vector<Aircraft> &aircraft,
     uint32_t t0 = micros();
     if (!full) {
         screen::fillRect(PLOT_L, PLOT_T, PLOT_R - PLOT_L, PLOT_B - PLOT_T, colorBg);
-        canvas.fillRect(FOOT_L, ZOOM_FOOT_T, FOOT_R - FOOT_L, FOOT_B - ZOOM_FOOT_T, colorBg);
+        canvas.fillRect(FOOT_L, FOOT_T, FOOT_R - FOOT_L, FOOT_B - FOOT_T, colorBg);
     }
     canvas.setFont(&fonts::Font0);
 
     float range = f.rangeNm;
-    float step = range > 3.0f ? 1.0f : 0.5f;
+    float step = range > 3.0f ? 1.0f : range > 1.0f ? 0.5f : 0.25f;
     drawScope(range, step);
 
     canvas.setClipRect(PLOT_L, PLOT_T, PLOT_R - PLOT_L, PLOT_B - PLOT_T);
@@ -1478,9 +1500,9 @@ void zoomPlot(const ZoomFrame &f, const std::vector<Aircraft> &aircraft,
     g_plotFrames++;
     canvas.clearClipRect();
 
-    // As the radar's, with the runways in use on top when there are any.
+    // As the radar's, with the runways in use over the range when there are any.
     if (!full) {
-        canvas.fillRect(0, RANGE_BOX_T, PLOT_L, BOX_H, colorBg);
+        canvas.fillRect(0, IN_USE_BOX_T, PLOT_L, RANGE_BOX_T + BOX_H - IN_USE_BOX_T, colorBg);
     }
     footerBox(nmText(range) + " nm range   rings every " + nmText(step) + " nm", 16, FOOTER_Y, false);
     String used;
@@ -1492,7 +1514,7 @@ void zoomPlot(const ZoomFrame &f, const std::vector<Aircraft> &aircraft,
         }
     }
     if (used.length()) {
-        footerBox("in use:" + used, 1264, FOOTER_Y - 2 * LEGEND_OFFSET, true);
+        footerBox("in use:" + used, 16, FOOTER_Y - LEGEND_OFFSET, false);
     }
     footerBox("o ground   ^ climb   v descent", 1264, FOOTER_Y - LEGEND_OFFSET, true);
     footerBox(String(plotted) + " contacts" + (labelled < plotted ? "   " + String(labelled) + " labelled" : ""), 1264,
@@ -1500,7 +1522,7 @@ void zoomPlot(const ZoomFrame &f, const std::vector<Aircraft> &aircraft,
 
     if (!full) {
         uint32_t t3 = micros();
-        pushPlot(push, ZOOM_FOOT_T);
+        pushPlot(push, IN_USE_BOX_T);
         g_pushUs += micros() - t3;
     }
 }
@@ -1518,7 +1540,9 @@ void radarZoomDraw(const std::vector<Aircraft> &aircraft, bool full) {
         drawZoomHeader();
     }
     // With a list up, a refresh is drawn under it and pushed along with it.
-    zoomPlot(g_zoom, aircraft, nullptr, true, g_zoomFollowHex, full, g_choiceCount == 0);
+    ZoomFrame view = g_zoom;
+    view.rangeNm = g_zoomViewNm;
+    zoomPlot(view, aircraft, nullptr, true, g_zoomFollowHex, full, g_choiceCount == 0);
     // Following into the zoom, its height against the field's.
     bool following = g_zoomFollowHex.length() > 0;
     if (following) {
@@ -1553,6 +1577,30 @@ ZoomAction radarZoomHandleTouch(int x, int y, String &outHex) {
         }
         if (b == BTN_REC) {
             return ZoomAction::TOGGLE_RECORD;
+        }
+        if (b == BTN_ZOOM_IN && zoomCanIn()) {
+            float next = ZOOM_VIEW_STEPS_NM[0];
+            for (float r : ZOOM_VIEW_STEPS_NM) {
+                if (r < g_zoomViewNm - 0.01f) {
+                    next = r;
+                }
+            }
+            g_zoomViewNm = next;
+            return ZoomAction::REDRAW;
+        }
+        if (b == BTN_ZOOM_OUT) {
+            if (g_zoomViewNm >= g_zoom.rangeNm - 0.01f) {
+                return ZoomAction::UNZOOM;
+            }
+            float next = g_zoom.rangeNm;
+            for (float r : ZOOM_VIEW_STEPS_NM) {
+                if (r > g_zoomViewNm + 0.01f) {
+                    next = std::min(r, g_zoom.rangeNm);
+                    break;
+                }
+            }
+            g_zoomViewNm = next;
+            return ZoomAction::REDRAW;
         }
     }
     switch (tapTarget(x, y, false, outHex)) {

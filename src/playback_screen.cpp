@@ -16,12 +16,14 @@
 
 namespace {
 
-// Back and the centre toggle where the live radar has them.
+// Back and the centre toggle where the live radar has them, and Export under
+// Back: the plot now runs the full height, and a third button in the row
+// reached into it.
 constexpr int BACK_X = 1140, BACK_Y = 8, BACK_W = 124, BACK_H = 44;
 constexpr int CENTRE_W = 124;
 constexpr int CENTRE_X = BACK_X - 12 - CENTRE_W;
 constexpr int EXPORT_W = 124;
-constexpr int EXPORT_X = CENTRE_X - 12 - EXPORT_W;
+constexpr int EXPORT_X = BACK_X, EXPORT_Y = BACK_Y + BACK_H + 8;
 
 // The controls take the margin left of the plot, where the live radar puts a
 // followed aircraft's telemetry: the plot itself is drawn exactly as it is
@@ -37,7 +39,7 @@ constexpr int STEP_W = (PANEL_W - 2 * STEP_GAP) / 3;
 constexpr int BAR_Y = 378, BAR_H = 40;
 constexpr int BAR_TOUCH_PAD = 14;  // a finger is wider than the bar is tall
 constexpr int FRAME_Y = 436;
-constexpr int TEL_X = 1264 - TELEMETRY_W, TEL_Y = 70;
+constexpr int TEL_X = 1264 - TELEMETRY_W, TEL_Y = EXPORT_Y + BACK_H + 12;
 // What a tick repaints: the clock and elapsed lines, and the bar with its
 // caption. The buttons only change when they are pressed.
 constexpr int DYN1_Y = CLOCK_Y - 4, DYN1_H = NOTE_Y - DYN1_Y - 6;
@@ -201,21 +203,21 @@ void checkVideo() {
 void drawExportButton() {
     auto &canvas = screen::canvas();
     const RadarPalette &p = radarPalette();
-    canvas.fillRect(EXPORT_X, BACK_Y, EXPORT_W, BACK_H, p.bg);
+    canvas.fillRect(EXPORT_X, EXPORT_Y, EXPORT_W, BACK_H, p.bg);
     canvas.setFont(&fonts::Font0);
     canvas.setTextSize(2);
     canvas.setTextDatum(MC_DATUM);
     if (g_videoExists) {
         // Outlined and grey, as the radar draws a button with nothing behind it.
-        canvas.drawRoundRect(EXPORT_X, BACK_Y, EXPORT_W, BACK_H, 6, p.disabled);
+        canvas.drawRoundRect(EXPORT_X, EXPORT_Y, EXPORT_W, BACK_H, 6, p.disabled);
         canvas.setTextColor(p.disabled);
-        canvas.drawString("Exported", EXPORT_X + EXPORT_W / 2, BACK_Y + BACK_H / 2);
+        canvas.drawString("Exported", EXPORT_X + EXPORT_W / 2, EXPORT_Y + BACK_H / 2);
     } else {
-        canvas.fillRoundRect(EXPORT_X, BACK_Y, EXPORT_W, BACK_H, 6, p.btnBg);
+        canvas.fillRoundRect(EXPORT_X, EXPORT_Y, EXPORT_W, BACK_H, 6, p.btnBg);
         canvas.setTextColor(p.text);
-        canvas.drawString("Export", EXPORT_X + EXPORT_W / 2, BACK_Y + BACK_H / 2);
+        canvas.drawString("Export", EXPORT_X + EXPORT_W / 2, EXPORT_Y + BACK_H / 2);
     }
-    screen::markDirty(EXPORT_X, BACK_Y, EXPORT_W, BACK_H);
+    screen::markDirty(EXPORT_X, EXPORT_Y, EXPORT_W, BACK_H);
 }
 
 // For a video frame, the buttons give way to the speed it plays at: nobody
@@ -228,23 +230,26 @@ void drawHeader(bool forVideo) {
     canvas.setTextSize(3);
     canvas.setTextDatum(ML_DATUM);
     canvas.setTextColor(p.text);
+    // In the corner left of the plot, as the live radar's title is: the
+    // date on a line of its own under it.
     const char *title = "Replay";
-    canvas.drawString(title, 16, 35);
-    String sub = h.military ? " - MIL -" : " - CIV -";
+    canvas.drawString(title, 16, 24);
+    canvas.setTextColor(p.muted);
+    canvas.drawString(h.military ? " - MIL -" : " - CIV -", 16 + canvas.textWidth(title), 24);
     if (h.startEpoch) {
         time_t t = h.startEpoch;
         struct tm tm;
         gmtime_r(&t, &tm);
         char buf[32];
-        strftime(buf, sizeof(buf), " %d %b %Y %H:%M UTC", &tm);
-        sub += buf;
+        strftime(buf, sizeof(buf), "%d %b %Y %H:%M UTC", &tm);
+        canvas.setTextSize(2);
+        canvas.drawString(buf, 16, 56);
+        canvas.setTextSize(3);
     }
-    canvas.setTextColor(p.muted);
-    canvas.drawString(sub, 16 + canvas.textWidth(title), 35);
 
     if (forVideo) {
         canvas.setTextDatum(MR_DATUM);
-        canvas.drawString(String(SPEEDS[g_speedIdx]) + "x speed", 1264, 35);
+        canvas.drawString(String(SPEEDS[g_speedIdx]) + "x speed", 1264, 24);
         return;
     }
     canvas.setTextSize(2);
@@ -286,8 +291,9 @@ void drawStaticPanel(bool forVideo) {
     }
     // Allowed the margin between the panel and the plot as well: a typical
     // auto note ("Auto: EZY13MG WATCHLIST") overran the panel by two pixels
-    // and fell to size 1, which is hard to read - in a video especially.
-    constexpr int NOTE_MAX_W = PANEL_W + 14;
+    // and fell to size 1, which is hard to read - in a video especially. No
+    // further than the plot's edge, which its refresh erases up to.
+    constexpr int NOTE_MAX_W = PANEL_W + 2;
     int size = 2;
     canvas.setTextSize(size);
     while (size > 1 && canvas.textWidth(note) > NOTE_MAX_W) {
@@ -589,9 +595,9 @@ PlaybackAction playbackScreenHandleTouch(int x, int y, Aircraft &outAircraft) {
         if (x >= CENTRE_X && x < CENTRE_X + CENTRE_W && hasHome()) {
             return PlaybackAction::TOGGLE_CENTRE;
         }
-        if (x >= EXPORT_X && x < EXPORT_X + EXPORT_W && !g_videoExists) {
-            return PlaybackAction::EXPORT;
-        }
+    }
+    if (y >= EXPORT_Y && y < EXPORT_Y + BACK_H && x >= EXPORT_X && x < EXPORT_X + EXPORT_W && !g_videoExists) {
+        return PlaybackAction::EXPORT;
     }
 
     if (x >= PANEL_X && x < PANEL_X + PANEL_W) {
