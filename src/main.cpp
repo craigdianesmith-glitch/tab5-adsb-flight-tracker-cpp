@@ -57,6 +57,7 @@ String g_label;
 TrafficFilter g_traffic = TrafficFilter::CIVIL;
 int g_radiusNm = DEFAULT_RADIUS_NM;
 bool g_showRefresh = true;
+bool g_navaids = true;  // marked on the radar - see radarScreenSetNavaids()
 int g_pollIntervalS = DEFAULT_POLL_INTERVAL_S;
 bool g_muted = false;
 AdsbSource g_source = DEFAULT_ADSB_SOURCE;
@@ -127,12 +128,16 @@ struct Follow {
     // Seen in the air, so a stop on the ground after it is an arrival rather
     // than where it was sitting when picked, or holding short to depart.
     bool airborne = false;
-    // Seen on the ground and then in the air: a departure, followed until it
-    // leaves the radius - see tickFollow().
+    // Seen on the ground and then in the air: a departure - which auto-follow
+    // follows until it leaves the radius, see tickFollow().
     bool seenGround = false;
     bool departed = false;
     String originCode;  // the airport it departed from, marked on the radar as it climbs away
     bool recording = false;  // it started the recording running now
+    // Started by an alert rather than by hand: with nobody there to end it,
+    // it ends itself - see tickFollow(). One started by hand runs, and its
+    // recording with it, until the user ends it.
+    bool automatic = false;
     bool inZoom = false;     // has been on the zoom's plot since it opened
     // The zoom up is one following handed it to, or it was picked in - not
     // one tapped open on some other airport, whose poll doesn't reach it.
@@ -796,8 +801,32 @@ struct Track {
     // put back into the kind of list it went missing from.
     uint32_t inMainMs = 0, inZoomMs = 0;
     String provider;  // who answered the list that last had it current
+    // What the zoom last announced it for, and when - see announceMovement().
+    RunwaySim::Movement announced = RunwaySim::Movement::NONE;
+    uint32_t announcedMs = 0;
 };
 std::map<String, Track> g_tracks;  // only touched by loop()
+
+// Not announced for the same again within this: a landing the sim loses
+// for a poll and picks up again is one landing.
+constexpr uint32_t ANNOUNCE_AGAIN_MS = 5UL * 60 * 1000;
+
+// The zoom on screen says each take-off and landing at its airport as it
+// begins, as a controller would clear it - lining up, for a take-off, or
+// established on final for a landing, as the runway sim has them.
+void announceMovement(const Aircraft &a, Track &t, uint32_t now) {
+    RunwaySim::Movement m = t.sim.movement();
+    if (m == RunwaySim::Movement::NONE || (m == t.announced && now - t.announcedMs < ANNOUNCE_AGAIN_MS)) {
+        return;
+    }
+    const RunwayLine &rw = t.sim.runway();
+    if (g_screen != Screen::ZOOM || !g_zoomUp || !rw.ident || !rw.airport || g_zoomCode != rw.airport) {
+        return;
+    }
+    t.announced = m;
+    t.announcedMs = now;
+    soundAnnounce(a.callsign, rw.ident, m == RunwaySim::Movement::TAKEOFF);
+}
 
 bool lowSample(const FollowSample &s) { return s.ground || (s.hasAlt && s.altFt < ESTIMATE_MAX_FT); }
 
@@ -811,6 +840,9 @@ void noteTracks(const std::vector<Aircraft> &list, bool zoomList, const String &
         }
         Track &t = g_tracks[a.hex];
         t.sim.report(followSampleOf(a, now));
+        if (zoomList) {
+            announceMovement(a, t, now);
+        }
         if (!a.posStale) {
             t.last = a;
             t.freshMs = now;
@@ -1475,9 +1507,12 @@ bool findShown(const String &hex, Aircraft &out) {
     return found || lastReported(hex, out);
 }
 
-// Following starts a recording when auto-record is on; it stops once the
-// aircraft has come to rest on the ground, or following does. One started by
-// hand is left to run, since it was asked for. One an alert started gives way
+// Following starts a recording when auto-record is on. Following by hand,
+// it runs until the user ends following or taps REC - and on past an
+// aircraft lost, for REC to stop. Auto-follow's stops too once the aircraft
+// has come to rest on the ground, or following ends itself. A recording
+// already running that was started by hand is left to run, since it was
+// asked for. One an alert started gives way
 // - more often than not it is of this very aircraft, a watchlist entry being
 // what makes one worth following, and it would only ever show it around home
 // - and auto-record is held off, as it is when one is stopped by hand, so it
@@ -1603,6 +1638,18 @@ void stopFollow() {
     }
 }
 
+// Like stopFollow(), for following that has run out on its own: auto-follow's
+// recording stops with it, but one of following by hand runs on until the user
+// stops it with REC.
+void followEnded() {
+    if (!g_follow.automatic && followRecording()) {
+        Serial.printf("[follow] %s's recording runs on until REC is tapped\n", g_follow.callsign.c_str());
+        g_follow.recording = false;
+    }
+    stopFollow();
+    updateRecButton(true);
+}
+
 // The airport the followed aircraft should be handed to the zoom of, if any:
 // one it is low near and not climbing away from - coming in to land, or
 // still on the ground to take off - and close enough to be on its zoom's plot
@@ -1703,7 +1750,7 @@ void tickFollow() {
         }
     } else if (now - g_follow.seenMs > std::max(FOLLOW_LOST_MS, g_follow.sim.keepMs())) {
         Serial.printf("[follow] lost %s\n", g_follow.callsign.c_str());
-        stopFollow();
+        followEnded();
         if (g_screen == Screen::RADAR) {
             drawRadar(true);
         } else if (g_screen == Screen::ZOOM) {
@@ -1740,18 +1787,21 @@ void tickFollow() {
     // Down and stopped - or stopped saying how fast it is, as many do once
     // they are parked - after having been seen moving: it has arrived.
     bool stopped = ac.speedStr == "?" || ac.speedStr.toInt() == 0;
-    if (followRecording() && g_follow.airborne && !g_follow.departed && onGround(ac) && stopped) {
+    if (g_follow.automatic && followRecording() && g_follow.airborne && !g_follow.departed && onGround(ac) &&
+        stopped) {
         Serial.printf("[follow] %s has stopped on the ground - ending its recording\n", g_follow.callsign.c_str());
         stopFollowRecording();
         updateRecButton(true);
     }
 
-    // A departure is followed until it is beyond the radius, where the rest
-    // of the radar's sky stops: by then it is on its way to somewhere else.
-    if (g_follow.departed && !g_follow.lost && haversineNm(g_lat, g_lon, ac.lat, ac.lon) > g_radiusNm) {
+    // Auto-follow follows a departure until it is beyond the radius, where the
+    // rest of the radar's sky stops: by then it is on its way to somewhere
+    // else. Followed by hand, it is followed on, as far as the user likes.
+    if (g_follow.automatic && g_follow.departed && !g_follow.lost &&
+        haversineNm(g_lat, g_lon, ac.lat, ac.lon) > g_radiusNm) {
         Serial.printf("[follow] %s has left the %d nm radius - done following it\n", g_follow.callsign.c_str(),
                       g_radiusNm);
-        stopFollow();
+        followEnded();
         if (g_screen == Screen::RADAR) {
             drawRadar(true);
         } else if (g_screen == Screen::ZOOM) {
@@ -1836,6 +1886,7 @@ void autoFollow(const Aircraft &ac) {
     }
     g_follow.picking = false;
     startFollow(ac);
+    g_follow.automatic = true;
     if (showRadar) {
         g_screen = Screen::RADAR;
         drawRadar(true);
@@ -2360,6 +2411,11 @@ void handleSettingsTouch(int x, int y, bool pressed, bool clicked) {
         g_showRefresh = settingsScreenShowRefresh();
         saveFilters(traffic, radius, g_showRefresh, interval, source);
         displaySetShowRefresh(g_showRefresh);
+        if (settingsScreenNavaids() != g_navaids) {
+            g_navaids = settingsScreenNavaids();
+            saveNavaids(g_navaids);
+            radarScreenSetNavaids(g_navaids);
+        }
         displaySetHeader(traffic == TrafficFilter::MILITARY, g_airportCode, activeProvider());
         if (xSemaphoreTake(g_dataMutex, portMAX_DELAY) == pdTRUE) {
             // A changed interval alone doesn't warrant refetching - the new
@@ -2507,6 +2563,7 @@ void setup() {
     g_traffic = s.traffic;
     g_radiusNm = s.radiusNm;
     g_showRefresh = s.showRefresh;
+    g_navaids = s.navaids;
     g_pollIntervalS = s.pollIntervalS;
     g_muted = s.muted;
     g_source = s.source;
@@ -2522,10 +2579,13 @@ void setup() {
     soundSetMuted(g_muted);
     displaySetShowRefresh(g_showRefresh);
     displaySetMuted(g_muted);
+    radarScreenSetNavaids(g_navaids);
+    settingsScreenSetNavaids(g_navaids);
     g_airportCode = nearestAirportCode(g_lat, g_lon);
     displaySetHeader(g_traffic == TrafficFilter::MILITARY, g_airportCode, g_activeProvider);
     screen::setOverlay(drawBanner, 0, 0, 1280, BANNER_H);
 
+    recorder::setRunwaysInUseSource(radarLiveRunwaysInUse);
     // Mounted now so the log says whether there is a card; recording mounts
     // it again later if one is put in after boot.
     if (!recorder::mount()) {
@@ -2618,7 +2678,8 @@ void loop() {
 
     // 'S' over serial sends the screen back, for tools/screenshot.py; 'E',
     // 'W', 'R' and 'M' sound an alert of each kind, for a made-up callsign,
-    // to hear what it says.
+    // to hear what it says; 'T' and 'L' the zoom's take-off and landing
+    // announcements.
     while (Serial.available()) {
         switch (Serial.read()) {
         case 'S':
@@ -2635,6 +2696,12 @@ void loop() {
             break;
         case 'M':
             soundAlert(ALERT_MILITARY, "RCH21", "Lockheed Martin F-35 Lightning II");
+            break;
+        case 'T':
+            soundAnnounce("EZY53TH", "23", true);
+            break;
+        case 'L':
+            soundAnnounce("BAW27K", "27L", false);
             break;
         }
     }

@@ -21,6 +21,7 @@ AppSettings loadSettings() {
     s.traffic = prefs.getBool("milonly", false) ? TrafficFilter::MILITARY : TrafficFilter::CIVIL;
     s.radiusNm = prefs.getInt("radius", DEFAULT_RADIUS_NM);
     s.showRefresh = prefs.getBool("refresh", true);
+    s.navaids = prefs.getBool("navaids", true);
     s.pollIntervalS = prefs.getInt("pollint", DEFAULT_POLL_INTERVAL_S);
     s.muted = prefs.getBool("muted", false);
     s.source = (AdsbSource)prefs.getUChar("source", (uint8_t)DEFAULT_ADSB_SOURCE);
@@ -83,6 +84,13 @@ void saveFilters(TrafficFilter traffic, int radiusNm, bool showRefresh, int poll
     prefs.putBool("refresh", showRefresh);
     prefs.putInt("pollint", pollIntervalS);
     prefs.putUChar("source", (uint8_t)source);
+    prefs.end();
+}
+
+void saveNavaids(bool navaids) {
+    Preferences prefs;
+    prefs.begin(NAMESPACE, false);
+    prefs.putBool("navaids", navaids);
     prefs.end();
 }
 

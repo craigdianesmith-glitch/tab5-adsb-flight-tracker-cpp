@@ -128,6 +128,8 @@ struct Lineup {
     float along;       // where it was, from the threshold
     int32_t fieldFt;
     float halfWidthNm;
+    const char *ident;    // the end it is lined up on
+    const char *airport;  // the airport's IATA code
 };
 
 bool scanLineup(const FollowSample &last, bool onGround, Lineup &out);
@@ -202,7 +204,7 @@ bool scanLineup(const FollowSample &last, bool onGround, Lineup &out) {
                     continue;
                 }
                 bestOffset = offset;
-                out = {fx, fy, ux, uy, len, along, rw.elevationFt, rw.widthFt / 2.0f / FT_PER_NM};
+                out = {fx, fy, ux, uy, len, along, rw.elevationFt, rw.widthFt / 2.0f / FT_PER_NM, from.ident, rw.code};
                 found = true;
             }
         }
@@ -309,9 +311,11 @@ bool runwayUnder(const FollowSample &last, const std::vector<FollowSample> &hist
                 }
             }
             if (towards1) {
-                out = {ax, ay, ux, uy, len, along, rw.elevationFt, rw.widthFt / 2.0f / FT_PER_NM};
+                out = {ax, ay, ux, uy, len, along, rw.elevationFt, rw.widthFt / 2.0f / FT_PER_NM, rw.end[0].ident,
+                       rw.code};
             } else {
-                out = {bx, by, -ux, -uy, len, len - along, rw.elevationFt, rw.widthFt / 2.0f / FT_PER_NM};
+                out = {bx, by, -ux, -uy, len, len - along, rw.elevationFt, rw.widthFt / 2.0f / FT_PER_NM,
+                       rw.end[1].ident, rw.code};
             }
             return true;
         }
@@ -343,7 +347,7 @@ void relate(const RunwayLine &r, float lat, float lon, float &along, float &offs
 // The runway a lineup found from `s` is relative to, fixed where it is.
 RunwayLine lineOf(const FollowSample &s, const Lineup &l) {
     return {s.lat + l.thrY / 60.0f, s.lon + l.thrX / nmPerDegLonAt(s.lat), l.ux, l.uy, l.len, l.halfWidthNm,
-            l.fieldFt};
+            l.fieldFt, l.ident, l.airport};
 }
 
 // On runway `r`'s centreline, or its extension, `along` from its threshold,
@@ -556,6 +560,15 @@ const char *RunwaySim::phase() const {
     case TAKEOFF: return "take-off";
     case LANDING: return "landing";
     default: return "none";
+    }
+}
+
+RunwaySim::Movement RunwaySim::movement() const {
+    switch (phase_) {
+    case LINED_UP:
+    case TAKEOFF: return Movement::TAKEOFF;
+    case LANDING: return Movement::LANDING;
+    default: return Movement::NONE;
     }
 }
 

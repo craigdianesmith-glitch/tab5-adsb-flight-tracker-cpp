@@ -35,13 +35,16 @@ constexpr int RADIUS_SLIDER_X = COL1_X + SLIDER_INSET, RADIUS_SLIDER_Y = 318;
 constexpr int RADIUS_TICKS_Y = RADIUS_SLIDER_Y + 38;
 constexpr int RADIUS_CAPS_Y = 392;
 
+// Two switches, a little shorter than the other rows to fit them both.
 constexpr int DISPLAY_LABEL_Y = 440;
-constexpr int REFRESH_X = COL1_X, REFRESH_Y = 468, REFRESH_W = COL_W, REFRESH_H = 76;
+constexpr int TOGGLE_H = 62;
+constexpr int REFRESH_X = COL1_X, REFRESH_Y = 468, REFRESH_W = COL_W, REFRESH_H = TOGGLE_H;
+constexpr int NAVAIDS_X = COL1_X, NAVAIDS_Y = REFRESH_Y + TOGGLE_H + 8, NAVAIDS_W = COL_W, NAVAIDS_H = TOGGLE_H;
 
-// The space below the refresh toggle was the only room left for this, which is
-// no hardship: the source is the one thing here you set once and forget.
-constexpr int SOURCE_LABEL_Y = 568;
-constexpr int SRC_X = COL1_X, SRC_Y = 596, SRC_W = COL_W, SRC_H = 76;
+// The space below the display toggles was the only room left for this, which
+// is no hardship: the source is the one thing here you set once and forget.
+constexpr int SOURCE_LABEL_Y = 616;
+constexpr int SRC_X = COL1_X, SRC_Y = 640, SRC_W = COL_W, SRC_H = 66;
 // Auto plus one per provider.
 constexpr int SRC_SEGMENTS = ADSB_PROVIDER_COUNT + 1;
 
@@ -68,6 +71,7 @@ TrafficFilter g_traffic = TrafficFilter::CIVIL;
 int g_radius = DEFAULT_RADIUS_NM;
 int g_interval = DEFAULT_POLL_INTERVAL_S;
 bool g_showRefresh = true;
+bool g_navaids = true;
 String g_locationLabel;
 String g_alertSummary;
 AdsbSource g_source = DEFAULT_ADSB_SOURCE;
@@ -244,32 +248,41 @@ void drawSourceSegments() {
     screen::markDirty(SRC_X, SRC_Y, SRC_W, SRC_H);
 }
 
-void drawRefreshToggle() {
+// A switch row: its title, a line saying what it does, and the switch.
+void drawToggle(int x, int y, int w, int h, const char *title, const char *detail, bool on) {
     auto &canvas = screen::canvas();
-    canvas.fillRoundRect(REFRESH_X, REFRESH_Y, REFRESH_W, REFRESH_H, 8, colorBtnBg);
-    canvas.drawRoundRect(REFRESH_X, REFRESH_Y, REFRESH_W, REFRESH_H, 8, colorBorder);
+    canvas.fillRoundRect(x, y, w, h, 8, colorBtnBg);
+    canvas.drawRoundRect(x, y, w, h, 8, colorBorder);
 
     canvas.setFont(&fonts::Font0);
     canvas.setTextDatum(ML_DATUM);
     canvas.setTextSize(3);
     canvas.setTextColor(colorWhite);
-    canvas.drawString("Show flight refresh", REFRESH_X + 24, REFRESH_Y + 26);
+    canvas.drawString(title, x + 24, y + 20);
     canvas.setTextSize(2);
     canvas.setTextColor(colorDim);
-    canvas.drawString("Shades cells that changed", REFRESH_X + 24, REFRESH_Y + 54);
+    canvas.drawString(detail, x + 24, y + 46);
 
     int sw = 108, sh = 40;
-    int sx = REFRESH_X + REFRESH_W - sw - 20, sy = REFRESH_Y + (REFRESH_H - sh) / 2;
-    canvas.fillRoundRect(sx, sy, sw, sh, sh / 2, g_showRefresh ? colorOn : colorOff);
+    int sx = x + w - sw - 20, sy = y + (h - sh) / 2;
+    canvas.fillRoundRect(sx, sy, sw, sh, sh / 2, on ? colorOn : colorOff);
     int knob = sh - 8;
-    canvas.fillCircle(g_showRefresh ? (sx + sw - 4 - knob / 2) : (sx + 4 + knob / 2), sy + sh / 2, knob / 2,
-                      colorWhite);
+    canvas.fillCircle(on ? (sx + sw - 4 - knob / 2) : (sx + 4 + knob / 2), sy + sh / 2, knob / 2, colorWhite);
     canvas.setTextSize(2);
     canvas.setTextColor(colorWhite);
     canvas.setTextDatum(MC_DATUM);
-    canvas.drawString(g_showRefresh ? "ON" : "OFF", g_showRefresh ? (sx + 30) : (sx + sw - 30), sy + sh / 2);
+    canvas.drawString(on ? "ON" : "OFF", on ? (sx + 30) : (sx + sw - 30), sy + sh / 2);
 
-    screen::markDirty(REFRESH_X, REFRESH_Y, REFRESH_W, REFRESH_H);
+    screen::markDirty(x, y, w, h);
+}
+
+void drawRefreshToggle() {
+    drawToggle(REFRESH_X, REFRESH_Y, REFRESH_W, REFRESH_H, "Show flight refresh", "Shades cells that changed",
+               g_showRefresh);
+}
+
+void drawNavaidsToggle() {
+    drawToggle(NAVAIDS_X, NAVAIDS_Y, NAVAIDS_W, NAVAIDS_H, "Navaids", "VOR, DME and TACAN on the radar", g_navaids);
 }
 
 // The "leads somewhere else" rows share a shape: a title, a line of
@@ -351,6 +364,9 @@ void settingsScreenSet(TrafficFilter traffic, int radiusNm, bool showRefresh, in
 
 void settingsScreenSetLocation(const String &locationLabel) { g_locationLabel = locationLabel; }
 
+void settingsScreenSetNavaids(bool on) { g_navaids = on; }
+bool settingsScreenNavaids() { return g_navaids; }
+
 void settingsScreenSetAlertSummary(const String &summary) { g_alertSummary = summary; }
 
 int settingsScreenPollInterval() { return g_interval; }
@@ -377,6 +393,7 @@ void settingsScreenDraw() {
     drawRadiusSlider();
     sectionLabel("DISPLAY", COL1_X, DISPLAY_LABEL_Y);
     drawRefreshToggle();
+    drawNavaidsToggle();
     sectionLabel("DATA SOURCE", COL1_X, SOURCE_LABEL_Y);
     drawSourceSegments();
 
@@ -456,6 +473,13 @@ SettingsAction settingsScreenHandleTouch(int x, int y, bool pressed, bool clicke
     if (x >= REFRESH_X && x < REFRESH_X + REFRESH_W && y >= REFRESH_Y && y < REFRESH_Y + REFRESH_H) {
         g_showRefresh = !g_showRefresh;
         drawRefreshToggle();
+        screen::flush();
+        return SettingsAction::NONE;
+    }
+
+    if (x >= NAVAIDS_X && x < NAVAIDS_X + NAVAIDS_W && y >= NAVAIDS_Y && y < NAVAIDS_Y + NAVAIDS_H) {
+        g_navaids = !g_navaids;
+        drawNavaidsToggle();
         screen::flush();
         return SettingsAction::NONE;
     }

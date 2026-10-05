@@ -63,6 +63,10 @@ struct RunwayLine {
     float len;     // nm
     float halfWidthNm;
     int32_t fieldFt;
+    // Which runway end it is, as painted on it, and the airport's IATA code:
+    // pointers into the runway table, so they last.
+    const char *ident = nullptr;
+    const char *airport = nullptr;
 };
 
 // A take-off or a landing, simulated from when it begins to when the feed
@@ -102,6 +106,11 @@ public:
     bool haveFresh() const { return haveFresh_; }
     const FollowSample &fresh() const { return fresh_; }  // its last report with a current position
     const char *phase() const;                              // for the log
+    // The take-off or landing under way, for the zoom to announce: lined up
+    // counts as a take-off, cleared for it. `runway()` is which, while one is.
+    enum class Movement : uint8_t { NONE, TAKEOFF, LANDING };
+    Movement movement() const;
+    const RunwayLine &runway() const { return rw_; }
 
 private:
     enum Phase : uint8_t { NONE, LINED_UP, TAKEOFF, LANDING };

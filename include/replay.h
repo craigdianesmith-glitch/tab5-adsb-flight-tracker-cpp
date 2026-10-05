@@ -56,10 +56,6 @@ struct View {
 // The view of the poll latest at `t`.
 View viewAt(uint32_t t);
 
-// Whether any of its polls are of the radar around home, which is all an
-// older recording has: for the replay to offer its HOME and AIRPORT centres.
-bool hasHomeView();
-
 // Where the aircraft with ICAO `hex` was last reported by `t` ms in, for
 // centring on one that is missing from the poll at that point. False if it
 // hadn't been reported yet.

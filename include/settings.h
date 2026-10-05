@@ -16,6 +16,7 @@ struct AppSettings {
     TrafficFilter traffic;
     int radiusNm;
     bool showRefresh;   // shade cells that changed on the last poll
+    bool navaids;       // mark the VORs, DMEs and TACANs in range on the radar
     int pollIntervalS;  // how often the sky is refetched
     bool muted;         // speaker silenced from the header
     AdsbSource source;  // which ADS-B provider to poll, or AUTO to fail over
@@ -39,6 +40,7 @@ void saveLocation(double lat, double lon, const String &label);
 void saveFilters(TrafficFilter traffic, int radiusNm, bool showRefresh, int pollIntervalS,
                  AdsbSource source);
 void saveMuted(bool muted);
+void saveNavaids(bool navaids);
 void saveRadarCentre(RadarCentre centre);
 void saveRadarAirports(bool airports);
 void saveRadarRange(int rangeNm);

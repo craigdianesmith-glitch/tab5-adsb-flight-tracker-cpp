@@ -163,6 +163,18 @@ float radarZoomViewNm();
 // code the airport table hasn't got, with nothing drawn.
 bool radarZoomPlotDraw(const RadarScene &scene, const String &code, bool full);
 
+// Whether the radar marks the navaids in range - VORs, DMEs and TACANs, as
+// the settings screen has it - live and in replays. A navaid's ident or
+// symbol is tapped for its card: its name, type, frequency and DME channel.
+void radarScreenSetNavaids(bool on);
+
+// The runway ends the live zoom has lately seen in use, and how long ago,
+// for a recording's file to begin with - see recorder::RunwaysInUse.
+void radarLiveRunwaysInUse(recorder::RunwaysInUse &out);
+// What a replay's zoom starts out remembering of the runways in use: its
+// recording's, as the live zoom had them when it began.
+void radarReplayRunwaysInUse(const recorder::RunwaysInUse &seed);
+
 ZoomAction radarZoomHandleTouch(int x, int y, String &outHex);
 
 // --- the followed aircraft's height ---------------------------------------------

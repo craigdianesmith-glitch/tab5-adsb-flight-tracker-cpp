@@ -44,6 +44,7 @@ String g_path;
 // The header the recording was started with, kept for the parts after the
 // first; and the part being written, which is what decides when to split.
 Header g_header;
+void (*g_runwaysSource)(RunwaysInUse &out) = nullptr;
 uint32_t g_fileStartMs = 0;
 uint32_t g_fileBytes = 0;
 
@@ -198,11 +199,32 @@ bool openPartLocked(const Header &h) {
     if (h.followHex.length()) {
         snprintf(follow, sizeof(follow), "follow %s %d\n", field(h.followHex, 8).c_str(), h.followRangeNm);
     }
-    char buf[320];
+    // Last, after what the list reads, and kept short enough for a replay's
+    // line buffer: a few ends are all an airport is ever working at once.
+    char runways[160] = "";
+    RunwaysInUse inUse;
+    if (g_runwaysSource) {
+        g_runwaysSource(inUse);
+    }
+    if (inUse.code.length() && !inUse.ends.empty()) {
+        int at = snprintf(runways, sizeof(runways), "runways %s", field(inUse.code, 4).c_str());
+        for (const RunwaysInUse::End &e : inUse.ends) {
+            char one[24];
+            int len = snprintf(one, sizeof(one), " %s %lu", e.ident, (unsigned long)e.agoS);
+            if (at + len + 2 > (int)sizeof(runways)) {
+                break;
+            }
+            memcpy(runways + at, one, len + 1);
+            at += len;
+        }
+        runways[at++] = '\n';
+        runways[at] = 0;
+    }
+    char buf[512];
     int n = snprintf(buf, sizeof(buf),
-                     "%s\nstart %lu\ntrigger %s\nnote %s\nhome %.5f %.5f\nradius %d\ntraffic %s\npart %d\n%send-header\n",
+                     "%s\nstart %lu\ntrigger %s\nnote %s\nhome %.5f %.5f\nradius %d\ntraffic %s\npart %d\n%s%send-header\n",
                      MAGIC, (unsigned long)h.startEpoch, triggerName(h.trigger), note.c_str(),
-                     h.lat, h.lon, h.radiusNm, h.military ? "military" : "civil", h.part, follow);
+                     h.lat, h.lon, h.radiusNm, h.military ? "military" : "civil", h.part, follow, runways);
     size_t want = std::min<size_t>(n, sizeof(buf) - 1);
     size_t wrote = g_file.write((const uint8_t *)buf, want);
     g_file.flush();
@@ -238,6 +260,11 @@ bool nextPartLocked() {
 }
 
 }  // namespace
+
+void setRunwaysInUseSource(void (*source)(RunwaysInUse &out)) {
+    Lock lock;
+    g_runwaysSource = source;
+}
 
 bool start(const Header &h) {
     Lock lock;
@@ -470,6 +497,22 @@ bool parseHeaderLine(const char *line, Header &h) {
         const char *space = strchr(v, ' ');
         h.followHex = space ? String(v).substring(0, space - v) : String(v);
         h.followRangeNm = space ? atoi(space + 1) : 0;
+    } else if ((v = after(line, "runways"))) {
+        h.runways = RunwaysInUse();
+        char code[8], ident[8];
+        unsigned long ago;
+        int used = 0;
+        if (sscanf(v, "%7s%n", code, &used) == 1) {
+            h.runways.code = code;
+            v += used;
+            while (sscanf(v, "%7s %lu%n", ident, &ago, &used) == 2) {
+                RunwaysInUse::End e = {};
+                strlcpy(e.ident, ident, sizeof(e.ident));
+                e.agoS = ago;
+                h.runways.ends.push_back(e);
+                v += used;
+            }
+        }
     } else {
         return false;
     }

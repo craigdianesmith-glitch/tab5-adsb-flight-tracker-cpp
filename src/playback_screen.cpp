@@ -93,9 +93,10 @@ int g_followRange = FOLLOW_RANGE_NM;  // the radar view's, as last worked out
 // counted it, or 0: set by keepFollowedInScene() for the telemetry.
 uint32_t g_lostS = 0;
 
-// Whether the recording has polls of the radar around home, for the HOME and
-// AIRPORT centre to apply to.
-bool hasHome() { return replay::hasHomeView(); }
+// Whether the poll shown is of the radar around home, the only view the HOME
+// and AIRPORT centre applies to: a followed aircraft's polls were fetched
+// around it, and a zoom is framed on its airport.
+bool centreApplies() { return g_view.kind == replay::View::HOME; }
 
 String clockText(uint32_t ms) {
     uint32_t s = ms / 1000;
@@ -257,9 +258,7 @@ void drawHeader(bool forVideo) {
     canvas.setTextColor(p.text);
     canvas.fillRoundRect(BACK_X, BACK_Y, BACK_W, BACK_H, 6, p.btnBg);
     canvas.drawString("Back", BACK_X + BACK_W / 2, BACK_Y + BACK_H / 2);
-    // A followed aircraft's polls were fetched around it, not home, so there
-    // is no other centre to switch to.
-    if (hasHome()) {
+    if (centreApplies()) {
         canvas.fillRoundRect(CENTRE_X, BACK_Y, CENTRE_W, BACK_H, 6, p.btnBg);
         canvas.drawString(g_centre == RadarCentre::HOME ? "HOME" : "AIRPORT", CENTRE_X + CENTRE_W / 2,
                           BACK_Y + BACK_H / 2);
@@ -532,6 +531,7 @@ bool playbackScreenOpen(const String &path, replay::LoadProgress progress) {
     g_dirty = false;
     g_view = replay::View();
     g_followRange = FOLLOW_RANGE_NM;
+    radarReplayRunwaysInUse(replay::header().runways);
     g_path = path;
     g_resultLine = g_resultDetail = "";
     checkVideo();
@@ -598,7 +598,7 @@ PlaybackAction playbackScreenHandleTouch(int x, int y, Aircraft &outAircraft) {
         if (x >= BACK_X && x < BACK_X + BACK_W) {
             return PlaybackAction::BACK;
         }
-        if (x >= CENTRE_X && x < CENTRE_X + CENTRE_W && hasHome()) {
+        if (x >= CENTRE_X && x < CENTRE_X + CENTRE_W && centreApplies()) {
             return PlaybackAction::TOGGLE_CENTRE;
         }
     }

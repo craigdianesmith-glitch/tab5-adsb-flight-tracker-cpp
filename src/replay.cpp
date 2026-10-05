@@ -110,7 +110,6 @@ std::vector<Gap, PsramAllocator<Gap>> g_gaps;
 // keep anywhere.
 std::map<String, std::vector<FollowSample>> g_heights;
 std::vector<String> g_providers;  // the names the polls give, in the order first met
-bool g_hasHome = false;
 
 // Each low contact's RunwaySim, fed its fixes up to the moment last shown
 // as the live screens feed theirs at each poll, so that a take-off or
@@ -378,7 +377,6 @@ bool load(const String &path, LoadProgress progress) {
             sscanf(end, "%23s %23s %15s", viewTok, providerTok, rangeTok);
             f.view = parseView(viewTok);
             f.view.rangeNm = rangeTok[0] ? std::max(0.0f, strtof(rangeTok, nullptr)) : 0.0f;
-            g_hasHome = g_hasHome || f.view.kind == View::HOME;
             if (providerTok[0] && strcmp(providerTok, "?") != 0) {
                 auto it = std::find(g_providers.begin(), g_providers.end(), String(providerTok));
                 if (it == g_providers.end()) {
@@ -435,7 +433,6 @@ void unload() {
     g_sims.clear();
     g_simsAt = 0;
     g_providers.clear();
-    g_hasHome = false;
     g_cur.clear();
     g_next.clear();
     g_curIdx = g_nextIdx = SIZE_MAX;
@@ -553,8 +550,6 @@ String callsignOf(const String &hex) {
 }
 
 View viewAt(uint32_t t) { return g_frames.empty() ? View() : g_frames[frameIndexAt(t)].view; }
-
-bool hasHomeView() { return g_hasHome; }
 
 bool lastFixOf(const String &hex, uint32_t t, float &lat, float &lon) {
     if (g_frames.empty()) {

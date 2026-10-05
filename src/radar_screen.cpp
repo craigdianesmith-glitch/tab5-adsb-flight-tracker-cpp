@@ -5,6 +5,7 @@
 #include <math.h>
 
 #include "airports.h"
+#include "navaids.h"
 #include "alerts.h"
 #include "runways.h"
 #include "screen.h"
@@ -95,6 +96,13 @@ struct LabelBox {
     int16_t x, y, w, h;
 };
 
+// The map's labels on the plot being drawn - the centre's code, the other
+// airports', then the navaids' - placed in that order, each kept clear of
+// those before it.
+constexpr int MAX_MAP_LABELS = 96;
+LabelBox g_mapLabels[MAX_MAP_LABELS];
+int g_mapLabelCount = 0;
+
 bool overlapsAny(const LabelBox *boxes, int count, int x, int y, int w, int h) {
     for (int j = 0; j < count; j++) {
         const LabelBox &b = boxes[j];
@@ -118,6 +126,17 @@ constexpr int AIRPORT_TAP_R = 22;
 constexpr int AIRPORT_LABEL_PAD = 10;
 AirportHit g_airportHits[MAX_AIRPORT_LABELS + 1];  // and the centre's
 int g_airportHitCount = 0;
+
+// The same for the navaids, to open one's card.
+struct NavaidHit {
+    int16_t x, y;
+    LabelBox label;
+    const Navaid *navaid;
+};
+constexpr int MAX_NAVAID_HITS = 64;
+NavaidHit g_navaidHits[MAX_NAVAID_HITS];
+int g_navaidHitCount = 0;
+bool g_navaidsOn = true;  // the setting
 
 void noteAirportHit(const String &code, int x, int y, const LabelBox &label) {
     if (g_airportHitCount < MAX_AIRPORT_LABELS + 1) {
@@ -315,12 +334,6 @@ void drawAirports(double lat, double lon, int rangeNm, const String &centreCode,
     canvas.setTextSize(2);
     canvas.setTextColor(colorFaint);
     canvas.setTextDatum(TL_DATUM);
-    LabelBox taken[MAX_AIRPORT_LABELS];
-    int takenCount = 0;
-    if (centreCode.length()) {
-        int w = canvas.textWidth(centreCode);
-        taken[takenCount++] = {(int16_t)(CENTER_X - w / 2), (int16_t)CENTRE_CODE_Y, (int16_t)w, (int16_t)LABEL_H};
-    }
     for (const Airport &a : airportsWithin(lat, lon, rangeNm)) {
         if (a.code == centreCode) {
             continue;  // the cross already marks it
@@ -341,13 +354,99 @@ void drawAirports(double lat, double lon, int rangeNm, const String &centreCode,
             ly = y - T1 - 3 - LABEL_H;
         }
         LabelBox label = {(int16_t)lx, (int16_t)ly, 0, (int16_t)LABEL_H};
-        if (origin || (takenCount < MAX_AIRPORT_LABELS && !overlapsAny(taken, takenCount, lx, ly, w, LABEL_H))) {
+        if (g_mapLabelCount < MAX_MAP_LABELS &&
+            (origin || !overlapsAny(g_mapLabels, g_mapLabelCount, lx, ly, w, LABEL_H))) {
             canvas.setTextColor(origin ? colorHome : colorFaint);
             canvas.drawString(a.code, lx, ly);
             label.w = (int16_t)w;
-            taken[takenCount++] = label;
+            g_mapLabels[g_mapLabelCount++] = label;
         }
         noteAirportHit(a.code, x, y, label);
+    }
+}
+
+// A navaid as a chart draws one, small: a VOR a hexagon with a dot in it,
+// boxed when there is a DME with it; a DME alone a box with a dot, beside an
+// NDB a box round a ring of dots; a TACAN three tabs, round a VOR's hexagon
+// for a VORTAC.
+constexpr int NAVAID_R = 7, NAVAID_TAB = 3;
+void drawNavaidSymbol(int x, int y, NavaidType type, uint16_t color) {
+    auto &canvas = screen::canvas();
+    // A flat-topped hexagon's corners, from east anticlockwise.
+    int vx[6], vy[6];
+    for (int i = 0; i < 6; i++) {
+        float a = i * (float)M_PI / 3.0f;
+        vx[i] = x + (int)lroundf(NAVAID_R * cosf(a));
+        vy[i] = y - (int)lroundf(NAVAID_R * sinf(a));
+    }
+    bool hexagon = type == NavaidType::VOR || type == NavaidType::VOR_DME || type == NavaidType::VORTAC;
+    bool box = type == NavaidType::VOR_DME || type == NavaidType::DME || type == NavaidType::NDB_DME;
+    bool tabs = type == NavaidType::VORTAC || type == NavaidType::TACAN;
+    if (hexagon) {
+        for (int i = 0; i < 6; i++) {
+            canvas.drawLine(vx[i], vy[i], vx[(i + 1) % 6], vy[(i + 1) % 6], color);
+        }
+    }
+    if (box) {
+        // Clear of a VOR's hexagon, which would otherwise touch it at its corners.
+        int half = hexagon ? NAVAID_R + 3 : NAVAID_R;
+        canvas.drawRect(x - half, y - half, 2 * half + 1, 2 * half + 1, color);
+    }
+    if (tabs) {
+        // On the top edge and the two lower slanted ones, pushed outward.
+        for (int i : {1, 3, 5}) {
+            int ax = vx[i], ay = vy[i], bx = vx[(i + 1) % 6], by = vy[(i + 1) % 6];
+            float mx = (ax + bx) / 2.0f - x, my = (ay + by) / 2.0f - y;
+            float len = hypotf(mx, my);
+            int ox = (int)lroundf(mx / len * NAVAID_TAB), oy = (int)lroundf(my / len * NAVAID_TAB);
+            canvas.fillTriangle(ax, ay, bx, by, bx + ox, by + oy, color);
+            canvas.fillTriangle(ax, ay, bx + ox, by + oy, ax + ox, ay + oy, color);
+        }
+    }
+    if (type == NavaidType::NDB_DME) {
+        for (int i = 0; i < 8; i++) {
+            float a = i * (float)M_PI / 4.0f;
+            canvas.drawPixel(x + (int)lroundf(3.5f * cosf(a)), y + (int)lroundf(3.5f * sinf(a)), color);
+        }
+    }
+    canvas.fillCircle(x, y, 1, color);
+}
+
+// The navaids in range, under the airports: dimmer, as the part of the map
+// least often looked for, with ident and frequency beside each - to the right,
+// or the left where that would run into something already placed, or off
+// the plot. One with no room either side keeps its symbol only.
+void drawNavaids(double lat, double lon, int rangeNm) {
+    auto &canvas = screen::canvas();
+    double nmPerDegLon = 60.0 * cos(lat * M_PI / 180.0);
+    canvas.setTextSize(2);
+    canvas.setTextDatum(TL_DATUM);
+    canvas.setTextColor(colorRingText);
+    g_navaidHitCount = 0;
+    for (const Navaid *n : navaidsWithin(lat, lon, rangeNm)) {
+        double dLon = n->lon - lon;
+        if (dLon > 180) dLon -= 360;
+        if (dLon < -180) dLon += 360;
+        int x = CENTER_X + (int)lroundf((float)(dLon * nmPerDegLon / rangeNm * RADIUS));
+        int y = CENTER_Y - (int)lroundf((float)((n->lat - lat) * 60.0 / rangeNm * RADIUS));
+        drawNavaidSymbol(x, y, n->type, colorRingText);
+        String text = navaidLabel(*n);
+        int w = canvas.textWidth(text);
+        int ly = y - LABEL_H / 2;
+        LabelBox label = {0, (int16_t)ly, 0, (int16_t)LABEL_H};
+        for (int lx : {x + NAVAID_R + NAVAID_TAB + 4, x - NAVAID_R - NAVAID_TAB - 4 - w}) {
+            if (lx >= PLOT_L && lx + w <= PLOT_R && g_mapLabelCount < MAX_MAP_LABELS &&
+                !overlapsAny(g_mapLabels, g_mapLabelCount, lx, ly, w, LABEL_H)) {
+                canvas.drawString(text, lx, ly);
+                label.x = (int16_t)lx;
+                label.w = (int16_t)w;
+                g_mapLabels[g_mapLabelCount++] = label;
+                break;
+            }
+        }
+        if (g_navaidHitCount < MAX_NAVAID_HITS) {
+            g_navaidHits[g_navaidHitCount++] = {(int16_t)x, (int16_t)y, label, n};
+        }
     }
 }
 
@@ -514,6 +613,9 @@ int buttonAt(int x, int y) {
 // pick from, rather than the nearest being guessed at. Anywhere outside the
 // list, or Cancel, closes it. It stays up over the plot's refreshes, and a
 // full draw - arriving at the screen - starts without one.
+//
+// A navaid picked, or tapped on its own, puts up its card the same way:
+// what it is and how to tune it, until the next tap anywhere.
 
 constexpr int MAX_CHOICES = 6;
 constexpr int CHOICE_W = 400;
@@ -521,16 +623,111 @@ constexpr int CHOICE_PAD = 12, CHOICE_TITLE_H = 32, CHOICE_ROW_H = 52, CHOICE_GA
 constexpr int CHOICE_OFFSET = 40;  // from the tap to the near side of the list
 
 struct Choice {
-    bool airport;
+    enum Kind : uint8_t { AIRCRAFT, AIRPORT, NAVAID } kind;
     String id;  // the airport's IATA code, or the contact's ICAO hex
     String text;
     bool ground;
+    const Navaid *navaid;
 };
 Choice g_choices[MAX_CHOICES];
 int g_choiceCount = 0;  // 0 while no list is up
 int g_choiceX = 0, g_choiceY = 0, g_choiceH = 0;
 
 int choiceRowY(int i) { return g_choiceY + CHOICE_PAD + CHOICE_TITLE_H + i * (CHOICE_ROW_H + CHOICE_GAP); }
+
+// The navaid card up, or nullptr. Picked from the list, it is put up by the
+// full redraw that takes the list off, which would otherwise close it too.
+const Navaid *g_card = nullptr;
+bool g_cardSurvivesRedraw = false;
+int g_cardX = 0, g_cardY = 0, g_cardH = 0;
+constexpr int CARD_LINE_H = 26;
+
+bool overlayUp() { return g_choiceCount || g_card; }
+
+// Beside a tap at (x, y), as openChooser() places the list.
+void placeBeside(int x, int y, int h, int &outX, int &outY) {
+    constexpr int RIGHT = BTN_X - 16;
+    outX = (x + CHOICE_OFFSET + CHOICE_W <= RIGHT) ? x + CHOICE_OFFSET : x - CHOICE_OFFSET - CHOICE_W;
+    outX = std::min(std::max(outX, 16), RIGHT - CHOICE_W);
+    outY = std::min(std::max(y - h / 2, PLOT_T + 4), 720 - 8 - h);
+}
+
+// The card's lines under its title: what it is, then what to tune.
+std::vector<String> cardLines(const Navaid &n) {
+    std::vector<String> lines;
+    lines.push_back(navaidTypeName(n.type));
+    String freq = navaidFrequency(n);
+    if (n.type == NavaidType::NDB_DME) {
+        if (freq.length()) {
+            lines.push_back("NDB " + freq + " kHz");
+        }
+        if (n.channel[0]) {
+            lines.push_back(String("DME channel ") + n.channel);
+        }
+    } else if (n.type == NavaidType::TACAN) {
+        if (n.channel[0]) {
+            lines.push_back(String("Channel ") + n.channel);
+        }
+        if (freq.length()) {
+            lines.push_back("Paired VHF " + freq + " MHz");
+        }
+    } else {
+        if (freq.length()) {
+            lines.push_back(freq + " MHz");
+        }
+        if (n.channel[0]) {
+            lines.push_back(String(n.type == NavaidType::VORTAC ? "TACAN channel " : "DME channel ") + n.channel);
+        }
+    }
+    if (n.airport[0]) {
+        lines.push_back(String("Serves ") + n.airport);
+    }
+    return lines;
+}
+
+void drawCard() {
+    const Navaid &n = *g_card;
+    std::vector<String> lines = cardLines(n);
+    auto &canvas = screen::canvas();
+    canvas.clearClipRect();
+    canvas.setFont(&fonts::Font0);
+    canvas.fillRoundRect(g_cardX, g_cardY, CHOICE_W, g_cardH, 10, colorBg);
+    canvas.drawRoundRect(g_cardX, g_cardY, CHOICE_W, g_cardH, 10, colorRing);
+    canvas.drawRoundRect(g_cardX + 1, g_cardY + 1, CHOICE_W - 2, g_cardH - 2, 9, colorRing);
+    int x = g_cardX + CHOICE_PAD + 4;
+    int y = g_cardY + CHOICE_PAD + 4;
+    drawNavaidSymbol(x + NAVAID_R + NAVAID_TAB, y + 12, n.type, colorText);
+    canvas.setTextDatum(TL_DATUM);
+    canvas.setTextSize(3);
+    canvas.setTextColor(colorText);
+    int tx = x + 2 * (NAVAID_R + NAVAID_TAB) + 12;
+    canvas.drawString(n.ident, tx, y);
+    y += 40;
+    // Names run to 31 characters, a little more than the card takes at size 2.
+    canvas.setTextSize(2);
+    canvas.setTextColor(colorMuted);
+    if (canvas.textWidth(n.name) > CHOICE_W - 2 * (x - g_cardX)) {
+        canvas.setTextSize(1);
+    }
+    canvas.drawString(n.name, x, y);
+    canvas.setTextSize(2);
+    y += CARD_LINE_H + 4;
+    canvas.setTextColor(colorText);
+    for (const String &line : lines) {
+        canvas.drawString(line, x, y);
+        y += CARD_LINE_H;
+    }
+    canvas.setTextColor(colorFaint);
+    canvas.drawString("Tap anywhere to close", x, y + 6);
+    screen::markDirty(g_cardX, g_cardY, CHOICE_W, g_cardH);
+}
+
+// Puts the card up for `n`, beside where it is on the plot.
+void openCard(const Navaid *n, int x, int y) {
+    g_card = n;
+    g_cardH = 2 * CHOICE_PAD + 8 + 40 + CARD_LINE_H + 4 + (int)cardLines(*n).size() * CARD_LINE_H + 6 + LABEL_H;
+    placeBeside(x, y, g_cardH, g_cardX, g_cardY);
+}
 
 // The list, with Cancel as its last row, over whatever is drawn under it.
 void drawChooser() {
@@ -552,8 +749,10 @@ void drawChooser() {
         canvas.fillRoundRect(rowX, y, rowW, CHOICE_ROW_H, 6, colorBtnBg);
         // The mark it has on the plot, so the row reads as the thing tapped.
         int iconX = rowX + 24;
-        if (c.airport) {
+        if (c.kind == Choice::AIRPORT) {
             drawAirfield(iconX, midY, colorText);
+        } else if (c.kind == Choice::NAVAID) {
+            drawNavaidSymbol(iconX, midY, c.navaid->type, colorText);
         } else if (c.ground) {
             canvas.drawCircle(iconX, midY, 5, colorBlip);
             canvas.drawCircle(iconX, midY, 4, colorBlip);
@@ -577,11 +776,8 @@ void drawChooser() {
 // over the buttons, which repaint on their own: REC's count, every second
 // while recording, painted over a list that reached across the column.
 void openChooser(int x, int y) {
-    constexpr int RIGHT = BTN_X - 16;
     g_choiceH = 2 * CHOICE_PAD + CHOICE_TITLE_H + (g_choiceCount + 1) * (CHOICE_ROW_H + CHOICE_GAP) - CHOICE_GAP;
-    g_choiceX = (x + CHOICE_OFFSET + CHOICE_W <= RIGHT) ? x + CHOICE_OFFSET : x - CHOICE_OFFSET - CHOICE_W;
-    g_choiceX = std::min(std::max(g_choiceX, 16), RIGHT - CHOICE_W);
-    g_choiceY = std::min(std::max(y - g_choiceH / 2, PLOT_T + 4), 720 - 8 - g_choiceH);
+    placeBeside(x, y, g_choiceH, g_choiceX, g_choiceY);
     drawChooser();
     screen::flush();
 }
@@ -590,8 +786,19 @@ void openChooser(int x, int y) {
 // g_choices: the airports first, since an airport is what a crowd of its own
 // traffic hides, then the contacts, each nearest first. Returns how many.
 int collectChoices(int x, int y, bool withAirports) {
-    std::vector<std::pair<long, int>> airports, blips;
+    std::vector<std::pair<long, int>> airports, navaids, blips;
     if (withAirports) {
+        for (int i = 0; i < g_navaidHitCount; i++) {
+            const NavaidHit &h = g_navaidHits[i];
+            long dx = x - h.x, dy = y - h.y;
+            long d = dx * dx + dy * dy;
+            const LabelBox &b = h.label;
+            bool onLabel = b.w && x >= b.x - AIRPORT_LABEL_PAD && x < b.x + b.w + AIRPORT_LABEL_PAD &&
+                           y >= b.y - AIRPORT_LABEL_PAD && y < b.y + b.h + AIRPORT_LABEL_PAD;
+            if (onLabel || d <= (long)AIRPORT_TAP_R * AIRPORT_TAP_R) {
+                navaids.push_back({d, i});
+            }
+        }
         for (int i = 0; i < g_airportHitCount; i++) {
             const AirportHit &h = g_airportHits[i];
             long dx = x - h.x, dy = y - h.y;
@@ -612,18 +819,26 @@ int collectChoices(int x, int y, bool withAirports) {
         }
     }
     std::sort(airports.begin(), airports.end());
+    std::sort(navaids.begin(), navaids.end());
     std::sort(blips.begin(), blips.end());
     int n = 0;
     for (const auto &a : airports) {
         if (n < MAX_CHOICES) {
             const AirportHit &h = g_airportHits[a.second];
-            g_choices[n++] = {true, String(h.code), String("Zoom in on ") + h.code, false};
+            g_choices[n++] = {Choice::AIRPORT, String(h.code), String("Zoom in on ") + h.code, false, nullptr};
+        }
+    }
+    for (const auto &v : navaids) {
+        if (n < MAX_CHOICES) {
+            const NavaidHit &h = g_navaidHits[v.second];
+            g_choices[n++] = {Choice::NAVAID, String(h.navaid->ident),
+                              String(h.navaid->ident) + " " + navaidTypeName(h.navaid->type), false, h.navaid};
         }
     }
     for (const auto &b : blips) {
         if (n < MAX_CHOICES) {
             const Blip &bl = g_blips[b.second];
-            g_choices[n++] = {false, bl.hex, bl.label, bl.ground};
+            g_choices[n++] = {Choice::AIRCRAFT, bl.hex, bl.label, bl.ground, nullptr};
         }
     }
     return n;
@@ -635,6 +850,10 @@ enum class Target { NONE, AIRCRAFT, AIRPORT, DISMISSED };
 // or, anywhere else, dismisses it. Otherwise it is the one target within
 // reach, or NONE: either nothing is, or several are and the list has gone up.
 Target tapTarget(int x, int y, bool withAirports, String &outId) {
+    if (g_card) {
+        g_card = nullptr;
+        return Target::DISMISSED;
+    }
     if (g_choiceCount) {
         bool inside = x >= g_choiceX && x < g_choiceX + CHOICE_W && y >= g_choiceY && y < g_choiceY + g_choiceH;
         if (!inside) {
@@ -650,16 +869,39 @@ Target tapTarget(int x, int y, bool withAirports, String &outId) {
                 }
                 Choice c = g_choices[i];
                 g_choiceCount = 0;
+                if (c.kind == Choice::NAVAID) {
+                    for (int k = 0; k < g_navaidHitCount; k++) {
+                        if (g_navaidHits[k].navaid == c.navaid) {
+                            openCard(c.navaid, g_navaidHits[k].x, g_navaidHits[k].y);
+                            g_cardSurvivesRedraw = true;  // the list's redraw puts it up
+                        }
+                    }
+                    return Target::DISMISSED;
+                }
                 outId = c.id;
-                return c.airport ? Target::AIRPORT : Target::AIRCRAFT;
+                return c.kind == Choice::AIRPORT ? Target::AIRPORT : Target::AIRCRAFT;
             }
         }
         return Target::NONE;  // the list's title or frame
     }
     int n = collectChoices(x, y, withAirports);
+    if (n == 1 && g_choices[0].kind == Choice::NAVAID) {
+        const NavaidHit *h = nullptr;
+        for (int k = 0; k < g_navaidHitCount; k++) {
+            if (g_navaidHits[k].navaid == g_choices[0].navaid) {
+                h = &g_navaidHits[k];
+            }
+        }
+        if (h) {
+            openCard(h->navaid, h->x, h->y);
+            drawCard();
+            screen::flush();
+        }
+        return Target::NONE;
+    }
     if (n == 1) {
         outId = g_choices[0].id;
-        return g_choices[0].airport ? Target::AIRPORT : Target::AIRCRAFT;
+        return g_choices[0].kind == Choice::AIRPORT ? Target::AIRPORT : Target::AIRCRAFT;
     }
     if (n > 1) {
         g_choiceCount = n;
@@ -675,13 +917,17 @@ void radarScreenDraw(const std::vector<Aircraft> &aircraft, const std::vector<ui
     ensureColors();
     if (full) {
         g_choiceCount = 0;
+        if (!g_cardSurvivesRedraw) {
+            g_card = nullptr;
+        }
+        g_cardSurvivesRedraw = false;
         screen::clear(colorBg);
         drawHeader(military);
     }
     // With a list up, a refresh is drawn under it and pushed along with it.
     bool following = (g_follow == FollowButton::ON);
     radarPlotDraw({aircraft, isNew, nullptr, lat, lon, rangeNm, following ? RadarCentre::HOME : g_centre, g_airportsOn,
-                   true, g_choiceCount == 0, following ? g_followHex : String(),
+                   true, !overlayUp(), following ? g_followHex : String(),
                    following ? g_followOrigin : String()},
                   full);
     if (following) {
@@ -690,9 +936,12 @@ void radarScreenDraw(const std::vector<Aircraft> &aircraft, const std::vector<ui
     if (g_choiceCount) {
         drawChooser();
     }
+    if (g_card) {
+        drawCard();
+    }
     // Following, the telemetry goes in a push of its own: with the plot's,
     // flush() would send the margin between them too.
-    if (full || g_choiceCount || following) {
+    if (full || overlayUp() || following) {
         screen::flush();
     }
 }
@@ -982,6 +1231,8 @@ void radarPlotDraw(const RadarScene &scene, bool full) {
     // nothing in range of the lookup falls back to home, since there is no
     // other point to centre on.
     g_airportHitCount = 0;
+    g_navaidHitCount = 0;
+    g_mapLabelCount = 0;
     Airport airport;
     String centreCode;
     bool following = scene.followHex.length() > 0;
@@ -994,8 +1245,9 @@ void radarPlotDraw(const RadarScene &scene, bool full) {
         canvas.setTextDatum(TC_DATUM);
         canvas.drawString(airport.code, CENTER_X, CENTRE_CODE_Y);
         int w = canvas.textWidth(airport.code);
-        noteAirportHit(airport.code, CENTER_X, CENTER_Y,
-                       {(int16_t)(CENTER_X - w / 2), (int16_t)CENTRE_CODE_Y, (int16_t)w, (int16_t)LABEL_H});
+        LabelBox label = {(int16_t)(CENTER_X - w / 2), (int16_t)CENTRE_CODE_Y, (int16_t)w, (int16_t)LABEL_H};
+        noteAirportHit(airport.code, CENTER_X, CENTER_Y, label);
+        g_mapLabels[g_mapLabelCount++] = label;
     }
     // Following, the centre is the aircraft, ringed where it is drawn.
     if (!following) {
@@ -1012,6 +1264,9 @@ void radarPlotDraw(const RadarScene &scene, bool full) {
     // following a departure, where it came from.
     if ((scene.airports && centreCode.length()) || following) {
         drawAirports(lat, lon, rangeNm, centreCode, following ? scene.originCode : String());
+    }
+    if (g_navaidsOn) {
+        drawNavaids(lat, lon, rangeNm);
     }
 
     int plotted = 0, labelled = 0;
@@ -1100,18 +1355,34 @@ ZoomFrame g_zoom;
 // more than a few times a day. On the clock its zoom is drawn on - the live
 // zoom's millis(), a replay's own time - and forgotten when that runs
 // backwards, as a replay going back does, or the airport changes.
+//
+// A replay's starts again, each time, from what the live zoom remembered as
+// the recording began - its `seed`, at the replay's 0.
 struct InUseMemory {
-    String code;
+    char code[4] = "";
     uint32_t lastDrawnMs = 0;
     uint32_t ms[MAX_ZOOM_RUNWAYS][2];
     bool seen[MAX_ZOOM_RUNWAYS][2];
+    recorder::RunwaysInUse seed;
 
     // Notes the ends in use now, at `nowMs`, and says which others were
     // within RUNWAY_IN_USE_MEMORY_MS.
     void update(const ZoomFrame &f, const bool inUse[][2], uint32_t nowMs, bool recent[][2]) {
-        if (code != f.code || nowMs < lastDrawnMs) {
-            code = f.code;
+        if (strcmp(code, f.code.c_str()) != 0 || nowMs < lastDrawnMs) {
+            strlcpy(code, f.code.c_str(), sizeof(code));
             memset(seen, 0, sizeof(seen));
+            if (seed.code == f.code) {
+                for (const recorder::RunwaysInUse::End &e : seed.ends) {
+                    for (int r = 0; r < f.runwayCount; r++) {
+                        for (int k = 0; k < 2; k++) {
+                            if (strcmp(f.runways[r].end[k].ident, e.ident) == 0) {
+                                seen[r][k] = true;
+                                ms[r][k] = 0u - e.agoS * 1000u;  // before 0, which the subtraction below wraps back
+                            }
+                        }
+                    }
+                }
+            }
         }
         lastDrawnMs = nowMs;
         for (int r = 0; r < f.runwayCount; r++) {
@@ -1125,6 +1396,9 @@ struct InUseMemory {
         }
     }
 };
+// The live one is read by a recording starting, from the poll task too, so
+// it is only touched under this. Nothing in it allocates.
+portMUX_TYPE g_inUseMux = portMUX_INITIALIZER_UNLOCKED;
 InUseMemory g_liveInUse, g_replayInUse;
 
 float g_zoomViewNm = ZOOM_NO_RUNWAYS_NM;  // the range the live zoom shows: see ZOOM_VIEW_STEPS_NM
@@ -1565,7 +1839,9 @@ bool zoomPlot(const ZoomFrame &framed, const std::vector<Aircraft> &aircraft,
     canvas.setClipRect(PLOT_L, PLOT_T, PLOT_R - PLOT_L, PLOT_B - PLOT_T);
     bool inUse[MAX_ZOOM_RUNWAYS][2], recent[MAX_ZOOM_RUNWAYS][2];
     runwaysInUse(f, aircraft, inUse);
+    portENTER_CRITICAL(&g_inUseMux);
     memory.update(f, inUse, nowMs, recent);
+    portEXIT_CRITICAL(&g_inUseMux);
     drawRunways(f, inUse, recent);
     static const std::vector<uint8_t> noneNew;  // the radar marks new contacts; here they are all just traffic
     int plotted = 0, labelled = 0;
@@ -1623,6 +1899,7 @@ void radarZoomDraw(const std::vector<Aircraft> &aircraft, bool full) {
     ensureColors();
     if (full) {
         g_choiceCount = 0;
+        g_card = nullptr;
         screen::clear(colorBg);
         drawZoomHeader();
     }
@@ -1657,6 +1934,43 @@ bool radarZoomPlotDraw(const RadarScene &scene, const String &code, bool full) {
     zoomPlot(view, scene.aircraft, scene.trails, scene.flash, scene.followHex, full, scene.push, scene.nowMs,
              g_replayInUse);
     return true;
+}
+
+void radarScreenSetNavaids(bool on) { g_navaidsOn = on; }
+
+void radarLiveRunwaysInUse(recorder::RunwaysInUse &out) {
+    out = recorder::RunwaysInUse();
+    char code[4];
+    uint32_t ms[MAX_ZOOM_RUNWAYS][2];
+    bool seen[MAX_ZOOM_RUNWAYS][2];
+    portENTER_CRITICAL(&g_inUseMux);
+    memcpy(code, g_liveInUse.code, sizeof(code));
+    memcpy(ms, g_liveInUse.ms, sizeof(ms));
+    memcpy(seen, g_liveInUse.seen, sizeof(seen));
+    portEXIT_CRITICAL(&g_inUseMux);
+    int count = 0;
+    const Runway *runways = code[0] ? runwaysAt(code, count) : nullptr;
+    uint32_t now = millis();
+    for (int r = 0; r < std::min(count, MAX_ZOOM_RUNWAYS); r++) {
+        for (int k = 0; k < 2; k++) {
+            if (seen[r][k] && now - ms[r][k] <= RUNWAY_IN_USE_MEMORY_MS) {
+                recorder::RunwaysInUse::End e = {};
+                strlcpy(e.ident, runways[r].end[k].ident, sizeof(e.ident));
+                e.agoS = (now - ms[r][k]) / 1000;
+                out.ends.push_back(e);
+            }
+        }
+    }
+    if (!out.ends.empty()) {
+        out.code = code;
+    }
+}
+
+void radarReplayRunwaysInUse(const recorder::RunwaysInUse &seed) {
+    portENTER_CRITICAL(&g_inUseMux);
+    g_replayInUse.code[0] = 0;  // so its next draw starts afresh, from this
+    portEXIT_CRITICAL(&g_inUseMux);
+    g_replayInUse.seed = seed;
 }
 
 ZoomAction radarZoomHandleTouch(int x, int y, String &outHex) {
@@ -1708,7 +2022,7 @@ ZoomAction radarZoomHandleTouch(int x, int y, String &outHex) {
 
 RadarAction radarScreenHandleTouch(int x, int y, String &outHex, String &outAirport) {
     // With the list up, every tap is the list's: outside it is a dismissal.
-    if (!g_choiceCount) {
+    if (!overlayUp()) {
         switch (buttonAt(x, y)) {
         case BTN_BACK:
             return RadarAction::BACK;

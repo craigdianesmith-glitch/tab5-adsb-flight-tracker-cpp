@@ -2,6 +2,7 @@
 
 #include <M5Unified.h>
 
+#include "aircraft_db.h"
 #include "alerts.h"
 #include "config.h"
 
@@ -149,6 +150,65 @@ bool sayType(const String &name) {
     return true;
 }
 
+// The airport zoom's announcements waiting their turn, behind an alert or
+// one another - a few at most, as an airport's movements come minutes apart.
+struct Announcement {
+    String callsign;
+    String runway;
+    bool takeoff;
+};
+constexpr int MAX_ANNOUNCEMENTS = 3;
+Announcement g_announcements[MAX_ANNOUNCEMENTS];
+int g_announcementCount = 0;
+// An announcement has no chime: only words, played as an alert's are.
+constexpr Note NO_NOTES[] = {{0, 0}};
+
+// Queues "easyJet five three Tango Hotel, runway two three, cleared for
+// take-off": the airline by its name where the table has it and a clip for
+// it, then the rest of the callsign spelt - or, an airline it doesn't know,
+// all of it - then the runway, its number a digit at a time and its side.
+void startAnnouncement(const Announcement &a) {
+    g_spokenCount = g_nextSpoken = 0;
+    AirlineInfo airline;
+    const VoiceMaker *voice = nullptr;
+    if (lookupAirline(a.callsign, airline)) {
+        for (const VoiceMaker &v : VOICE_AIRLINES) {
+            if (airline.name == v.name) {
+                voice = &v;
+            }
+        }
+    }
+    if (voice) {
+        say({voice->samples, voice->count}, AFTER_MAKER_MS);
+        spell(a.callsign.substring(3));
+    } else {
+        spell(a.callsign);
+    }
+    if (g_spokenCount > 0) {
+        g_spoken[g_spokenCount - 1].pauseMs = AFTER_CALLSIGN_MS;
+    }
+    say(CLIP(VOICE_RUNWAY), BETWEEN_LETTERS_MS);
+    for (size_t i = 0; i < a.runway.length(); i++) {
+        char c = a.runway[i];
+        if (c >= '0' && c <= '9') {
+            say({VOICE_DIGITS[c - '0'], VOICE_DIGIT_LENS[c - '0']}, BETWEEN_LETTERS_MS);
+        } else if (c == 'L') {
+            say(CLIP(VOICE_SIDE_L), BETWEEN_LETTERS_MS);
+        } else if (c == 'R') {
+            say(CLIP(VOICE_SIDE_R), BETWEEN_LETTERS_MS);
+        } else if (c == 'C') {
+            say(CLIP(VOICE_SIDE_C), BETWEEN_LETTERS_MS);
+        }
+    }
+    g_spoken[g_spokenCount - 1].pauseMs = AFTER_CALLSIGN_MS;
+    say(a.takeoff ? CLIP(VOICE_CLEARED_TAKEOFF) : CLIP(VOICE_CLEARED_LAND), 0);
+    Serial.printf("[sound] announcing %s, runway %s, cleared %s: %d spoken\n", a.callsign.c_str(), a.runway.c_str(),
+                  a.takeoff ? "for take-off" : "to land", g_spokenCount);
+    g_notes = NO_NOTES;
+    g_noteCount = 0;
+    g_nextNote = 0;
+}
+
 }  // namespace
 
 void soundInit() {
@@ -216,7 +276,32 @@ void soundAlert(uint8_t reasons, const String &callsign, const String &typeName)
     g_nextNote = 0;
 }
 
+void soundAnnounce(const String &callsign, const String &runway, bool takeoff) {
+    String cs = callsign;
+    cs.trim();
+    if (!g_ready || g_muted || cs.length() == 0 || runway.length() == 0) {
+        return;
+    }
+    if (g_announcementCount == MAX_ANNOUNCEMENTS) {
+        Serial.printf("[sound] announcement for %s dropped: %d waiting\n", cs.c_str(), g_announcementCount);
+        return;
+    }
+    g_announcementCount++;
+    g_announcements[g_announcementCount - 1] = {cs, runway, takeoff};
+}
+
 void soundTick() {
+    // An alert, or the announcement before, finished: the next announcement.
+    if (g_notes == nullptr && g_announcementCount > 0 && !M5.Speaker.isPlaying(ALERT_CHANNEL)) {
+        Announcement a = g_announcements[0];
+        for (int i = 1; i < g_announcementCount; i++) {
+            g_announcements[i - 1] = g_announcements[i];
+        }
+        g_announcementCount--;
+        if (!g_muted) {
+            startAnnouncement(a);
+        }
+    }
     if (g_notes == nullptr || M5.Speaker.isPlaying(ALERT_CHANNEL)) {
         return;
     }

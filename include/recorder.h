@@ -40,8 +40,24 @@
 namespace recorder {
 
 // FOLLOW is auto-record's too, started by following an aircraft rather than
-// by an alert: the alerts' tail never stops it, its landing does.
+// by an alert: the alerts' tail never stops it. Auto-follow's landing does;
+// following by hand, only the user does.
 enum class Trigger : uint8_t { MANUAL, AUTO, FOLLOW };
+
+// The runway ends of one airport the live zoom had lately seen in use when a
+// file began, and how long before: so a replay starts out knowing which way
+// the airport was working, as the live zoom did, rather than only once
+// something lines up in the recording. Written as
+//   runways <airport> <end> <seconds ago> [<end> <seconds ago> ...]
+// - absent from older files, and from any begun with nothing remembered.
+struct RunwaysInUse {
+    String code;  // the airport's IATA code; empty for none
+    struct End {
+        char ident[4];  // "05", "27L"
+        uint32_t agoS;
+    };
+    std::vector<End> ends;
+};
 
 struct Header {
     uint32_t startEpoch = 0;  // UTC seconds; 0 if the clock had not been set
@@ -60,6 +76,7 @@ struct Header {
     // Empty for any other recording, and absent from older files.
     String followHex;
     int followRangeNm = 0;
+    RunwaysInUse runways;
 };
 
 // Mounts the card if it isn't already, and proves it can be written to - a
@@ -71,6 +88,10 @@ bool mount();
 // out what needs one; it goes false if a write fails and the card is dropped.
 bool mounted();
 uint64_t cardBytes();
+
+// Where each file's runways line comes from: called as the file is opened,
+// from whichever task opens it. Until set, none is written.
+void setRunwaysInUseSource(void (*source)(RunwaysInUse &out));
 
 bool start(const Header &header);  // false if there is no card or no file
 void stop();

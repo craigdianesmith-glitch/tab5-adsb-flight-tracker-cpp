@@ -29,6 +29,15 @@ void soundKeyClick();
 // soundTick().
 void soundAlert(uint8_t reasons, const String &callsign = String(), const String &typeName = String());
 
+// On the airport zoom, a take-off or landing as a controller would clear it:
+// "easyJet five three Tango Hotel, runway two three, cleared for take-off",
+// or "cleared to land". The airline is said by its name where the airline
+// table and the voice clips have it, the rest of `callsign` spelt; otherwise
+// the whole callsign is. `runway` is the end's ident, "23" or "27L". Queued
+// behind an alert or another announcement - an alert that comes while one is
+// being said cuts it short - and played out by soundTick().
+void soundAnnounce(const String &callsign, const String &runway, bool takeoff);
+
 // Plays the next note of a queued alert once the one before has finished.
 // Call every loop.
 void soundTick();

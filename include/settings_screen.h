@@ -18,6 +18,10 @@ enum class SettingsAction {
 void settingsScreenSet(TrafficFilter traffic, int radiusNm, bool showRefresh, int pollIntervalS,
                        const String &locationLabel, AdsbSource source);
 
+// Whether the radar's navaids switch is on, to seed it and read it back.
+void settingsScreenSetNavaids(bool on);
+bool settingsScreenNavaids();
+
 // Updates the location shown on the button, after the location screen has
 // been in and changed it.
 void settingsScreenSetLocation(const String &locationLabel);
