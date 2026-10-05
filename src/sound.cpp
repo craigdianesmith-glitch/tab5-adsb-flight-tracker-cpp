@@ -116,6 +116,7 @@ void soundNewFlight() {
 
 void soundAlert(uint8_t reasons, const String &callsign) {
     if (!g_ready || g_muted) {
+        Serial.printf("[sound] alert for %s not sounded: %s\n", callsign.c_str(), g_muted ? "muted" : "no speaker");
         return;
     }
     bool emergency = (reasons & ALERT_EMERGENCY) != 0;
@@ -135,6 +136,10 @@ void soundAlert(uint8_t reasons, const String &callsign) {
         }
     }
     g_notes = emergency ? WARBLE : CHIME;
+    // A line for each, as the speaker can go silent with nothing else to
+    // show for it - see the README.
+    Serial.printf("[sound] alert for %s: %s, then %d spoken\n", callsign.c_str(), emergency ? "warble" : "chime",
+                  g_spokenCount);
     g_noteCount = emergency ? (int)(sizeof(WARBLE) / sizeof(Note)) : (int)(sizeof(CHIME) / sizeof(Note));
     g_nextNote = 0;
 }
