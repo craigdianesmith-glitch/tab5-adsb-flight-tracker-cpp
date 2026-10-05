@@ -50,8 +50,10 @@ struct Spoken {
     Clip clip;
     uint16_t pauseMs;
 };
-constexpr int MAX_SPOKEN = 12;  // the reason and an 8-character callsign, with room to spare
-constexpr uint16_t AFTER_REASON_MS = 250, BETWEEN_LETTERS_MS = 60;
+// The reason, an 8-character callsign, and a type - its maker, a model of
+// up to 8 characters and its variants - with room to spare.
+constexpr int MAX_SPOKEN = 32;
+constexpr uint16_t AFTER_REASON_MS = 250, BETWEEN_LETTERS_MS = 60, AFTER_CALLSIGN_MS = 250, AFTER_MAKER_MS = 120;
 Spoken g_spoken[MAX_SPOKEN];
 int g_spokenCount = 0, g_nextSpoken = 0;
 uint32_t g_speakAtMs = 0;  // not before then: the pause after the clip before
@@ -71,6 +73,80 @@ void say(const Clip &clip, uint16_t pauseMs) {
     if (g_spokenCount < MAX_SPOKEN) {
         g_spoken[g_spokenCount++] = {clip, pauseMs};
     }
+}
+
+// Spells `text` a letter or digit at a time; anything else in it - a space,
+// a hyphen - left unsaid.
+void spell(const String &text) {
+    for (size_t i = 0; i < text.length(); i++) {
+        char c = toupper((unsigned char)text[i]);
+        if (c >= 'A' && c <= 'Z') {
+            say({VOICE_LETTERS[c - 'A'], VOICE_LETTER_LENS[c - 'A']}, BETWEEN_LETTERS_MS);
+        } else if (c >= '0' && c <= '9') {
+            say({VOICE_DIGITS[c - '0'], VOICE_DIGIT_LENS[c - '0']}, BETWEEN_LETTERS_MS);
+        }
+    }
+}
+
+// A type name from the aircraft table, said as its maker and its model
+// spelt: "Airbus A380-800" as "Airbus... Alpha three eight zero". The model
+// is the first word after the maker with a digit in it, up to a variant
+// after a hyphen or a slash - 737 of 737-800, 800 of 800/850 - but not a
+// hyphen or slash after letters alone, which are part of it: C-130J, F/A-18.
+// A neo, a MAX or a Dreamliner is said after it. False for a name with no
+// maker the table knows, as an unknown type's bare code is.
+bool sayType(const String &name) {
+    const VoiceMaker *maker = nullptr;
+    for (const VoiceMaker &m : VOICE_MAKERS) {
+        size_t n = strlen(m.name);
+        if (name.startsWith(m.name) && (name.length() == n || name[n] == ' ') &&
+            (maker == nullptr || n > strlen(maker->name))) {
+            maker = &m;
+        }
+    }
+    if (maker == nullptr) {
+        return false;
+    }
+    say({maker->samples, maker->count}, AFTER_MAKER_MS);
+    String rest = name.substring(strlen(maker->name));
+    bool neo = false, max = false, dreamliner = false, haveModel = false;
+    String model;
+    int from = 0;
+    while (from < (int)rest.length()) {
+        int space = rest.indexOf(' ', from);
+        String word = rest.substring(from, space < 0 ? rest.length() : space);
+        from = space < 0 ? rest.length() : space + 1;
+        max = max || word == "MAX";
+        dreamliner = dreamliner || word == "Dreamliner";
+        if (haveModel || word.length() == 0) {
+            continue;
+        }
+        bool digits = false;
+        for (size_t i = 0; i < word.length(); i++) {
+            digits = digits || isdigit((unsigned char)word[i]);
+        }
+        if (!digits) {
+            continue;
+        }
+        if (word.endsWith("neo")) {
+            neo = true;
+            word.remove(word.length() - 3);
+        }
+        // Cut at the first hyphen or slash with a digit before it.
+        for (size_t i = 0; i < word.length(); i++) {
+            if ((word[i] == '-' || word[i] == '/') && i > 0 && isdigit((unsigned char)word[i - 1])) {
+                word.remove(i);
+                break;
+            }
+        }
+        model = word;
+        haveModel = true;
+    }
+    spell(model);
+    if (neo) say(CLIP(VOICE_VARIANT_NEO), BETWEEN_LETTERS_MS);
+    if (max) say(CLIP(VOICE_VARIANT_MAX), BETWEEN_LETTERS_MS);
+    if (dreamliner) say(CLIP(VOICE_VARIANT_DREAMLINER), BETWEEN_LETTERS_MS);
+    return true;
 }
 
 }  // namespace
@@ -114,7 +190,7 @@ void soundNewFlight() {
     M5.Speaker.tone(1568, 70, CHANNEL, false);
 }
 
-void soundAlert(uint8_t reasons, const String &callsign) {
+void soundAlert(uint8_t reasons, const String &callsign, const String &typeName) {
     if (!g_ready || g_muted) {
         Serial.printf("[sound] alert for %s not sounded: %s\n", callsign.c_str(), g_muted ? "muted" : "no speaker");
         return;
@@ -125,16 +201,12 @@ void soundAlert(uint8_t reasons, const String &callsign) {
     if (wordFor(reasons, word)) {
         say(word, AFTER_REASON_MS);
     }
-    // Spelt as it would be read out over the radio, a letter or digit at a
-    // time; anything else in it - a space, a hyphen - left unsaid.
-    for (size_t i = 0; i < callsign.length(); i++) {
-        char c = toupper((unsigned char)callsign[i]);
-        if (c >= 'A' && c <= 'Z') {
-            say({VOICE_LETTERS[c - 'A'], VOICE_LETTER_LENS[c - 'A']}, BETWEEN_LETTERS_MS);
-        } else if (c >= '0' && c <= '9') {
-            say({VOICE_DIGITS[c - '0'], VOICE_DIGIT_LENS[c - '0']}, BETWEEN_LETTERS_MS);
-        }
+    // Spelt as it would be read out over the radio, and then what it is.
+    spell(callsign);
+    if (g_spokenCount > 0 && typeName.length()) {
+        g_spoken[g_spokenCount - 1].pauseMs = AFTER_CALLSIGN_MS;
     }
+    sayType(typeName);
     g_notes = emergency ? WARBLE : CHIME;
     // A line for each, as the speaker can go silent with nothing else to
     // show for it - see the README.

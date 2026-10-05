@@ -1321,7 +1321,8 @@ void tickAlerts() {
                       alertReasonText(g_bannerAc, g_bannerAc.alert).c_str(), g_bannerMore);
         g_bannerUp = true;
         g_bannerShownMs = 0;
-        soundAlert(g_bannerAc.alert, g_bannerAc.callsign);
+        soundAlert(g_bannerAc.alert, g_bannerAc.callsign,
+                   g_bannerAc.type.length() ? lookupAircraftType(g_bannerAc.type, g_bannerAc.military) : String());
         if (g_autoFollow) {
             autoFollow(g_bannerAc);
         }
@@ -2624,16 +2625,16 @@ void loop() {
             screen::dumpToSerial();
             break;
         case 'E':
-            soundAlert(ALERT_EMERGENCY, "EZY12AB");
+            soundAlert(ALERT_EMERGENCY, "EZY12AB", "Airbus A320neo");
             break;
         case 'W':
-            soundAlert(ALERT_WATCHLIST, "GSGTS");
+            soundAlert(ALERT_WATCHLIST, "GSGTS", "Boeing 787-9 Dreamliner");
             break;
         case 'R':
-            soundAlert(ALERT_RARE, "N747NA");
+            soundAlert(ALERT_RARE, "N747NA", "Airbus A380-800");
             break;
         case 'M':
-            soundAlert(ALERT_MILITARY, "RCH21");
+            soundAlert(ALERT_MILITARY, "RCH21", "Lockheed Martin F-35 Lightning II");
             break;
         }
     }
