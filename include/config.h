@@ -48,9 +48,9 @@ constexpr uint32_t TWEEN_MAX_MS = 5000;
 // the list: off the plot, but it says which runway is in use before it lands.
 constexpr int ZOOM_FETCH_EXTRA_NM = 4;
 // A runway end stays marked as in use - its arrow dimmed, and listed as
-// "last in use" - this long after anything was last lined up on it: through
-// a lull, it says which way the airport is working.
-constexpr uint32_t RUNWAY_IN_USE_MEMORY_MS = 15UL * 60 * 1000;
+// "last in use" - this long after anything in the air was last lined up on
+// it: through a lull, it says which way the airport is working.
+constexpr uint32_t RUNWAY_IN_USE_MEMORY_MS = 30UL * 60 * 1000;
 
 // Follow me: the radar centred on one aircraft, at this range, fetched around
 // it by the zoom's extra poll wherever it goes, in or out of the radius. On

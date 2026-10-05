@@ -1074,15 +1074,16 @@ constexpr float RUNWAY_LABEL_GAP = 5.0f;
 // where the centreline's dashes do, and its size, in pixels.
 constexpr float RUNWAY_ARROW_INSET = 10.0f, RUNWAY_ARROW_LEN = 18.0f, RUNWAY_ARROW_HALF_W = 8.0f;
 
-// An end is in use while something is lined up on it going the way that end
-// faces: rolling along the runway at take-off or landing speed, or in the air
-// below circuit height, pointing along it and near its extended centreline -
-// on either side, since departures go the same way as arrivals.
+// An end is in use while something in the air is lined up on it going the way
+// that end faces: below circuit height, pointing along it and near its
+// extended centreline - on either side, since departures go the same way as
+// arrivals. Only in the air: on the ground, a vehicle racing down a runway
+// and back can light both its ends - most likely what had Heathrow's 09R
+// and 27L both in use, with a runway inspection car, SQUID30, on it - and a
+// taxi along one the wrong way could too.
 constexpr float IN_USE_ALIGN_DEG = 15.0f;
 constexpr int IN_USE_MAX_AGL_FT = 2500;
 constexpr float IN_USE_AIR_OFFSET_NM = 0.5f;
-constexpr float IN_USE_GROUND_OFFSET_NM = 0.05f;  // about 90m: on it, not on a taxiway beside it
-constexpr float IN_USE_ROLL_KT = 40.0f;
 
 struct ZoomFrame {
     String code;
@@ -1191,19 +1192,16 @@ void runwaysInUse(const ZoomFrame &f, const std::vector<Aircraft> &aircraft, boo
         inUse[r][0] = inUse[r][1] = false;
     }
     for (const Aircraft &ac : aircraft) {
-        if (!ac.hasPos || !ac.hasTrack || ac.altStr == "?") {
+        if (!ac.hasPos || !ac.hasTrack || ac.altStr == "?" || ac.altStr == "GND" || ac.status == "GROUND" ||
+            ac.status == "TAXI") {
             continue;
-        }
-        bool onGround = (ac.status == "GROUND" || ac.status == "TAXI");
-        if (onGround && ac.speedStr.toFloat() < IN_USE_ROLL_KT) {
-            continue;  // taxiing, or holding short
         }
         Vec p = toLocal(f, ac.lat, ac.lon);
         int bestR = -1, bestK = 0;
         float bestOffset = 1e9f;
         for (int r = 0; r < f.runwayCount; r++) {
             const Runway &rw = f.runways[r];
-            if (rw.closed || (!onGround && ac.altStr.toInt() - rw.elevationFt > IN_USE_MAX_AGL_FT)) {
+            if (rw.closed || ac.altStr.toInt() - rw.elevationFt > IN_USE_MAX_AGL_FT) {
                 continue;
             }
             Vec ends[2] = {toLocal(f, rw.end[0].lat, rw.end[0].lon), toLocal(f, rw.end[1].lat, rw.end[1].lon)};
@@ -1221,11 +1219,8 @@ void runwaysInUse(const ZoomFrame &f, const std::vector<Aircraft> &aircraft, boo
                     continue;
                 }
                 float rx = p.x - from.x, ry = p.y - from.y;
-                float along = rx * ux + ry * uy;
                 float offset = fabsf(rx * uy - ry * ux);
-                bool lined = onGround ? (offset <= IN_USE_GROUND_OFFSET_NM && along >= 0 && along <= len)
-                                      : offset <= IN_USE_AIR_OFFSET_NM;
-                if (lined && offset < bestOffset) {
+                if (offset <= IN_USE_AIR_OFFSET_NM && offset < bestOffset) {
                     bestOffset = offset;
                     bestR = r;
                     bestK = k;
