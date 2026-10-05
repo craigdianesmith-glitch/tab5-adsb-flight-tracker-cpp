@@ -168,7 +168,7 @@ Four kinds, each switched on or off under **Settings > Alerts & recording**:
 - **Watchlist** - entries typed on the keyboard, matched against callsigns, registrations (dashes optional, so `G-ABCD` and `GABCD` both work), type designators and ICAO hex codes. A three-letter entry is an airline: `RYR` matches every flight number that starts with it. Entries are letters, digits and dashes, 2 to 10 long, and a list holding anything else is refused with the offending entries named, rather than kept and never matched. A **long press** on a table row puts that flight's callsign on the list, or takes it off.
 - **Rare type** - a short list of notable designators (the A380, 747s, the An-124, the Beluga, heavies and warbirds) plus readsb's own "interesting" flag where the feed carries it.
 
-An alert puts a banner across the table, radar or detail screen - red for an emergency, amber otherwise - with what tripped it, the callsign, type and distance. Tap it for the aircraft's details, tap the X to close it, or leave it: it goes after 20 seconds. A three-note chime plays, or a two-tone warble for an emergency that can't be mistaken for it. The callsign flashes red three times on the table and the radar, in step with the chime, then stays amber (red for an emergency) for as long as the aircraft is in range.
+An alert puts a banner across the table, radar or detail screen - red for an emergency, amber otherwise - with what tripped it, the callsign, type and distance. Tap it for the aircraft's details, tap the X to close it, or leave it: it goes after 20 seconds. A three-note chime plays, or a two-tone warble for an emergency that can't be mistaken for it, and then a voice says what it is: "Emergency", "Watchlist", "Rare aircraft" or "Military", for the reason the banner names. The callsign flashes red three times on the table and the radar, in step with the chime, then stays amber (red for an emergency) for as long as the aircraft is in range.
 
 Each aircraft alerts once per sighting, and again only if it trips a new rule - a watchlisted airliner that then squawks 7700. An alerted aircraft is never trimmed off a busy radius: the poll keeps the nearest sixty contacts for the radar, and any alerted one beyond that is kept as well.
 
@@ -213,7 +213,7 @@ A two-note rise once the firmware is up, and a short blip whenever an aircraft t
 
 The on-screen keyboard ticks on each key - 25ms at 3kHz, on a channel of its own that cuts off the tick before it, so fast typing doesn't queue up behind itself or behind an arrival blip.
 
-An alert plays a rising three-note chime, or a two-tone warble for an emergency, on a channel of its own, a note at a time from the main loop so it never holds up the screen.
+An alert plays a rising three-note chime, or a two-tone warble for an emergency, on a channel of its own, a note at a time from the main loop so it never holds up the screen - and then the word for what it is. The words are recordings in flash, about a second of 16-bit sound each at 22kHz, 138KB for the four, played by the speaker's own task straight from flash, so saying one costs no RAM and no more of the UI's time than a note. They are made by `tools/gen_voice.py` with [Piper](https://github.com/rhasspy/piper), an offline neural text-to-speech engine, in its `en_GB-alba-medium` voice - built from the [CSTR, University of Edinburgh](https://datashare.ed.ac.uk/handle/10283/3270) Alba data, CC BY 4.0 - and another voice, or other words, is a run of the script away. Over USB serial, `E`, `W`, `R` or `M` sounds an alert of each kind, to hear one without waiting for it.
 
 The speaker icon in the header mutes it, and the setting persists. Muting silences the beeps rather than shutting the speaker down, so unmuting needs no re-initialisation - and unmuting plays the arrival blip, which is the one confirmation that can only be given in the medium being switched back on. `SOUND_ENABLED` and `SOUND_VOLUME` in `include/config.h` remain the build-time "never make a sound" and the level.
 
@@ -346,5 +346,5 @@ MIT - see [LICENSE](LICENSE). The libraries it builds on (M5Unified, M5GFX, Ardu
 - `src/airports.cpp` - generated airport table: the nearest one, for the code at the centre of the plot, and every one in range, for the overlay
 - `src/runways.cpp` - generated runway table (`src/runways_table.inc`, from `tools/gen_runways.py`), for the airport zoom
 - `src/follow.cpp` - follow me's destination and range, and the simulation of take-offs and landings for every low contact (`tools/runway_sim_test` runs it on the PC)
-- `src/sound.cpp` - boot and new-arrival beeps, key ticks and alert chimes through the built-in speaker
+- `src/sound.cpp` - boot and new-arrival beeps, key ticks, and alert chimes and the words after them (`src/voice_table.inc`, from `tools/gen_voice.py`), through the built-in speaker
 - `include/config.h` - tunable constants, and the ADS-B provider table

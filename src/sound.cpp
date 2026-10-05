@@ -2,6 +2,7 @@
 
 #include <M5Unified.h>
 
+#include "alerts.h"
 #include "config.h"
 
 namespace {
@@ -31,6 +32,31 @@ constexpr Note WARBLE[] = {{988, 160}, {740, 160}, {988, 160}, {740, 160}, {988,
 const Note *g_notes = nullptr;
 int g_noteCount = 0;
 int g_nextNote = 0;
+
+// The words, made by tools/gen_voice.py: a second of 16-bit sound each, at
+// the voice's own rate, played from flash by the speaker's own task, so
+// saying one costs the UI no more than a note does.
+#include "voice_table.inc"
+
+struct Clip {
+    const int16_t *samples;
+    size_t count;
+};
+#define CLIP(a) Clip{a, sizeof(a) / sizeof(a[0])}
+
+// Said once the notes are done; nullptr for nothing to say.
+const Clip *g_word = nullptr;
+
+// The reason the banner names, in the same order - see alertReasonText().
+const Clip *wordFor(uint8_t reasons) {
+    static const Clip EMERGENCY = CLIP(VOICE_EMERGENCY), WATCHLIST = CLIP(VOICE_WATCHLIST), RARE = CLIP(VOICE_RARE),
+                      MILITARY = CLIP(VOICE_MILITARY);
+    if (reasons & ALERT_EMERGENCY) return &EMERGENCY;
+    if (reasons & ALERT_WATCHLIST) return &WATCHLIST;
+    if (reasons & ALERT_RARE) return &RARE;
+    if (reasons & ALERT_MILITARY) return &MILITARY;
+    return nullptr;
+}
 
 }  // namespace
 
@@ -73,10 +99,12 @@ void soundNewFlight() {
     M5.Speaker.tone(1568, 70, CHANNEL, false);
 }
 
-void soundAlert(bool emergency) {
+void soundAlert(uint8_t reasons) {
     if (!g_ready || g_muted) {
         return;
     }
+    bool emergency = (reasons & ALERT_EMERGENCY) != 0;
+    g_word = wordFor(reasons);
     g_notes = emergency ? WARBLE : CHIME;
     g_noteCount = emergency ? (int)(sizeof(WARBLE) / sizeof(Note)) : (int)(sizeof(CHIME) / sizeof(Note));
     g_nextNote = 0;
@@ -87,6 +115,11 @@ void soundTick() {
         return;
     }
     if (g_nextNote >= g_noteCount || g_muted) {
+        // The notes done, what it is - unless muted since.
+        if (g_word != nullptr && !g_muted) {
+            M5.Speaker.playRaw(g_word->samples, g_word->count, VOICE_RATE, false, 1, ALERT_CHANNEL, true);
+        }
+        g_word = nullptr;
         g_notes = nullptr;
         return;
     }

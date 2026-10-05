@@ -1,5 +1,7 @@
 #pragma once
 
+#include <stdint.h>
+
 // Feedback beeps through the Tab5's built-in speaker.
 //
 // M5.begin() configures the board's ES8388 codec and amp but stops short of
@@ -17,9 +19,11 @@ void soundNewFlight();
 void soundKeyClick();
 
 // A rising three-note chime for an interesting flight, or for an emergency
-// squawk a two-tone warble that can't be mistaken for it. Returns at once:
-// the notes are played out by soundTick().
-void soundAlert(bool emergency);
+// squawk a two-tone warble that can't be mistaken for it - and then, spoken,
+// what it is: "Emergency", "Watchlist", "Rare aircraft" or "Military", for
+// the reason the banner names, out of the AlertReason bits in `reasons`.
+// Returns at once: it is played out by soundTick().
+void soundAlert(uint8_t reasons);
 
 // Plays the next note of a queued alert once the one before has finished.
 // Call every loop.

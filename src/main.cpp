@@ -1321,7 +1321,7 @@ void tickAlerts() {
                       alertReasonText(g_bannerAc, g_bannerAc.alert).c_str(), g_bannerMore);
         g_bannerUp = true;
         g_bannerShownMs = 0;
-        soundAlert((g_bannerAc.alert & ALERT_EMERGENCY) != 0);
+        soundAlert(g_bannerAc.alert);
         if (g_autoFollow) {
             autoFollow(g_bannerAc);
         }
@@ -2575,10 +2575,25 @@ void loop() {
     uint32_t loopStart = micros();
     M5.update();
 
-    // 'S' over serial sends the screen back, for tools/screenshot.py.
+    // 'S' over serial sends the screen back, for tools/screenshot.py; 'E',
+    // 'W', 'R' and 'M' sound an alert of each kind, to hear what it says.
     while (Serial.available()) {
-        if (Serial.read() == 'S') {
+        switch (Serial.read()) {
+        case 'S':
             screen::dumpToSerial();
+            break;
+        case 'E':
+            soundAlert(ALERT_EMERGENCY);
+            break;
+        case 'W':
+            soundAlert(ALERT_WATCHLIST);
+            break;
+        case 'R':
+            soundAlert(ALERT_RARE);
+            break;
+        case 'M':
+            soundAlert(ALERT_MILITARY);
+            break;
         }
     }
 
