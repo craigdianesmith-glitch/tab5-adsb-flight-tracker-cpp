@@ -23,7 +23,13 @@
 #include "recordings_screen.h"
 #include "runways.h"
 #include "screen.h"
+#ifdef RELEASE_BUILD
+// A released image carries no network of its own: see platformio.ini.
+#define WIFI_SSID ""
+#define WIFI_PASSWORD ""
+#else
 #include "secrets.h"
+#endif
 #include "settings.h"
 #include "settings_screen.h"
 #include "share_screen.h"
@@ -2539,6 +2545,7 @@ void checkWifiGaveUp() {
 
 void setup() {
     Serial.begin(115200);
+    Serial.setTxTimeoutMs(SERIAL_TX_TIMEOUT_MS);
     delay(300);
     // Tab5's WiFi lives on a separate ESP32-C6 over SDIO, and the generic P4
     // eval-board pin defaults don't reach it. M5Unified is supposed to fix
@@ -2798,7 +2805,7 @@ void loop() {
 
     static uint32_t nextRotationCheck = 0;
     uint32_t now = millis();
-    if (now >= nextRotationCheck) {
+    if ((int32_t)(now - nextRotationCheck) >= 0) {  // across millis() wrapping, after 49 days
         nextRotationCheck = now + 1000;
         checkRotation();
     }

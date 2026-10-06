@@ -30,6 +30,7 @@ pip install platformio
    ```
    pio run -t upload --upload-port /dev/ttyACM0
    ```
+   An image to publish is built with `pio run -e release` instead, into `.pio/build/release/firmware.bin`: the same firmware without `include/secrets.h`, so the credentials of whoever built it never reach it, and it opens the WiFi screen on first boot. The libraries are pinned to the commits it was tested against.
 3. Watch serial output at 115200 baud for boot/WiFi diagnostics if anything looks wrong. Once a minute it also logs a `[perf]` line: how long the radar and zoom took to draw - split into the parts that don't move from frame to frame, the contacts, and the push to the panel - the longest pass of the main loop, and how much internal RAM is free. Measured on the radar and zoom at Glasgow: about 40-50ms a draw, of which 8ms the scope, airports and runways, 1ms the contacts and 19ms the push - too little in the unmoving parts for caching them to be worth its keeping in step.
 
 ## Screenshots

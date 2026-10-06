@@ -205,3 +205,11 @@ constexpr AdsbSource DEFAULT_ADSB_SOURCE = AdsbSource::AUTO;
 
 // Index into ADSB_PROVIDERS, or -1 for AUTO.
 constexpr int adsbSourceIndex(AdsbSource s) { return s == AdsbSource::AUTO ? -1 : (int)s - 1; }
+
+// How long a write over USB serial waits on a host that isn't reading. The
+// framework's 100ms is tried twenty times over before it gives up on the
+// host, and that was a 2-second freeze of the screen and its touches each time
+// a computer started reading the port - or was plugged into for power with
+// nothing reading it. The screenshot dump puts the 100ms back while it runs.
+constexpr uint32_t SERIAL_TX_TIMEOUT_MS = 10;
+constexpr uint32_t SERIAL_TX_TIMEOUT_DUMP_MS = 100;

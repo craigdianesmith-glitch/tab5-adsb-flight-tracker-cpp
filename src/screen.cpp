@@ -1,5 +1,7 @@
 #include "screen.h"
 
+#include "config.h"
+
 #include <driver/ppa.h>
 #include <esp_cache.h>
 #include <esp_heap_caps.h>
@@ -464,6 +466,9 @@ void dumpToSerial() {
     if (g_buffer == nullptr) {
         return;
     }
+    // Waited on as long as it takes: the tool is reading, and a write given up
+    // on would leave a hole in the picture.
+    Serial.setTxTimeoutMs(SERIAL_TX_TIMEOUT_DUMP_MS);
     Serial.flush();
     Serial.printf("\nSCREENSHOT %d %d\n", CANVAS_W, CANVAS_H);
     // In chunks: a single 1.8MB write can outlast the CDC driver's transmit
@@ -480,6 +485,7 @@ void dumpToSerial() {
     }
     Serial.flush();
     Serial.print("\nSCREENSHOT END\n");
+    Serial.setTxTimeoutMs(SERIAL_TX_TIMEOUT_MS);
 }
 
 }  // namespace screen
