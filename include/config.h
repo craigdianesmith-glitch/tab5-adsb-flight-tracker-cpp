@@ -29,7 +29,7 @@ constexpr uint32_t FORGET_AFTER_MS = 120000;
 // The airport zoom fetches the traffic around its airport this often, on top
 // of the main poll. Faster than the main poll's default, since at a couple of
 // miles across an airliner on final covers a third of the plot in thirty
-// seconds - but only while the zoom is up, which stays until Unzoom or the
+// seconds - but only while the zoom is up, which stays until Back or the
 // screen is left, and for a radius of a few miles, a far smaller answer than
 // the main poll's. The two never go closer together than
 // POLL_INTERVAL_MIN_S. Ten seconds rather than five: at five, sustained over

@@ -143,7 +143,7 @@ struct Follow {
     // one tapped open on some other airport, whose poll doesn't reach it.
     bool zoomIsItsOwn = false;
     float zoomDistNm = -1;   // how far from the zoom's middle it was at the last poll, -1 for not yet
-    String skipZoom;         // Unzoomed from while following: not handed back to
+    String skipZoom;         // Left by Back while following: not handed back to
     std::vector<FollowSample> heights;  // each report, for the telemetry's chart
     int rangeNm = FOLLOW_RANGE_NM;      // the radar's, closing in as it comes down
     // Its reports, for where it is shown - simulated down the runway when
@@ -1076,7 +1076,7 @@ void zoomRadar(bool in) {
         if (next == 0) {
             String code;
             if (radarZoomTarget(code)) {
-                openZoom(code);  // Unzoom comes back to the radar at this range
+                openZoom(code);  // Back comes back to the radar at this range
             }
             return;
         }
@@ -2932,7 +2932,7 @@ void loop() {
         }
     }
     // The zoom's fetches stop as soon as neither it nor a detail opened from
-    // it is up, however it was left - Unzoom, the timeout, or the WiFi screen
+    // it is up, however it was left - Back, the timeout, or the WiFi screen
     // taking over.
     if (g_zoomUp && g_screen != Screen::ZOOM && !(g_screen == Screen::DETAIL && g_detailReturnTo == Screen::ZOOM)) {
         endZoom();

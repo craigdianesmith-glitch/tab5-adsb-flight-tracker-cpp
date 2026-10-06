@@ -699,9 +699,32 @@ void drawCentreButtons() {
 
 bool g_canZoomIn = false, g_canZoomOut = false;
 
+// ZOOM IN or OUT, each after a magnifier with a plus or a minus in it, the
+// two centred together on the button.
+void drawZoomButton(int y, bool in, Look look) {
+    drawButtonFrame(y, look);
+    auto &canvas = screen::canvas();
+    uint16_t color = look == Look::GREYED ? colorDisabled : look == Look::LIT ? colorBg : colorText;
+    const char *label = in ? "ZOOM IN" : "ZOOM OUT";
+    constexpr int ICON_W = 21, ICON_GAP = 8;  // the lens's left edge to the handle's end
+    int left = BTN_X + (BTN_W - ICON_W - ICON_GAP - canvas.textWidth(label)) / 2;
+    int cx = left + 8, cy = y + BTN_H / 2 - 3;
+    canvas.drawCircle(cx, cy, 8, color);
+    canvas.drawCircle(cx, cy, 7, color);
+    canvas.drawFastHLine(cx - 4, cy, 9, color);
+    if (in) {
+        canvas.drawFastVLine(cx, cy - 4, 9, color);
+    }
+    for (int i = 0; i <= 1; i++) {
+        canvas.drawLine(cx + 6 + i, cy + 6, cx + 11 + i, cy + 11, color);
+    }
+    canvas.setTextDatum(ML_DATUM);
+    canvas.drawString(label, left + ICON_W + ICON_GAP, y + BTN_H / 2);
+}
+
 void drawZoomButtons() {
-    drawButton(ZOOM_IN_Y, "ZOOM IN", g_canZoomIn ? Look::PLAIN : Look::GREYED);
-    drawButton(ZOOM_OUT_Y, "ZOOM OUT", g_canZoomOut ? Look::PLAIN : Look::GREYED);
+    drawZoomButton(ZOOM_IN_Y, true, g_canZoomIn ? Look::PLAIN : Look::GREYED);
+    drawZoomButton(ZOOM_OUT_Y, false, g_canZoomOut ? Look::PLAIN : Look::GREYED);
 }
 
 void drawFollowButton() {
@@ -1481,7 +1504,7 @@ constexpr float ZOOM_LEAD_S = 20.0f;
 constexpr int MAX_ZOOM_RUNWAYS = 16;  // O'Hare has the most, at 11 with its closed ones
 // The live zoom's ZOOM IN and OUT step its range through these, from the
 // frame's own: in to taxiway level, where a crowded apron's contacts come
-// apart, and out to the frame's range - past which ZOOM OUT is Unzoom.
+// apart, and out to the frame's range - past which ZOOM OUT goes back to the radar.
 constexpr float ZOOM_VIEW_STEPS_NM[] = {0.5f, 1.0f, 1.5f, 2.0f, 3.0f, 4.0f, 5.0f, 6.0f};
 // Between the end of a runway and its number, and its number and its
 // extended centreline.
@@ -1863,31 +1886,13 @@ void drawRunways(const ZoomFrame &f, const bool inUse[][2], const bool recent[][
     }
 }
 
-// A magnifier with a minus in it, then the word: what the button undoes.
-// Where the radar's Back is.
-void drawUnzoomButton() {
-    auto &canvas = screen::canvas();
-    canvas.fillRoundRect(BTN_X, BACK_Y, BTN_W, BTN_H, 6, colorBtnBg);
-    int cx = BTN_X + 30, cy = BACK_Y + BTN_H / 2 - 3;
-    canvas.drawCircle(cx, cy, 8, colorText);
-    canvas.drawCircle(cx, cy, 7, colorText);
-    canvas.drawFastHLine(cx - 4, cy, 9, colorText);
-    for (int i = 0; i <= 1; i++) {
-        canvas.drawLine(cx + 6 + i, cy + 6, cx + 11 + i, cy + 11, colorText);
-    }
-    canvas.setTextSize(2);
-    canvas.setTextDatum(ML_DATUM);
-    canvas.setTextColor(colorText);
-    canvas.drawString("Unzoom", BTN_X + 52, BACK_Y + BTN_H / 2);
-}
-
 bool zoomCanIn() { return g_zoomViewNm > ZOOM_VIEW_STEPS_NM[0] + 0.01f; }
 
 // Where the radar has its ZOOM buttons, working the same way. ZOOM OUT always
 // goes somewhere: at the frame's range, back to the radar.
 void drawZoomViewButtons() {
-    drawButton(ZOOM_IN_Y, "ZOOM IN", zoomCanIn() ? Look::PLAIN : Look::GREYED);
-    drawButton(ZOOM_OUT_Y, "ZOOM OUT", Look::PLAIN);
+    drawZoomButton(ZOOM_IN_Y, true, zoomCanIn() ? Look::PLAIN : Look::GREYED);
+    drawZoomButton(ZOOM_OUT_Y, false, Look::PLAIN);
 }
 
 void drawZoomHeader() {
@@ -1925,7 +1930,9 @@ void drawZoomHeader() {
     drawButton(FOLLOW_Y, g_zoomPicking ? "TAP PLANE" : "FOLLOW",
                g_zoomFollowHex.length() || g_zoomPicking ? Look::LIT : Look::PLAIN);
     drawRecButton();
-    drawUnzoomButton();
+    // Back to the radar, where Back is on every screen - as ZOOM OUT is, from
+    // the zoom's own framing.
+    drawButton(BACK_Y, "Back", Look::PLAIN);
     drawZoomViewButtons();
 }
 
