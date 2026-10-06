@@ -23,6 +23,11 @@ struct AppSettings {
     RadarCentre radarCentre;  // toggled from the radar screen itself
     bool radarAirports;       // the other airports around the centred one - a long press there
     int radarRangeNm;         // how far the radar shows, from ZOOM IN and OUT; 0 for the whole radius
+    // The airport zoom the radar was left on, to come back to after a reboot
+    // as it was: its airport, empty for none, and the range ZOOM IN and OUT
+    // had it at, 0 for its framing.
+    String zoomCode;
+    float zoomViewNm;
 
     uint8_t alertMask;  // which AlertReasons raise an alert
     String watchlist;   // as typed: entries separated by spaces or commas
@@ -44,5 +49,6 @@ void saveNavaids(bool navaids);
 void saveRadarCentre(RadarCentre centre);
 void saveRadarAirports(bool airports);
 void saveRadarRange(int rangeNm);
+void saveRadarZoom(const String &code, float viewNm);
 void saveWifi(const String &ssid, const String &pass);
 void saveAlerts(uint8_t alertMask, const String &watchlist, bool autoRecord, bool autoFollow);

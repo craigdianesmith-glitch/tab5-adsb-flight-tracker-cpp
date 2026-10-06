@@ -30,6 +30,8 @@ AppSettings loadSettings() {
                         : RadarCentre::AIRPORT;
     s.radarAirports = prefs.getBool("radarapt", false);
     s.radarRangeNm = prefs.getUShort("radarrng", 0);
+    s.zoomCode = prefs.isKey("zoomapt") ? prefs.getString("zoomapt") : String("");
+    s.zoomViewNm = prefs.getUShort("zoomview", 0) / 10.0f;  // in tenths
     s.alertMask = prefs.getUChar("alerts", ALERT_ALL) & ALERT_ALL;
     s.watchlist = prefs.isKey("watch") ? prefs.getString("watch") : String("");
     s.autoRecord = prefs.getBool("autorec", false);
@@ -119,6 +121,14 @@ void saveRadarRange(int rangeNm) {
     Preferences prefs;
     prefs.begin(NAMESPACE, false);
     prefs.putUShort("radarrng", (uint16_t)rangeNm);
+    prefs.end();
+}
+
+void saveRadarZoom(const String &code, float viewNm) {
+    Preferences prefs;
+    prefs.begin(NAMESPACE, false);
+    prefs.putString("zoomapt", code);
+    prefs.putUShort("zoomview", (uint16_t)lroundf(viewNm * 10));
     prefs.end();
 }
 

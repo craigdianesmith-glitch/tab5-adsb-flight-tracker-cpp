@@ -122,11 +122,22 @@ uint32_t g_zoomDrawnMs = 0;            // and when it was last drawn
 uint32_t g_radarDrawnMs = 0;           // likewise, the radar
 String g_zoomCode;                     // likewise: the airport it is on
 float g_zoomRangeNm = 0;               // and how far its plot reaches from g_zoomPoll's middle
-// The zoom Back left for the table, to be opened again as it was left - at
-// the range it was showing - when the radar is next opened from there. Empty
-// for none. Only touched by loop().
+// The radar's view when it is an airport zoom: the airport, and the range
+// ZOOM IN and OUT have it at - for the table's radar icon to come back to as
+// it was left, and saved, so after a reboot too. Empty while the radar is the
+// radar itself. A zoom following hands an aircraft to isn't kept: following
+// isn't either. Only touched by loop().
 String g_returnZoomCode;
 float g_returnZoomViewNm = 0;
+
+void rememberZoom(const String &code, float viewNm) {
+    if (code == g_returnZoomCode && fabsf(viewNm - g_returnZoomViewNm) < 0.01f) {
+        return;  // as saved already: no write to flash
+    }
+    g_returnZoomCode = code;
+    g_returnZoomViewNm = viewNm;
+    saveRadarZoom(code, viewNm);
+}
 
 // Follow me. Only touched by loop(). FOLLOW on the radar, then a tap on a
 // contact, and the radar is centred on that aircraft wherever it goes; low
@@ -1186,6 +1197,9 @@ bool openZoom(const String &code, bool forFollowed, float viewNm) {
     }
     g_zoomUp = true;
     g_screen = Screen::ZOOM;
+    if (!g_follow.active) {
+        rememberZoom(code, radarZoomViewNm());
+    }
     drawZoom(true);
     return true;
 }
@@ -1237,6 +1251,7 @@ void closeZoom() {
     if (!g_follow.active) {
         g_follow.picking = false;  // tapped in the zoom, it was for the zoom's contacts
     }
+    rememberZoom(String(), 0);  // the radar is the radar again
     endZoom();
     g_screen = Screen::RADAR;
     drawRadar(true);
@@ -2003,12 +2018,10 @@ void handleZoomTouch(int x, int y) {
     String hex;
     switch (radarZoomHandleTouch(x, y, hex)) {
     case ZoomAction::BACK:
-        // To the table, as the radar's Back is, with the zoom kept for the
-        // radar to come back to. Following carries on out of sight, and it
-        // is the radar centred on the aircraft that comes back, to hand it to
-        // a zoom again if that is where it still is.
-        g_returnZoomCode = g_follow.active ? String() : g_zoomCode;
-        g_returnZoomViewNm = radarZoomViewNm();
+        // To the table, as the radar's Back is, the zoom kept for the radar to
+        // come back to - see g_returnZoomCode. Following carries on out of
+        // sight, and it is the radar centred on the aircraft that comes back,
+        // to hand it to a zoom again if that is where it still is.
         g_follow.picking = false;
         g_screen = Screen::MAIN;  // and loop() ends the zoom's fetches
         displayInvalidate();
@@ -2067,6 +2080,9 @@ void handleZoomTouch(int x, int y) {
     }
     case ZoomAction::REDRAW:
         shareZoomView();
+        if (!g_follow.active) {
+            rememberZoom(g_zoomCode, radarZoomViewNm());
+        }
         drawZoom(true);
         break;
     case ZoomAction::DISMISS:
@@ -2269,11 +2285,14 @@ void handleWatchlistTouch(int x, int y) {
 
 void handleMainTouch(int x, int y) {
     if (displayHitRadar(x, y)) {
-        // Back where it was left: the zoom, if that was what Back left.
+        // Back where it was left: the zoom, if it was on one - this boot or
+        // the last.
         String code = g_returnZoomCode;
-        g_returnZoomCode = "";
-        if (code.length() && !g_follow.active && openZoom(code, false, g_returnZoomViewNm)) {
-            return;
+        if (code.length() && !g_follow.active) {
+            if (openZoom(code, false, g_returnZoomViewNm)) {
+                return;
+            }
+            rememberZoom(String(), 0);  // an airport no longer in the table
         }
         g_screen = Screen::RADAR;
         drawRadar(true);
@@ -2616,6 +2635,8 @@ void setup() {
     g_radarCentre = s.radarCentre;
     g_radarAirports = s.radarAirports;
     g_radarRangeNm = s.radarRangeNm;
+    g_returnZoomCode = s.zoomCode;
+    g_returnZoomViewNm = s.zoomViewNm;
     g_alertMask = s.alertMask;
     g_watchlist = s.watchlist;
     g_autoRecord = s.autoRecord;
