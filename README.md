@@ -78,6 +78,8 @@ A callsign the transponder sent as blank arrives from readsb as a row of `@`s. T
 
 The cog opens a settings screen in two columns - eight controls will not stack down 720px of height, and 1280px of width was going spare:
 
+Its title bar has the version beside the title, and **Help** and **About** beside Back. **Help** is two pages on how to use the tracker - the table, radar, airport zoom, following, alerts, recording and settings - and **About** the version, a disclaimer (for interest only, not for navigation or anything safety depends on; the data can be incomplete or wrong; take-offs, landings and the spoken clearances are simulated) and the credits for the data, voice and libraries. Both are `src/info_screen.cpp`, written as headings, paragraphs and bullets and wrapped and paged to fit when opened, so the words can change without anything being counted.
+
 - **Traffic filter** - civilian or military, as an either/or choice rather than two independent switches. Military aircraft are the ones readsb sets bit 0 of `dbFlags` on - or, on a feed that doesn't carry that field, the ones a military-only endpoint returned.
 - **Range** - a slider whose ceiling follows the filter above it: 60nm for civil traffic, 150nm for military, since military traffic is worth watching further out. Switching to civil with the slider up high clamps it back down.
 - **Show flight refresh** - whether cells that changed on the last poll are shaded for a moment (see Rendering below). On by default.
@@ -337,6 +339,7 @@ MIT - see [LICENSE](LICENSE). The libraries it builds on (M5Unified, M5GFX, Ardu
 - `src/detail_screen.cpp` - one aircraft's details, from the table, the radar, a replay or an alert banner
 - `src/location_screen.cpp` - location search screen: text entry and results list, reached from the settings screen
 - `src/settings_screen.cpp` - the cog screen: filters, the data source, the range and interval sliders, and the way in to location, WiFi and alerts
+- `src/info_screen.cpp` - Help and About, from the settings screen: how to use it, and the version, disclaimer and credits
 - `src/alerts.cpp` - the alert rules, the watchlist parser and the callsign flash
 - `src/alerts_screen.cpp`, `src/watchlist_screen.cpp` - alert switches and auto-record, and the watchlist editor
 - `src/recorder.cpp` - the SD card: mounting and the write test, recordings and their parts, and the video folder

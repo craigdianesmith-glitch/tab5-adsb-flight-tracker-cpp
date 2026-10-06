@@ -16,6 +16,7 @@
 #include "detail_screen.h"
 #include "display.h"
 #include "follow.h"
+#include "info_screen.h"
 #include "location_screen.h"
 #include "playback_screen.h"
 #include "radar_screen.h"
@@ -40,7 +41,8 @@
 
 namespace {
 
-enum class Screen { MAIN, LOCATION, DETAIL, SETTINGS, WIFI, RADAR, ZOOM, ALERTS, WATCHLIST, RECORDINGS, PLAYBACK, SHARE };
+enum class Screen { MAIN, LOCATION, DETAIL, SETTINGS, WIFI, RADAR, ZOOM, ALERTS, WATCHLIST, RECORDINGS, PLAYBACK, SHARE,
+                    INFO };
 Screen g_screen = Screen::MAIN;
 // The detail screen is reachable from the table and from the radar, and Back
 // should land wherever you came from.
@@ -2436,7 +2438,8 @@ void handleLocationTouch(int x, int y) {
 }
 
 void handleSettingsTouch(int x, int y, bool pressed, bool clicked) {
-    switch (settingsScreenHandleTouch(x, y, pressed, clicked)) {
+    SettingsAction action = settingsScreenHandleTouch(x, y, pressed, clicked);
+    switch (action) {
     case SettingsAction::BACK: {
         TrafficFilter traffic = settingsScreenTraffic();
         int radius = settingsScreenRadius();
@@ -2496,8 +2499,21 @@ void handleSettingsTouch(int x, int y, bool pressed, bool clicked) {
         g_screen = Screen::WIFI;
         wifiScreenEnter();
         break;
+    case SettingsAction::OPEN_HELP:
+    case SettingsAction::OPEN_ABOUT:
+        // Settings keeps what has been changed on it meanwhile, for its Back.
+        g_screen = Screen::INFO;
+        infoScreenOpen(action == SettingsAction::OPEN_HELP ? InfoPage::HELP : InfoPage::ABOUT);
+        break;
     case SettingsAction::NONE:
         break;
+    }
+}
+
+void handleInfoTouch(int x, int y) {
+    if (infoScreenHandleTouch(x, y) == InfoAction::BACK) {
+        g_screen = Screen::SETTINGS;
+        settingsScreenDraw();
     }
 }
 
@@ -2816,6 +2832,9 @@ void loop() {
                 break;
             case Screen::SHARE:
                 handleShareTouch(t.x, t.y);
+                break;
+            case Screen::INFO:
+                handleInfoTouch(t.x, t.y);
                 break;
             default:
                 break;

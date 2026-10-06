@@ -11,6 +11,9 @@ namespace {
 bool colorsReady = false;
 
 constexpr int BACK_X = 1140, BACK_Y = 8, BACK_W = 124, BACK_H = 44;
+// Beside Back in the title bar, as Share is on the recordings screen: the
+// two screens of reading, about the tracker rather than its settings.
+constexpr int ABOUT_X = BACK_X - 12 - BACK_W, HELP_X = ABOUT_X - 12 - BACK_W;
 
 // Two columns rather than one full-width stack: there are six things on this
 // screen now and 720px of height won't take them end to end, while 1280px of
@@ -392,6 +395,10 @@ void settingsScreenDraw() {
     canvas.setTextSize(2);
     canvas.setTextDatum(MC_DATUM);
     canvas.drawString("Back", BACK_X + BACK_W / 2, BACK_Y + BACK_H / 2);
+    canvas.fillRoundRect(ABOUT_X, BACK_Y, BACK_W, BACK_H, 6, colorBtnBg);
+    canvas.drawString("About", ABOUT_X + BACK_W / 2, BACK_Y + BACK_H / 2);
+    canvas.fillRoundRect(HELP_X, BACK_Y, BACK_W, BACK_H, 6, colorBtnBg);
+    canvas.drawString("Help", HELP_X + BACK_W / 2, BACK_Y + BACK_H / 2);
 
     sectionLabel("SHOW", COL1_X, SHOW_LABEL_Y);
     drawSegments();
@@ -462,6 +469,12 @@ SettingsAction settingsScreenHandleTouch(int x, int y, bool pressed, bool clicke
 
     if (x >= BACK_X && x < BACK_X + BACK_W && y >= BACK_Y && y < BACK_Y + BACK_H) {
         return SettingsAction::BACK;
+    }
+    if (x >= ABOUT_X && x < ABOUT_X + BACK_W && y >= BACK_Y && y < BACK_Y + BACK_H) {
+        return SettingsAction::OPEN_ABOUT;
+    }
+    if (x >= HELP_X && x < HELP_X + BACK_W && y >= BACK_Y && y < BACK_Y + BACK_H) {
+        return SettingsAction::OPEN_HELP;
     }
 
     if (y >= SEG_Y && y < SEG_Y + SEG_H && x >= SEG_X && x < SEG_X + SEG_W) {

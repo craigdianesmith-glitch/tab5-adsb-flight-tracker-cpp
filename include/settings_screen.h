@@ -10,6 +10,8 @@ enum class SettingsAction {
     OPEN_WIFI,
     OPEN_LOCATION,
     OPEN_ALERTS,
+    OPEN_HELP,      // the how-to-use screen
+    OPEN_ABOUT,     // version, disclaimer and credits
 };
 
 // Seeds the screen with the values currently in force. The label is only
