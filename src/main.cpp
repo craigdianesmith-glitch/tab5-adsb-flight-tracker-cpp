@@ -35,6 +35,7 @@
 #include "settings_screen.h"
 #include "share_screen.h"
 #include "sound.h"
+#include "splash.h"
 #include "telemetry.h"
 #include "watchlist_screen.h"
 #include "wifi_screen.h"
@@ -723,16 +724,9 @@ void checkRotation() {
     screen::flush();
 }
 
-void connectWifi(const String &ssid, const String &password) {
-    WiFi.mode(WIFI_STA);
-    WiFi.begin(ssid.c_str(), password.c_str());
-    uint32_t start = millis();
-    while (WiFi.status() != WL_CONNECTED && millis() - start < 15000) {
-        delay(500);
-    }
-    Serial.printf("[wifi] %s\n",
-                  WiFi.status() == WL_CONNECTED ? WiFi.localIP().toString().c_str() : "FAILED to connect");
-}
+// How long boot waits on the network, from when it is begun - the splash
+// screen playing out in the first few seconds of it.
+constexpr uint32_t WIFI_BOOT_TIMEOUT_MS = 15000;
 
 void updateRecButton(bool onScreen);
 
@@ -2653,32 +2647,45 @@ void setup() {
                   g_pollIntervalS,
                   adsbSourceIndex(g_source) < 0 ? "auto" : ADSB_PROVIDERS[adsbSourceIndex(g_source)].name);
 
-    // Something on screen before the WiFi connect blocks for up to 15s. The
-    // status line under it says what's happening.
-    std::vector<Aircraft> none;
-    std::vector<uint8_t> noneNew;
-    displayRenderAircraft(none, noneNew);
-    displaySetPollState(false, false, false, 0);
-    displayTickStatus();
-
     // Credentials set on-screen win; secrets.h is the fallback for a device
     // that's never had WiFi configured through the settings screen. Kept so
     // the poll task can reconnect with them without re-reading NVS each time.
     g_wifiSsid = s.wifiSsid.length() ? s.wifiSsid : String(WIFI_SSID);
     g_wifiPass = s.wifiSsid.length() ? s.wifiPass : String(WIFI_PASSWORD);
-
     bool haveCredentials = !credentialsUnset(g_wifiSsid);
+
+    // The network is joined while the splash screen plays, and waited on
+    // after it for what is left of the timeout, the splash saying so. With
+    // nothing to connect with, the timeout isn't spent finding out; the WiFi
+    // screen scans, which needs the radio in station mode either way.
+    WiFi.mode(WIFI_STA);
+    uint32_t wifiStart = millis();
     if (haveCredentials) {
-        connectWifi(g_wifiSsid, g_wifiPass);
+        WiFi.begin(g_wifiSsid.c_str(), g_wifiPass.c_str());
+    }
+    soundTakeoff();
+    splashPlay();
+    if (haveCredentials) {
+        if (WiFi.status() != WL_CONNECTED) {
+            splashStatus("Connecting to " + g_wifiSsid + "...");
+        }
+        while (WiFi.status() != WL_CONNECTED && millis() - wifiStart < WIFI_BOOT_TIMEOUT_MS) {
+            delay(100);
+        }
+        Serial.printf("[wifi] %s\n",
+                      WiFi.status() == WL_CONNECTED ? WiFi.localIP().toString().c_str() : "FAILED to connect");
         if (WiFi.status() != WL_CONNECTED) {
             g_wifiFails = 1;  // the first of the attempts before the WiFi screen comes up
         }
     } else {
-        // Nothing to connect with, so don't spend the timeout finding out.
-        // The screen scans, which needs the radio in station mode either way.
         Serial.println("[wifi] no credentials set - opening the WiFi screen");
-        WiFi.mode(WIFI_STA);
     }
+
+    std::vector<Aircraft> none;
+    std::vector<uint8_t> noneNew;
+    displayRenderAircraft(none, noneNew);
+    displaySetPollState(false, false, false, 0);
+    displayTickStatus();
     g_linkUp = (WiFi.status() == WL_CONNECTED);
     // UTC, for naming recordings and stamping their polls. SNTP keeps trying in
     // the background, so a link that comes up later still gets the time.
@@ -2691,8 +2698,6 @@ void setup() {
     // Pinned to core 0 so it doesn't contend with the render/UI loop on core 1.
     // mbedTLS/HTTPS needs considerably more stack than a typical task.
     xTaskCreatePinnedToCore(pollTask, "poll", 16384, nullptr, 1, nullptr, 0);
-
-    soundBoot();
 
     // A device that has never been told about a network lands on the screen
     // that fixes that, rather than on a table that can never fill.

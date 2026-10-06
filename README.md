@@ -213,9 +213,13 @@ The server answers byte-range requests - Safari won't play a video from one that
 
 There is no password, so it runs only while the share screen is up, and Back stops it.
 
+## Splash screen
+
+At boot, while WiFi joins, a title screen: a runway running off to a dusk horizon with the sun going down beside it, and **OVERHEAD** across the sky, with the version in the corner. An airliner, nose on, rolls down the runway from a speck at its far end, lifts off with its landing lights blazing, tucks its gear up, and comes on ever faster - in perspective, the runway's own - until it fills the screen and roars out over the top of it: overhead. It plays for three seconds to a jet taking off, and stays up with "Connecting to ..." under it if the network takes longer, for the rest of the 15 seconds boot waits on it. All of it is drawn - polygons into the canvas, no images - by `src/splash.cpp`; the scene is drawn once and kept, and each frame only puts it back where the plane was and pushes the patch the plane moved through, so it runs at 55-60 frames a second where redrawing the whole screen managed 11. The take-off is synthesised by `tools/gen_jet.py` from noise and a sine - a roar opening out as the engines spool up, the turbines' whine climbing over it, the crackle of the exhaust at full power, and then the roar closing and the whine dropping as it climbs away - 3.6 seconds at 16kHz, 112KB of flash. Muted, it plays silently.
+
 ## Sound
 
-A two-note rise once the firmware is up, and a short blip whenever an aircraft that wasn't there before appears in the table - one blip per poll however many arrived, and never on the first poll after a start or a location change, where every aircraft is new by definition.
+A jet taking off with the splash screen at boot (below), and a short blip whenever an aircraft that wasn't there before appears in the table - one blip per poll however many arrived, and never on the first poll after a start or a location change, where every aircraft is new by definition.
 
 The on-screen keyboard ticks on each key - 25ms at 3kHz, on a channel of its own that cuts off the tick before it, so fast typing doesn't queue up behind itself or behind an arrival blip.
 
@@ -223,7 +227,7 @@ An alert plays a rising three-note chime, or a two-tone warble for an emergency,
 
 The **airport zoom announces** each take-off and landing at its airport, while it is on screen, as a controller would clear it: "easyJet five three Tango Hotel, runway two three, cleared for take-off", or "...cleared to land". The airline is said by its name - every one in the airline table has a clip, with the rest of the callsign spelt after it; one it doesn't know has the whole callsign spelt - and the runway a digit at a time, with left, right or centre. They come from the runway simulation above: a take-off as the aircraft lines up or starts its roll, a landing as it is established on final, under 2,500ft and within 8nm. Each aircraft is announced once - not again for the same within five minutes, so a landing the simulation loses for a poll and picks up is one landing. Announcements have no chime, and wait behind an alert or each other, three at most; an alert that fires during one cuts it short, and mute silences both. Alerts are said as before: the reason, the callsign spelt, the type. Over serial, `T` and `L` say a made-up take-off and landing.
 
-If the speaker goes quiet - no boot beep, no alerts, though each alert's `[sound]` line in the serial log says it was played - the Tab5's audio chip has stuck: a reset or a reflash restarts only the processor, and it takes powering the Tab5 right off, battery and USB, to bring it back. What sets it off isn't known: the once it happened, the Tab5 had been running on USB with its battery out.
+If the speaker goes quiet - no take-off at boot, no alerts, though each alert's `[sound]` line in the serial log says it was played - the Tab5's audio chip has stuck: a reset or a reflash restarts only the processor, and it takes powering the Tab5 right off, battery and USB, to bring it back. What sets it off isn't known: the once it happened, the Tab5 had been running on USB with its battery out.
 
 The speaker icon in the header mutes it, and the setting persists. Muting silences the beeps rather than shutting the speaker down, so unmuting needs no re-initialisation - and unmuting plays the arrival blip, which is the one confirmation that can only be given in the medium being switched back on. `SOUND_ENABLED` and `SOUND_VOLUME` in `include/config.h` remain the build-time "never make a sound" and the level.
 
@@ -357,5 +361,6 @@ MIT - see [LICENSE](LICENSE). The libraries it builds on (M5Unified, M5GFX, Ardu
 - `src/airports.cpp` - generated airport table: the nearest one, for the code at the centre of the plot, and every one in range, for the overlay
 - `src/runways.cpp` - generated runway table (`src/runways_table.inc`, from `tools/gen_runways.py`), for the airport zoom
 - `src/follow.cpp` - follow me's destination and range, and the simulation of take-offs and landings for every low contact (`tools/runway_sim_test` runs it on the PC)
-- `src/sound.cpp` - boot and new-arrival beeps, key ticks, and alert chimes and the words after them (`src/voice_table.inc`, from `tools/gen_voice.py`), through the built-in speaker
+- `src/sound.cpp` - the take-off at boot (`src/jet_table.inc`, from `tools/gen_jet.py`), new-arrival beeps, key ticks, and alert chimes and the words after them (`src/voice_table.inc`, from `tools/gen_voice.py`), through the built-in speaker
+- `src/splash.cpp` - the title screen at boot: the runway, an airliner taking off at the viewer, and the OVERHEAD logo
 - `include/config.h` - tunable constants, and the ADS-B provider table

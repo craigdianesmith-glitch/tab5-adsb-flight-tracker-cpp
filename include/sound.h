@@ -11,7 +11,8 @@
 void soundInit();
 
 // Two-note rise, played once the firmware is up.
-void soundBoot();
+// The jet take-off the splash screen plays to - see tools/gen_jet.py.
+void soundTakeoff();
 
 // Short blip when an aircraft that wasn't there before appears in the table.
 void soundNewFlight();

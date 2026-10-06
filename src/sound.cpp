@@ -38,6 +38,7 @@ int g_nextNote = 0;
 // the voice's own rate, played from flash by the speaker's own task, so
 // saying one costs the UI no more than a note does.
 #include "voice_table.inc"
+#include "jet_table.inc"
 
 struct Clip {
     const int16_t *samples;
@@ -228,12 +229,12 @@ void soundSetMuted(bool muted) { g_muted = muted; }
 
 bool soundMuted() { return g_muted; }
 
-void soundBoot() {
+void soundTakeoff() {
     if (!g_ready || g_muted) {
         return;
     }
-    M5.Speaker.tone(880, 90, CHANNEL, false);
-    M5.Speaker.tone(1320, 140, CHANNEL, false);
+    // Played from flash by the speaker's own task, as the words are.
+    M5.Speaker.playRaw(JET_TAKEOFF, sizeof(JET_TAKEOFF) / sizeof(JET_TAKEOFF[0]), JET_RATE, false, 1, CHANNEL, true);
 }
 
 void soundKeyClick() {
