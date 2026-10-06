@@ -28,7 +28,7 @@ port = serial.Serial(args.port, 115200, timeout=5)
 
 def grab():
     port.reset_input_buffer()
-    port.write(b"S")
+    port.write(b"##S")
     # Log lines may arrive ahead of the header; skip until it turns up.
     deadline = time.time() + 10
     while True:

@@ -2733,12 +2733,26 @@ void loop() {
     uint32_t loopStart = micros();
     M5.update();
 
-    // 'S' over serial sends the screen back, for tools/screenshot.py; 'E',
-    // 'W', 'R' and 'M' sound an alert of each kind, for a made-up callsign,
-    // to hear what it says; 'T' and 'L' the zoom's take-off and landing
-    // announcements.
+    // "##S" over serial sends the screen back, for tools/screenshot.py;
+    // "##E", "##W", "##R" and "##M" sound an alert of each kind, for a
+    // made-up callsign, to hear what it says; "##T" and "##L" the zoom's
+    // take-off and landing announcements. Behind "##" rather than a bare
+    // letter: a computer opening the port echoes back the log lines it
+    // catches for a moment, and their letters ran the tests - a warble and a
+    // screenshot each time the port was opened.
+    static int hashes = 0;
     while (Serial.available()) {
-        switch (Serial.read()) {
+        int c = Serial.read();
+        if (c == '#') {
+            hashes++;
+            continue;
+        }
+        bool armed = hashes >= 2;
+        hashes = 0;
+        if (!armed) {
+            continue;
+        }
+        switch (c) {
         case 'S':
             screen::dumpToSerial();
             break;
