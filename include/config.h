@@ -1,5 +1,8 @@
 #pragma once
 
+// The release this is, shown on the settings screen and logged at boot.
+#define FIRMWARE_VERSION "1.3.0"
+
 constexpr double DEFAULT_LAT = 55.9297;
 constexpr double DEFAULT_LON = -4.4664;
 constexpr const char *DEFAULT_LABEL = "Erskine, UK";

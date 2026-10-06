@@ -2547,6 +2547,7 @@ void setup() {
     Serial.begin(115200);
     Serial.setTxTimeoutMs(SERIAL_TX_TIMEOUT_MS);
     delay(300);
+    Serial.printf("[boot] Overhead v%s\n", FIRMWARE_VERSION);
     // Tab5's WiFi lives on a separate ESP32-C6 over SDIO, and the generic P4
     // eval-board pin defaults don't reach it. M5Unified is supposed to fix
     // this via a weak-linked hostedSetPins() call in M5.begin(), but set it

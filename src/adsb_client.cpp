@@ -103,7 +103,7 @@ static uint32_t g_rateLimitedUntil[ADSB_PROVIDER_COUNT] = {};
 // the kind of generic string adsb.lol rejects. setUserAgent() is the actual
 // override point.
 static const char *USER_AGENT =
-    "OverheadFlightTracker/1.0 (+https://github.com/craigdianesmith-glitch/tab5-adsb-flight-tracker-cpp)";
+    "OverheadFlightTracker/" FIRMWARE_VERSION " (+https://github.com/craigdianesmith-glitch/tab5-adsb-flight-tracker-cpp)";
 
 #ifdef NET_PROFILE
 // Set inside requestInto so the request and the parse stay separable now that

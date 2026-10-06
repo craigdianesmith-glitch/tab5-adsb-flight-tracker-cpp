@@ -381,6 +381,12 @@ void settingsScreenDraw() {
     canvas.setTextSize(3);
     canvas.setTextDatum(TL_DATUM);
     canvas.drawString("Settings", 16, 12);
+    // Which release is running, beside the title and set lower to share its baseline.
+    int versionX = 16 + canvas.textWidth("Settings") + 16;
+    canvas.setTextSize(2);
+    canvas.setTextColor(colorDim);
+    canvas.drawString("v" FIRMWARE_VERSION, versionX, 20);
+    canvas.setTextColor(colorWhite);
 
     canvas.fillRoundRect(BACK_X, BACK_Y, BACK_W, BACK_H, 6, colorBtnBg);
     canvas.setTextSize(2);

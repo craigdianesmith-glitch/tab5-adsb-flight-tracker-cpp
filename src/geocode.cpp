@@ -1,5 +1,7 @@
 #include "geocode.h"
 
+#include "config.h"
+
 #include <ArduinoJson.h>
 #include <HTTPClient.h>
 #include <WiFiClientSecure.h>
@@ -36,7 +38,7 @@ bool geocodeSearch(const String &query, std::vector<GeoResult> &out) {
         return false;
     }
     http.setUserAgent(
-        "OverheadFlightTracker/1.0 (+https://github.com/craigdianesmith-glitch/tab5-adsb-flight-tracker-cpp)");
+        "OverheadFlightTracker/" FIRMWARE_VERSION " (+https://github.com/craigdianesmith-glitch/tab5-adsb-flight-tracker-cpp)");
     int code = http.GET();
     String payload = http.getString();
     http.end();
