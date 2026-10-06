@@ -418,7 +418,7 @@ void pollTask(void *) {
     uint32_t lastRequestMs = 0, lastZoomMs = 0;
     uint32_t zoomGenServed = 0;
     for (;;) {
-        double lat, lon;
+        double lat = 0, lon = 0;
         TrafficFilter traffic = TrafficFilter::CIVIL;
         int radius = DEFAULT_RADIUS_NM;
         AdsbSource source = DEFAULT_ADSB_SOURCE;
