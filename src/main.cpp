@@ -832,6 +832,12 @@ constexpr uint32_t ANNOUNCE_AGAIN_MS = 5UL * 60 * 1000;
 // The zoom on screen says each take-off and landing at its airport as it
 // begins, as a controller would clear it - lining up, for a take-off, or
 // established on final for a landing, as the runway sim has them.
+//
+// Only while it would still be said: a take-off on the ground, a landing in
+// the air. The sim can be into a take-off by the time the zoom's list next
+// has it - begun from the main poll's, ten seconds or more before - and keeps
+// it up to 1500ft; cleared for take-off was being said of an aircraft already
+// climbing away. One too late is taken as said, so it isn't said later.
 void announceMovement(const Aircraft &a, Track &t, uint32_t now) {
     RunwaySim::Movement m = t.sim.movement();
     if (m == RunwaySim::Movement::NONE || (m == t.announced && now - t.announcedMs < ANNOUNCE_AGAIN_MS)) {
@@ -843,7 +849,13 @@ void announceMovement(const Aircraft &a, Track &t, uint32_t now) {
     }
     t.announced = m;
     t.announcedMs = now;
-    soundAnnounce(a.callsign, rw.ident, m == RunwaySim::Movement::TAKEOFF);
+    bool takeoff = m == RunwaySim::Movement::TAKEOFF;
+    if (t.sim.at(now).ground != takeoff) {
+        Serial.printf("[sound] not announcing %s, runway %s: already %s\n", a.callsign.c_str(), rw.ident,
+                      takeoff ? "airborne" : "down");
+        return;
+    }
+    soundAnnounce(a.callsign, rw.ident, takeoff);
 }
 
 bool lowSample(const FollowSample &s) { return s.ground || (s.hasAlt && s.altFt < ESTIMATE_MAX_FT); }

@@ -157,7 +157,11 @@ struct Announcement {
     String callsign;
     String runway;
     bool takeoff;
+    uint32_t queuedMs;
 };
+// Waiting behind an alert's words longer than this, it is over by the time it
+// would be said - an aircraft cleared for take-off is in the air - and dropped.
+constexpr uint32_t ANNOUNCE_STALE_MS = 8000;
 constexpr int MAX_ANNOUNCEMENTS = 3;
 Announcement g_announcements[MAX_ANNOUNCEMENTS];
 int g_announcementCount = 0;
@@ -288,7 +292,7 @@ void soundAnnounce(const String &callsign, const String &runway, bool takeoff) {
         return;
     }
     g_announcementCount++;
-    g_announcements[g_announcementCount - 1] = {cs, runway, takeoff};
+    g_announcements[g_announcementCount - 1] = {cs, runway, takeoff, millis()};
 }
 
 void soundTick() {
@@ -299,7 +303,10 @@ void soundTick() {
             g_announcements[i - 1] = g_announcements[i];
         }
         g_announcementCount--;
-        if (!g_muted) {
+        if (millis() - a.queuedMs > ANNOUNCE_STALE_MS) {
+            Serial.printf("[sound] announcement for %s dropped: %lus late\n", a.callsign.c_str(),
+                          (unsigned long)((millis() - a.queuedMs) / 1000));
+        } else if (!g_muted) {
             startAnnouncement(a);
         }
     }
