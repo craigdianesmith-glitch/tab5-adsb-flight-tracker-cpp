@@ -103,15 +103,82 @@ constexpr int MAX_MAP_LABELS = 96;
 LabelBox g_mapLabels[MAX_MAP_LABELS];
 int g_mapLabelCount = 0;
 
-bool overlapsAny(const LabelBox *boxes, int count, int x, int y, int w, int h) {
+// `skip`, the index of one box not to count - a label's own symbol's.
+bool overlapsAny(const LabelBox *boxes, int count, int x, int y, int w, int h, int pad = LABEL_PAD,
+                 int skip = -1) {
     for (int j = 0; j < count; j++) {
         const LabelBox &b = boxes[j];
-        if (x - LABEL_PAD < b.x + b.w && x + w + LABEL_PAD > b.x && y - LABEL_PAD < b.y + b.h &&
-            y + h + LABEL_PAD > b.y) {
+        if (j != skip && x - pad < b.x + b.w && x + w + pad > b.x && y - pad < b.y + b.h && y + h + pad > b.y) {
             return true;
         }
     }
     return false;
+}
+
+// What else is on the plot that a navaid's label keeps off, besides the other
+// labels: the scope's ring distances and compass points, the centre's cross
+// or the followed aircraft's ring, and every airfield and navaid symbol.
+// drawScope starts it afresh, as the first thing drawn on a plot - and with it
+// g_airfieldSpots and g_runwayBars below.
+std::vector<LabelBox> g_mapMarks;
+
+void noteMark(int x, int y, int w, int h) {
+    g_mapMarks.push_back({(int16_t)x, (int16_t)y, (int16_t)w, (int16_t)h});
+}
+
+// Where each airfield symbol went, unrounded, so a navaid that would sit on one
+// - an airport's own VOR, as GOW is Glasgow's - can be left off rather than
+// drawn over it. Unrounded, so the two stay the same distance apart as the map
+// moves under a following, rather than a pixel either way.
+std::vector<std::pair<float, float>> g_airfieldSpots;
+
+// The zoom's runways, each as its centreline and how far either side of it is
+// taken up - the runway, or an in-use arrow or closed runway's crosses where
+// those are wider - for a navaid's label to keep off.
+struct RunwayBar {
+    float x0, y0, x1, y1, half;
+};
+std::vector<RunwayBar> g_runwayBars;
+
+// Whether a box comes within `pad` of a runway: its centreline clipped
+// against the box grown by the runway's half-width and the pad.
+bool overlapsRunway(int x, int y, int w, int h, int pad) {
+    for (const RunwayBar &b : g_runwayBars) {
+        float grow = b.half + pad;
+        float dx = b.x1 - b.x0, dy = b.y1 - b.y0;
+        const float p[4] = {-dx, dx, -dy, dy};
+        const float q[4] = {b.x0 - (x - grow), (x + w + grow) - b.x0, b.y0 - (y - grow), (y + h + grow) - b.y0};
+        float t0 = 0, t1 = 1;
+        bool hit = true;
+        for (int i = 0; i < 4 && hit; i++) {
+            if (p[i] == 0) {
+                hit = q[i] >= 0;
+            } else if (p[i] < 0) {
+                t0 = std::max(t0, q[i] / p[i]);
+            } else {
+                t1 = std::min(t1, q[i] / p[i]);
+            }
+            hit = hit && t0 <= t1;
+        }
+        if (hit) {
+            return true;
+        }
+    }
+    return false;
+}
+
+// Whether a box lies wholly inside the outer ring, `pad` clear of it.
+bool insideScope(int x, int y, int w, int h, int pad) {
+    long r = RADIUS - 2 - pad;
+    for (int cx : {x, x + w}) {
+        for (int cy : {y, y + h}) {
+            long dx = cx - CENTER_X, dy = cy - CENTER_Y;
+            if (dx * dx + dy * dy > r * r) {
+                return false;
+            }
+        }
+    }
+    return true;
 }
 
 // Where each airport was last plotted, so a tap on its code or its symbol
@@ -231,6 +298,9 @@ String nmText(float nm) {
 // ring doubled, the compass points just inside it and a tick every 30 degrees.
 void drawScope(float rangeNm, float stepNm) {
     auto &canvas = screen::canvas();
+    g_mapMarks.clear();
+    g_airfieldSpots.clear();
+    g_runwayBars.clear();
     canvas.setTextSize(2);
     canvas.setTextColor(colorRingText);
     canvas.setTextDatum(BC_DATUM);
@@ -238,7 +308,10 @@ void drawScope(float rangeNm, float stepNm) {
         float nm = i * stepNm;
         int r = (int)lroundf(nm / rangeNm * RADIUS);
         canvas.drawCircle(CENTER_X, CENTER_Y, r, colorRing);
-        canvas.drawString(nmText(nm), CENTER_X, CENTER_Y - r - 2);
+        String text = nmText(nm);
+        canvas.drawString(text, CENTER_X, CENTER_Y - r - 2);
+        int w = canvas.textWidth(text);
+        noteMark(CENTER_X - w / 2, CENTER_Y - r - 2 - LABEL_H, w, LABEL_H);
     }
     canvas.drawCircle(CENTER_X, CENTER_Y, RADIUS, colorRing);
     canvas.drawCircle(CENTER_X, CENTER_Y, RADIUS - 1, colorRing);
@@ -249,8 +322,11 @@ void drawScope(float rangeNm, float stepNm) {
     canvas.setTextDatum(MC_DATUM);
     for (int i = 0; i < 4; i++) {
         float a = i * (float)M_PI / 2.0f;
-        canvas.drawString(POINTS[i], CENTER_X + (int)lroundf(sinf(a) * (RADIUS - COMPASS_INSET)),
-                          CENTER_Y - (int)lroundf(cosf(a) * (RADIUS - COMPASS_INSET)));
+        int x = CENTER_X + (int)lroundf(sinf(a) * (RADIUS - COMPASS_INSET));
+        int y = CENTER_Y - (int)lroundf(cosf(a) * (RADIUS - COMPASS_INSET));
+        canvas.drawString(POINTS[i], x, y);
+        int w = canvas.textWidth(POINTS[i]);
+        noteMark(x - w / 2, y - LABEL_H / 2, w, LABEL_H);
     }
     for (int deg = 0; deg < 360; deg += 30) {
         float a = deg * (float)M_PI / 180.0f;
@@ -338,11 +414,15 @@ void drawAirports(double lat, double lon, int rangeNm, const String &centreCode,
         if (a.code == centreCode) {
             continue;  // the cross already marks it
         }
-        int x = CENTER_X + (int)lroundf((float)((a.lon - lon) * nmPerDegLon / rangeNm * RADIUS));
-        int y = CENTER_Y - (int)lroundf((float)((a.lat - lat) * 60.0 / rangeNm * RADIUS));
+        float ox = (float)((a.lon - lon) * nmPerDegLon / rangeNm * RADIUS);
+        float oy = (float)((a.lat - lat) * 60.0 / rangeNm * RADIUS);
+        int x = CENTER_X + (int)lroundf(ox);
+        int y = CENTER_Y - (int)lroundf(oy);
+        g_airfieldSpots.push_back({CENTER_X + ox, CENTER_Y - oy});
         bool origin = originCode.length() && a.code == originCode;
         drawAirfield(x, y, origin ? colorHome : colorFaint);
         constexpr int T1 = AIRPORT_R + AIRPORT_TICK;
+        noteMark(x - T1, y - T1, 2 * T1 + 1, 2 * T1 + 1);
 
         // Under the symbol unless that runs off the bottom of the plot, and
         // kept inside its sides: one due east or west at the very edge of the
@@ -412,35 +492,111 @@ void drawNavaidSymbol(int x, int y, NavaidType type, uint16_t color) {
     canvas.fillCircle(x, y, 1, color);
 }
 
+// How far a navaid symbol reaches from its middle - a TACAN's tabs, or the
+// box round a VOR-DME - and the gap between that and its label.
+constexpr int NAVAID_REACH = NAVAID_R + NAVAID_TAB, NAVAID_LABEL_GAP = 4;
+
+// Where a navaid's label can go, in the order tried.
+enum NavaidSlot : uint8_t { SLOT_RIGHT, SLOT_LEFT, SLOT_ABOVE, SLOT_BELOW, SLOT_COUNT };
+
+void navaidLabelAt(int slot, int x, int y, int w, int &lx, int &ly) {
+    constexpr int OFF = NAVAID_REACH + NAVAID_LABEL_GAP;
+    lx = slot == SLOT_RIGHT ? x + OFF : slot == SLOT_LEFT ? x - OFF - w : x - w / 2;
+    ly = slot == SLOT_ABOVE ? y - OFF - LABEL_H : slot == SLOT_BELOW ? y + OFF : y - LABEL_H / 2;
+}
+
+// Where each navaid's label went on the last plot, to be tried there first on
+// the next and let stay with less room around it. Following, the map moves
+// under the centre and everything on it rounds to its own pixel, so a label
+// with a pixel to spare came and went from frame to frame - as GOW's did beside
+// GLA's code, all through a replay of a flight out of Glasgow.
+struct PlacedNavaidLabel {
+    const Navaid *navaid;
+    uint8_t slot;
+};
+std::vector<PlacedNavaidLabel> g_navaidLabelsWere, g_navaidLabelsNow;
+constexpr int KEPT_LABEL_PAD = 1;
+
 // The navaids in range, under the airports: dimmer, as the part of the map
 // least often looked for, with ident and frequency beside each - to the right,
-// or the left where that would run into something already placed, or off
-// the plot. One with no room either side keeps its symbol only.
-void drawNavaids(double lat, double lon, int rangeNm) {
+// or failing that the left, above or below - kept inside the outer ring and
+// clear of every label already placed, every symbol on the map and, in the
+// zoom, the runways. One with no room anywhere keeps its symbol only.
+//
+// One whose symbol would touch an airfield's is left off altogether: it is
+// that airport's own, and at a range where the two can't be told apart. The
+// airport's zoom, or a closer range, has room for it.
+void drawNavaids(double lat, double lon, float rangeNm) {
     auto &canvas = screen::canvas();
     double nmPerDegLon = 60.0 * cos(lat * M_PI / 180.0);
-    canvas.setTextSize(2);
-    canvas.setTextDatum(TL_DATUM);
-    canvas.setTextColor(colorRingText);
-    g_navaidHitCount = 0;
+    constexpr float AIRFIELD_CLEAR = AIRPORT_R + AIRPORT_TICK + NAVAID_REACH;
+
+    // Every symbol before any label, so a near one's label can't go over one
+    // further out.
+    static std::vector<const Navaid *> navaids;
+    static std::vector<std::pair<int16_t, int16_t>> spots;
+    navaids.clear();
+    spots.clear();
+    int firstMark = (int)g_mapMarks.size();
     for (const Navaid *n : navaidsWithin(lat, lon, rangeNm)) {
         double dLon = n->lon - lon;
         if (dLon > 180) dLon -= 360;
         if (dLon < -180) dLon += 360;
-        int x = CENTER_X + (int)lroundf((float)(dLon * nmPerDegLon / rangeNm * RADIUS));
-        int y = CENTER_Y - (int)lroundf((float)((n->lat - lat) * 60.0 / rangeNm * RADIUS));
+        float ox = (float)(dLon * nmPerDegLon / rangeNm * RADIUS);
+        float oy = (float)((n->lat - lat) * 60.0 / rangeNm * RADIUS);
+        bool onAirfield = false;
+        for (const auto &a : g_airfieldSpots) {
+            if (fabsf(CENTER_X + ox - a.first) <= AIRFIELD_CLEAR && fabsf(CENTER_Y - oy - a.second) <= AIRFIELD_CLEAR) {
+                onAirfield = true;
+                break;
+            }
+        }
+        if (onAirfield) {
+            continue;
+        }
+        int x = CENTER_X + (int)lroundf(ox);
+        int y = CENTER_Y - (int)lroundf(oy);
         drawNavaidSymbol(x, y, n->type, colorRingText);
+        noteMark(x - NAVAID_REACH, y - NAVAID_REACH, 2 * NAVAID_REACH + 1, 2 * NAVAID_REACH + 1);
+        navaids.push_back(n);
+        spots.push_back({(int16_t)x, (int16_t)y});
+    }
+
+    canvas.setTextSize(2);
+    canvas.setTextDatum(TL_DATUM);
+    canvas.setTextColor(colorRingText);
+    g_navaidHitCount = 0;
+    g_navaidLabelsNow.clear();
+    for (size_t i = 0; i < navaids.size(); i++) {
+        const Navaid *n = navaids[i];
+        int x = spots[i].first, y = spots[i].second;
         String text = navaidLabel(*n);
         int w = canvas.textWidth(text);
-        int ly = y - LABEL_H / 2;
-        LabelBox label = {0, (int16_t)ly, 0, (int16_t)LABEL_H};
-        for (int lx : {x + NAVAID_R + NAVAID_TAB + 4, x - NAVAID_R - NAVAID_TAB - 4 - w}) {
-            if (lx >= PLOT_L && lx + w <= PLOT_R && g_mapLabelCount < MAX_MAP_LABELS &&
-                !overlapsAny(g_mapLabels, g_mapLabelCount, lx, ly, w, LABEL_H)) {
+        int was = -1;
+        for (const PlacedNavaidLabel &p : g_navaidLabelsWere) {
+            if (p.navaid == n) {
+                was = p.slot;
+                break;
+            }
+        }
+        LabelBox label = {0, (int16_t)(y - LABEL_H / 2), 0, (int16_t)LABEL_H};
+        // Where it was first, then the rest in order.
+        for (int k = -1; k < SLOT_COUNT && g_mapLabelCount < MAX_MAP_LABELS; k++) {
+            int slot = k < 0 ? was : k;
+            if (slot < 0 || (k >= 0 && slot == was)) {
+                continue;
+            }
+            int lx, ly;
+            navaidLabelAt(slot, x, y, w, lx, ly);
+            int pad = slot == was ? KEPT_LABEL_PAD : LABEL_PAD;
+            if (insideScope(lx, ly, w, LABEL_H, pad) && !overlapsRunway(lx, ly, w, LABEL_H, pad) &&
+                !overlapsAny(g_mapLabels, g_mapLabelCount, lx, ly, w, LABEL_H, pad) &&
+                !overlapsAny(g_mapMarks.data(), (int)g_mapMarks.size(), lx, ly, w, LABEL_H, pad,
+                             firstMark + (int)i)) {
                 canvas.drawString(text, lx, ly);
-                label.x = (int16_t)lx;
-                label.w = (int16_t)w;
+                label = {(int16_t)lx, (int16_t)ly, (int16_t)w, (int16_t)LABEL_H};
                 g_mapLabels[g_mapLabelCount++] = label;
+                g_navaidLabelsNow.push_back({n, (uint8_t)slot});
                 break;
             }
         }
@@ -448,6 +604,7 @@ void drawNavaids(double lat, double lon, int rangeNm) {
             g_navaidHits[g_navaidHitCount++] = {(int16_t)x, (int16_t)y, label, n};
         }
     }
+    std::swap(g_navaidLabelsWere, g_navaidLabelsNow);
 }
 
 // A button's three looks: an ordinary one filled; a lit one - the centre in
@@ -784,21 +941,22 @@ void openChooser(int x, int y) {
 
 // Everything within reach of a tap at (x, y) on the last plot drawn, into
 // g_choices: the airports first, since an airport is what a crowd of its own
-// traffic hides, then the contacts, each nearest first. Returns how many.
+// traffic hides, then the navaids, then the contacts, each nearest first.
+// The zoom has no airports to tap, but has its navaids. Returns how many.
 int collectChoices(int x, int y, bool withAirports) {
     std::vector<std::pair<long, int>> airports, navaids, blips;
-    if (withAirports) {
-        for (int i = 0; i < g_navaidHitCount; i++) {
-            const NavaidHit &h = g_navaidHits[i];
-            long dx = x - h.x, dy = y - h.y;
-            long d = dx * dx + dy * dy;
-            const LabelBox &b = h.label;
-            bool onLabel = b.w && x >= b.x - AIRPORT_LABEL_PAD && x < b.x + b.w + AIRPORT_LABEL_PAD &&
-                           y >= b.y - AIRPORT_LABEL_PAD && y < b.y + b.h + AIRPORT_LABEL_PAD;
-            if (onLabel || d <= (long)AIRPORT_TAP_R * AIRPORT_TAP_R) {
-                navaids.push_back({d, i});
-            }
+    for (int i = 0; i < g_navaidHitCount; i++) {
+        const NavaidHit &h = g_navaidHits[i];
+        long dx = x - h.x, dy = y - h.y;
+        long d = dx * dx + dy * dy;
+        const LabelBox &b = h.label;
+        bool onLabel = b.w && x >= b.x - AIRPORT_LABEL_PAD && x < b.x + b.w + AIRPORT_LABEL_PAD &&
+                       y >= b.y - AIRPORT_LABEL_PAD && y < b.y + b.h + AIRPORT_LABEL_PAD;
+        if (onLabel || d <= (long)AIRPORT_TAP_R * AIRPORT_TAP_R) {
+            navaids.push_back({d, i});
         }
+    }
+    if (withAirports) {
         for (int i = 0; i < g_airportHitCount; i++) {
             const AirportHit &h = g_airportHits[i];
             long dx = x - h.x, dy = y - h.y;
@@ -1248,12 +1406,15 @@ void radarPlotDraw(const RadarScene &scene, bool full) {
         LabelBox label = {(int16_t)(CENTER_X - w / 2), (int16_t)CENTRE_CODE_Y, (int16_t)w, (int16_t)LABEL_H};
         noteAirportHit(airport.code, CENTER_X, CENTER_Y, label);
         g_mapLabels[g_mapLabelCount++] = label;
+        g_airfieldSpots.push_back({(float)CENTER_X, (float)CENTER_Y});  // the cross is its symbol
     }
     // Following, the centre is the aircraft, ringed where it is drawn.
     if (!following) {
         canvas.drawLine(CENTER_X - 9, CENTER_Y, CENTER_X + 9, CENTER_Y, colorHome);
         canvas.drawLine(CENTER_X, CENTER_Y - 9, CENTER_X, CENTER_Y + 9, colorHome);
     }
+    int centreReach = following ? 18 : 9;  // the followed one's ring, or the cross
+    noteMark(CENTER_X - centreReach, CENTER_Y - centreReach, 2 * centreReach + 1, 2 * centreReach + 1);
 
     // --- contacts ---------------------------------------------------------
     canvas.setClipRect(PLOT_L, PLOT_T, PLOT_R - PLOT_L, PLOT_B - PLOT_T);
@@ -1614,6 +1775,10 @@ void drawRunways(const ZoomFrame &f, const bool inUse[][2], const bool recent[][
                                      (int16_t)LABEL_H};
         }
     }
+    // The numbers are the map's labels here, for the navaids' to keep off.
+    for (int i = 0; i < placedCount && g_mapLabelCount < MAX_MAP_LABELS; i++) {
+        g_mapLabels[g_mapLabelCount++] = placed[i];
+    }
 
     for (int r = 0; r < f.runwayCount; r++) {
         if (!drawn[r] || f.runways[r].closed) {
@@ -1638,6 +1803,7 @@ void drawRunways(const ZoomFrame &f, const bool inUse[][2], const bool recent[][
             const EndPx &a = ends[r][0], &b = ends[r][1];
             float ux = b.ox, uy = b.oy;  // end 0 to end 1
             float halfW = std::max(f.runways[r].widthFt * 0.3048f / 1852.0f * pxPerNm / 2.0f, 2.0f);
+            g_runwayBars.push_back({a.x, a.y, b.x, b.y, std::max(halfW, closed ? 6.0f : RUNWAY_ARROW_HALF_W)});
             float nx = -uy * halfW, ny = ux * halfW;
             int x0 = (int)lroundf(a.x + nx), y0 = (int)lroundf(a.y + ny);
             int x1 = (int)lroundf(b.x + nx), y1 = (int)lroundf(b.y + ny);
@@ -1835,6 +2001,7 @@ bool zoomPlot(const ZoomFrame &framed, const std::vector<Aircraft> &aircraft,
     float range = f.rangeNm;
     float step = range > 3.0f ? 1.0f : range > 1.0f ? 0.5f : 0.25f;
     drawScope(range, step);
+    g_mapLabelCount = 0;
 
     canvas.setClipRect(PLOT_L, PLOT_T, PLOT_R - PLOT_L, PLOT_B - PLOT_T);
     bool inUse[MAX_ZOOM_RUNWAYS][2], recent[MAX_ZOOM_RUNWAYS][2];
@@ -1843,6 +2010,11 @@ bool zoomPlot(const ZoomFrame &framed, const std::vector<Aircraft> &aircraft,
     memory.update(f, inUse, nowMs, recent);
     portEXIT_CRITICAL(&g_inUseMux);
     drawRunways(f, inUse, recent);
+    // Over the runways, which an airport's own often sits beside.
+    g_navaidHitCount = 0;
+    if (g_navaidsOn) {
+        drawNavaids(f.lat, f.lon, range);
+    }
     static const std::vector<uint8_t> noneNew;  // the radar marks new contacts; here they are all just traffic
     int plotted = 0, labelled = 0;
     uint32_t t1 = micros();
@@ -1899,15 +2071,18 @@ void radarZoomDraw(const std::vector<Aircraft> &aircraft, bool full) {
     ensureColors();
     if (full) {
         g_choiceCount = 0;
-        g_card = nullptr;
+        if (!g_cardSurvivesRedraw) {
+            g_card = nullptr;
+        }
+        g_cardSurvivesRedraw = false;
         screen::clear(colorBg);
         drawZoomHeader();
     }
-    // With a list up, a refresh is drawn under it and pushed along with it.
+    // With a list or card up, a refresh is drawn under it and pushed along with it.
     ZoomFrame view = g_zoom;
     view.rangeNm = g_zoomViewNm;
     g_zoomOnFollowed =
-        zoomPlot(view, aircraft, nullptr, true, g_zoomFollowHex, full, g_choiceCount == 0, millis(), g_liveInUse);
+        zoomPlot(view, aircraft, nullptr, true, g_zoomFollowHex, full, !overlayUp(), millis(), g_liveInUse);
     // Following into the zoom, its height against the field's.
     bool following = g_zoomFollowHex.length() > 0;
     if (following) {
@@ -1917,7 +2092,10 @@ void radarZoomDraw(const std::vector<Aircraft> &aircraft, bool full) {
     if (g_choiceCount) {
         drawChooser();
     }
-    if (full || g_choiceCount || following) {
+    if (g_card) {
+        drawCard();
+    }
+    if (full || overlayUp() || following) {
         screen::flush();
     }
 }
@@ -1974,7 +2152,7 @@ void radarReplayRunwaysInUse(const recorder::RunwaysInUse &seed) {
 }
 
 ZoomAction radarZoomHandleTouch(int x, int y, String &outHex) {
-    if (!g_choiceCount) {
+    if (!overlayUp()) {
         int b = buttonAt(x, y);
         if (b == BTN_BACK) {
             return ZoomAction::UNZOOM;
