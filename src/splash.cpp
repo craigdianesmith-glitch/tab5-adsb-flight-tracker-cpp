@@ -329,8 +329,8 @@ void splashPlay() {
         if (bg == nullptr) {
             drawSky();  // short of memory for the copy: the whole scene each frame
             drawGround();
-            drawTitles();
             drawPlane(pose);
+            drawTitles();
             screen::markAllDirty();
         } else {
             Box both = frames == 0           ? Box{0, 0, W, H}
@@ -340,6 +340,12 @@ void splashPlay() {
                                              std::max(shown.x1, now.x1), std::max(shown.y1, now.y1)};
             restore(bg, both);
             drawPlane(pose);
+            // The titles back over it, where it passes behind them - they
+            // are in front, the plane flying on behind the logo.
+            auto &canvas = screen::canvas();
+            canvas.setClipRect(both.x0, both.y0, both.x1 - both.x0, both.y1 - both.y0);
+            drawTitles();
+            canvas.clearClipRect();
             if (both.x1 > both.x0) {
                 screen::markDirty(both.x0, both.y0, both.x1 - both.x0, both.y1 - both.y0);
             }
