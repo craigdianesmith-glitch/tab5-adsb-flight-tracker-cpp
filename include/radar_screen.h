@@ -126,8 +126,9 @@ bool radarPlotHit(int x, int y, String &outHex);
 // TOGGLE_FOLLOW and TOGGLE_RECORD are the FOLLOW and REC buttons, as the
 // radar's and where the radar has them.
 // REDRAW: ZOOM IN or OUT changed the range shown, for a full redraw. ZOOM OUT
-// from the widest is UNZOOM.
-enum class ZoomAction { NONE, UNZOOM, TOGGLE_FOLLOW, TOGGLE_RECORD, SELECT, DISMISS, REDRAW };
+// from the widest is UNZOOM, back to the radar; BACK is the Back button, to
+// the table.
+enum class ZoomAction { NONE, UNZOOM, BACK, TOGGLE_FOLLOW, TOGGLE_RECORD, SELECT, DISMISS, REDRAW };
 
 // Where the zoom on the airport with IATA `code` would be framed: on the
 // middle of its runways, at a range that fits them with room around for
@@ -155,6 +156,10 @@ bool radarZoomOnFollowed();
 // The range the zoom shows, as ZOOM IN and OUT have it, for a recording to
 // say - or 0 at its framing.
 float radarZoomViewNm();
+
+// Puts the zoom just opened back to a range radarZoomViewNm() gave, to come
+// back to it as it was left - 0 for its framing.
+void radarZoomSetViewNm(float nm);
 
 // The zoom's plot on its own, for a replay of a followed aircraft: the
 // airport with IATA `code` as the live zoom frames it, and the scene's

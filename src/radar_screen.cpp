@@ -1930,8 +1930,8 @@ void drawZoomHeader() {
     drawButton(FOLLOW_Y, g_zoomPicking ? "TAP PLANE" : "FOLLOW",
                g_zoomFollowHex.length() || g_zoomPicking ? Look::LIT : Look::PLAIN);
     drawRecButton();
-    // Back to the radar, where Back is on every screen - as ZOOM OUT is, from
-    // the zoom's own framing.
+    // Back to the table, as the radar's Back is - the radar coming back to
+    // this zoom - where ZOOM OUT, from the zoom's own framing, is to the radar.
     drawButton(BACK_Y, "Back", Look::PLAIN);
     drawZoomViewButtons();
 }
@@ -1941,6 +1941,10 @@ void drawZoomHeader() {
 bool radarZoomOnFollowed() { return g_zoomOnFollowed; }
 
 float radarZoomViewNm() { return g_zoomViewNm < g_zoom.framedNm - 0.01f ? g_zoomViewNm : 0.0f; }
+
+void radarZoomSetViewNm(float nm) {
+    g_zoomViewNm = nm > 0 ? std::min(nm, g_zoom.framedNm) : g_zoom.framedNm;
+}
 
 bool radarZoomFrame(const String &code, double &lat, double &lon, float &rangeNm) {
     ZoomFrame f;
@@ -2162,7 +2166,7 @@ ZoomAction radarZoomHandleTouch(int x, int y, String &outHex) {
     if (!overlayUp()) {
         int b = buttonAt(x, y);
         if (b == BTN_BACK) {
-            return ZoomAction::UNZOOM;
+            return ZoomAction::BACK;
         }
         if (b == BTN_FOLLOW) {
             return ZoomAction::TOGGLE_FOLLOW;

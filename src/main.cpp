@@ -119,6 +119,11 @@ uint32_t g_zoomDrawnMs = 0;            // and when it was last drawn
 uint32_t g_radarDrawnMs = 0;           // likewise, the radar
 String g_zoomCode;                     // likewise: the airport it is on
 float g_zoomRangeNm = 0;               // and how far its plot reaches from g_zoomPoll's middle
+// The zoom Back left for the table, to be opened again as it was left - at
+// the range it was showing - when the radar is next opened from there. Empty
+// for none. Only touched by loop().
+String g_returnZoomCode;
+float g_returnZoomViewNm = 0;
 
 // Follow me. Only touched by loop(). FOLLOW on the radar, then a tap on a
 // contact, and the radar is centred on that aircraft wherever it goes; low
@@ -1065,7 +1070,7 @@ void setRadarControls(bool onScreen) {
     radarScreenSetZoom(!g_follow.active && canIn, !g_follow.active && canOut, onScreen);
 }
 
-bool openZoom(const String &code, bool forFollowed = false);
+bool openZoom(const String &code, bool forFollowed = false, float viewNm = 0);
 
 // ZOOM IN or OUT: the next of the steps in that direction from the range
 // shown now. In from the closest, the airport's own zoom; out past the poll
@@ -1147,16 +1152,18 @@ void drawZoom(bool full) {
 }
 
 // Zooms in on an airport tapped on the radar, or one the followed aircraft
-// is coming down to. Until the zoom's own first fetch lands, the radar's
+// is coming down to - at its framing, or at `viewNm` as radarZoomViewNm() had
+// it, for one being come back to. Until the zoom's own first fetch lands, the radar's
 // contacts stand in: around an airport inside the radius they are the same
 // aircraft, a poll older - and following, those fetched around the aircraft
 // are, the airport being near it.
-bool openZoom(const String &code, bool forFollowed) {
+bool openZoom(const String &code, bool forFollowed, float viewNm) {
     double lat, lon;
     float rangeNm;
     if (!radarZoomOpen(code, lat, lon, rangeNm)) {
         return false;
     }
+    radarZoomSetViewNm(viewNm);
     g_zoomCode = code;
     g_zoomRangeNm = rangeNm;
     g_follow.picking = false;
@@ -1173,7 +1180,7 @@ bool openZoom(const String &code, bool forFollowed) {
         g_zoomPoll.lat = lat;
         g_zoomPoll.lon = lon;
         g_zoomPoll.radiusNm = (int)ceilf(rangeNm) + ZOOM_FETCH_EXTRA_NM;
-        g_zoomPoll.viewNm = 0;  // opened at its framing
+        g_zoomPoll.viewNm = radarZoomViewNm();
         if (!g_follow.active) {
             g_zoomAircraft = g_latestAircraft;
             g_zoomDataMs = g_latestDataMs;  // moved on between polls from when it really arrived
@@ -1999,6 +2006,21 @@ void handleRadarTouch(int x, int y) {
 void handleZoomTouch(int x, int y) {
     String hex;
     switch (radarZoomHandleTouch(x, y, hex)) {
+    case ZoomAction::BACK:
+        // To the table, as the radar's Back is, with the zoom kept for the
+        // radar to come back to. Following carries on out of sight, and it
+        // is the radar centred on the aircraft that comes back, to hand it to
+        // a zoom again if that is where it still is.
+        g_returnZoomCode = g_follow.active ? String() : g_zoomCode;
+        g_returnZoomViewNm = radarZoomViewNm();
+        g_follow.picking = false;
+        g_screen = Screen::MAIN;  // and loop() ends the zoom's fetches
+        displayInvalidate();
+        if (xSemaphoreTake(g_dataMutex, portMAX_DELAY) == pdTRUE) {
+            g_dataReady = true;
+            xSemaphoreGive(g_dataMutex);
+        }
+        break;
     case ZoomAction::UNZOOM:
         // Following, back to the radar centred on it - and not handed to
         // this airport's zoom again, which would undo the tap.
@@ -2251,6 +2273,12 @@ void handleWatchlistTouch(int x, int y) {
 
 void handleMainTouch(int x, int y) {
     if (displayHitRadar(x, y)) {
+        // Back where it was left: the zoom, if that was what Back left.
+        String code = g_returnZoomCode;
+        g_returnZoomCode = "";
+        if (code.length() && !g_follow.active && openZoom(code, false, g_returnZoomViewNm)) {
+            return;
+        }
         g_screen = Screen::RADAR;
         drawRadar(true);
         return;
