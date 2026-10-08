@@ -6,12 +6,15 @@ A C++ rewrite of [Overhead](https://github.com/craigdianesmith-glitch/tab5-adsb-
 
 | | |
 | --- | --- |
-| ![The table of aircraft overhead](docs/screenshots/table.png) | ![The radar plot, centred on the nearest airport](docs/screenshots/radar.png) |
-| ![The detail screen for one flight](docs/screenshots/detail.png) | ![The settings screen](docs/screenshots/settings.png) |
-| ![A recording played back at 16x, with trails](docs/screenshots/replay.png) | ![A recording being exported to video](docs/screenshots/export.png) |
+| ![The table of aircraft overhead](docs/screenshots/table.png) | ![The radar around Glasgow, with every airport and the navaids marked](docs/screenshots/radar.png) |
+| ![Glasgow's airport zoom, with runway 23 in use](docs/screenshots/zoom.png) | ![The detail screen for one flight, with WATCH and FOLLOW](docs/screenshots/detail.png) |
+| ![Following an arrival on the radar, with its height charted on the left](docs/screenshots/follow.png) | ![The same arrival handed to Glasgow's zoom, on short final for runway 23](docs/screenshots/follow-zoom.png) |
+| ![A recording played back at 16x, an arrival on short final as another waits to line up](docs/screenshots/replay.png) | ![A recording exported to video, the aircraft's climb-out charted with its take-off](docs/screenshots/export.png) |
 | ![The recordings on the card, and the videos made from them](docs/screenshots/recordings.png) | ![Sharing over WiFi, with a QR code to the page](docs/screenshots/share.png) |
+| ![The settings screen](docs/screenshots/settings.png) | ![The alerts and recording settings](docs/screenshots/alerts.png) |
+| ![Help, on how to use the tracker](docs/screenshots/help.png) | ![About: the version, a disclaimer and the credits](docs/screenshots/about.png) |
 
-Captured from the device with `tools/screenshot.py` - see [Screenshots](#screenshots). The address and network name on the share screen are placeholders.
+Captured from the device with `tools/screenshot.py` - see [Screenshots](#screenshots). The address and network name on the settings and share screens are placeholders.
 
 ## Hardware
 
@@ -44,7 +47,7 @@ pip install pyserial pillow
 python tools/screenshot.py radar.png
 ```
 
-It is pixel-exact and the right way up whatever the device's orientation, and takes about three seconds. Close any serial monitor first. The script leaves DTR and RTS as the kernel sets them on open: clearing DTR while RTS is still raised is the ESP32's USB-serial reset signal, which is what pyserial's usual `dtr = False` sends. And it checks that the end marker follows the last pixel exactly, retrying if a log line from the poll task landed mid-transfer and shifted the image.
+It is pixel-exact and the right way up whatever the device's orientation, and takes about three seconds. The UI doesn't take touches while it is sent, so grabbing one every few seconds makes the device feel sluggish; and during a video export, which holds the main loop, the request isn't answered until the export ends. Close any serial monitor first. The script leaves DTR and RTS as the kernel sets them on open: clearing DTR while RTS is still raised is the ESP32's USB-serial reset signal, which is what pyserial's usual `dtr = False` sends. And it checks that the end marker follows the last pixel exactly, retrying if a log line from the poll task landed mid-transfer and shifted the image.
 
 ## Notable hardware quirks this project works around
 
