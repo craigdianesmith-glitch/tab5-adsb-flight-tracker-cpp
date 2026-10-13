@@ -24,6 +24,13 @@ void settingsScreenSet(TrafficFilter traffic, int radiusNm, bool showRefresh, in
 void settingsScreenSetNavaids(bool on);
 bool settingsScreenNavaids();
 
+// And its map switch - the coasts, lakes and borders under the plot - and
+// the one for its range rings.
+void settingsScreenSetCoast(bool on);
+bool settingsScreenCoast();
+void settingsScreenSetRings(bool on);
+bool settingsScreenRings();
+
 // Updates the location shown on the button, after the location screen has
 // been in and changed it.
 void settingsScreenSetLocation(const String &locationLabel);

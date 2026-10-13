@@ -67,6 +67,8 @@ TrafficFilter g_traffic = TrafficFilter::CIVIL;
 int g_radiusNm = DEFAULT_RADIUS_NM;
 bool g_showRefresh = true;
 bool g_navaids = true;  // marked on the radar - see radarScreenSetNavaids()
+bool g_coast = true;    // the map under the radar - see radarScreenSetCoast()
+bool g_rings = false;   // and its range rings - see radarScreenSetRings()
 int g_pollIntervalS = DEFAULT_POLL_INTERVAL_S;
 bool g_muted = false;
 AdsbSource g_source = DEFAULT_ADSB_SOURCE;
@@ -107,6 +109,12 @@ struct ZoomPoll {
     // it goes at the main poll's interval, as the radar refreshes, rather than
     // the zoom's quicker one.
     bool follow = false;
+    // Aimed where the radar has been dragged to - free look, see tickLook() -
+    // rather than at either: at the main poll's interval too, of the traffic
+    // the table is filtered to, as the radar it is drawn on would have, and
+    // left out of a recording, which goes on being of home.
+    bool look = false;
+    bool military = false;
     String code;       // the zoom's airport, when it isn't following
     String followHex;  // the aircraft being followed, in either view; empty for none
     float viewNm = 0;  // the zoom's range as ZOOM IN has it, for the recording; 0 for its framing
@@ -206,6 +214,25 @@ PerfStat g_perfRadar, g_perfZoom, g_perfTracks, g_perfLoop;
 // of it - its release, or its turning into a hold - is ignored, so a tap that
 // opens another screen doesn't go on to press whatever is under it there.
 bool g_touchSpent = false;
+// Unless it landed on the plot with nothing under it: then the rest of it is
+// a drag of the plot - see radarDragTo() - for as long as the finger is down.
+bool g_dragging = false;
+
+// Free look: the radar dragged off its own centre, to anywhere. The traffic
+// there is fetched by the extra poll - the zoom's, and following's - aimed
+// at where the radar has been left, for as long as neither of those wants
+// it: `aimed`, and at what. Only touched by loop().
+struct Look {
+    bool aimed = false;
+    double lat = 0, lon = 0;
+    int radiusNm = 0;
+    bool military = false;
+};
+Look g_look;
+
+// Whether the radar is drawn from the extra poll's list rather than the main
+// poll's: following an aircraft, or looking somewhere of its own.
+bool radarOnExtraList() { return g_follow.active || g_look.aimed; }
 
 // Only touched by pollTask - no locking needed since it's the sole writer/reader.
 std::map<String, uint32_t> g_seenMap;
@@ -386,7 +413,7 @@ void pollZoom(const ZoomPoll &zoom, AdsbSource source) {
     std::vector<Aircraft> fetched;
     const char *provider = nullptr;
     if (WiFi.status() != WL_CONNECTED ||
-        !fetchAircraft(zoom.lat, zoom.lon, zoom.radiusNm, false, source, fetched, provider)) {
+        !fetchAircraft(zoom.lat, zoom.lon, zoom.radiusNm, zoom.look && zoom.military, source, fetched, provider)) {
         return;  // the last list stays up, as the main poll's does
     }
     AlertRules rules;
@@ -425,7 +452,7 @@ void pollZoom(const ZoomPoll &zoom, AdsbSource source) {
     // While this poll is up, a recording is made of it rather than the main
     // poll's - it is what the screens are showing - each marked with the view
     // it was for, so a replay shows it the way it was seen.
-    if (current && recorder::active()) {
+    if (current && recorder::active() && !now.look) {
         String view = now.follow ? "-" + now.followHex : now.code + "/" + now.followHex;
         recorder::addFrame(fetched, view, provider, now.follow ? 0.0f : now.viewNm);
     }
@@ -605,7 +632,7 @@ void pollTask(void *) {
             bool extraUp = false;
             int shownNm = 0;  // the radar's range as ZOOM IN has it, inside the radius
             if (xSemaphoreTake(g_dataMutex, portMAX_DELAY) == pdTRUE) {
-                extraUp = g_zoomPoll.active;
+                extraUp = g_zoomPoll.active && !g_zoomPoll.look;  // a free look isn't recorded
                 shownNm = g_radarRangeNm > 0 && g_radarRangeNm < g_radiusNm ? g_radarRangeNm : 0;
                 xSemaphoreGive(g_dataMutex);
             }
@@ -686,7 +713,7 @@ void pollTask(void *) {
             int32_t zoomLate = INT32_MIN;
             if (zoom.active) {
                 // A zoom just opened has waited longest of all.
-                uint32_t every = zoom.follow ? intervalMs : ZOOM_POLL_MS;
+                uint32_t every = zoom.follow || zoom.look ? intervalMs : ZOOM_POLL_MS;
                 zoomLate = zoom.gen != zoomGenServed ? INT32_MAX : (int32_t)(t - lastZoomMs - every);
             }
             if (mainLate >= 0 && mainLate >= zoomLate) {
@@ -1025,7 +1052,14 @@ bool radarZoomTarget(String &code) {
     float withinNm = g_radarCentre == RadarCentre::AIRPORT ? 120.0f : (float)RADAR_RANGE_STEPS_NM[0];
     double lat, lon;
     float rangeNm;
-    if (!nearestAirport(g_lat, g_lon, a, withinNm) || !radarZoomFrame(a.code, lat, lon, rangeNm)) {
+    // Dragged somewhere of its own, the one nearest where it has been left.
+    double fromLat = g_lat, fromLon = g_lon;
+    if (radarScreenFreeLook(lat, lon)) {
+        fromLat = lat;
+        fromLon = lon;
+        withinNm = (float)RADAR_RANGE_STEPS_NM[0];
+    }
+    if (!nearestAirport(fromLat, fromLon, a, withinNm) || !radarZoomFrame(a.code, lat, lon, rangeNm)) {
         return false;
     }
     code = a.code;
@@ -1046,12 +1080,13 @@ void drawRadar(bool full) {
     bool military = false;
     String provider;
     if (xSemaphoreTake(g_dataMutex, portMAX_DELAY) == pdTRUE) {
-        provider = g_follow.active ? g_zoomProvider : g_activeProvider;
+        provider = radarOnExtraList() ? g_zoomProvider : g_activeProvider;
         // Following, the plot is the list fetched around the aircraft,
-        // centred on where it is reckoned to be. Nothing in that list is
-        // marked new: the marks belong to the main poll's.
-        aircraft = g_follow.active ? g_zoomAircraft : g_latestAircraft;
-        if (!g_follow.active) {
+        // centred on where it is reckoned to be - and on a free look, the
+        // one fetched around where the radar has been left. Nothing in that
+        // list is marked new: the marks belong to the main poll's.
+        aircraft = radarOnExtraList() ? g_zoomAircraft : g_latestAircraft;
+        if (!radarOnExtraList()) {
             isNew = g_latestIsNew;
         }
         lat = g_lat;
@@ -1067,10 +1102,10 @@ void drawRadar(bool full) {
     } else {
         radius = radarRangeShown();
     }
-    fillLost(aircraft, g_follow.active, provider);
+    fillLost(aircraft, radarOnExtraList(), provider);
     // Following, the list is the extra poll's, which on the radar goes at the
     // main poll's interval too.
-    moveOnToNow(aircraft, g_follow.active ? g_zoomDataMs : g_latestDataMs, g_pollIntervalS);
+    moveOnToNow(aircraft, radarOnExtraList() ? g_zoomDataMs : g_latestDataMs, g_pollIntervalS);
     g_radarDrawnMs = millis();
     radarScreenDraw(aircraft, isNew, lat, lon, radius, military, full);
     g_perfRadar.add(micros() - t0);
@@ -1193,6 +1228,7 @@ bool openZoom(const String &code, bool forFollowed, float viewNm) {
     if (xSemaphoreTake(g_dataMutex, portMAX_DELAY) == pdTRUE) {
         g_zoomPoll.active = true;
         g_zoomPoll.follow = false;
+        g_zoomPoll.look = false;
         g_zoomPoll.code = code;
         g_zoomPoll.followHex = g_follow.active ? g_follow.hex : String();
         g_zoomPoll.gen++;
@@ -1200,7 +1236,9 @@ bool openZoom(const String &code, bool forFollowed, float viewNm) {
         g_zoomPoll.lon = lon;
         g_zoomPoll.radiusNm = (int)ceilf(rangeNm) + ZOOM_FETCH_EXTRA_NM;
         g_zoomPoll.viewNm = radarZoomViewNm();
-        if (!g_follow.active) {
+        // Until its own first list lands: the main poll's - or, opened from a
+        // radar dragged somewhere else, the one that was fetched around there.
+        if (!g_follow.active && !g_look.aimed) {
             g_zoomAircraft = g_latestAircraft;
             g_zoomDataMs = g_latestDataMs;  // moved on between polls from when it really arrived
         }
@@ -1229,6 +1267,7 @@ void aimFollowPoll(bool fresh) {
     if (xSemaphoreTake(g_dataMutex, portMAX_DELAY) == pdTRUE) {
         g_zoomPoll.active = true;
         g_zoomPoll.follow = true;
+        g_zoomPoll.look = false;
         g_zoomPoll.followHex = g_follow.hex;
         if (fresh) {
             g_zoomPoll.gen++;
@@ -1463,8 +1502,7 @@ void updateRecButton(bool onScreen) {
                       : !recorder::mounted() ? RecButton::NO_CARD
                                              : RecButton::IDLE;
     uint32_t elapsed = active ? (millis() - recorder::activeSinceMs()) / 1000 : 0;
-    bool zoom = (g_screen == Screen::ZOOM);
-    radarScreenSetRecording(state, elapsed, onScreen && (zoom || g_screen == Screen::RADAR), zoom);
+    radarScreenSetRecording(state, elapsed, onScreen && (g_screen == Screen::ZOOM || g_screen == Screen::RADAR));
 }
 
 void toggleRecording() {
@@ -1531,7 +1569,7 @@ bool lastReported(const String &hex, Aircraft &out) {
 bool findShown(const String &hex, Aircraft &out) {
     bool found = false;
     if (xSemaphoreTake(g_dataMutex, portMAX_DELAY) == pdTRUE) {
-        for (const Aircraft &a : g_follow.active ? g_zoomAircraft : g_latestAircraft) {
+        for (const Aircraft &a : radarOnExtraList() ? g_zoomAircraft : g_latestAircraft) {
             if (a.hex == hex) {
                 out = a;
                 found = true;
@@ -1929,6 +1967,18 @@ void autoFollow(const Aircraft &ac) {
     }
 }
 
+// Where the list of recordings was opened from - the table's header, the
+// radar or the airport zoom, each of which has a button for it - for its Back
+// to go back to.
+Screen g_recordingsReturnTo = Screen::RADAR;
+
+void openRecordings(Screen from) {
+    g_follow.picking = false;
+    g_recordingsReturnTo = from;
+    g_screen = Screen::RECORDINGS;
+    recordingsScreenEnter();
+}
+
 void handleRadarTouch(int x, int y) {
     String hex, airport;
     RadarAction action = radarScreenHandleTouch(x, y, hex, airport);
@@ -1962,6 +2012,9 @@ void handleRadarTouch(int x, int y) {
     case RadarAction::DISMISS:
         drawRadar(true);
         break;
+    case RadarAction::DRAG:
+        g_dragging = true;
+        break;
     // Each button is lit as soon as it is tapped, so the tap shows it
     // registered before the plot - the slower part - is redrawn under it.
     case RadarAction::CENTRE_HOME:
@@ -1969,7 +2022,9 @@ void handleRadarTouch(int x, int y) {
     case RadarAction::CENTRE_ALL: {
         RadarCentre centre = (action == RadarAction::CENTRE_HOME) ? RadarCentre::HOME : RadarCentre::AIRPORT;
         bool airports = (action == RadarAction::CENTRE_ALL);
-        bool wasFollowing = g_follow.active;
+        // Dragged off its centre, the plot goes back to the one tapped - with
+        // the title, which said so, as when following ends.
+        bool wasFollowing = radarScreenEndFreeLook() || g_follow.active;
         stopFollow();  // a view of its own is the end of following, or of picking
         bool changed = wasFollowing || centre != g_radarCentre || airports != g_radarAirports;
         if (centre != g_radarCentre) {
@@ -2008,9 +2063,7 @@ void handleRadarTouch(int x, int y) {
             updateRecButton(true);
             break;
         }
-        g_follow.picking = false;
-        g_screen = Screen::RECORDINGS;
-        recordingsScreenEnter();
+        openRecordings(Screen::RADAR);
         break;
     case RadarAction::ZOOM_AIRPORT:
         if (!openZoom(airport)) {
@@ -2052,6 +2105,17 @@ void handleZoomTouch(int x, int y) {
         break;
     case ZoomAction::TOGGLE_RECORD:
         toggleRecording();
+        break;
+    case ZoomAction::OPEN_RECORDINGS:
+        // As the radar's: greyed out without a card, but a tap still has
+        // another look for one. The zoom is left as Back leaves it, for
+        // the recordings' own Back to come back to.
+        if (!recorder::mount()) {
+            soundKeyClick();
+            updateRecButton(true);
+            break;
+        }
+        openRecordings(Screen::ZOOM);
         break;
     case ZoomAction::TOGGLE_FOLLOW:
         if (g_follow.active) {
@@ -2100,15 +2164,124 @@ void handleZoomTouch(int x, int y) {
     case ZoomAction::DISMISS:
         drawZoom(true);
         break;
+    case ZoomAction::DRAG:
+        g_dragging = true;
+        break;
     case ZoomAction::NONE:
         break;
     }
+}
+
+void tickLook();
+
+// The finger that landed on a plot's empty sky has moved, to (x, y): the line
+// it is dragging out goes with it.
+void dragTo(int x, int y) {
+    if (!radarDragTo(x, y)) {
+        return;
+    }
+    if (g_screen == Screen::RADAR) {
+        drawRadar(false);
+    } else if (g_screen == Screen::ZOOM) {
+        drawZoom(false);
+    }
+}
+
+// And it has lifted: the plot is centred where the line had got to, with the
+// title and the buttons saying so.
+void endDrag() {
+    if (!g_dragging) {
+        return;
+    }
+    g_dragging = false;
+    if (!radarDragEnd()) {
+        return;
+    }
+    if (g_screen == Screen::RADAR) {
+        tickLook();  // so that it is drawn with what there is for where it now is
+        setRadarControls(false);
+        drawRadar(true);
+    } else if (g_screen == Screen::ZOOM) {
+        drawZoom(true);
+    }
+}
+
+// Keeps the extra poll aimed where the radar has been dragged to, at the
+// range it shows, while that is where it is and nothing else has the poll -
+// and lets go of it when the radar is back on its own centre. Looked at
+// every pass rather than at each thing that could change it: a drag, HOME, a
+// change of range or of traffic, following starting, a zoom opening over the
+// radar and closing again.
+void tickLook() {
+    double lat = 0, lon = 0;
+    // Only while the radar is what is up, or a detail opened from it: left
+    // for the table, it stops asking, and asks again on the way back.
+    bool shown = g_screen == Screen::RADAR || (g_screen == Screen::DETAIL && g_detailReturnTo == Screen::RADAR);
+    bool look = radarScreenFreeLook(lat, lon) && !g_follow.active && shown;
+    if (g_zoomUp || g_follow.active) {
+        g_look.aimed = false;  // theirs for now: a zoom's closing gives it up, for this to take again
+        return;
+    }
+    int radius = radarRangeShown() + ZOOM_FETCH_EXTRA_NM;
+    bool military = g_traffic == TrafficFilter::MILITARY;
+    if (look && g_look.aimed && g_look.lat == lat && g_look.lon == lon && g_look.radiusNm == radius &&
+        g_look.military == military) {
+        return;
+    }
+    if (!look && !g_look.aimed) {
+        return;
+    }
+    if (xSemaphoreTake(g_dataMutex, portMAX_DELAY) == pdTRUE) {
+        if (look) {
+            g_zoomPoll.active = true;
+            g_zoomPoll.follow = false;
+            g_zoomPoll.look = true;
+            g_zoomPoll.military = military;
+            g_zoomPoll.followHex = "";
+            g_zoomPoll.code = "";
+            g_zoomPoll.gen++;  // straight away, and whatever is on its way for somewhere else dropped
+            g_zoomPoll.lat = lat;
+            g_zoomPoll.lon = lon;
+            g_zoomPoll.radiusNm = radius;
+            if (!g_look.aimed) {
+                // The main poll's stands in until the first fetch lands, a
+                // few seconds from now: what of it is near enough is real.
+                g_zoomAircraft = g_latestAircraft;
+                g_zoomProvider = g_activeProvider;
+                g_zoomDataMs = g_latestDataMs;
+            }
+        } else {
+            g_zoomPoll.active = false;
+            g_zoomPoll.look = false;
+            g_zoomAircraft.clear();
+            g_zoomReady = false;
+        }
+        xSemaphoreGive(g_dataMutex);
+    }
+    g_look = {look, lat, lon, radius, military};
 }
 
 void handleRecordingsTouch(int x, int y) {
     String path;
     switch (recordingsScreenHandleTouch(x, y, path)) {
     case RecordingsAction::BACK:
+        // To wherever Replays was tapped. The table's own button brought it
+        // from there; the zoom's left the zoom as its Back does, to be opened
+        // again as the table's radar button would - unless something is being
+        // followed, when it is the radar centred on that which comes back.
+        if (g_recordingsReturnTo == Screen::MAIN) {
+            g_screen = Screen::MAIN;
+            displayInvalidate();
+            if (xSemaphoreTake(g_dataMutex, portMAX_DELAY) == pdTRUE) {
+                g_dataReady = true;
+                xSemaphoreGive(g_dataMutex);
+            }
+            break;
+        }
+        if (g_recordingsReturnTo == Screen::ZOOM && g_returnZoomCode.length() && !g_follow.active &&
+            openZoom(g_returnZoomCode, false, g_returnZoomViewNm)) {
+            break;
+        }
         g_screen = Screen::RADAR;
         drawRadar(true);
         break;
@@ -2311,6 +2484,13 @@ void handleMainTouch(int x, int y) {
         return;
     }
 
+    if (displayHitReplays(x, y)) {
+        // Card or no card: the list says which, where the radar's button
+        // would only be greyed out.
+        openRecordings(Screen::MAIN);
+        return;
+    }
+
     if (displayHitCog(x, y)) {
         String label;
         if (xSemaphoreTake(g_dataMutex, portMAX_DELAY) == pdTRUE) {
@@ -2478,6 +2658,16 @@ void handleSettingsTouch(int x, int y, bool pressed, bool clicked) {
             saveNavaids(g_navaids);
             radarScreenSetNavaids(g_navaids);
         }
+        if (settingsScreenCoast() != g_coast) {
+            g_coast = settingsScreenCoast();
+            saveCoast(g_coast);
+            radarScreenSetCoast(g_coast);
+        }
+        if (settingsScreenRings() != g_rings) {
+            g_rings = settingsScreenRings();
+            saveRings(g_rings);
+            radarScreenSetRings(g_rings);
+        }
         displaySetHeader(traffic == TrafficFilter::MILITARY, g_airportCode, activeProvider());
         if (xSemaphoreTake(g_dataMutex, portMAX_DELAY) == pdTRUE) {
             // A changed interval alone doesn't warrant refetching - the new
@@ -2641,6 +2831,8 @@ void setup() {
     g_radiusNm = s.radiusNm;
     g_showRefresh = s.showRefresh;
     g_navaids = s.navaids;
+    g_coast = s.coast;
+    g_rings = s.rings;
     g_pollIntervalS = s.pollIntervalS;
     g_muted = s.muted;
     g_source = s.source;
@@ -2660,6 +2852,10 @@ void setup() {
     displaySetMuted(g_muted);
     radarScreenSetNavaids(g_navaids);
     settingsScreenSetNavaids(g_navaids);
+    radarScreenSetCoast(g_coast);
+    settingsScreenSetCoast(g_coast);
+    radarScreenSetRings(g_rings);
+    settingsScreenSetRings(g_rings);
     g_airportCode = nearestAirportCode(g_lat, g_lon);
     displaySetHeader(g_traffic == TrafficFilter::MILITARY, g_airportCode, g_activeProvider);
     screen::setOverlay(drawBanner, 0, 0, 1280, BANNER_H);
@@ -2827,6 +3023,7 @@ void loop() {
         handleSettingsTouch(tx, ty, pressed, clicked);
     } else if (M5.Touch.getCount() == 0) {
         g_touchSpent = false;
+        endDrag();
     } else {
         auto t = M5.Touch.getDetail(0);
         // The radar and the zoom act on a touch as it lands. Elsewhere a tap
@@ -2835,11 +3032,15 @@ void loop() {
         // otherwise it was a hold or a flick, and nothing. With a finger on
         // a glass panel, enough taps strayed past one limit or the other
         // that the radar's buttons felt laggy, or missed taps altogether.
-        // Nothing on either screen drags or holds, so nothing is lost by it.
+        // Nothing on either screen holds, and the one thing that drags - the
+        // plot, by its empty sky - is a touch that had nothing to act on.
         bool onLanding = (g_screen == Screen::RADAR || g_screen == Screen::ZOOM);
         if (g_touchSpent) {
             if (!t.isPressed()) {
                 g_touchSpent = false;
+                endDrag();
+            } else if (g_dragging) {
+                dragTo(t.x, t.y);
             }
         } else if (onLanding) {
             if (t.wasPressed()) {
@@ -2987,6 +3188,7 @@ void loop() {
     }
 
     tickFollow();
+    tickLook();
 
     if (g_screen == Screen::RADAR) {
         // Following, the plot is drawn from the extra poll's list rather
@@ -2994,14 +3196,14 @@ void loop() {
         // through g_dataReady.
         bool fresh = false;
         if (xSemaphoreTake(g_dataMutex, 0) == pdTRUE) {
-            fresh = g_dataReady || (g_follow.active && g_zoomReady);
+            fresh = g_dataReady || (radarOnExtraList() && g_zoomReady);
             g_dataReady = false;
-            if (g_follow.active) {
+            if (radarOnExtraList()) {
                 g_zoomReady = false;
             }
             xSemaphoreGive(g_dataMutex);
         }
-        uint32_t dataMs = g_follow.active ? g_zoomDataMs : g_latestDataMs;
+        uint32_t dataMs = radarOnExtraList() ? g_zoomDataMs : g_latestDataMs;
         if (fresh) {
             drawRadar(false);
         } else if (millis() - g_radarDrawnMs >= tweenMs(g_pollIntervalS) &&

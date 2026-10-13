@@ -22,15 +22,16 @@ const char *const HELP[] = {
     "- Tap a row for that aircraft's details. There, FOLLOW follows it on the radar and WATCH puts its callsign on "
     "your watchlist.",
     "- Hold a row to put its callsign on the watchlist, or take it off.",
-    "- The icons at the top right open the radar, switch the sound off or on, and open Settings.",
+    "- The icons at the top right: Replays, the radar, the sound off or on, and Settings.",
 
     "# The radar",
     "Everything in range, around the centre: each aircraft with its callsign, a line to where it will be in a "
-    "minute, and ^ or v while it climbs or descends.",
+    "minute, and ^ or v while it climbs or descends. Under it is the map: coasts and lakes, with borders dashed "
+    "and state lines dotted.",
     "- HOME centres on your location, AIRPORT on the airport nearest it, and ALL is AIRPORT with every other "
     "airport around marked too.",
     "- ZOOM IN and ZOOM OUT change the range. ZOOM IN from the closest opens the airport zoom; ZOOM OUT past your "
-    "range widens it.",
+    "range widens it. Drag empty sky to look around - in the zoom too.",
     "- Tap an aircraft for its details, an airport to zoom in on it, or a navaid - the small hexagons and boxes - "
     "for its frequency. Where a tap reaches several, a list asks which.",
     "- Back goes to the table. The radar keeps its view for next time.",
@@ -39,7 +40,8 @@ const char *const HELP[] = {
     "One airport close up, its runways drawn to scale. A runway in use - something lined up on it, landing or "
     "taking off - has an arrow on it and is listed at the bottom left, and each take-off and landing is said as a "
     "controller would clear it.",
-    "- ZOOM IN to see the aircraft on the taxiways and at the stands. ZOOM OUT from the widest goes to the radar.",
+    "- ZOOM IN shows the aircraft on the taxiways and stands; ZOOM OUT from the widest, the radar.",
+    "- INFO puts up the airport's card: its name, and its tower, approach, radar and other frequencies.",
     "- Back goes to the table, and the radar opened from there comes back to this zoom.",
 
     "# Following an aircraft",
@@ -62,8 +64,8 @@ const char *const HELP[] = {
     "computer to download - open the address it shows in a browser.",
 
     "# Settings",
-    "Civilian or military traffic, how far around you to look, how often to refresh, your location, the WiFi, the "
-    "data source, and navaids. They take effect as you leave with Back.",
+    "Civilian or military traffic, how far to look, how often to refresh, your location, the WiFi, the data "
+    "source, and the radar's navaids, map and rings. They take effect as you leave with Back.",
 };
 
 const char *const ABOUT[] = {
@@ -83,7 +85,8 @@ const char *const ABOUT[] = {
     "# Credits",
     "- Live aircraft: adsb.lol, whose data is made available under the Open Database License 1.0, and adsb.fi "
     "(adsb.fi) - both run by volunteers, and free to use. Please keep the refresh interval generous.",
-    "- Airports, runways and navaids: OurAirports (ourairports.com), public domain.",
+    "- Airports, their runways and frequencies, and navaids: OurAirports (ourairports.com). The map's coasts, "
+    "lakes and borders: Natural Earth (naturalearthdata.com). Both public domain.",
     "- Place search: Open-Meteo's geocoding API (open-meteo.com), CC BY 4.0.",
     "- Voice: Piper text-to-speech, its en_GB-alba-medium voice, built from the Alba data of the CSTR, University "
     "of Edinburgh, CC BY 4.0.",

@@ -18,6 +18,9 @@ bool displayHitCog(int x, int y);
 // True if (x, y) is on the radar button in the header.
 bool displayHitRadar(int x, int y);
 
+// True if (x, y) is on the replays button in the header.
+bool displayHitReplays(int x, int y);
+
 // True if (x, y) is on the mute speaker in the header.
 bool displayHitMute(int x, int y);
 

@@ -4,7 +4,9 @@
 #include <algorithm>
 #include <math.h>
 
+#include "airport_info.h"
 #include "airports.h"
+#include "coast.h"
 #include "navaids.h"
 #include "alerts.h"
 #include "runways.h"
@@ -204,6 +206,63 @@ constexpr int MAX_NAVAID_HITS = 64;
 NavaidHit g_navaidHits[MAX_NAVAID_HITS];
 int g_navaidHitCount = 0;
 bool g_navaidsOn = true;  // the setting
+bool g_coastOn = true;    // and the one for the map's outlines
+bool g_ringsOn = false;   // and for the radar's range rings
+
+// Free look: a plot dragged off its own centre - see radarDragTo(). The
+// radar's and the zoom's each keep theirs, with where the plot's own centre
+// was when it was dragged off it: a radar whose home has since moved, or
+// that has gone from HOME to AIRPORT, is back on its own.
+struct FreeLook {
+    bool active = false;
+    double lat = 0, lon = 0;
+    double fromLat = 0, fromLon = 0;
+};
+FreeLook g_radarLook, g_zoomLook;
+
+// What the last plot drawn was of, for a drag to be measured on: its middle,
+// its scale - at its own range, not one a drag has it drawn at - and where
+// its middle is when nothing has dragged it.
+struct PlotView {
+    double lat = 0, lon = 0;
+    float pxPerNm = 1;
+    double ownLat = 0, ownLon = 0;
+};
+PlotView g_radarView, g_zoomView;
+
+// A finger down on a plot that may be dragging it, with the plot as it was
+// when it landed - and once it has gone DRAG_MIN_PX from there, the line it
+// has stretched out from the middle: so far east and north, which is `nm` on
+// `bearing` and would put the middle at (lat, lon).
+constexpr int DRAG_MIN_PX = 12;
+struct Drag {
+    bool down = false, zoom = false, showing = false;
+    int startX = 0, startY = 0;
+    PlotView view;
+    float eastNm = 0, northNm = 0;
+    float nm = 0, bearing = 0;
+    double lat = 0, lon = 0;
+};
+Drag g_drag;
+
+// The ranges a plot is drawn at for a line dragged past its edge: the first
+// that takes the line, with room for the ring on its end. A swipe across the
+// whole screen is twice the plot's own range, so it is seldom more than a
+// step or two up.
+constexpr float DRAG_RANGES_NM[] = {1,  1.5, 2,   3,   4,   5,   6,   8,   10,  15,  20,  30,  40,
+                                    60, 80,  100, 120, 150, 200, 250, 300, 400, 500, 600, 800, 1000};
+constexpr float DRAG_LINE_FILLS = 0.92f;
+float dragRangeNm(float ownNm) {
+    if (g_drag.nm <= ownNm * DRAG_LINE_FILLS) {
+        return ownNm;
+    }
+    for (float r : DRAG_RANGES_NM) {
+        if (r > ownNm && g_drag.nm <= r * DRAG_LINE_FILLS) {
+            return r;
+        }
+    }
+    return 1000;
+}
 
 void noteAirportHit(const String &code, int x, int y, const LabelBox &label) {
     if (g_airportHitCount < MAX_AIRPORT_LABELS + 1) {
@@ -235,13 +294,15 @@ int g_blipCount = 0;
 // a single hue leaves brightness free to do that.
 uint16_t colorDisabled;
 uint16_t colorBg, colorText, colorMuted, colorFaint, colorBtnBg, colorRing, colorRingText, colorBlip, colorNewBlip,
-    colorHome, colorTrail, colorAlert, colorEmergency, colorRec, colorRunway;
+    colorHome, colorTrail, colorAlert, colorEmergency, colorRec, colorRunway, colorCoast, colorCoastAlone;
 RadarPalette g_palette;
 
 // Where a plot's drawing time goes, for the [perf] line: the parts that
 // don't move from one frame to the next - erasing, the scope, the airports
-// and runways - then the contacts, then pushing it to the panel.
-uint64_t g_backgroundUs = 0, g_contactsUs = 0, g_pushUs = 0;
+// and runways - then the contacts, then pushing it to the panel. And of the
+// first, how much was the map's outlines, in microseconds: it is a fraction
+// of a millisecond most places and several over the lakes of Finland.
+uint64_t g_backgroundUs = 0, g_contactsUs = 0, g_pushUs = 0, g_coastUs = 0;
 uint32_t g_plotFrames = 0;
 
 RecButton g_recState = RecButton::IDLE;
@@ -266,6 +327,13 @@ void ensureColors() {
     // Greyed toward pavement, so a runway reads as ground under the traffic
     // rather than as a mark of the same kind as a contact.
     colorRunway = M5.Display.color565(0x4E, 0x6E, 0x5C);
+    // The map under it all, greyed the same way and no brighter than the
+    // rings: it says where the traffic is, and is not to be looked at for
+    // itself.
+    colorCoast = M5.Display.color565(0x26, 0x50, 0x48);
+    // And a little brighter with the rings switched off, when it is all there
+    // is under the traffic and has no rings to be told from.
+    colorCoastAlone = M5.Display.color565(0x30, 0x66, 0x5A);
     // The one exception to the single hue: an alerted contact has to stand out
     // from the sky around it at a glance, which no shade of green does.
     colorAlert = M5.Display.color565(0xFF, 0xB3, 0x2E);
@@ -294,8 +362,23 @@ String nmText(float nm) {
     return String(nm, nm * 2 == floorf(nm * 2) ? 1 : 2);
 }
 
-// The scope itself: a ring every stepNm with its distance on it, the outer
-// ring doubled, the compass points just inside it and a tick every 30 degrees.
+// The map under the plot - coasts and lakes, borders and state lines: see
+// coast.h - drawn before anything else, so that everything else is over it.
+void drawCoast(double lat, double lon, float rangeNm) {
+    if (!g_coastOn) {
+        return;
+    }
+    auto &canvas = screen::canvas();
+    uint32_t t0 = micros();
+    // Onto the canvas's own pixels, which it keeps high byte first.
+    coastDraw({(uint16_t *)canvas.getBuffer(), canvas.width(), CENTER_X, CENTER_Y, RADIUS, lat, lon, rangeNm,
+               __builtin_bswap16(g_ringsOn ? colorCoast : colorCoastAlone)});
+    g_coastUs += micros() - t0;
+}
+
+// The scope itself: a ring every stepNm with its distance on it - unless
+// they are switched off, which is a stepNm of 0 - the outer ring doubled, the
+// compass points just inside it and a tick every 30 degrees.
 void drawScope(float rangeNm, float stepNm) {
     auto &canvas = screen::canvas();
     g_mapMarks.clear();
@@ -304,7 +387,7 @@ void drawScope(float rangeNm, float stepNm) {
     canvas.setTextSize(2);
     canvas.setTextColor(colorRingText);
     canvas.setTextDatum(BC_DATUM);
-    for (int i = 1; i * stepNm < rangeNm - 0.001f; i++) {
+    for (int i = 1; stepNm > 0 && i * stepNm < rangeNm - 0.001f; i++) {
         float nm = i * stepNm;
         int r = (int)lroundf(nm / rangeNm * RADIUS);
         canvas.drawCircle(CENTER_X, CENTER_Y, r, colorRing);
@@ -689,9 +772,10 @@ uint32_t g_lostS = 0;
 constexpr int LIVE_TEL_X = 16, LIVE_TEL_Y = 96;
 
 void drawCentreButtons() {
-    bool following = (g_follow == FollowButton::ON);
-    bool home = !following && g_centre == RadarCentre::HOME;
-    bool airport = !following && g_centre == RadarCentre::AIRPORT;
+    // None of them lit while following, or dragged off the centre it names.
+    bool own = g_follow != FollowButton::ON && !g_radarLook.active;
+    bool home = own && g_centre == RadarCentre::HOME;
+    bool airport = own && g_centre == RadarCentre::AIRPORT;
     drawButton(HOME_Y, "HOME", home ? Look::LIT : Look::PLAIN);
     drawButton(AIRPORT_Y, "AIRPORT", airport && !g_airportsOn ? Look::LIT : Look::PLAIN);
     drawButton(ALL_Y, "ALL", airport && g_airportsOn ? Look::LIT : Look::PLAIN);
@@ -755,6 +839,8 @@ void drawTitle(bool military) {
         canvas.drawString(what, 16, TITLE_LINE2_Y);
         canvas.setTextColor(colorHome);
         canvas.drawString(g_followCallsign, 16 + canvas.textWidth(what), TITLE_LINE2_Y);
+    } else if (g_radarLook.active) {
+        canvas.drawString("free look", 16, TITLE_LINE2_Y);
     }
     screen::markDirty(0, 0, PLOT_L, TITLE_BLOCK_H);
 }
@@ -822,7 +908,7 @@ bool g_cardSurvivesRedraw = false;
 int g_cardX = 0, g_cardY = 0, g_cardH = 0;
 constexpr int CARD_LINE_H = 26;
 
-bool overlayUp() { return g_choiceCount || g_card; }
+bool overlayUp();  // a list, or either card: an airport's is further down
 
 // Beside a tap at (x, y), as openChooser() places the list.
 void placeBeside(int x, int y, int h, int &outX, int &outY) {
@@ -907,6 +993,261 @@ void openCard(const Navaid *n, int x, int y) {
     g_card = n;
     g_cardH = 2 * CHOICE_PAD + 8 + 40 + CARD_LINE_H + 4 + (int)cardLines(*n).size() * CARD_LINE_H + 6 + LABEL_H;
     placeBeside(x, y, g_cardH, g_cardX, g_cardY);
+}
+
+// --- an airport's card ----------------------------------------------------------
+// INFO, in the zoom, puts up the card of the airport zoomed on: its name and
+// codes, how high it is, and the frequencies to hear it on - its tower, the
+// approach and the radar around it, the control centre over it and the rest,
+// as far as OurAirports lists them - beside a radar on its mast, sending.
+// Over the plot until the next tap anywhere, as a navaid's card is.
+//
+// The frequencies are the airport's and have no place of their own on the
+// map, which is why they are on a card and not marked on the plot.
+
+constexpr int INFO_W = 560, INFO_PAD = 16;
+constexpr int MAST_W = 112, MAST_H = 116;  // the picture's box
+constexpr int INFO_ROW_H = 28;
+// A row is what the frequencies are for, then up to four of them.
+constexpr int INFO_LABEL_W = 132, INFO_FREQ_W = 96;
+// How much of a name fits a line beside the picture, at 12px a character.
+constexpr int INFO_NAME_CHARS = (INFO_W - 3 * INFO_PAD - MAST_W) / 12;
+
+const AirportInfo *g_airportCard = nullptr;
+int g_airportCardX = 0, g_airportCardY = 0, g_airportCardH = 0;
+
+bool overlayUp() { return g_choiceCount || g_card || g_airportCard; }
+
+// A radar on a lattice mast - its dish tilted up, the feed out in front of
+// it, and three arcs of what it sends going out, each fainter than the last
+// - in a box MAST_W by MAST_H with its corner at (x, y).
+void drawTransmitter(int x, int y) {
+    auto &canvas = screen::canvas();
+    auto line = [&](float x0, float y0, float x1, float y1, uint16_t color) {
+        canvas.drawLine(x + (int)lroundf(x0), y + (int)lroundf(y0), x + (int)lroundf(x1), y + (int)lroundf(y1),
+                        color);
+    };
+
+    // The mast: two legs closing in towards its top, braced straight across
+    // and corner to corner, on a line of ground.
+    constexpr float BASE_Y = 110, TOP_Y = 76, LEFT = 26, RIGHT = 62, LEAN = 12;
+    auto leg = [&](float atY, bool right) {
+        float in = (BASE_Y - atY) / (BASE_Y - TOP_Y) * LEAN;
+        return right ? RIGHT - in : LEFT + in;
+    };
+    line(12, BASE_Y, 78, BASE_Y, colorFaint);
+    line(LEFT, BASE_Y, LEFT + LEAN, TOP_Y, colorMuted);
+    line(RIGHT, BASE_Y, RIGHT - LEAN, TOP_Y, colorMuted);
+    constexpr float BARS[] = {BASE_Y, BASE_Y - 13, BASE_Y - 24, TOP_Y};
+    for (int i = 0; i < 4; i++) {
+        line(leg(BARS[i], false), BARS[i], leg(BARS[i], true), BARS[i], colorMuted);
+        if (i < 3) {
+            line(leg(BARS[i], false), BARS[i], leg(BARS[i + 1], true), BARS[i + 1], colorFaint);
+            line(leg(BARS[i], true), BARS[i], leg(BARS[i + 1], false), BARS[i + 1], colorFaint);
+        }
+    }
+    // The turning gear on top of it, and what holds the dish to that.
+    constexpr float VX = 44, VY = 58;  // the middle of the dish
+    canvas.fillRect(x + 40, y + 68, 9, 8, colorMuted);
+    for (float footX : {40.0f, 44.0f, 48.0f}) {
+        line(VX, VY, footX, 68, colorMuted);
+    }
+
+    // The dish, side on: a parabola 52px across, tilted 40 degrees up to the
+    // right, drawn a few times over just behind itself for its thickness.
+    constexpr float HALF = 26, DEPTH = 56;
+    const float tilt = 40.0f * (float)M_PI / 180.0f;
+    const float axisX = cosf(tilt), axisY = -sinf(tilt), acrossX = sinf(tilt), acrossY = cosf(tilt);
+    auto dish = [&](float t, float back, float &outX, float &outY) {
+        float along = t * t / DEPTH - back;
+        outX = VX + along * axisX + t * acrossX;
+        outY = VY + along * axisY + t * acrossY;
+    };
+    for (float back : {0.0f, 0.7f, 1.4f, 2.1f}) {
+        float fromX, fromY;
+        dish(-HALF, back, fromX, fromY);
+        for (int i = 1; i <= 26; i++) {
+            float toX, toY;
+            dish(-HALF + 2 * HALF * i / 26, back, toX, toY);
+            line(fromX, fromY, toX, toY, colorText);
+            fromX = toX;
+            fromY = toY;
+        }
+    }
+    // Its feed, at the parabola's focus, on a strut from each rim.
+    float focusX = VX + DEPTH / 4 * axisX, focusY = VY + DEPTH / 4 * axisY;
+    for (float t : {-HALF, HALF}) {
+        float rimX, rimY;
+        dish(t, 0, rimX, rimY);
+        line(rimX, rimY, focusX, focusY, colorMuted);
+    }
+    canvas.fillCircle(x + (int)lroundf(focusX), y + (int)lroundf(focusY), 2, colorText);
+
+    // What it sends: arcs across the way it points, two pixels thick.
+    const uint16_t shades[] = {colorBlip, colorMuted, colorFaint};
+    for (int w = 0; w < 3; w++) {
+        for (int thick = 0; thick < 2; thick++) {
+            float r = 20 + 11 * w + thick;
+            float fromX = 0, fromY = 0;
+            for (int i = 0; i <= 16; i++) {
+                float a = -tilt + (-30.0f + 60.0f * i / 16) * (float)M_PI / 180.0f;
+                float toX = focusX + r * cosf(a), toY = focusY + r * sinf(a);
+                if (i) {
+                    line(fromX, fromY, toX, toY, shades[w]);
+                }
+                fromX = toX;
+                fromY = toY;
+            }
+        }
+    }
+}
+
+// How many rows of frequencies its card has: one for each use it has any for.
+int airportCardRows(const AirportInfo &a) {
+    const AirportFrequency *f = airportFrequencies(a);
+    int rows = 0;
+    for (int i = 0; i < a.frequencyCount; i++) {
+        rows += i == 0 || f[i].use != f[i - 1].use;
+    }
+    return rows;
+}
+
+void drawAirportCard() {
+    const AirportInfo &a = *g_airportCard;
+    auto &canvas = screen::canvas();
+    canvas.clearClipRect();
+    canvas.setFont(&fonts::Font0);
+    int left = g_airportCardX + INFO_PAD, top = g_airportCardY + INFO_PAD;
+    canvas.fillRoundRect(g_airportCardX, g_airportCardY, INFO_W, g_airportCardH, 10, colorBg);
+    canvas.drawRoundRect(g_airportCardX, g_airportCardY, INFO_W, g_airportCardH, 10, colorRing);
+    canvas.drawRoundRect(g_airportCardX + 1, g_airportCardY + 1, INFO_W - 2, g_airportCardH - 2, 9, colorRing);
+    drawTransmitter(left, top);
+
+    // Beside the picture: its codes, its name in up to two lines, its height.
+    int tx = left + MAST_W + INFO_PAD, ty = top + 6;
+    canvas.setTextDatum(TL_DATUM);
+    canvas.setTextSize(3);
+    canvas.setTextColor(colorText);
+    canvas.drawString(a.code, tx, ty);
+    int codeW = canvas.textWidth(a.code);
+    canvas.setTextSize(2);
+    if (a.icao[0]) {
+        canvas.setTextColor(colorMuted);
+        canvas.drawString(a.icao, tx + codeW + 16, ty + 8);  // on the larger one's baseline
+    }
+    ty += 36;
+    canvas.setTextColor(colorMuted);
+    String name(a.name);
+    for (int lineNo = 0; lineNo < 2 && name.length(); lineNo++) {
+        String part = name;
+        if ((int)name.length() > INFO_NAME_CHARS) {
+            // Broken at a space where the first line has one; the second is
+            // cut short, for the few names two lines won't take.
+            int space = lineNo == 0 ? name.lastIndexOf(' ', INFO_NAME_CHARS) : -1;
+            part = space > 0 ? name.substring(0, space) : name.substring(0, INFO_NAME_CHARS - 2) + "..";
+            name = space > 0 ? name.substring(space + 1) : String();
+        } else {
+            name = String();
+        }
+        canvas.drawString(part, tx, ty);
+        ty += 22;
+    }
+    canvas.setTextColor(colorFaint);
+    canvas.drawString("Elevation " + String(a.elevationFt) + " ft", tx, ty + 4);
+
+    // Under it, a row for each use: TOWER 118.500 118.700 124.475.
+    int y = top + MAST_H + 10;
+    canvas.drawFastHLine(left, y, INFO_W - 2 * INFO_PAD, colorRing);
+    y += 12;
+    const AirportFrequency *f = airportFrequencies(a);
+    for (int i = 0; i < a.frequencyCount;) {
+        uint8_t use = f[i].use;
+        canvas.setTextColor(colorMuted);
+        canvas.drawString(atcUseName((AtcUse)use), left, y);
+        canvas.setTextColor(colorText);
+        for (int column = 0; i < a.frequencyCount && f[i].use == use; i++, column++) {
+            char mhz[12];
+            snprintf(mhz, sizeof(mhz), "%u.%03u", (unsigned)(f[i].khz / 1000), (unsigned)(f[i].khz % 1000));
+            canvas.drawString(mhz, left + INFO_LABEL_W + column * INFO_FREQ_W, y);
+        }
+        y += INFO_ROW_H;
+    }
+    canvas.setTextColor(colorFaint);
+    if (a.frequencyCount == 0) {
+        canvas.drawString("No frequencies are listed for it", left, y);
+        y += INFO_ROW_H;
+        canvas.drawString("Tap anywhere to close", left, y + 6);
+    } else {
+        canvas.drawString("Frequencies in MHz - tap anywhere to close", left, y + 6);
+    }
+    screen::markDirty(g_airportCardX, g_airportCardY, INFO_W, g_airportCardH);
+}
+
+// Puts the card up for the airport with IATA `code`, in the middle of the
+// plot - or leaves things as they are, for one the table hasn't got.
+void openAirportCard(const String &code) {
+    const AirportInfo *a = airportInfo(code.c_str());
+    if (a == nullptr) {
+        return;
+    }
+    g_airportCard = a;
+    g_airportCardH = 2 * INFO_PAD + MAST_H + 10 + 12 + std::max(airportCardRows(*a), 1) * INFO_ROW_H + 6 + LABEL_H;
+    g_airportCardX = CENTER_X - INFO_W / 2;
+    g_airportCardY = std::min(std::max(CENTER_Y - g_airportCardH / 2, 8), 720 - 8 - g_airportCardH);
+}
+
+// --- free look -------------------------------------------------------------------
+
+bool insideRing(int x, int y) {
+    long dx = x - CENTER_X, dy = y - CENTER_Y;
+    return dx * dx + dy * dy <= (long)RADIUS * RADIUS;
+}
+
+void startDrag(int x, int y, bool zoom) {
+    g_drag = Drag();
+    g_drag.down = true;
+    g_drag.zoom = zoom;
+    g_drag.startX = x;
+    g_drag.startY = y;
+    g_drag.view = zoom ? g_zoomView : g_radarView;
+}
+
+// The line a drag has stretched out from the middle of the plot, a ring on
+// the end of it where the middle would go, and beside that how far it is and
+// which way. Over the plot, once that has been drawn, at the range that was
+// drawn at.
+void drawDragLine(float rangeNm) {
+    auto &canvas = screen::canvas();
+    canvas.clearClipRect();
+    int dx = (int)lroundf(g_drag.eastNm / rangeNm * RADIUS), dy = -(int)lroundf(g_drag.northNm / rangeNm * RADIUS);
+    int ex = CENTER_X + dx, ey = CENTER_Y + dy;
+    // Two pixels wide, the second beside the first across the way it runs.
+    bool steep = abs(dy) > abs(dx);
+    canvas.drawLine(CENTER_X, CENTER_Y, ex, ey, colorHome);
+    canvas.drawLine(CENTER_X + steep, CENTER_Y + !steep, ex + steep, ey + !steep, colorHome);
+    canvas.fillCircle(ex, ey, 11, colorBg);
+    canvas.drawCircle(ex, ey, 11, colorHome);
+    canvas.drawCircle(ex, ey, 10, colorHome);
+    canvas.drawLine(ex - 5, ey, ex + 5, ey, colorHome);
+    canvas.drawLine(ex, ey - 5, ex, ey + 5, colorHome);
+
+    // 0.35 in the zoom, 12.4 on the radar, 105 across the whole of it.
+    char text[32];
+    int bearing = ((int)lroundf(g_drag.bearing) % 360 + 360) % 360;
+    snprintf(text, sizeof(text), "%.*f nm  BRG %03d", g_drag.nm < 1 ? 2 : g_drag.nm < 20 ? 1 : 0, g_drag.nm, bearing);
+    canvas.setFont(&fonts::Font0);
+    canvas.setTextSize(2);
+    int w = canvas.textWidth(text) + 2 * BOX_PAD_X;
+    // Beside the ring, on the side with room for it, and inside the plot's
+    // column, which is all of the screen a refresh pushes.
+    int bx = ex + 18 + w <= PLOT_R ? ex + 18 : ex - 18 - w;
+    bx = std::min(std::max(bx, PLOT_L), PLOT_R - w);
+    int by = std::min(std::max(ey - BOX_H / 2, PLOT_T + 4), PLOT_B - 4 - BOX_H);
+    canvas.fillRect(bx, by, w, BOX_H, colorBg);
+    canvas.drawRect(bx, by, w, BOX_H, colorHome);
+    canvas.setTextDatum(TL_DATUM);
+    canvas.setTextColor(colorText);
+    canvas.drawString(text, bx + BOX_PAD_X, by + BOX_PAD_Y);
 }
 
 // The list, with Cancel as its last row, over whatever is drawn under it.
@@ -1031,8 +1372,9 @@ enum class Target { NONE, AIRCRAFT, AIRPORT, DISMISSED };
 // or, anywhere else, dismisses it. Otherwise it is the one target within
 // reach, or NONE: either nothing is, or several are and the list has gone up.
 Target tapTarget(int x, int y, bool withAirports, String &outId) {
-    if (g_card) {
+    if (g_card || g_airportCard) {
         g_card = nullptr;
+        g_airportCard = nullptr;
         return Target::DISMISSED;
     }
     if (g_choiceCount) {
@@ -1102,17 +1444,49 @@ void radarScreenDraw(const std::vector<Aircraft> &aircraft, const std::vector<ui
             g_card = nullptr;
         }
         g_cardSurvivesRedraw = false;
+        g_airportCard = nullptr;
         screen::clear(colorBg);
         drawHeader(military);
     }
-    // With a list up, a refresh is drawn under it and pushed along with it.
+    // With a list up, a refresh is drawn under it and pushed along with it -
+    // as it is with a drag's line over it.
     bool following = (g_follow == FollowButton::ON);
-    radarPlotDraw({aircraft, isNew, nullptr, lat, lon, rangeNm, following ? RadarCentre::HOME : g_centre, g_airportsOn,
-                   true, !overlayUp(), following ? g_followHex : String(),
-                   following ? g_followOrigin : String()},
-                  full);
+    bool dragged = g_drag.showing && !g_drag.zoom;
+    // Where the plot is centred left to itself, as radarPlotDraw() has it:
+    // home, or the airport nearest it. Dragged off that, it is centred where
+    // it was let go - unless its own centre has since changed under it.
+    Airport airport;
+    bool onAirport = !following && g_centre == RadarCentre::AIRPORT && nearestAirport(lat, lon, airport);
+    double ownLat = onAirport ? airport.lat : lat, ownLon = onAirport ? airport.lon : lon;
+    FreeLook &look = g_radarLook;
+    if (look.active && (following || look.fromLat != ownLat || look.fromLon != ownLon)) {
+        look.active = false;
+    }
+    g_radarView = {look.active ? look.lat : ownLat, look.active ? look.lon : ownLon, (float)RADIUS / rangeNm, ownLat,
+                   ownLon};
+    // A line dragged past the edge has the plot at a range that takes it,
+    // with its map and airports and none of its traffic.
+    int shownNm = dragged ? (int)dragRangeNm((float)rangeNm) : rangeNm;
+    bool mapOnly = shownNm != rangeNm;
+    static const std::vector<Aircraft> noAircraft;
+    static const std::vector<uint8_t> noneNew;
+    RadarScene scene = {mapOnly ? noAircraft : aircraft, mapOnly ? noneNew : isNew, nullptr,
+                        look.active ? look.lat : lat, look.active ? look.lon : lon, shownNm,
+                        following || look.active ? RadarCentre::HOME : g_centre, g_airportsOn, true,
+                        !overlayUp() && !dragged, following ? g_followHex : String(),
+                        following ? g_followOrigin : String()};
+    scene.freeLook = look.active;
+    scene.everyAirport = look.active || dragged;
+    scene.markHome = look.active && !onAirport;
+    scene.homeLat = lat;
+    scene.homeLon = lon;
+    scene.mapOnly = mapOnly;
+    radarPlotDraw(scene, full);
     if (following) {
         radarTelemetryDraw(LIVE_TEL_X, LIVE_TEL_Y, g_heights, millis(), INT32_MIN, g_lostS);
+    }
+    if (dragged) {
+        drawDragLine((float)shownNm);
     }
     if (g_choiceCount) {
         drawChooser();
@@ -1120,14 +1494,17 @@ void radarScreenDraw(const std::vector<Aircraft> &aircraft, const std::vector<ui
     if (g_card) {
         drawCard();
     }
+    if (g_airportCard) {
+        drawAirportCard();
+    }
     // Following, the telemetry goes in a push of its own: with the plot's,
     // flush() would send the margin between them too.
-    if (full || overlayUp() || following) {
+    if (full || overlayUp() || following || dragged) {
         screen::flush();
     }
 }
 
-void radarScreenSetRecording(RecButton state, uint32_t elapsedS, bool onScreen, bool zoom) {
+void radarScreenSetRecording(RecButton state, uint32_t elapsedS, bool onScreen) {
     if (state == g_recState && elapsedS == g_recElapsedS) {
         return;
     }
@@ -1138,7 +1515,7 @@ void radarScreenSetRecording(RecButton state, uint32_t elapsedS, bool onScreen, 
     g_recElapsedS = elapsedS;
     if (onScreen) {
         ensureColors();
-        if (stateChanged && !zoom) {
+        if (stateChanged) {
             drawReplaysButton();
         }
         drawRecButton();
@@ -1162,6 +1539,9 @@ void radarScreenSetZoom(bool canIn, bool canOut, bool onScreen) {
 void radarScreenSetControls(RadarCentre centre, bool airports, FollowButton follow, const String &followHex,
                             const String &followCallsign, const String &followOrigin, bool onScreen) {
     g_followOrigin = followOrigin;
+    if (follow == FollowButton::ON) {
+        g_radarLook.active = false;  // the aircraft is the centre now
+    }
     // Following unlights the centre, so starting or stopping it changes those too.
     bool wasFollowing = (g_follow == FollowButton::ON), following = (follow == FollowButton::ON);
     bool centreChanged = (centre != g_centre || airports != g_airportsOn || following != wasFollowing);
@@ -1196,8 +1576,9 @@ String radarTakeTimings() {
     }
     String s = "background " + String((uint32_t)(g_backgroundUs / g_plotFrames / 1000)) + ", contacts " +
                String((uint32_t)(g_contactsUs / g_plotFrames / 1000)) + ", push " +
-               String((uint32_t)(g_pushUs / g_plotFrames / 1000)) + "ms avg";
-    g_backgroundUs = g_contactsUs = g_pushUs = 0;
+               String((uint32_t)(g_pushUs / g_plotFrames / 1000)) + "ms avg, map " +
+               String((uint32_t)(g_coastUs / g_plotFrames)) + "us";
+    g_backgroundUs = g_contactsUs = g_pushUs = g_coastUs = 0;
     g_plotFrames = 0;
     return s;
 }
@@ -1403,24 +1784,28 @@ void radarPlotDraw(const RadarScene &scene, bool full) {
     }
     canvas.setFont(&fonts::Font0);
 
-    // --- rings and bearings ----------------------------------------------
-    int step = ringStep(rangeNm);
-    drawScope((float)rangeNm, (float)step);
-
     // Centred on the airport, the cross is tagged with its code so the centre
     // says where it is; centred on home, it is a bare cross. Airport mode with
     // nothing in range of the lookup falls back to home, since there is no
     // other point to centre on.
-    g_airportHitCount = 0;
-    g_navaidHitCount = 0;
-    g_mapLabelCount = 0;
     Airport airport;
     String centreCode;
     bool following = scene.followHex.length() > 0;
-    if (!following && centre == RadarCentre::AIRPORT && nearestAirport(lat, lon, airport)) {
+    if (!following && !scene.freeLook && centre == RadarCentre::AIRPORT && nearestAirport(lat, lon, airport)) {
         lat = airport.lat;
         lon = airport.lon;
         centreCode = airport.code;
+    }
+
+    // --- the map, then rings and bearings over it --------------------------
+    drawCoast(lat, lon, (float)rangeNm);
+    int step = g_ringsOn ? ringStep(rangeNm) : 0;
+    drawScope((float)rangeNm, (float)step);
+
+    g_airportHitCount = 0;
+    g_navaidHitCount = 0;
+    g_mapLabelCount = 0;
+    if (centreCode.length()) {
         canvas.setTextSize(2);
         canvas.setTextColor(colorHome);
         canvas.setTextDatum(TC_DATUM);
@@ -1432,7 +1817,20 @@ void radarPlotDraw(const RadarScene &scene, bool full) {
         g_airfieldSpots.push_back({(float)CENTER_X, (float)CENTER_Y});  // the cross is its symbol
     }
     // Following, the centre is the aircraft, ringed where it is drawn.
-    if (!following) {
+    // Dragged off its own centre, the middle is nowhere in particular: a
+    // smaller, dimmer cross says where it is, and home keeps its own where
+    // home is, if that is still on the plot.
+    if (scene.freeLook) {
+        canvas.drawLine(CENTER_X - 5, CENTER_Y, CENTER_X + 5, CENTER_Y, colorMuted);
+        canvas.drawLine(CENTER_X, CENTER_Y - 5, CENTER_X, CENTER_Y + 5, colorMuted);
+        int hx = CENTER_X + (int)lround((scene.homeLon - lon) * 60.0 * cos(lat * M_PI / 180.0) / rangeNm * RADIUS);
+        int hy = CENTER_Y - (int)lround((scene.homeLat - lat) * 60.0 / rangeNm * RADIUS);
+        if (scene.markHome && insideScope(hx - 9, hy - 9, 18, 18, 0)) {
+            canvas.drawLine(hx - 9, hy, hx + 9, hy, colorHome);
+            canvas.drawLine(hx, hy - 9, hx, hy + 9, colorHome);
+            noteMark(hx - 9, hy - 9, 19, 19);
+        }
+    } else if (!following) {
         canvas.drawLine(CENTER_X - 9, CENTER_Y, CENTER_X + 9, CENTER_Y, colorHome);
         canvas.drawLine(CENTER_X, CENTER_Y - 9, CENTER_X, CENTER_Y + 9, colorHome);
     }
@@ -1446,10 +1844,10 @@ void radarPlotDraw(const RadarScene &scene, bool full) {
     // on a replay switched to HOME. Following, they are always on, whichever
     // view it was picked from: they say where it might be going - and
     // following a departure, where it came from.
-    if ((scene.airports && centreCode.length()) || following) {
+    if ((scene.airports && centreCode.length()) || following || scene.everyAirport) {
         drawAirports(lat, lon, rangeNm, centreCode, following ? scene.originCode : String());
     }
-    if (g_navaidsOn) {
+    if (g_navaidsOn && !scene.mapOnly) {
         drawNavaids(lat, lon, rangeNm);
     }
 
@@ -1472,10 +1870,13 @@ void radarPlotDraw(const RadarScene &scene, bool full) {
     if (!full) {
         canvas.fillRect(0, RANGE_BOX_T, PLOT_L, BOX_H, colorBg);
     }
-    footerBox(String(rangeNm) + " nm range   rings every " + String(step) + " nm", 16, FOOTER_Y, false);
-    footerBox("^ climb   v descent", 1264, FOOTER_Y - LEGEND_OFFSET, true);
-    footerBox(String(plotted) + " contacts" + (labelled < plotted ? "   " + String(labelled) + " labelled" : ""), 1264,
-              FOOTER_Y, true);
+    footerBox(String(rangeNm) + " nm range" + (step ? "   rings every " + String(step) + " nm" : String()), 16, FOOTER_Y,
+              false);
+    if (!scene.mapOnly) {
+        footerBox("^ climb   v descent", 1264, FOOTER_Y - LEGEND_OFFSET, true);
+        footerBox(String(plotted) + " contacts" + (labelled < plotted ? "   " + String(labelled) + " labelled" : ""),
+                  1264, FOOTER_Y, true);
+    }
 
     uint32_t t2 = micros();
     g_backgroundUs += t1 - t0;
@@ -1930,9 +2331,16 @@ void drawZoomHeader() {
     drawButton(FOLLOW_Y, g_zoomPicking ? "TAP PLANE" : "FOLLOW",
                g_zoomFollowHex.length() || g_zoomPicking ? Look::LIT : Look::PLAIN);
     drawRecButton();
+    drawReplaysButton();
     // Back to the table, as the radar's Back is - the radar coming back to
     // this zoom - where ZOOM OUT, from the zoom's own framing, is to the radar.
     drawButton(BACK_Y, "Back", Look::PLAIN);
+    // Where the radar has HOME, the first of the buttons it has no use for
+    // here: the airport's card - see drawAirportCard().
+    drawButton(HOME_Y, "INFO", Look::PLAIN);
+    // And under it, where the radar has AIRPORT: back to the middle of the
+    // runways, once the plot has been dragged off it.
+    drawButton(AIRPORT_Y, "CENTRE", g_zoomLook.active ? Look::PLAIN : Look::GREYED);
     drawZoomViewButtons();
 }
 
@@ -1961,6 +2369,7 @@ bool radarZoomOpen(const String &code, double &lat, double &lon, float &rangeNm)
     if (!frameZoom(code, g_zoom)) {
         return false;
     }
+    g_zoomLook.active = false;
     g_zoomViewNm = g_zoom.rangeNm;
     lat = g_zoom.lat;
     lon = g_zoom.lon;
@@ -1975,6 +2384,10 @@ void radarZoomSetFollow(const String &hex, const String &callsign, bool picking)
 }
 
 namespace {
+
+// Set round a draw of the live zoom at a range a drag's line has it at, with
+// none of its traffic: the readouts that count the traffic are left off too.
+bool g_zoomMapOnly = false;
 
 // The zoom's plot and footer readouts, for frame `f`: what the live zoom and
 // a replay of one both draw. As radarPlotDraw(): with `full` the caller has
@@ -2061,9 +2474,12 @@ bool zoomPlot(const ZoomFrame &framed, const std::vector<Aircraft> &aircraft,
     } else if (lately.length()) {
         footerBox("last in use:" + lately, 16, FOOTER_Y - LEGEND_OFFSET, false);
     }
-    footerBox("o ground   ^ climb   v descent", 1264, FOOTER_Y - LEGEND_OFFSET, true);
-    footerBox(String(plotted) + " contacts" + (labelled < plotted ? "   " + String(labelled) + " labelled" : ""), 1264,
-              FOOTER_Y, true);
+    // Not while a drag's line has it drawn without its traffic.
+    if (!g_zoomMapOnly) {
+        footerBox("o ground   ^ climb   v descent", 1264, FOOTER_Y - LEGEND_OFFSET, true);
+        footerBox(String(plotted) + " contacts" + (labelled < plotted ? "   " + String(labelled) + " labelled" : ""),
+                  1264, FOOTER_Y, true);
+    }
 
     if (!full) {
         uint32_t t3 = micros();
@@ -2086,16 +2502,38 @@ void radarZoomDraw(const std::vector<Aircraft> &aircraft, bool full) {
             g_card = nullptr;
         }
         g_cardSurvivesRedraw = false;
+        g_airportCard = nullptr;
         screen::clear(colorBg);
         drawZoomHeader();
     }
-    // With a list or card up, a refresh is drawn under it and pushed along with it.
+    // With a list or card up, a refresh is drawn under it and pushed along
+    // with it - as it is with a drag's line over it.
+    bool following = g_zoomFollowHex.length() > 0;
+    bool dragged = g_drag.showing && g_drag.zoom;
     ZoomFrame view = g_zoom;
     view.rangeNm = g_zoomViewNm;
-    g_zoomOnFollowed =
-        zoomPlot(view, aircraft, nullptr, true, g_zoomFollowHex, full, !overlayUp(), millis(), g_liveInUse);
+    // Dragged off the middle of its runways, it is centred where it was let
+    // go - until something is followed, which has a centre of its own.
+    if (following) {
+        g_zoomLook.active = false;
+    }
+    if (g_zoomLook.active) {
+        view.lat = g_zoomLook.lat;
+        view.lon = g_zoomLook.lon;
+    }
+    g_zoomView = {view.lat, view.lon, RADIUS / view.rangeNm, g_zoom.lat, g_zoom.lon};
+    // A line dragged past the edge has the plot at a range that takes it,
+    // with its runways and none of its traffic.
+    if (dragged) {
+        view.rangeNm = dragRangeNm(view.rangeNm);
+    }
+    bool mapOnly = view.rangeNm != g_zoomViewNm;
+    static const std::vector<Aircraft> noAircraft;
+    g_zoomMapOnly = mapOnly;
+    g_zoomOnFollowed = zoomPlot(view, mapOnly ? noAircraft : aircraft, nullptr, true, g_zoomFollowHex, full,
+                                !overlayUp() && !dragged, millis(), g_liveInUse);
+    g_zoomMapOnly = false;
     // Following into the zoom, its height against the field's.
-    bool following = g_zoomFollowHex.length() > 0;
     if (following) {
         radarTelemetryDraw(LIVE_TEL_X, LIVE_TEL_Y, g_heights, millis(),
                            g_zoom.runwayCount ? g_zoom.runways[0].elevationFt : INT32_MIN, g_lostS);
@@ -2106,7 +2544,13 @@ void radarZoomDraw(const std::vector<Aircraft> &aircraft, bool full) {
     if (g_card) {
         drawCard();
     }
-    if (full || overlayUp() || following) {
+    if (g_airportCard) {
+        drawAirportCard();
+    }
+    if (dragged) {
+        drawDragLine(view.rangeNm);
+    }
+    if (full || overlayUp() || following || dragged) {
         screen::flush();
     }
 }
@@ -2126,6 +2570,10 @@ bool radarZoomPlotDraw(const RadarScene &scene, const String &code, bool full) {
 }
 
 void radarScreenSetNavaids(bool on) { g_navaidsOn = on; }
+
+void radarScreenSetCoast(bool on) { g_coastOn = on; }
+
+void radarScreenSetRings(bool on) { g_ringsOn = on; }
 
 void radarLiveRunwaysInUse(recorder::RunwaysInUse &out) {
     out = recorder::RunwaysInUse();
@@ -2174,6 +2622,27 @@ ZoomAction radarZoomHandleTouch(int x, int y, String &outHex) {
         if (b == BTN_REC) {
             return ZoomAction::TOGGLE_RECORD;
         }
+        if (b == BTN_REPLAYS) {
+            return ZoomAction::OPEN_RECORDINGS;
+        }
+        if (b == BTN_AIRPORT) {
+            // CENTRE, which has somewhere to go back to once it is dragged.
+            if (!g_zoomLook.active) {
+                return ZoomAction::NONE;
+            }
+            g_zoomLook.active = false;
+            return ZoomAction::REDRAW;
+        }
+        if (b == BTN_HOME) {
+            // INFO: the card goes up over the plot as it stands, and the
+            // plot's refreshes are drawn under it until a tap takes it off.
+            openAirportCard(g_zoom.code);
+            if (g_airportCard) {
+                drawAirportCard();
+                screen::flush();
+            }
+            return ZoomAction::NONE;
+        }
         if (b == BTN_ZOOM_IN && zoomCanIn()) {
             float next = ZOOM_VIEW_STEPS_NM[0];
             for (float r : ZOOM_VIEW_STEPS_NM) {
@@ -2205,8 +2674,15 @@ ZoomAction radarZoomHandleTouch(int x, int y, String &outHex) {
     case Target::DISMISSED:
         return ZoomAction::DISMISS;
     default:
-        return ZoomAction::NONE;
+        break;
     }
+    // On the plot with nothing under it, and nothing put up by it: it may be
+    // going to drag - see radarDragTo().
+    if (!overlayUp() && !g_zoomFollowHex.length() && insideRing(x, y)) {
+        startDrag(x, y, true);
+        return ZoomAction::DRAG;
+    }
+    return ZoomAction::NONE;
 }
 
 RadarAction radarScreenHandleTouch(int x, int y, String &outHex, String &outAirport) {
@@ -2248,7 +2724,87 @@ RadarAction radarScreenHandleTouch(int x, int y, String &outHex, String &outAirp
     case Target::NONE:
         break;
     }
+    // On the plot with nothing under it, and nothing put up by it: it may be
+    // going to drag - see radarDragTo().
+    if (!overlayUp() && g_follow != FollowButton::ON && insideRing(x, y)) {
+        startDrag(x, y, false);
+        return RadarAction::DRAG;
+    }
     return RadarAction::NONE;
+}
+
+bool radarDragTo(int x, int y) {
+    Drag &d = g_drag;
+    if (!d.down) {
+        return false;
+    }
+    int dx = x - d.startX, dy = y - d.startY;
+    if (!d.showing && dx * dx + dy * dy < DRAG_MIN_PX * DRAG_MIN_PX) {
+        return false;  // still a tap that found nothing, or a finger settling
+    }
+    // The middle goes the way the finger has, and as far at the scale the
+    // plot had when it landed: where that is, on the plot's own flat earth.
+    const PlotView &v = d.view;
+    double nmPerDegLon = 60.0 * std::max(cos(v.lat * M_PI / 180.0), 0.01);
+    double lat = v.lat - dy / v.pxPerNm / 60.0;
+    double lon = v.lon + dx / v.pxPerNm / nmPerDegLon;
+    if (d.zoom) {
+        // The zoom's is no further from the middle of its runways than its
+        // framing reaches, which is as far as its traffic is fetched.
+        double ownNmPerDegLon = 60.0 * std::max(cos(v.ownLat * M_PI / 180.0), 0.01);
+        double east = (lon - v.ownLon) * ownNmPerDegLon, north = (lat - v.ownLat) * 60.0;
+        double out = hypot(east, north), reach = g_zoom.framedNm;
+        if (out > reach) {
+            lat = v.ownLat + north * reach / out / 60.0;
+            lon = v.ownLon + east * reach / out / ownNmPerDegLon;
+        }
+    }
+    // The radar's goes where it likes - short of the poles, and round the
+    // date line rather than off the end of it.
+    lat = std::min(std::max(lat, -85.0), 85.0);
+    float eastNm = (float)((lon - v.lon) * nmPerDegLon), northNm = (float)((lat - v.lat) * 60.0);
+    if (d.showing && fabsf(eastNm - d.eastNm) * v.pxPerNm < 2 && fabsf(northNm - d.northNm) * v.pxPerNm < 2) {
+        return false;  // nowhere new enough to draw again
+    }
+    d.showing = true;
+    d.eastNm = eastNm;
+    d.northNm = northNm;
+    d.lat = lat;
+    d.lon = lon > 180.0 ? lon - 360.0 : lon < -180.0 ? lon + 360.0 : lon;
+    d.nm = hypotf(eastNm, northNm);
+    d.bearing = atan2f(eastNm, northNm) * 180.0f / (float)M_PI;
+    return true;
+}
+
+bool radarDragEnd() {
+    Drag d = g_drag;
+    g_drag = Drag();
+    if (!d.showing) {
+        return false;
+    }
+    // Let go back where it started, it has gone nowhere - but the line has to
+    // come off either way.
+    if (d.nm * d.view.pxPerNm >= DRAG_MIN_PX) {
+        FreeLook &look = d.zoom ? g_zoomLook : g_radarLook;
+        look.active = true;
+        look.lat = d.lat;
+        look.lon = d.lon;
+        look.fromLat = d.view.ownLat;
+        look.fromLon = d.view.ownLon;
+    }
+    return true;
+}
+
+bool radarScreenFreeLook(double &lat, double &lon) {
+    lat = g_radarLook.lat;
+    lon = g_radarLook.lon;
+    return g_radarLook.active;
+}
+
+bool radarScreenEndFreeLook() {
+    bool was = g_radarLook.active;
+    g_radarLook.active = false;
+    return was;
 }
 
 bool radarPlotHit(int x, int y, String &outHex) {

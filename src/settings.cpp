@@ -22,6 +22,8 @@ AppSettings loadSettings() {
     s.radiusNm = prefs.getInt("radius", DEFAULT_RADIUS_NM);
     s.showRefresh = prefs.getBool("refresh", true);
     s.navaids = prefs.getBool("navaids", true);
+    s.coast = prefs.getBool("coast", true);
+    s.rings = prefs.getBool("rings", false);
     s.pollIntervalS = prefs.getInt("pollint", DEFAULT_POLL_INTERVAL_S);
     s.muted = prefs.getBool("muted", false);
     s.source = (AdsbSource)prefs.getUChar("source", (uint8_t)DEFAULT_ADSB_SOURCE);
@@ -93,6 +95,20 @@ void saveNavaids(bool navaids) {
     Preferences prefs;
     prefs.begin(NAMESPACE, false);
     prefs.putBool("navaids", navaids);
+    prefs.end();
+}
+
+void saveCoast(bool coast) {
+    Preferences prefs;
+    prefs.begin(NAMESPACE, false);
+    prefs.putBool("coast", coast);
+    prefs.end();
+}
+
+void saveRings(bool rings) {
+    Preferences prefs;
+    prefs.begin(NAMESPACE, false);
+    prefs.putBool("rings", rings);
     prefs.end();
 }
 

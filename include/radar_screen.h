@@ -23,6 +23,7 @@ enum class RadarAction {
     ZOOM_OUT,         // show a longer one
     ZOOM_AIRPORT,     // outAirport is the IATA code of the tapped airport
     DISMISS,          // the list of targets closed without a pick; redraw to take it off
+    DRAG,             // landed on the plot with nothing under it: see radarDragTo()
 };
 
 // What the record button shows. NO_CARD greys out Replays along with it:
@@ -73,11 +74,12 @@ void radarScreenDraw(const std::vector<Aircraft> &aircraft, const std::vector<ui
 // list stays up over refreshes; a full draw starts without one.
 RadarAction radarScreenHandleTouch(int x, int y, String &outHex, String &outAirport);
 
-// Updates the record button. It is part of the header, which a refresh
-// doesn't repaint, so this repaints the button itself when `onScreen` says the
-// radar - or with `zoom`, the airport zoom, which has REC without Replays - is
-// up and what it would show has changed.
-void radarScreenSetRecording(RecButton state, uint32_t elapsedS, bool onScreen, bool zoom);
+// Updates the record button, and Replays under it, which is greyed out with
+// it. They are part of the header, which a refresh doesn't repaint, so this
+// repaints them itself when `onScreen` says the radar or the airport zoom -
+// which has the two where the radar does - is up and what they would show has
+// changed.
+void radarScreenSetRecording(RecButton state, uint32_t elapsedS, bool onScreen);
 
 // --- the plot on its own, for playback -------------------------------------
 
@@ -105,6 +107,19 @@ struct RadarScene {
     // forward through a replay, for the runways lately in use.
     float zoomRangeNm = 0;
     uint32_t nowMs = 0;
+    // Dragged off its own centre - see radarDragTo(): (lat, lon) is where it
+    // was let go, and with `markHome` home is crossed where it is, at
+    // (homeLat, homeLon), having been what the plot was dragged off.
+    bool freeLook = false;
+    bool markHome = false;
+    double homeLat = 0, homeLon = 0;
+    // Every airport in range marked, whichever view it is: dragged off its
+    // centre, or being dragged, they are what a drag is aimed by.
+    bool everyAirport = false;
+    // A drag's line has run off the edge of the plot, which is drawn at a
+    // range that takes it: the map and the airports alone, the traffic left
+    // off until the plot is back at its own range, wherever it is let go.
+    bool mapOnly = false;
 };
 
 // Draws the plot, and the footer readouts at the bottom right. With `full`
@@ -127,8 +142,11 @@ bool radarPlotHit(int x, int y, String &outHex);
 // radar's and where the radar has them.
 // REDRAW: ZOOM IN or OUT changed the range shown, for a full redraw. ZOOM OUT
 // from the widest is UNZOOM, back to the radar; BACK is the Back button, to
-// the table.
-enum class ZoomAction { NONE, UNZOOM, BACK, TOGGLE_FOLLOW, TOGGLE_RECORD, SELECT, DISMISS, REDRAW };
+// the table. OPEN_RECORDINGS is Replays, where the radar has it. DRAG is the
+// radar's: a touch on the plot that may go on to drag it.
+enum class ZoomAction {
+    NONE, UNZOOM, BACK, TOGGLE_FOLLOW, TOGGLE_RECORD, OPEN_RECORDINGS, SELECT, DISMISS, REDRAW, DRAG
+};
 
 // Where the zoom on the airport with IATA `code` would be framed: on the
 // middle of its runways, at a range that fits them with room around for
@@ -172,6 +190,52 @@ bool radarZoomPlotDraw(const RadarScene &scene, const String &code, bool full);
 // the settings screen has it - live and in replays. A navaid's ident or
 // symbol is tapped for its card: its name, type, frequency and DME channel.
 void radarScreenSetNavaids(bool on);
+
+// --- dragging the plot -----------------------------------------------------------
+//
+// Free look. A touch that lands on the radar's plot, or the zoom's, with
+// nothing under it to tap is one that may drag: the screen's touch handler
+// says DRAG, and for as long as the finger stays down each place it moves to
+// is given to radarDragTo(). Once it has gone a little way a line stretches
+// out from the middle of the plot, the way it has been dragged and as far,
+// with how far that is in nautical miles and on what bearing - over the plot
+// as it stands, the map under it and every airport in range, marked for as
+// long as the line is out, being what the line is read against. A line
+// dragged past the edge of the plot - a swipe across the screen is twice its
+// range - has the plot drawn again at a range that takes it: its map and its
+// airports only, the traffic left off until it is let go. Where it is let
+// go, radarDragEnd(), is the plot's new centre, at the range it had, until
+// the radar's HOME, AIRPORT or ALL, or the zoom's CENTRE, puts it back.
+//
+// The radar goes anywhere, a swipe at a time, and the traffic around where it
+// has got to is the caller's to fetch - radarScreenFreeLook() says where
+// that is. The zoom is of its airport: its middle goes no further from the
+// middle of its runways than its framing reaches. Neither drags while
+// following, which has a centre of its own.
+//
+// Both say whether there is something to redraw: the line having moved, or
+// the plot.
+bool radarDragTo(int x, int y);
+bool radarDragEnd();
+
+// Whether the radar has been dragged off its own centre, and where to.
+bool radarScreenFreeLook(double &lat, double &lon);
+
+// Puts the radar back on its own centre, as HOME, AIRPORT and ALL do. True if
+// it had been dragged off it.
+bool radarScreenEndFreeLook();
+
+// Whether the radar has the map under it - coasts and lakes, countries'
+// borders, and the state lines of the big federations, as the settings screen
+// has it - live and in replays. The airport zoom never does: see coast.h.
+void radarScreenSetCoast(bool on);
+
+// Whether the radar has its range rings - the ones inside the outer ring,
+// with their distances. Without them there is the outer ring, with its range
+// and the compass on it, and the map under it drawn a little brighter, having
+// the plot to itself. The airport zoom keeps its rings either way: it has no
+// map, and they are all that says how far out the traffic on final is.
+void radarScreenSetRings(bool on);
 
 // The runway ends the live zoom has lately seen in use, and how long ago,
 // for a recording's file to begin with - see recorder::RunwaysInUse.

@@ -45,6 +45,9 @@ constexpr int ICON_Y = 6, ICON_SIZE = 52, ICON_GAP = 12;
 constexpr int COG_X = TABLE_X + TABLE_W - ICON_SIZE;
 constexpr int MUTE_X = COG_X - ICON_GAP - ICON_SIZE;
 constexpr int RADAR_X = MUTE_X - ICON_GAP - ICON_SIZE;
+// The recordings, which were two screens away - or three, with the radar
+// coming back to an airport's zoom - behind the radar's Replays button.
+constexpr int REPLAYS_X = RADAR_X - ICON_GAP - ICON_SIZE;
 
 // The strip left over between the last row that fits and the bottom of the
 // screen - too short for a row, tall enough for a line of size-2 text.
@@ -143,6 +146,27 @@ void drawRadarIcon(int cx, int cy, int r, uint16_t color) {
     canvas.drawCircle(cx, cy, r / 3, color);
     // sweep line, up and to the right
     canvas.drawLine(cx, cy, cx + (int)lroundf(r * 0.707f), cy - (int)lroundf(r * 0.707f), color);
+}
+
+// Replays: an arrow round on itself, as a player's "again" is, with a play
+// triangle in the middle of it. The arrow runs anticlockwise from eleven
+// o'clock round to one, where its head is, leaving the top open.
+void drawReplayIcon(int cx, int cy, int r, uint16_t color) {
+    auto &canvas = screen::canvas();
+    // Split at 0, as the speaker's arcs are: clockwise from due east.
+    canvas.drawArc(cx, cy, r - 2, r, 300, 360, color);
+    canvas.drawArc(cx, cy, r - 2, r, 0, 240, color);
+    // The head, at 300 degrees, pointing the way the arrow has come round:
+    // up and to the left, across the gap.
+    constexpr float AT = 300.0f * (float)M_PI / 180.0f;
+    float px = cx + (r - 1) * cosf(AT), py = cy + (r - 1) * sinf(AT);
+    float outX = cosf(AT), outY = sinf(AT), onX = sinf(AT), onY = -cosf(AT);
+    float half = r * 0.34f, len = r * 0.52f;
+    canvas.fillTriangle((int)lroundf(px + outX * half), (int)lroundf(py + outY * half),
+                        (int)lroundf(px - outX * half), (int)lroundf(py - outY * half),
+                        (int)lroundf(px + onX * len), (int)lroundf(py + onY * len), color);
+    int left = cx - (int)lroundf(r * 0.24f), up = (int)lroundf(r * 0.40f);
+    canvas.fillTriangle(left, cy - up, left, cy + up, cx + (int)lroundf(r * 0.44f), cy, color);
 }
 
 // Drawn like the others: a driver box, a cone flaring right as two triangles,
@@ -300,6 +324,8 @@ bool hitIcon(int iconX, int x, int y) {
 bool displayHitCog(int x, int y) { return hitIcon(COG_X, x, y); }
 
 bool displayHitRadar(int x, int y) { return hitIcon(RADAR_X, x, y); }
+
+bool displayHitReplays(int x, int y) { return hitIcon(REPLAYS_X, x, y); }
 
 bool displayHitMute(int x, int y) { return hitIcon(MUTE_X, x, y); }
 
@@ -499,17 +525,18 @@ void displayRenderAircraft(const std::vector<Aircraft> &aircraft, const std::vec
             String via = "  via " + g_provider;
             int size = 2;
             canvas.setTextSize(size);
-            // The icons own everything from RADAR_X rightwards. A name long
+            // The icons own everything from REPLAYS_X rightwards. A name long
             // enough to reach them is dropped rather than drawn underneath.
-            while (size > 1 && x + canvas.textWidth(via) > RADAR_X - 12) {
+            while (size > 1 && x + canvas.textWidth(via) > REPLAYS_X - 12) {
                 canvas.setTextSize(--size);
             }
-            if (x + canvas.textWidth(via) <= RADAR_X - 12) {
+            if (x + canvas.textWidth(via) <= REPLAYS_X - 12) {
                 canvas.drawString(via, x, HEADER_MID_Y);
             }
             canvas.setTextSize(3);
         }
 
+        drawReplayIcon(REPLAYS_X + ICON_SIZE / 2, ICON_Y + ICON_SIZE / 2, ICON_SIZE / 2 - 8, colorGrey);
         drawRadarIcon(RADAR_X + ICON_SIZE / 2, ICON_Y + ICON_SIZE / 2, ICON_SIZE / 2 - 6, colorGrey);
         drawSpeaker(MUTE_X + ICON_SIZE / 2, ICON_Y + ICON_SIZE / 2, ICON_SIZE / 2 - 8, g_muted,
                     g_muted ? colorMutedIcon : colorGrey);

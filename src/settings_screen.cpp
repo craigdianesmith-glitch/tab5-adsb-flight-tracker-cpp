@@ -30,19 +30,22 @@ constexpr int BAND_ABOVE = 44, BAND_H = 88;
 
 // --- left column ---
 constexpr int SHOW_LABEL_Y = 84;
-constexpr int SEG_X = COL1_X, SEG_Y = 112, SEG_W = COL_W, SEG_H = 76;
+constexpr int SEG_X = COL1_X, SEG_Y = 112, SEG_W = COL_W, SEG_H = 64;
 
-constexpr int RADIUS_LABEL_Y = 216;
-constexpr int RADIUS_VALUE_Y = 244;
-constexpr int RADIUS_SLIDER_X = COL1_X + SLIDER_INSET, RADIUS_SLIDER_Y = 318;
+constexpr int RADIUS_LABEL_Y = 198;
+constexpr int RADIUS_VALUE_Y = 226;
+constexpr int RADIUS_SLIDER_X = COL1_X + SLIDER_INSET, RADIUS_SLIDER_Y = 290;
 constexpr int RADIUS_TICKS_Y = RADIUS_SLIDER_Y + 38;
-constexpr int RADIUS_CAPS_Y = 392;
+constexpr int RADIUS_CAPS_Y = 358;
 
-// Two switches, a little shorter than the other rows to fit them both.
-constexpr int DISPLAY_LABEL_Y = 440;
-constexpr int TOGGLE_H = 62;
-constexpr int REFRESH_X = COL1_X, REFRESH_Y = 468, REFRESH_W = COL_W, REFRESH_H = TOGGLE_H;
-constexpr int NAVAIDS_X = COL1_X, NAVAIDS_Y = REFRESH_Y + TOGGLE_H + 8, NAVAIDS_W = COL_W, NAVAIDS_H = TOGGLE_H;
+// The radar's three switches, shorter than the other rows to fit them all -
+// and the rows above closed up a little, which is where the third one's room
+// came from.
+constexpr int RADAR_LABEL_Y = 398;
+constexpr int TOGGLE_H = 56, TOGGLE_GAP = 6;
+constexpr int NAVAIDS_X = COL1_X, NAVAIDS_Y = 424, NAVAIDS_W = COL_W, NAVAIDS_H = TOGGLE_H;
+constexpr int COAST_X = COL1_X, COAST_Y = NAVAIDS_Y + TOGGLE_H + TOGGLE_GAP, COAST_W = COL_W, COAST_H = TOGGLE_H;
+constexpr int RINGS_X = COL1_X, RINGS_Y = COAST_Y + TOGGLE_H + TOGGLE_GAP, RINGS_W = COL_W, RINGS_H = TOGGLE_H;
 
 // The space below the display toggles was the only room left for this, which
 // is no hardship: the source is the one thing here you set once and forget.
@@ -57,24 +60,29 @@ constexpr int INTERVAL_VALUE_Y = 112;
 constexpr int INTERVAL_SLIDER_X = COL2_X + SLIDER_INSET, INTERVAL_SLIDER_Y = 186;
 constexpr int INTERVAL_TICKS_Y = INTERVAL_SLIDER_Y + 38;
 constexpr int INTERVAL_CAPS_Y = 260;
+// What a refresh shades, under how often there is one - and clear of the
+// slider's own redraw, which reaches 28px below its caption.
+constexpr int REFRESH_X = COL2_X, REFRESH_Y = INTERVAL_CAPS_Y + 30, REFRESH_W = COL_W, REFRESH_H = TOGGLE_H;
 
-// Three "leads somewhere else" rows now, so they are a little shorter than the
-// two used to be, to fit them all under the interval slider.
-constexpr int NAV_H = 84;
-constexpr int LOC_LABEL_Y = 308;
-constexpr int LOC_X = COL2_X, LOC_Y = 336, LOC_W = COL_W, LOC_H = NAV_H;
+// Three "leads somewhere else" rows, a little shorter and closer together
+// than they were, to fit them all under that switch.
+constexpr int NAV_H = 80, NAV_LABEL_ABOVE = 26, NAV_GAP = 14;
+constexpr int LOC_LABEL_Y = REFRESH_Y + TOGGLE_H + NAV_GAP;
+constexpr int LOC_X = COL2_X, LOC_Y = LOC_LABEL_Y + NAV_LABEL_ABOVE, LOC_W = COL_W, LOC_H = NAV_H;
 
-constexpr int WIFI_LABEL_Y = 440;
-constexpr int WIFI_X = COL2_X, WIFI_Y = 468, WIFI_W = COL_W, WIFI_H = NAV_H;
+constexpr int WIFI_LABEL_Y = LOC_Y + NAV_H + NAV_GAP;
+constexpr int WIFI_X = COL2_X, WIFI_Y = WIFI_LABEL_Y + NAV_LABEL_ABOVE, WIFI_W = COL_W, WIFI_H = NAV_H;
 
-constexpr int ALERTS_LABEL_Y = 572;
-constexpr int ALERTS_X = COL2_X, ALERTS_Y = 600, ALERTS_W = COL_W, ALERTS_H = NAV_H;
+constexpr int ALERTS_LABEL_Y = WIFI_Y + NAV_H + NAV_GAP;
+constexpr int ALERTS_X = COL2_X, ALERTS_Y = ALERTS_LABEL_Y + NAV_LABEL_ABOVE, ALERTS_W = COL_W, ALERTS_H = NAV_H;
 
 TrafficFilter g_traffic = TrafficFilter::CIVIL;
 int g_radius = DEFAULT_RADIUS_NM;
 int g_interval = DEFAULT_POLL_INTERVAL_S;
 bool g_showRefresh = true;
 bool g_navaids = true;
+bool g_coast = true;
+bool g_rings = false;
 String g_locationLabel;
 String g_alertSummary;
 AdsbSource g_source = DEFAULT_ADSB_SOURCE;
@@ -261,10 +269,10 @@ void drawToggle(int x, int y, int w, int h, const char *title, const char *detai
     canvas.setTextDatum(ML_DATUM);
     canvas.setTextSize(3);
     canvas.setTextColor(colorWhite);
-    canvas.drawString(title, x + 24, y + 20);
+    canvas.drawString(title, x + 24, y + h / 2 - 10);
     canvas.setTextSize(2);
     canvas.setTextColor(colorDim);
-    canvas.drawString(detail, x + 24, y + 46);
+    canvas.drawString(detail, x + 24, y + h / 2 + 15);
 
     int sw = 108, sh = 40;
     int sx = x + w - sw - 20, sy = y + (h - sh) / 2;
@@ -286,6 +294,14 @@ void drawRefreshToggle() {
 
 void drawNavaidsToggle() {
     drawToggle(NAVAIDS_X, NAVAIDS_Y, NAVAIDS_W, NAVAIDS_H, "Navaids", "VOR, DME and TACAN on the radar", g_navaids);
+}
+
+void drawCoastToggle() {
+    drawToggle(COAST_X, COAST_Y, COAST_W, COAST_H, "Map", "Coasts, lakes and borders", g_coast);
+}
+
+void drawRingsToggle() {
+    drawToggle(RINGS_X, RINGS_Y, RINGS_W, RINGS_H, "Range rings", "Off, the map is brighter", g_rings);
 }
 
 // The "leads somewhere else" rows share a shape: a title, a line of
@@ -370,6 +386,12 @@ void settingsScreenSetLocation(const String &locationLabel) { g_locationLabel = 
 void settingsScreenSetNavaids(bool on) { g_navaids = on; }
 bool settingsScreenNavaids() { return g_navaids; }
 
+void settingsScreenSetCoast(bool on) { g_coast = on; }
+bool settingsScreenCoast() { return g_coast; }
+
+void settingsScreenSetRings(bool on) { g_rings = on; }
+bool settingsScreenRings() { return g_rings; }
+
 void settingsScreenSetAlertSummary(const String &summary) { g_alertSummary = summary; }
 
 int settingsScreenPollInterval() { return g_interval; }
@@ -404,14 +426,16 @@ void settingsScreenDraw() {
     drawSegments();
     sectionLabel("RANGE", COL1_X, RADIUS_LABEL_Y);
     drawRadiusSlider();
-    sectionLabel("DISPLAY", COL1_X, DISPLAY_LABEL_Y);
-    drawRefreshToggle();
+    sectionLabel("RADAR", COL1_X, RADAR_LABEL_Y);
     drawNavaidsToggle();
+    drawCoastToggle();
+    drawRingsToggle();
     sectionLabel("DATA SOURCE", COL1_X, SOURCE_LABEL_Y);
     drawSourceSegments();
 
     sectionLabel("REFRESH", COL2_X, INTERVAL_LABEL_Y);
     drawIntervalSlider();
+    drawRefreshToggle();
     sectionLabel("LOCATION", COL2_X, LOC_LABEL_Y);
     drawLocationButton();
     sectionLabel("NETWORK", COL2_X, WIFI_LABEL_Y);
@@ -499,6 +523,20 @@ SettingsAction settingsScreenHandleTouch(int x, int y, bool pressed, bool clicke
     if (x >= NAVAIDS_X && x < NAVAIDS_X + NAVAIDS_W && y >= NAVAIDS_Y && y < NAVAIDS_Y + NAVAIDS_H) {
         g_navaids = !g_navaids;
         drawNavaidsToggle();
+        screen::flush();
+        return SettingsAction::NONE;
+    }
+
+    if (x >= COAST_X && x < COAST_X + COAST_W && y >= COAST_Y && y < COAST_Y + COAST_H) {
+        g_coast = !g_coast;
+        drawCoastToggle();
+        screen::flush();
+        return SettingsAction::NONE;
+    }
+
+    if (x >= RINGS_X && x < RINGS_X + RINGS_W && y >= RINGS_Y && y < RINGS_Y + RINGS_H) {
+        g_rings = !g_rings;
+        drawRingsToggle();
         screen::flush();
         return SettingsAction::NONE;
     }
