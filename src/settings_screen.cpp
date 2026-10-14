@@ -297,7 +297,7 @@ void drawNavaidsToggle() {
 }
 
 void drawCoastToggle() {
-    drawToggle(COAST_X, COAST_Y, COAST_W, COAST_H, "Map", "Coasts, lakes and borders", g_coast);
+    drawToggle(COAST_X, COAST_Y, COAST_W, COAST_H, "Map", "Coasts, borders and names", g_coast);
 }
 
 void drawRingsToggle() {

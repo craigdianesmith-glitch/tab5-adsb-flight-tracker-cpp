@@ -7,10 +7,12 @@
 #include "airport_info.h"
 #include "airports.h"
 #include "coast.h"
+#include "names.h"
 #include "navaids.h"
 #include "alerts.h"
 #include "runways.h"
 #include "screen.h"
+#include "sound.h"
 
 namespace {
 
@@ -208,11 +210,15 @@ int g_navaidHitCount = 0;
 bool g_navaidsOn = true;  // the setting
 bool g_coastOn = true;    // and the one for the map's outlines
 bool g_ringsOn = false;   // and for the radar's range rings
+// Zoomed out past where there is traffic: the map alone - see
+// radarScreenSetMapOnly().
+bool g_mapOnly = false;
 
 // Free look: a plot dragged off its own centre - see radarDragTo(). The
-// radar's and the zoom's each keep theirs, with where the plot's own centre
-// was when it was dragged off it: a radar whose home has since moved, or
-// that has gone from HOME to AIRPORT, is back on its own.
+// radar's and the zoom's each keep theirs, with what it was dragged away
+// from: the radar's home, the zoom's own centre. A radar whose home has since
+// moved is back on its own; its centre's mode can change under it - ALL,
+// tapped on a free look, marks every airport there and leaves it where it is.
 struct FreeLook {
     bool active = false;
     double lat = 0, lon = 0;
@@ -227,6 +233,7 @@ struct PlotView {
     double lat = 0, lon = 0;
     float pxPerNm = 1;
     double ownLat = 0, ownLon = 0;
+    double homeLat = 0, homeLon = 0;  // the radar's: what a free look is of - see FreeLook
 };
 PlotView g_radarView, g_zoomView;
 
@@ -249,8 +256,8 @@ Drag g_drag;
 // that takes the line, with room for the ring on its end. A swipe across the
 // whole screen is twice the plot's own range, so it is seldom more than a
 // step or two up.
-constexpr float DRAG_RANGES_NM[] = {1,  1.5, 2,   3,   4,   5,   6,   8,   10,  15,  20,  30,  40,
-                                    60, 80,  100, 120, 150, 200, 250, 300, 400, 500, 600, 800, 1000};
+constexpr float DRAG_RANGES_NM[] = {1,   1.5, 2,   3,   4,   5,   6,   8,   10,  15,   20,   30,   40,   60,  80,
+                                    100, 120, 150, 200, 250, 300, 400, 500, 600, 800, 1000, 1500, 2000, 3000};
 constexpr float DRAG_LINE_FILLS = 0.92f;
 float dragRangeNm(float ownNm) {
     if (g_drag.nm <= ownNm * DRAG_LINE_FILLS) {
@@ -261,7 +268,8 @@ float dragRangeNm(float ownNm) {
             return r;
         }
     }
-    return 1000;
+    // Past the widest, as wide as it goes - or the plot's own, if wider.
+    return std::max(ownNm, DRAG_RANGES_NM[sizeof(DRAG_RANGES_NM) / sizeof(DRAG_RANGES_NM[0]) - 1]);
 }
 
 void noteAirportHit(const String &code, int x, int y, const LabelBox &label) {
@@ -294,7 +302,8 @@ int g_blipCount = 0;
 // a single hue leaves brightness free to do that.
 uint16_t colorDisabled;
 uint16_t colorBg, colorText, colorMuted, colorFaint, colorBtnBg, colorRing, colorRingText, colorBlip, colorNewBlip,
-    colorHome, colorTrail, colorAlert, colorEmergency, colorRec, colorRunway, colorCoast, colorCoastAlone;
+    colorHome, colorTrail, colorAlert, colorEmergency, colorRec, colorRunway, colorCoast, colorCoastAlone,
+    colorLandName, colorWaterName;
 RadarPalette g_palette;
 
 // Where a plot's drawing time goes, for the [perf] line: the parts that
@@ -334,6 +343,10 @@ void ensureColors() {
     // And a little brighter with the rings switched off, when it is all there
     // is under the traffic and has no rings to be told from.
     colorCoastAlone = M5.Display.color565(0x30, 0x66, 0x5A);
+    // Its names a step brighter than its lines, to be read when looked for -
+    // a sea's or a lake's a little bluer than the land's.
+    colorLandName = M5.Display.color565(0x36, 0x6E, 0x60);
+    colorWaterName = M5.Display.color565(0x32, 0x68, 0x74);
     // The one exception to the single hue: an alerted contact has to stand out
     // from the sky around it at a glance, which no shade of green does.
     colorAlert = M5.Display.color565(0xFF, 0xB3, 0x2E);
@@ -350,7 +363,12 @@ int ringStep(int rangeNm) {
     if (rangeNm <= 15) return 5;
     if (rangeNm <= 30) return 10;
     if (rangeNm <= 60) return 20;
-    return 50;
+    if (rangeNm <= 150) return 50;
+    // The map's own ranges, out past the traffic's.
+    if (rangeNm <= 300) return 100;
+    if (rangeNm <= 750) return 250;
+    if (rangeNm <= 1500) return 500;
+    return 1000;
 }
 
 // A distance as a ring label: whole miles bare, the zoom's half miles to one
@@ -487,18 +505,41 @@ void drawAirfield(int x, int y, uint16_t color) {
 //
 // `originCode`, while following a departure, is the airport it took off from:
 // drawn brighter and always labelled, so where it came from stays on show.
+// Out on the map's own ranges, from SPARSE_FROM_NM, the airports are thinned
+// to the large ones and those no nearer another already drawn than
+// SPARSE_PX, nearest the middle first: ALL at 750nm round Frankfurt was 316
+// symbols and a wall of codes over the map.
+constexpr int SPARSE_FROM_NM = 200;
+constexpr float SPARSE_PX = 32;
+
 void drawAirports(double lat, double lon, int rangeNm, const String &centreCode, const String &originCode) {
     auto &canvas = screen::canvas();
     double nmPerDegLon = 60.0 * cos(lat * M_PI / 180.0);
     canvas.setTextSize(2);
     canvas.setTextColor(colorFaint);
     canvas.setTextDatum(TL_DATUM);
+    bool sparse = rangeNm >= SPARSE_FROM_NM;
+    size_t firstSpot = g_airfieldSpots.size();
     for (const Airport &a : airportsWithin(lat, lon, rangeNm)) {
         if (a.code == centreCode) {
             continue;  // the cross already marks it
         }
         float ox = (float)((a.lon - lon) * nmPerDegLon / rangeNm * RADIUS);
         float oy = (float)((a.lat - lat) * 60.0 / rangeNm * RADIUS);
+        if (sparse) {
+            const AirportInfo *info = airportInfo(a.code.c_str());
+            if (!info || !info->large) {
+                continue;
+            }
+            bool crowded = false;
+            for (size_t i = firstSpot; i < g_airfieldSpots.size() && !crowded; i++) {
+                crowded = fabsf(g_airfieldSpots[i].first - (CENTER_X + ox)) < SPARSE_PX &&
+                          fabsf(g_airfieldSpots[i].second - (CENTER_Y - oy)) < SPARSE_PX;
+            }
+            if (crowded) {
+                continue;
+            }
+        }
         int x = CENTER_X + (int)lroundf(ox);
         int y = CENTER_Y - (int)lroundf(oy);
         g_airfieldSpots.push_back({CENTER_X + ox, CENTER_Y - oy});
@@ -690,6 +731,36 @@ void drawNavaids(double lat, double lon, float rangeNm) {
     std::swap(g_navaidLabelsWere, g_navaidLabelsNow);
 }
 
+// What a name on the map keeps off: the labels placed before it, and every
+// mark on the plot - the ring distances and compass points, the centre, and
+// the airfield and navaid symbols.
+bool nameBlocked(int x, int y, int w, int h) {
+    return overlapsAny(g_mapLabels, g_mapLabelCount, x, y, w, h) ||
+           overlapsAny(g_mapMarks.data(), (int)g_mapMarks.size(), x, y, w, h);
+}
+
+// The names of the countries, regions, seas and lakes on the plot - see
+// names.h - over the map's outlines and the scope, under the traffic. With
+// the map, or not at all.
+void drawNames(double lat, double lon, float rangeNm) {
+    if (!g_coastOn) {
+        return;
+    }
+    auto &canvas = screen::canvas();
+    static std::vector<PlacedName> names;
+    namesPlace({CENTER_X, CENTER_Y, RADIUS, lat, lon, rangeNm}, nameBlocked, names);
+    canvas.setTextDatum(TL_DATUM);
+    char letter[2] = {0, 0};
+    for (const PlacedName &n : names) {
+        canvas.setTextSize(n.size);
+        canvas.setTextColor(n.kind == NameKind::SEA || n.kind == NameKind::LAKE ? colorWaterName : colorLandName);
+        nameLetters(n, [&](char c, int x, int y) {
+            letter[0] = c;
+            canvas.drawString(letter, x, y);
+        });
+    }
+}
+
 // A button's three looks: an ordinary one filled; a lit one - the centre in
 // use, the airports on, following - filled brighter with dark text, so the
 // column reads as a set of switches at a glance; and one with nothing behind
@@ -772,13 +843,16 @@ uint32_t g_lostS = 0;
 constexpr int LIVE_TEL_X = 16, LIVE_TEL_Y = 96;
 
 void drawCentreButtons() {
-    // None of them lit while following, or dragged off the centre it names.
+    // None of them lit while following; HOME and AIRPORT none either dragged
+    // off the centre they name, where ALL is still lit if every airport is
+    // marked - see FreeLook.
     bool own = g_follow != FollowButton::ON && !g_radarLook.active;
     bool home = own && g_centre == RadarCentre::HOME;
     bool airport = own && g_centre == RadarCentre::AIRPORT;
+    bool all = g_follow != FollowButton::ON && g_centre == RadarCentre::AIRPORT && g_airportsOn;
     drawButton(HOME_Y, "HOME", home ? Look::LIT : Look::PLAIN);
     drawButton(AIRPORT_Y, "AIRPORT", airport && !g_airportsOn ? Look::LIT : Look::PLAIN);
-    drawButton(ALL_Y, "ALL", airport && g_airportsOn ? Look::LIT : Look::PLAIN);
+    drawButton(ALL_Y, "ALL", all ? Look::LIT : Look::PLAIN);
 }
 
 bool g_canZoomIn = false, g_canZoomOut = false;
@@ -839,6 +913,8 @@ void drawTitle(bool military) {
         canvas.drawString(what, 16, TITLE_LINE2_Y);
         canvas.setTextColor(colorHome);
         canvas.drawString(g_followCallsign, 16 + canvas.textWidth(what), TITLE_LINE2_Y);
+    } else if (g_mapOnly) {
+        canvas.drawString("map only", 16, TITLE_LINE2_Y);
     } else if (g_radarLook.active) {
         canvas.drawString("free look", 16, TITLE_LINE2_Y);
     }
@@ -991,6 +1067,7 @@ void drawCard() {
 // Puts the card up for `n`, beside where it is on the plot.
 void openCard(const Navaid *n, int x, int y) {
     g_card = n;
+    soundReadNavaid(*n);  // if read aloud is on
     g_cardH = 2 * CHOICE_PAD + 8 + 40 + CARD_LINE_H + 4 + (int)cardLines(*n).size() * CARD_LINE_H + 6 + LABEL_H;
     placeBeside(x, y, g_cardH, g_cardX, g_cardY);
 }
@@ -1191,6 +1268,7 @@ void openAirportCard(const String &code) {
         return;
     }
     g_airportCard = a;
+    soundReadAirport(*a);  // if read aloud is on
     g_airportCardH = 2 * INFO_PAD + MAST_H + 10 + 12 + std::max(airportCardRows(*a), 1) * INFO_ROW_H + 6 + LABEL_H;
     g_airportCardX = CENTER_X - INFO_W / 2;
     g_airportCardY = std::min(std::max(CENTER_Y - g_airportCardH / 2, 8), 720 - 8 - g_airportCardH);
@@ -1375,6 +1453,7 @@ Target tapTarget(int x, int y, bool withAirports, String &outId) {
     if (g_card || g_airportCard) {
         g_card = nullptr;
         g_airportCard = nullptr;
+        soundStopReading();  // its card closed
         return Target::DISMISSED;
     }
     if (g_choiceCount) {
@@ -1459,15 +1538,17 @@ void radarScreenDraw(const std::vector<Aircraft> &aircraft, const std::vector<ui
     bool onAirport = !following && g_centre == RadarCentre::AIRPORT && nearestAirport(lat, lon, airport);
     double ownLat = onAirport ? airport.lat : lat, ownLon = onAirport ? airport.lon : lon;
     FreeLook &look = g_radarLook;
-    if (look.active && (following || look.fromLat != ownLat || look.fromLon != ownLon)) {
+    if (look.active && (following || look.fromLat != lat || look.fromLon != lon)) {
         look.active = false;
     }
     g_radarView = {look.active ? look.lat : ownLat, look.active ? look.lon : ownLon, (float)RADIUS / rangeNm, ownLat,
-                   ownLon};
+                   ownLon, lat, lon};
     // A line dragged past the edge has the plot at a range that takes it,
-    // with its map and airports and none of its traffic.
+    // with its map and airports and none of its traffic. Out on the map's own
+    // ranges, the airports are left off as well - at 500nm there are
+    // hundreds - unless ALL asks for every one.
     int shownNm = dragged ? (int)dragRangeNm((float)rangeNm) : rangeNm;
-    bool mapOnly = shownNm != rangeNm;
+    bool mapOnly = shownNm != rangeNm || g_mapOnly;
     static const std::vector<Aircraft> noAircraft;
     static const std::vector<uint8_t> noneNew;
     RadarScene scene = {mapOnly ? noAircraft : aircraft, mapOnly ? noneNew : isNew, nullptr,
@@ -1476,7 +1557,7 @@ void radarScreenDraw(const std::vector<Aircraft> &aircraft, const std::vector<ui
                         !overlayUp() && !dragged, following ? g_followHex : String(),
                         following ? g_followOrigin : String()};
     scene.freeLook = look.active;
-    scene.everyAirport = look.active || dragged;
+    scene.everyAirport = (look.active || dragged) && (!g_mapOnly || g_airportsOn);
     scene.markHome = look.active && !onAirport;
     scene.homeLat = lat;
     scene.homeLon = lon;
@@ -1850,6 +1931,8 @@ void radarPlotDraw(const RadarScene &scene, bool full) {
     if (g_navaidsOn && !scene.mapOnly) {
         drawNavaids(lat, lon, rangeNm);
     }
+    // Clear of all of those.
+    drawNames(lat, lon, (float)rangeNm);
 
     int plotted = 0, labelled = 0;
     uint32_t t1 = micros();
@@ -2521,7 +2604,7 @@ void radarZoomDraw(const std::vector<Aircraft> &aircraft, bool full) {
         view.lat = g_zoomLook.lat;
         view.lon = g_zoomLook.lon;
     }
-    g_zoomView = {view.lat, view.lon, RADIUS / view.rangeNm, g_zoom.lat, g_zoom.lon};
+    g_zoomView = {view.lat, view.lon, RADIUS / view.rangeNm, g_zoom.lat, g_zoom.lon, g_zoom.lat, g_zoom.lon};
     // A line dragged past the edge has the plot at a range that takes it,
     // with its runways and none of its traffic.
     if (dragged) {
@@ -2789,8 +2872,8 @@ bool radarDragEnd() {
         look.active = true;
         look.lat = d.lat;
         look.lon = d.lon;
-        look.fromLat = d.view.ownLat;
-        look.fromLon = d.view.ownLon;
+        look.fromLat = d.zoom ? d.view.ownLat : d.view.homeLat;
+        look.fromLon = d.zoom ? d.view.ownLon : d.view.homeLon;
     }
     return true;
 }
@@ -2800,6 +2883,8 @@ bool radarScreenFreeLook(double &lat, double &lon) {
     lon = g_radarLook.lon;
     return g_radarLook.active;
 }
+
+void radarScreenSetMapOnly(bool on) { g_mapOnly = on; }
 
 bool radarScreenEndFreeLook() {
     bool was = g_radarLook.active;

@@ -78,6 +78,10 @@ bool g_radarAirports = false;                       // likewise
 // RADAR_RANGE_STEPS_NM, or 0 for the whole poll radius. Written by loop()
 // under the mutex, for the poll task to record it.
 int g_radarRangeNm = 0;
+// Zoomed out past the poll radius's ceiling, the radar is the map alone, at
+// one of MAP_RANGE_STEPS_NM; 0 for the traffic's ranges. Not kept across a
+// reboot, which comes back to those. Only touched by loop().
+int g_mapRangeNm = 0;
 // Which provider actually answered the last successful poll, for the header.
 // Under AUTO that is not necessarily the one at the top of the table.
 String g_activeProvider;
@@ -250,6 +254,10 @@ bool g_autoFollow = false;
 // The same, as the alerts screen edits them. Only touched by loop().
 uint8_t g_alertMask = ALERT_ALL;
 String g_watchlist;
+// Read aloud, and the voice for everywhere without one of its own - see
+// sound.h. Only touched by loop().
+bool g_readAloud = false;
+Accent g_elsewhereAccent = DEFAULT_ELSEWHERE_ACCENT;
 
 // Set by pollTask, consumed by loop(): the most important of the alerts the
 // last poll raised, and how many more came with it.
@@ -882,7 +890,7 @@ void announceMovement(const Aircraft &a, Track &t, uint32_t now) {
                       takeoff ? "airborne" : "down");
         return;
     }
-    soundAnnounce(a.callsign, rw.ident, takeoff);
+    soundAnnounce(a.callsign, rw.ident, takeoff, rw.airport);
 }
 
 bool lowSample(const FollowSample &s) { return s.ground || (s.hasAlt && s.altFt < ESTIMATE_MAX_FT); }
@@ -1023,8 +1031,15 @@ uint32_t tweenMs(int intervalS) {
 // chose, inside the poll radius - which a range chosen before the radius was
 // brought in under it falls back to.
 int radarRangeShown() {
+    if (g_mapRangeNm > 0) {
+        return g_mapRangeNm;
+    }
     return g_radarRangeNm > 0 && g_radarRangeNm < g_radiusNm ? g_radarRangeNm : g_radiusNm;
 }
+
+// Whether the radar is the map alone: zoomed out past where there is any
+// traffic, and not following - which sets a range of its own.
+bool radarOnMap() { return g_mapRangeNm > 0 && !g_follow.active; }
 
 // The widest the poll radius may be, as the settings screen's slider allows
 // for the traffic chosen.
@@ -1102,10 +1117,16 @@ void drawRadar(bool full) {
     } else {
         radius = radarRangeShown();
     }
-    fillLost(aircraft, radarOnExtraList(), provider);
-    // Following, the list is the extra poll's, which on the radar goes at the
-    // main poll's interval too.
-    moveOnToNow(aircraft, radarOnExtraList() ? g_zoomDataMs : g_latestDataMs, g_pollIntervalS);
+    radarScreenSetMapOnly(radarOnMap());
+    if (radarOnMap()) {
+        aircraft.clear();
+        isNew.clear();
+    } else {
+        fillLost(aircraft, radarOnExtraList(), provider);
+        // Following, the list is the extra poll's, which on the radar goes at
+        // the main poll's interval too.
+        moveOnToNow(aircraft, radarOnExtraList() ? g_zoomDataMs : g_latestDataMs, g_pollIntervalS);
+    }
     g_radarDrawnMs = millis();
     radarScreenDraw(aircraft, isNew, lat, lon, radius, military, full);
     g_perfRadar.add(micros() - t0);
@@ -1120,7 +1141,9 @@ void setRadarControls(bool onScreen) {
     int shown = radarRangeShown();
     String code;
     bool canIn = shown > RADAR_RANGE_STEPS_NM[0] || radarZoomTarget(code);
-    bool canOut = shown < g_radiusNm || g_radiusNm < maxRadiusNow();
+    // Past the radius's ceiling there is always the map, to its own widest.
+    constexpr int widestMap = MAP_RANGE_STEPS_NM[sizeof(MAP_RANGE_STEPS_NM) / sizeof(MAP_RANGE_STEPS_NM[0]) - 1];
+    bool canOut = g_mapRangeNm < widestMap;
     radarScreenSetZoom(!g_follow.active && canIn, !g_follow.active && canOut, onScreen);
 }
 
@@ -1128,8 +1151,34 @@ bool openZoom(const String &code, bool forFollowed = false, float viewNm = 0);
 
 // ZOOM IN or OUT: the next of the steps in that direction from the range
 // shown now. In from the closest, the airport's own zoom; out past the poll
-// radius, the radius itself, as far as the settings allow.
+// radius, the radius itself, as far as the settings allow - and past that,
+// the map alone, through MAP_RANGE_STEPS_NM, and in again back down them to
+// the radius.
 void zoomRadar(bool in) {
+    if (g_mapRangeNm > 0 || (!in && radarRangeShown() >= g_radiusNm && g_radiusNm >= maxRadiusNow())) {
+        int next = 0;
+        if (in) {
+            for (int r : MAP_RANGE_STEPS_NM) {
+                if (r < g_mapRangeNm && r > g_radiusNm) {
+                    next = r;
+                }
+            }
+        } else {
+            for (int r : MAP_RANGE_STEPS_NM) {
+                if (r > std::max(g_mapRangeNm, g_radiusNm)) {
+                    next = r;
+                    break;
+                }
+            }
+            if (next == 0) {
+                return;  // as wide as it goes
+            }
+        }
+        g_mapRangeNm = next;  // 0, in past the last of them: the radius, and its traffic, again
+        setRadarControls(true);
+        drawRadar(true);
+        return;
+    }
     int shown = radarRangeShown(), chosen = 0;
     if (in) {
         int next = 0;
@@ -1428,8 +1477,10 @@ void tickAlerts() {
                       alertReasonText(g_bannerAc, g_bannerAc.alert).c_str(), g_bannerMore);
         g_bannerUp = true;
         g_bannerShownMs = 0;
+        // In the voice of where it is - or, with no position, of home, which it is near.
         soundAlert(g_bannerAc.alert, g_bannerAc.callsign,
-                   g_bannerAc.type.length() ? lookupAircraftType(g_bannerAc.type, g_bannerAc.military) : String());
+                   g_bannerAc.type.length() ? lookupAircraftType(g_bannerAc.type, g_bannerAc.military) : String(),
+                   g_bannerAc.hasPos ? g_bannerAc.lat : (float)g_lat, g_bannerAc.hasPos ? g_bannerAc.lon : (float)g_lon);
         if (g_autoFollow) {
             autoFollow(g_bannerAc);
         }
@@ -1451,7 +1502,8 @@ void tickAlerts() {
 String watchableCallsign(String callsign);
 bool onWatchlist(const String &callsign);
 
-void openDetail(const Aircraft &ac, Screen returnTo) {
+// Its details, read aloud unless `read` says not - see soundReadAircraft().
+void openDetail(const Aircraft &ac, Screen returnTo, bool read = true) {
     DetailFollow follow = returnTo == Screen::PLAYBACK || !ac.hasPos ? DetailFollow::NONE
                           : g_follow.active && g_follow.hex == ac.hex ? DetailFollow::UNFOLLOW
                                                                       : DetailFollow::FOLLOW;
@@ -1464,6 +1516,9 @@ void openDetail(const Aircraft &ac, Screen returnTo) {
     g_detailReturnTo = returnTo;
     g_screen = Screen::DETAIL;
     detailScreenDraw();
+    if (read) {
+        soundReadAircraft(ac);  // if read aloud is on
+    }
 }
 
 // Whether a touch at height y lands on the banner, if it is showing.
@@ -1663,6 +1718,7 @@ void noteHeight(const Aircraft &ac) {
 void startFollow(const Aircraft &ac) {
     g_follow = Follow();
     g_follow.active = true;
+    g_mapRangeNm = 0;  // an alert's auto-follow can find the radar out on the map
     g_follow.hex = ac.hex;
     g_follow.callsign = ac.callsign;
     g_follow.last = ac;
@@ -2023,8 +2079,12 @@ void handleRadarTouch(int x, int y) {
         RadarCentre centre = (action == RadarAction::CENTRE_HOME) ? RadarCentre::HOME : RadarCentre::AIRPORT;
         bool airports = (action == RadarAction::CENTRE_ALL);
         // Dragged off its centre, the plot goes back to the one tapped - with
-        // the title, which said so, as when following ends.
-        bool wasFollowing = radarScreenEndFreeLook() || g_follow.active;
+        // the title, which said so, as when following ends - but for ALL,
+        // which marks every airport around where it has been left, and
+        // leaves it there.
+        double lookLat, lookLon;
+        bool stay = airports && !g_follow.active && radarScreenFreeLook(lookLat, lookLon);
+        bool wasFollowing = (!stay && radarScreenEndFreeLook()) || g_follow.active;
         stopFollow();  // a view of its own is the end of following, or of picking
         bool changed = wasFollowing || centre != g_radarCentre || airports != g_radarAirports;
         if (centre != g_radarCentre) {
@@ -2050,7 +2110,15 @@ void handleRadarTouch(int x, int y) {
             drawRadar(true);
         } else {
             g_follow.picking = !g_follow.picking;
+            // Out on the map, back in to the traffic, for one to be picked.
+            bool offMap = g_follow.picking && g_mapRangeNm > 0;
+            if (offMap) {
+                g_mapRangeNm = 0;
+            }
             setRadarControls(true);
+            if (offMap) {
+                drawRadar(true);
+            }
         }
         break;
     case RadarAction::TOGGLE_RECORD:
@@ -2217,7 +2285,8 @@ void tickLook() {
     // Only while the radar is what is up, or a detail opened from it: left
     // for the table, it stops asking, and asks again on the way back.
     bool shown = g_screen == Screen::RADAR || (g_screen == Screen::DETAIL && g_detailReturnTo == Screen::RADAR);
-    bool look = radarScreenFreeLook(lat, lon) && !g_follow.active && shown;
+    // Nor out on the map, which has no traffic to fetch.
+    bool look = radarScreenFreeLook(lat, lon) && !g_follow.active && shown && !radarOnMap();
     if (g_zoomUp || g_follow.active) {
         g_look.aimed = false;  // theirs for now: a zoom's closing gives it up, for this to take again
         return;
@@ -2433,6 +2502,13 @@ void handleAlertsTouch(int x, int y) {
         g_autoFollow = alertsScreenAutoFollow();
         g_watchlist = alertsScreenWatchlist();
         saveAlerts(g_alertMask, g_watchlist, g_autoRecord, g_autoFollow);
+        if (alertsScreenReadAloud() != g_readAloud || alertsScreenElsewhereAccent() != g_elsewhereAccent) {
+            g_readAloud = alertsScreenReadAloud();
+            g_elsewhereAccent = alertsScreenElsewhereAccent();
+            saveVoice(g_readAloud, g_elsewhereAccent);
+            soundSetReadAloud(g_readAloud);
+            soundSetElsewhereAccent(g_elsewhereAccent);
+        }
         if (xSemaphoreTake(g_dataMutex, portMAX_DELAY) == pdTRUE) {
             g_alertRules.enabled = g_alertMask;
             g_alertRules.watch = parseWatchlist(g_watchlist);
@@ -2562,6 +2638,9 @@ void handleDetailTouch(int x, int y) {
     if (action == DetailAction::NONE) {
         return;
     }
+    if (action != DetailAction::WATCH) {
+        soundStopReading();  // leaving them: their details, if they are being read, are done with
+    }
     if (action == DetailAction::FOLLOW) {
         followFromDetail();
         return;
@@ -2571,7 +2650,7 @@ void handleDetailTouch(int x, int y) {
         // the button turning to UNWATCH says it.
         soundKeyClick();
         displayShowNotice(toggleWatchlist(watchableCallsign(g_detailAc.callsign)));
-        openDetail(g_detailAc, g_detailReturnTo);
+        openDetail(g_detailAc, g_detailReturnTo, false);  // drawn again for the button, not read again
         return;
     }
     if (action == DetailAction::UNFOLLOW) {
@@ -2612,6 +2691,57 @@ void forgetContactsLocked() {
     g_dataReady = true;
 }
 
+// Out of settings, with what was changed there saved and put to use - by
+// its Back, or by setting a new location, which is what was gone in for.
+void leaveSettings() {
+    TrafficFilter traffic = settingsScreenTraffic();
+    int radius = settingsScreenRadius();
+    int interval = settingsScreenPollInterval();
+    AdsbSource source = settingsScreenSource();
+    g_showRefresh = settingsScreenShowRefresh();
+    saveFilters(traffic, radius, g_showRefresh, interval, source);
+    displaySetShowRefresh(g_showRefresh);
+    if (settingsScreenNavaids() != g_navaids) {
+        g_navaids = settingsScreenNavaids();
+        saveNavaids(g_navaids);
+        radarScreenSetNavaids(g_navaids);
+    }
+    if (settingsScreenCoast() != g_coast) {
+        g_coast = settingsScreenCoast();
+        saveCoast(g_coast);
+        radarScreenSetCoast(g_coast);
+    }
+    if (settingsScreenRings() != g_rings) {
+        g_rings = settingsScreenRings();
+        saveRings(g_rings);
+        radarScreenSetRings(g_rings);
+    }
+    displaySetHeader(traffic == TrafficFilter::MILITARY, g_airportCode, activeProvider());
+    if (xSemaphoreTake(g_dataMutex, portMAX_DELAY) == pdTRUE) {
+        // A changed interval alone doesn't warrant refetching - the new
+        // one simply applies to the wait already running.
+        bool changed = (traffic != g_traffic) || (radius != g_radiusNm) || (source != g_source);
+        if (traffic != g_traffic || radius != g_radiusNm) {
+            g_sceneChanged = true;  // the source doesn't alter what a recording's plot is drawn around
+        }
+        if (traffic != g_traffic) {
+            forgetContactsLocked();
+        }
+        g_traffic = traffic;
+        g_radiusNm = radius;
+        g_source = source;
+        g_pollIntervalS = interval;
+        if (changed) {
+            g_resetBaseline = true;
+            g_pollNow = true;
+        }
+        g_dataReady = true;
+        xSemaphoreGive(g_dataMutex);
+    }
+    g_screen = Screen::MAIN;
+    displayInvalidate();
+}
+
 void handleLocationTouch(int x, int y) {
     double lat, lon;
     String label;
@@ -2619,9 +2749,9 @@ void handleLocationTouch(int x, int y) {
     if (action == LocationAction::NONE) {
         return;
     }
-    // Reached from the settings screen now, so both outcomes go back there
-    // rather than to the table: setting a location then lands you where you
-    // can see it took, on the button you pressed to get here.
+    // Reached from the settings screen. Back goes back there; setting a
+    // location goes on out of it as well, to the traffic around the new one,
+    // rather than leave a second Back to press.
     if (action == LocationAction::LOCATION_SET) {
         saveLocation(lat, lon, label);
         g_airportCode = nearestAirportCode(lat, lon);
@@ -2637,6 +2767,8 @@ void handleLocationTouch(int x, int y) {
             forgetContactsLocked();
             xSemaphoreGive(g_dataMutex);
         }
+        leaveSettings();
+        return;
     }
     g_screen = Screen::SETTINGS;
     settingsScreenDraw();
@@ -2645,55 +2777,9 @@ void handleLocationTouch(int x, int y) {
 void handleSettingsTouch(int x, int y, bool pressed, bool clicked) {
     SettingsAction action = settingsScreenHandleTouch(x, y, pressed, clicked);
     switch (action) {
-    case SettingsAction::BACK: {
-        TrafficFilter traffic = settingsScreenTraffic();
-        int radius = settingsScreenRadius();
-        int interval = settingsScreenPollInterval();
-        AdsbSource source = settingsScreenSource();
-        g_showRefresh = settingsScreenShowRefresh();
-        saveFilters(traffic, radius, g_showRefresh, interval, source);
-        displaySetShowRefresh(g_showRefresh);
-        if (settingsScreenNavaids() != g_navaids) {
-            g_navaids = settingsScreenNavaids();
-            saveNavaids(g_navaids);
-            radarScreenSetNavaids(g_navaids);
-        }
-        if (settingsScreenCoast() != g_coast) {
-            g_coast = settingsScreenCoast();
-            saveCoast(g_coast);
-            radarScreenSetCoast(g_coast);
-        }
-        if (settingsScreenRings() != g_rings) {
-            g_rings = settingsScreenRings();
-            saveRings(g_rings);
-            radarScreenSetRings(g_rings);
-        }
-        displaySetHeader(traffic == TrafficFilter::MILITARY, g_airportCode, activeProvider());
-        if (xSemaphoreTake(g_dataMutex, portMAX_DELAY) == pdTRUE) {
-            // A changed interval alone doesn't warrant refetching - the new
-            // one simply applies to the wait already running.
-            bool changed = (traffic != g_traffic) || (radius != g_radiusNm) || (source != g_source);
-            if (traffic != g_traffic || radius != g_radiusNm) {
-                g_sceneChanged = true;  // the source doesn't alter what a recording's plot is drawn around
-            }
-            if (traffic != g_traffic) {
-                forgetContactsLocked();
-            }
-            g_traffic = traffic;
-            g_radiusNm = radius;
-            g_source = source;
-            g_pollIntervalS = interval;
-            if (changed) {
-                g_resetBaseline = true;
-                g_pollNow = true;
-            }
-            g_dataReady = true;
-            xSemaphoreGive(g_dataMutex);
-        }
-        g_screen = Screen::MAIN;
-        displayInvalidate();
+    case SettingsAction::BACK:
+        leaveSettings();
         break;
-    }
     case SettingsAction::OPEN_LOCATION:
         locationScreenReset();
         g_screen = Screen::LOCATION;
@@ -2701,6 +2787,7 @@ void handleSettingsTouch(int x, int y, bool pressed, bool clicked) {
         break;
     case SettingsAction::OPEN_ALERTS:
         alertsScreenSet(g_alertMask, g_autoRecord, g_autoFollow, g_watchlist);
+        alertsScreenSetVoice(g_readAloud, g_elsewhereAccent);
         alertsScreenSetCard(recorder::mount());  // one look for a card put in since
         g_screen = Screen::ALERTS;
         alertsScreenDraw();
@@ -2845,9 +2932,13 @@ void setup() {
     g_watchlist = s.watchlist;
     g_autoRecord = s.autoRecord;
     g_autoFollow = s.autoFollow;
+    g_readAloud = s.readAloud;
+    g_elsewhereAccent = s.elsewhereAccent;
     g_alertRules.enabled = g_alertMask;
     g_alertRules.watch = parseWatchlist(g_watchlist);
     soundSetMuted(g_muted);
+    soundSetReadAloud(g_readAloud);
+    soundSetElsewhereAccent(g_elsewhereAccent);
     displaySetShowRefresh(g_showRefresh);
     displaySetMuted(g_muted);
     radarScreenSetNavaids(g_navaids);
@@ -2956,6 +3047,34 @@ void reportPerf() {
     g_perfRadar = g_perfZoom = g_perfTracks = g_perfLoop = PerfStat();
 }
 
+// For the serial tests: the airport last said everything at.
+const char *g_testCode = "GLA";
+
+// At airport `code`, an alert, a landing on `runway` by `callsign`, and its
+// details - in that place's voice, one after another.
+void sayEverything(const char *code, const char *callsign, const char *runway) {
+    double lat, lon;
+    float rangeNm;
+    if (!radarZoomFrame(code, lat, lon, rangeNm)) {
+        return;
+    }
+    g_testCode = code;
+    soundAlert(ALERT_RARE, callsign, "Boeing 747-400", lat, lon);
+    soundAnnounce(callsign, runway, false, code);
+    Aircraft ac;
+    ac.callsign = callsign;
+    ac.type = "B744";
+    ac.altStr = "4375";
+    ac.speedStr = "175";
+    ac.status = "DESCEND";
+    ac.hasTrack = true;
+    ac.track = 240;
+    ac.hasPos = true;
+    ac.lat = lat;
+    ac.lon = lon;
+    soundReadAircraft(ac, true);
+}
+
 }  // namespace
 
 void loop() {
@@ -2964,11 +3083,15 @@ void loop() {
 
     // "##S" over serial sends the screen back, for tools/screenshot.py;
     // "##E", "##W", "##R" and "##M" sound an alert of each kind, for a
-    // made-up callsign, to hear what it says; "##T" and "##L" the zoom's
-    // take-off and landing announcements. Behind "##" rather than a bare
-    // letter: a computer opening the port echoes back the log lines it
-    // catches for a moment, and their letters ran the tests - a warble and a
-    // screenshot each time the port was opened.
+    // made-up callsign at home, to hear what it says; "##T" and "##L" the
+    // zoom's take-off and landing announcements at home's airport. "##C",
+    // "##G" and "##U" say an alert, a landing and an aircraft's details at
+    // Glasgow, Heathrow and JFK - in the Scottish, English and American
+    // voices - and "##N" and "##A" read the card of the navaid nearest the
+    // last of those, and of its airport. Behind "##"
+    // rather than a bare letter: a computer opening the port echoes back the
+    // log lines it catches for a moment, and their letters ran the tests - a
+    // warble and a screenshot each time the port was opened.
     static int hashes = 0;
     while (Serial.available()) {
         int c = Serial.read();
@@ -2986,22 +3109,47 @@ void loop() {
             screen::dumpToSerial();
             break;
         case 'E':
-            soundAlert(ALERT_EMERGENCY, "EZY12AB", "Airbus A320neo");
+            soundAlert(ALERT_EMERGENCY, "EZY12AB", "Airbus A320neo", g_lat, g_lon);
             break;
         case 'W':
-            soundAlert(ALERT_WATCHLIST, "GSGTS", "Boeing 787-9 Dreamliner");
+            soundAlert(ALERT_WATCHLIST, "GSGTS", "Boeing 787-9 Dreamliner", g_lat, g_lon);
             break;
         case 'R':
-            soundAlert(ALERT_RARE, "N747NA", "Airbus A380-800");
+            soundAlert(ALERT_RARE, "N747NA", "Airbus A380-800", g_lat, g_lon);
             break;
         case 'M':
-            soundAlert(ALERT_MILITARY, "RCH21", "Lockheed Martin F-35 Lightning II");
+            soundAlert(ALERT_MILITARY, "RCH21", "Lockheed Martin F-35 Lightning II", g_lat, g_lon);
             break;
         case 'T':
-            soundAnnounce("EZY53TH", "23", true);
+            soundAnnounce("EZY53TH", "23", true, g_airportCode.c_str());
             break;
         case 'L':
-            soundAnnounce("BAW27K", "27L", false);
+            soundAnnounce("BAW27K", "27L", false, g_airportCode.c_str());
+            break;
+        case 'C':
+            sayEverything("GLA", "EZY53TH", "23");
+            break;
+        case 'G':
+            sayEverything("LHR", "BAW27K", "27L");
+            break;
+        case 'U':
+            sayEverything("JFK", "N787RX", "22R");
+            break;
+        case 'N': {
+            double lat, lon;
+            float rangeNm;
+            if (radarZoomFrame(g_testCode, lat, lon, rangeNm)) {
+                const std::vector<const Navaid *> &near = navaidsWithin(lat, lon, 40);
+                if (!near.empty()) {
+                    soundReadNavaid(*near.front(), true);
+                }
+            }
+            break;
+        }
+        case 'A':
+            if (const AirportInfo *info = airportInfo(g_testCode)) {
+                soundReadAirport(*info, true);
+            }
             break;
         }
     }

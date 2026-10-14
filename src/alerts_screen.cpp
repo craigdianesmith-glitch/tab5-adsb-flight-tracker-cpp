@@ -2,9 +2,12 @@
 
 #include <M5Unified.h>
 
+#include <algorithm>
+
 #include "alerts.h"
 #include "recorder.h"
 #include "screen.h"
+#include "sound.h"
 
 namespace {
 
@@ -22,6 +25,14 @@ constexpr int TOGGLE_H = 76, TOGGLE_STEP = 88;
 constexpr int ALERT_LABEL_Y = 84;
 constexpr int ALERT_TOGGLE_Y = 112;
 constexpr int ALERT_COUNT = 4;
+// Under them, the voice: read aloud, and the voice for everywhere without
+// its own.
+constexpr int VOICE_LABEL_Y = ALERT_TOGGLE_Y + ALERT_COUNT * TOGGLE_STEP + 8;
+constexpr int READ_Y = VOICE_LABEL_Y + 28;
+constexpr int ACCENT_LABEL_Y = READ_Y + TOGGLE_H + 12;
+constexpr int ACCENT_Y = ACCENT_LABEL_Y + 28, ACCENT_H = 64;
+const char *const ACCENTS[] = {"Scottish", "English", "American"};  // in Accent's order
+constexpr int ACCENT_COUNT = 3;
 
 // --- right column ---
 constexpr int WATCH_LABEL_Y = 84;
@@ -38,15 +49,17 @@ struct AlertToggle {
     const char *detail;
 };
 const AlertToggle TOGGLES[ALERT_COUNT] = {
-    {ALERT_EMERGENCY, "Emergency squawks", "7700 emergency, 7600 radio, 7500 hijack"},
-    {ALERT_MILITARY, "Military in civil mode", "Shows and flags military passing through"},
-    {ALERT_RARE, "Rare and notable types", "A380, 747, Beluga, C-17, warbirds..."},
+    {ALERT_EMERGENCY, "Emergency squawks", "Squawk 7700, 7600 or 7500"},
+    {ALERT_MILITARY, "Military in civil mode", "Flags military passing through"},
+    {ALERT_RARE, "Rare and notable types", "A380, 747, Beluga, C-17..."},
     {ALERT_WATCHLIST, "Watchlist", "The entries listed on the right"},
 };
 
 uint8_t g_mask = ALERT_ALL;
 bool g_autoRecord = false;
 bool g_autoFollow = false;
+bool g_readAloud = false;
+Accent g_accent = DEFAULT_ELSEWHERE_ACCENT;
 bool g_cardPresent = true;
 String g_watchlist;
 
@@ -76,7 +89,23 @@ void sectionLabel(const char *text, int x, int y) {
     canvas.drawString(text, x, y);
 }
 
-// The same switch the settings screen's refresh toggle is.
+// `text` as it fits in `maxW` at the size set - cut short with "..." if it
+// doesn't, rather than run under what is beside it.
+String fitted(const String &text, int maxW) {
+    auto &canvas = screen::canvas();
+    if (canvas.textWidth(text) <= maxW) {
+        return text;
+    }
+    String s = text;
+    while (s.length() > 1 && canvas.textWidth(s + "...") > maxW) {
+        s.remove(s.length() - 1);
+    }
+    return s + "...";
+}
+
+// The same switch the settings screen's refresh toggle is - its words kept
+// to the room left of the switch, which some ran under: 33 characters of
+// the line under the title.
 void drawToggle(int x, int y, const char *title, const char *detail, bool on, bool enabled = true) {
     auto &canvas = screen::canvas();
     canvas.fillRoundRect(x, y, COL_W, TOGGLE_H, 8, colorBtnBg);
@@ -84,15 +113,16 @@ void drawToggle(int x, int y, const char *title, const char *detail, bool on, bo
 
     canvas.setFont(&fonts::Font0);
     canvas.setTextDatum(ML_DATUM);
-    canvas.setTextSize(3);
-    canvas.setTextColor(enabled ? colorWhite : colorDim);
-    canvas.drawString(title, x + 24, y + 26);
-    canvas.setTextSize(2);
-    canvas.setTextColor(colorDim);
-    canvas.drawString(detail, x + 24, y + 54);
-
     int sw = 108, sh = 40;
     int sx = x + COL_W - sw - 20, sy = y + (TOGGLE_H - sh) / 2;
+    int room = sx - 12 - (x + 24);
+    canvas.setTextSize(3);
+    canvas.setTextColor(enabled ? colorWhite : colorDim);
+    canvas.drawString(fitted(title, room), x + 24, y + 26);
+    canvas.setTextSize(2);
+    canvas.setTextColor(colorDim);
+    canvas.drawString(fitted(detail, room), x + 24, y + 54);
+
     canvas.fillRoundRect(sx, sy, sw, sh, sh / 2, on && enabled ? colorOn : colorOff);
     int knob = sh - 8;
     canvas.fillCircle(on ? (sx + sw - 4 - knob / 2) : (sx + 4 + knob / 2), sy + sh / 2, knob / 2,
@@ -112,12 +142,33 @@ void drawAlertToggle(int i) {
 
 void drawAutoRecord() {
     drawToggle(COL2_X, AUTOREC_Y, "Auto-record alerts",
-               g_cardPresent ? "Records the radar to the SD card" : "No SD card found - insert one to record",
+               g_cardPresent ? "Records the radar to the SD card" : "Insert an SD card to record",
                g_autoRecord, g_cardPresent);
 }
 
 void drawAutoFollow() {
-    drawToggle(COL2_X, AUTOFOLLOW_Y, "Auto-follow alerts", "Follows the alerted flight on the radar", g_autoFollow);
+    drawToggle(COL2_X, AUTOFOLLOW_Y, "Auto-follow alerts", "Follows the alerted flight", g_autoFollow);
+}
+
+void drawReadAloud() {
+    drawToggle(COL1_X, READ_Y, "Read aloud", "Details and frequency cards", g_readAloud);
+}
+
+// As the settings screen's choices are: one control, one of its three lit.
+void drawAccents() {
+    auto &canvas = screen::canvas();
+    int seg = COL_W / ACCENT_COUNT;
+    canvas.fillRoundRect(COL1_X, ACCENT_Y, COL_W, ACCENT_H, 8, colorOff);
+    canvas.fillRoundRect(COL1_X + (int)g_accent * seg, ACCENT_Y, seg, ACCENT_H, 8, colorOn);
+    canvas.drawRoundRect(COL1_X, ACCENT_Y, COL_W, ACCENT_H, 8, colorBorder);
+    canvas.setFont(&fonts::Font0);
+    canvas.setTextSize(3);
+    canvas.setTextDatum(MC_DATUM);
+    for (int i = 0; i < ACCENT_COUNT; i++) {
+        canvas.setTextColor(i == (int)g_accent ? colorWhite : colorDim);
+        canvas.drawString(ACCENTS[i], COL1_X + i * seg + seg / 2, ACCENT_Y + ACCENT_H / 2);
+    }
+    screen::markDirty(COL1_X, ACCENT_Y, COL_W, ACCENT_H);
 }
 
 // The entries themselves, wrapped onto as many lines as the button holds, so
@@ -209,6 +260,11 @@ void alertsScreenSet(uint8_t alertMask, bool autoRecord, bool autoFollow, const 
 
 void alertsScreenSetWatchlist(const String &watchlist) { g_watchlist = watchlist; }
 
+void alertsScreenSetVoice(bool readAloud, Accent elsewhere) {
+    g_readAloud = readAloud;
+    g_accent = elsewhere;
+}
+
 void alertsScreenDraw() {
     ensureColors();
     auto &canvas = screen::canvas();
@@ -218,7 +274,7 @@ void alertsScreenDraw() {
     canvas.setTextColor(colorWhite);
     canvas.setTextSize(3);
     canvas.setTextDatum(TL_DATUM);
-    canvas.drawString("Alerts & recording", 16, 12);
+    canvas.drawString("Alerts, voice & recording", 16, 12);
 
     canvas.fillRoundRect(BACK_X, BACK_Y, BACK_W, BACK_H, 6, colorBtnBg);
     canvas.setTextSize(2);
@@ -229,14 +285,10 @@ void alertsScreenDraw() {
     for (int i = 0; i < ALERT_COUNT; i++) {
         drawAlertToggle(i);
     }
-    canvas.setTextSize(2);
-    canvas.setTextColor(colorDim);
-    canvas.setTextDatum(TL_DATUM);
-    int noteY = ALERT_TOGGLE_Y + ALERT_COUNT * TOGGLE_STEP + 8;
-    canvas.drawString("An alert shows a banner over the table or", COL1_X, noteY);
-    canvas.drawString("radar, chimes, and marks the aircraft in", COL1_X, noteY + 26);
-    canvas.drawString("amber - red for an emergency. Tap the", COL1_X, noteY + 52);
-    canvas.drawString("banner to see the aircraft's details.", COL1_X, noteY + 78);
+    sectionLabel("VOICE", COL1_X, VOICE_LABEL_Y);
+    drawReadAloud();
+    sectionLabel("FOR COUNTRIES WITHOUT THEIR OWN", COL1_X, ACCENT_LABEL_Y);
+    drawAccents();
 
     sectionLabel("WATCHLIST", COL2_X, WATCH_LABEL_Y);
     drawWatchButton();
@@ -275,6 +327,20 @@ AlertsAction alertsScreenHandleTouch(int x, int y) {
     if (inside(x, y, WATCH_X, WATCH_Y, WATCH_W, WATCH_H)) {
         return AlertsAction::OPEN_WATCHLIST;
     }
+    if (inside(x, y, COL1_X, READ_Y, COL_W, TOGGLE_H)) {
+        g_readAloud = !g_readAloud;
+        drawReadAloud();
+        screen::flush();
+        return AlertsAction::NONE;
+    }
+    if (inside(x, y, COL1_X, ACCENT_Y, COL_W, ACCENT_H)) {
+        // Said in it as it is picked, to hear what it is.
+        g_accent = (Accent)std::min((x - COL1_X) * ACCENT_COUNT / COL_W, ACCENT_COUNT - 1);
+        drawAccents();
+        screen::flush();
+        soundSampleAccent(g_accent);
+        return AlertsAction::NONE;
+    }
     return AlertsAction::NONE;
 }
 
@@ -282,3 +348,5 @@ uint8_t alertsScreenMask() { return g_mask; }
 bool alertsScreenAutoRecord() { return g_autoRecord; }
 bool alertsScreenAutoFollow() { return g_autoFollow; }
 String alertsScreenWatchlist() { return g_watchlist; }
+bool alertsScreenReadAloud() { return g_readAloud; }
+Accent alertsScreenElsewhereAccent() { return g_accent; }

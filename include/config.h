@@ -72,6 +72,10 @@ constexpr int FOLLOW_RANGE_STEPS_NM[] = {5, 10, 15};
 // itself widens, to the settings' ceiling; in from the closest is the
 // airport's own zoom.
 constexpr int RADAR_RANGE_STEPS_NM[] = {5, 10, 15, 20, 30, 40, 60, 80, 100, 120};
+// And out past the settings' ceiling, these: the map alone, with its names -
+// no traffic, navaids or airports - to look round, and drag, over a country
+// or a continent.
+constexpr int MAP_RANGE_STEPS_NM[] = {200, 300, 500, 750, 1000, 1500, 2000};
 constexpr int FOLLOW_APPROACH_MAX_FT = 12000;
 // Level rather than descending, only this low: above it, an airport ahead is
 // one it is passing over.
@@ -98,16 +102,20 @@ constexpr uint32_t CELL_HIGHLIGHT_MS = 2000;
 // and persists, where this is a build-time "never make a sound".
 constexpr bool SOUND_ENABLED = true;
 constexpr uint8_t SOUND_VOLUME = 96;  // 0-255
-// Short and high, so it reads as a tick rather than a beep. The channel is
-// already at full volume, so loudness comes from length: at 12ms it was too
-// brief to register as loud as the master volume allows.
-constexpr uint16_t KEY_CLICK_HZ = 3000;
-constexpr uint32_t KEY_CLICK_MS = 25;
 
 // What the radar plot is centred on: the configured location, or the airport
 // nearest to it. Stored in NVS by value, so the numbers are not free to change.
 enum class RadarCentre : uint8_t { HOME = 0, AIRPORT = 1 };
 constexpr RadarCentre DEFAULT_RADAR_CENTRE = RadarCentre::AIRPORT;
+
+// --- voices -------------------------------------------------------------------
+
+// The voices the words are said in - see sound.h: Scotland, England and the
+// United States each have their own, and everywhere else has the one chosen
+// on the alerts screen. Stored in NVS by value, so the numbers are not free
+// to change.
+enum class Accent : uint8_t { SCOTTISH = 0, ENGLISH = 1, AMERICAN = 2 };
+constexpr Accent DEFAULT_ELSEWHERE_ACCENT = Accent::SCOTTISH;
 
 // --- alerts and recording ---------------------------------------------------
 

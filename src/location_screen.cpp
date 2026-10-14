@@ -16,7 +16,12 @@ constexpr int BOX_X = 16, BOX_Y = 64, BOX_W = 700, BOX_H = 50;
 constexpr int SEARCH_BTN_X = 726, SEARCH_BTN_Y = 64, SEARCH_BTN_W = 140, SEARCH_BTN_H = 50;
 constexpr int STATUS_X = 16, STATUS_Y = 126, STATUS_W = 700, STATUS_H = 24;
 constexpr int LIST_X = 16, LIST_Y = 156, LIST_W = 1248, ROW_H = 42, MAX_RESULT_ROWS = 5;
-constexpr int SET_BTN_X = 16, SET_BTN_Y = LIST_Y + MAX_RESULT_ROWS * ROW_H + 16, SET_BTN_W = 280, SET_BTN_H = 50;
+// Midway between the last row - each is drawn 4px short of the next - and
+// the keyboard, rather than 16px under the one and 4px over the other, where
+// it looked like a key.
+constexpr int LIST_BOTTOM = LIST_Y + MAX_RESULT_ROWS * ROW_H - 4;
+constexpr int SET_BTN_X = 16, SET_BTN_W = 280, SET_BTN_H = 50;
+constexpr int SET_BTN_Y = LIST_BOTTOM + (keyboard::TOP_Y - LIST_BOTTOM - SET_BTN_H) / 2;
 
 
 String g_query;

@@ -27,11 +27,12 @@ const char *const HELP[] = {
     "# The radar",
     "Everything in range, around the centre: each aircraft with its callsign, a line to where it will be in a "
     "minute, and ^ or v while it climbs or descends. Under it is the map: coasts and lakes, with borders dashed "
-    "and state lines dotted.",
+    "and state lines dotted, and faintly the names of the countries, regions, seas and lakes.",
     "- HOME centres on your location, AIRPORT on the airport nearest it, and ALL is AIRPORT with every other "
     "airport around marked too.",
     "- ZOOM IN and ZOOM OUT change the range. ZOOM IN from the closest opens the airport zoom; ZOOM OUT past your "
-    "range widens it. Drag empty sky to look around - in the zoom too.",
+    "range widens it, and past the widest goes on over the map alone, to 2000nm. Drag empty sky to look around - "
+    "in the zoom too. HOME or AIRPORT comes back; ALL marks every airport where you have got to.",
     "- Tap an aircraft for its details, an airport to zoom in on it, or a navaid - the small hexagons and boxes - "
     "for its frequency. Where a tap reaches several, a list asks which.",
     "- Back goes to the table. The radar keeps its view for next time.",
@@ -54,6 +55,9 @@ const char *const HELP[] = {
     "types, and your watchlist. An alert puts a banner across the top - tap it for the aircraft, or X to close it - "
     "chimes, and says what it is and its callsign. Auto-record records while one is about; auto-follow follows the "
     "aircraft it is for.",
+    "Words are said in the voice of where they are about: Scottish for Scotland, English for England, American for "
+    "the United States, and the one picked under Voice for everywhere else. Read aloud says an aircraft's details "
+    "as they open, a navaid's card, and one of each of an airport's frequencies.",
     "The watchlist takes callsigns (EZY12AB), airline prefixes (EZY), registrations (G-ABCD), type codes (A388) "
     "and ICAO hex codes, separated by spaces.",
 
@@ -88,8 +92,9 @@ const char *const ABOUT[] = {
     "- Airports, their runways and frequencies, and navaids: OurAirports (ourairports.com). The map's coasts, "
     "lakes and borders: Natural Earth (naturalearthdata.com). Both public domain.",
     "- Place search: Open-Meteo's geocoding API (open-meteo.com), CC BY 4.0.",
-    "- Voice: Piper text-to-speech, its en_GB-alba-medium voice, built from the Alba data of the CSTR, University "
-    "of Edinburgh, CC BY 4.0.",
+    "- Voices: Piper text-to-speech. Scottish, en_GB-alba-medium, from the Alba data of the CSTR, University of "
+    "Edinburgh, CC BY 4.0; English, en_GB-cori-medium, from LibriVox recordings, public domain; American, "
+    "en_US-amy-medium, from Mycroft AI's Mimic 3 voices, CC BY-SA 4.0.",
     "- Built on M5Unified, M5GFX and ArduinoJson (MIT), the ESP32 Arduino core (LGPL 2.1) and ESP-IDF "
     "(Apache 2.0).",
     "- Airline names identify the operator, and imply no endorsement by it.",

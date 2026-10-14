@@ -1,10 +1,12 @@
-// Draws the map outlines (src/coast.cpp) round a point on the PC, exactly as
-// the radar draws them on the device - the same code, onto a canvas the same
-// size, with the scope's rings over them - and saves it as a PPM, to look at
-// what a change to them or to tools/gen_coast.py has done without flashing
-// anything. Build and run, from the repo's root:
+// Draws the map outlines (src/coast.cpp) and names (src/names.cpp) round a
+// point on the PC, exactly as the radar draws them on the device - the same
+// code, onto a canvas the same size, with the scope's rings over them and the
+// names in the device's own font - and saves it as a PPM, to look at what a
+// change to them or to tools/gen_coast.py or tools/gen_names.py has done
+// without flashing anything. Build (once the firmware has been, for the font
+// it fetches) and run, from the repo's root:
 //
-//   g++ -std=c++17 -O2 -Iinclude tools/coast_preview/preview.cpp src/coast.cpp -o /tmp/coast_preview
+//   g++ -std=c++17 -O2 -Iinclude -I.pio/libdeps/tab5/M5GFX/src/lgfx/Fonts tools/coast_preview/preview.cpp src/coast.cpp src/names.cpp -o /tmp/coast_preview
 //   /tmp/coast_preview 55.8719 -4.4331 20 /tmp/glasgow.ppm
 //
 // The arguments are the latitude and longitude of the middle of the plot, its
@@ -16,12 +18,17 @@
 #include <vector>
 
 #include "coast.h"
+#include "names.h"
+
+#define PROGMEM
+#include "glcdfont.h"  // Font0's letters, a byte a column
 
 // The radar's own: its canvas, its plot, and its colours as RGB565.
 constexpr int W = 1280, H = 720, CENTER_X = 640, CENTER_Y = 362, RADIUS = 342;
 constexpr uint16_t rgb(int r, int g, int b) { return (uint16_t)((r >> 3) << 11 | (g >> 2) << 5 | b >> 3); }
 constexpr uint16_t BG = rgb(0x04, 0x12, 0x0A), RING = rgb(0x1C, 0x5A, 0x38), HOME = rgb(0xEA, 0xFF, 0xF0);
 constexpr uint16_t COAST = rgb(0x26, 0x50, 0x48);
+constexpr uint16_t LAND_NAME = rgb(0x36, 0x6E, 0x60), WATER_NAME = rgb(0x32, 0x68, 0x74);
 
 std::vector<uint16_t> canvas(W * H, BG);
 
@@ -45,7 +52,8 @@ int main(int argc, char **argv) {
     printf("%d strokes in %ldus\n", strokes, (long)us);
 
     // Rings as the radar spaces them, the outer one doubled, and the centre's cross.
-    int step = range <= 5 ? 1 : range <= 15 ? 5 : range <= 30 ? 10 : range <= 60 ? 20 : 50;
+    int step = range <= 5 ? 1 : range <= 15 ? 5 : range <= 30 ? 10 : range <= 60 ? 20 : range <= 150 ? 50
+             : range <= 300 ? 100 : range <= 750 ? 250 : range <= 1500 ? 500 : 1000;
     for (int nm = step; nm < range; nm += step) {
         ring((int)lroundf(nm / range * RADIUS), RING);
     }
@@ -53,6 +61,33 @@ int main(int argc, char **argv) {
     ring(RADIUS - 1, RING);
     for (int i = -9; i <= 9; i++) {
         canvas[CENTER_Y * W + CENTER_X + i] = canvas[(CENTER_Y + i) * W + CENTER_X] = HOME;
+    }
+
+    // The names, kept off the centre's cross as the radar keeps them.
+    std::vector<PlacedName> names;
+    namesPlace({CENTER_X, CENTER_Y, RADIUS, plot.lat, plot.lon, range},
+               [](int x, int y, int w, int h) {
+                   return x - 4 < CENTER_X + 10 && x + w + 4 > CENTER_X - 9 && y - 4 < CENTER_Y + 10 &&
+                          y + h + 4 > CENTER_Y - 9;
+               },
+               names);
+    for (const PlacedName &n : names) {
+        uint16_t color = n.kind == NameKind::SEA || n.kind == NameKind::LAKE ? WATER_NAME : LAND_NAME;
+        nameLetters(n, [&](char c, int x, int y) {
+            for (int col = 0; col < 5; col++) {
+                uint8_t bits = font[(uint8_t)c * 5 + col];
+                for (int row = 0; row < 8; row++) {
+                    if (bits >> row & 1) {
+                        for (int py = 0; py < n.size; py++) {
+                            for (int px = 0; px < n.size; px++) {
+                                canvas[(y + row * n.size + py) * W + x + col * n.size + px] = color;
+                            }
+                        }
+                    }
+                }
+            }
+        });
+        printf("  %-24s size %d spacing %d at %d,%d\n", n.text, n.size, n.spacing, n.x, n.y);
     }
 
     FILE *f = fopen(argv[4], "wb");

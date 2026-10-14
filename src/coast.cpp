@@ -36,6 +36,11 @@ constexpr int RING_CLEAR = 2;
 constexpr float CURVE_MIN_PX = 8;
 // And the most straight strokes one edge's curve is drawn in.
 constexpr int CURVE_MAX_PARTS = 16;
+// A point less than this from the last one kept, along or across, is passed
+// over - the line's last excepted. Close in that is none of them; out on the
+// map's widest ranges, where Natural Earth has several to a pixel, it is
+// most: at 2000nm round Glasgow, 187,000 strokes came to 25,000 pixels.
+constexpr float POINT_MIN_PX = 1.0f;
 
 // A point of a line, on the canvas - and, once a curve has asked for it, the
 // square root of how far it is to the next point, which is what spaces a
@@ -57,10 +62,12 @@ constexpr float DASH_ON[] = {0, 7, 2}, DASH_PERIOD[] = {0, 11, 6};
 // polls - and finding it is most of the work: reading the cells, placing
 // every point, bending the coasts, cutting it all off at the ring and
 // stepping along each stroke takes 12ms at 150nm round Glasgow, where
-// putting those pixels back is a loop that does nothing else, and takes 4.
-// In PSRAM on the device, four bytes a pixel: a couple of thousand of them at
-// 20nm, fourteen thousand in that plot of Glasgow's, thirty over the lakes
-// of Finland.
+// putting those pixels back is a loop that does nothing else, and took 4.
+// In PSRAM on the device, four bytes a pixel, each pixel once: a couple of
+// thousand of them at 20nm, nine thousand in that plot of Glasgow's -
+// fourteen, when a pixel two strokes crossed was kept twice - fifteen over
+// the lakes of Finland, and no more than thirty-five out on the map's widest
+// ranges, where it was once a quarter of a million.
 //
 // What is left is the canvas, not the code: it is in PSRAM, behind a cache
 // far smaller than it, and each pixel put on it is a line of that cache
@@ -164,7 +171,12 @@ void stroke(Pen &pen, float ax, float ay, float bx, float by) {
     int alongStep = steep ? stepY * pen.stride : stepX, sideStep = steep ? stepX : stepY * pen.stride;
     int error = major / 2;
     for (int i = 0; i <= major; i++) {
-        if ((!check || inCircle(x, y)) && (!dashed || dash < DASH_ON[pen.style])) {
+        // Kept the once, however many strokes cross it: the plot is cleared
+        // before the map is drawn on it, and nothing else is in its colour.
+        // That is a read of the line of cache being written anyway, where a
+        // pixel kept twice is put back twice every time the plot is redrawn -
+        // nine in ten of them, at 2000nm.
+        if ((!check || inCircle(x, y)) && (!dashed || dash < DASH_ON[pen.style]) && pen.pixels[at] != pen.color) {
             pen.pixels[at] = pen.color;
             g_kept.pixels.push_back(at);
         }
@@ -270,6 +282,13 @@ void drawCell(Pen &pen, const uint8_t *lines, const uint8_t *end, float originX,
             maxX = std::max(maxX, p.x);
             minY = std::min(minY, p.y);
             maxY = std::max(maxY, p.y);
+        }
+        // Within a pixel of the one kept before the last: the last stands in
+        // for both, so that whichever point ends the line is kept.
+        size_t n = points.size();
+        if (n >= 2 && fabsf(p.x - points[n - 2].x) < POINT_MIN_PX && fabsf(p.y - points[n - 2].y) < POINT_MIN_PX) {
+            points[n - 1] = p;
+            return;
         }
         points.push_back(p);
     };

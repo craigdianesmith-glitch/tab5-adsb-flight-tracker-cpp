@@ -115,6 +115,20 @@ Truth takeoff(float t) {
     return r;
 }
 
+// A rolling take-off on 23: taxiing down it at 10kt, then from t=0 off at
+// 3kt/s, rotating at 150kt. Its transponder says it is in the air from 40kt,
+// as an E190's at Glasgow did - and the zoom cleared it to land.
+Truth rollingTakeoff(float t) {
+    Truth r = {};
+    r.track = rwHeading();
+    const float rotateT = 140.0f / 3;
+    float tr = std::min(std::max(t, 0.0f), rotateT);
+    r.along = 0.1f + 10 * std::min(t, 0.0f) / 3600 + (10 * tr + 1.5f * tr * tr) / 3600;
+    r.gs = 10 + 3 * tr; r.alt = FIELD; r.ground = r.gs < 40;
+    if (t > rotateT) { float a = t - rotateT; r.along += (150 * a + a * a / 2) / 3600; r.gs = 150 + a; r.alt = FIELD + 2200 * a / 60; }
+    return r;
+}
+
 // Go-around: on final until t=-10 at 150ft, then climbs at 1500fpm, straight ahead.
 Truth goAround(float t) {
     Truth r = landing(std::min(t, -10.0f));
@@ -147,4 +161,5 @@ int main() {
     run("go-around", goAround, [](float t) { return true; }, -150, 60, 0, 1);
     run("crossing the runway", crossing, [](float t) { return true; }, -60, 40, 0, 1);
     run("take-off, every report", takeoff, [](float t) { return true; }, -40, 110, 100, 1);
+    run("rolling take-off, in the air by the feed from 40kt", rollingTakeoff, [](float t) { return true; }, -30, 90, 0, 1);
 }

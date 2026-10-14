@@ -13,6 +13,8 @@ bool colorsReady = false;
 constexpr int BACK_X = 1140, BACK_Y = 8, BACK_W = 124, BACK_H = 44;
 constexpr int FOLLOW_W = 124, FOLLOW_X = BACK_X - 12 - FOLLOW_W;
 constexpr int WATCH_W = 124, WATCH_X = FOLLOW_X - 12 - WATCH_W;
+// The airline's banner, under the buttons.
+constexpr int BANNER_Y = BACK_Y + BACK_H + 4, BANNER_H = 32;
 // Label column widened to fit the bigger label font (e.g. "ALTITUDE (BARO)"
 // at size 3); value width capped so long values (e.g. "Cessna Citation CJ2")
 // can't run into the next column - field() shrinks the font if it doesn't fit.
@@ -121,20 +123,21 @@ void detailScreenDraw() {
     }
 
     // Livery banner: no real logo/image assets available, so this is the
-    // airline's actual brand colour as a drawn band, not a bitmap.
+    // airline's actual brand colour as a drawn band, not a bitmap. Clear of
+    // the buttons above it, whose bottom 4px it covered from y=48.
     AirlineInfo airline;
     if (lookupAirline(g_ac.callsign, airline)) {
         uint16_t bandColor = M5.Display.color565((airline.color >> 16) & 0xFF, (airline.color >> 8) & 0xFF,
                                                    airline.color & 0xFF);
-        canvas.fillRect(16, 48, 1248, 32, bandColor);
+        canvas.fillRect(16, BANNER_Y, 1248, BANNER_H, bandColor);
         canvas.setFont(&fonts::Font0);
         canvas.setTextSize(3);
         canvas.setTextColor(colorWhite);
         canvas.setTextDatum(ML_DATUM);
-        canvas.drawString(airline.name, 26, 64);
+        canvas.drawString(airline.name, 26, BANNER_Y + BANNER_H / 2);
     }
 
-    canvas.drawFastHLine(16, 92, 1248, colorGrey);
+    canvas.drawFastHLine(16, BANNER_Y + BANNER_H + 8, 1248, colorGrey);
 
     String altBaro = (g_ac.altStr == "GND")  ? g_ac.altStr
                      : (g_ac.altStr == "?") ? String("unknown")

@@ -30,6 +30,7 @@ struct AirportInfo {
     int16_t elevationFt;
     uint16_t firstFrequency;  // its own, in the table of them all
     uint8_t frequencyCount;   // none, for one airport in six
+    bool large;               // a large airport, as OurAirports has it - the rest are medium
     const char *name;         // "Glasgow Airport", in ASCII, 66 characters at most
 };
 

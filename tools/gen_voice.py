@@ -1,15 +1,25 @@
 #!/usr/bin/env python3
-"""Generate the spoken alert words into src/voice_table.inc.
+"""Generate the spoken words in one voice into src/voice_<name>.inc.
 
-    python tools/gen_voice.py --piper PATH/TO/piper --model PATH/TO/voice.onnx
+    python tools/gen_voice.py --piper PATH/TO/piper --model PATH/TO/voice.onnx --name scottish
 
 Speaks each word with Piper (https://github.com/rhasspy/piper), a free offline
 neural text-to-speech engine - `pip install piper-tts` in a virtualenv, and a
 voice from https://huggingface.co/rhasspy/piper-voices - trims the silence off
-either end, brings it up to a common peak, and writes it as 16-bit samples at
-the voice's own rate for the firmware to play from flash. The default words
-are spoken by en_GB-alba-medium, a Scottish voice built from the University
-of Edinburgh's CSTR data (CC BY 4.0).
+either end, brings it up to a common peak, and writes it as 8-bit samples at
+the voice's own rate for the firmware to play from flash. Eight bits rather
+than sixteen, at half the flash, so that there is room for three voices:
+squeezed as the words are (see DRIVE), they keep 37dB of signal over the
+noise of the coarser steps, as much as 8-bit mu-law would, and the speaker
+plays them as they are. The firmware has three, each of the words said in
+each - see src/sound.cpp:
+
+    --name scottish  en_GB-alba-medium  Scottish: the Alba data of the CSTR, University of Edinburgh, CC BY 4.0
+    --name english   en_GB-cori-medium  English: LibriVox recordings, public domain
+    --name american  en_US-amy-medium   American: Mycroft AI's Mimic 3 voices, CC BY-SA 4.0
+
+as the voices' model cards on Hugging Face say - each credited on the About
+screen, src/info_screen.cpp.
 """
 import argparse
 import array
@@ -73,6 +83,28 @@ PHRASES = [
     ("CLEARED_TAKEOFF", "cleared for take-off."),
     ("CLEARED_LAND", "cleared to land."),
 ]
+# Read aloud - see src/sound.cpp's soundReadAircraft() and the cards': an
+# aircraft's height, speed and heading as a controller says them - "four
+# thousand four hundred feet", "flight level three five zero", "one seven
+# five knots", "heading two four zero" - and a frequency, "one one eight
+# decimal eight".
+READ = [
+    ("DECIMAL", "decimal,"), ("FEET", "feet,"), ("THOUSAND", "thousand,"), ("HUNDRED", "hundred,"),
+    ("FLIGHT_LEVEL", "flight level,"), ("KNOTS", "knots,"), ("HEADING", "heading,"), ("CLIMBING", "climbing,"),
+    ("DESCENDING", "descending,"), ("LEVEL", "level,"), ("ON_GROUND", "on the ground."), ("CHANNEL", "channel,"),
+]
+# A navaid's kind, in NavaidType's order, as a pilot says it.
+NAVAID_TYPES = [("NAV_VOR", "V O R,"), ("NAV_VOR_DME", "V O R D M E,"), ("NAV_VORTAC", "Vortac,"),
+                ("NAV_TACAN", "Tacan,"), ("NAV_DME", "D M E,"), ("NAV_NDB_DME", "N D B D M E,")]
+# Who is on an airport's frequency, in AtcUse's order.
+ATC_USES = [("ATC_TOWER", "Tower,"), ("ATC_GROUND", "Ground,"), ("ATC_DELIVERY", "Delivery,"),
+            ("ATC_APPROACH", "Approach,"), ("ATC_DEPARTURE", "Departure,"), ("ATC_RADAR", "Radar,"),
+            ("ATC_CONTROL", "Control,"), ("ATC_ATIS", "Atis,"), ("ATC_INFO", "Information,")]
+# Words a voice says wrongly as written, and how to write them for it to say
+# them right - found by ear, a few spellings tried for each.
+RESPELT = {
+    "american": {"Romeo,": "Roh mee oh,"},  # it said "Romeo" as "Rome-yo"
+}
 PEAK = 0.89  # of full scale: about -1dB, loud on the Tab5's small speaker without clipping
 # Speech peaks only now and then, a dozen dB over most of a word, where the
 # alert's chime is a square wave at full level throughout - so at the same
@@ -86,9 +118,12 @@ MARGIN_MS = 30  # kept either side of the speech, so its first and last sounds a
 ap = argparse.ArgumentParser()
 ap.add_argument("--piper", required=True, help="the piper executable")
 ap.add_argument("--model", required=True, help="the voice's .onnx file, with its .onnx.json beside it")
-ap.add_argument("--out", default=os.path.join(os.path.dirname(__file__), "..", "src", "voice_table.inc"))
+ap.add_argument("--name", required=True, help="which voice it is: scottish, english or american")
+ap.add_argument("--out", help="default src/voice_<name>.inc")
 ap.add_argument("--drive", type=float, default=DRIVE, help="how hard the words are squeezed: louder, up to harsh")
 args = ap.parse_args()
+if not args.out:
+    args.out = os.path.join(os.path.dirname(__file__), "..", "src", f"voice_{args.name}.inc")
 
 
 def speak(text):
@@ -137,11 +172,17 @@ WORDS += [(f"DIGIT_{i}", w + ",") for i, w in enumerate(DIGITS)]
 WORDS += [(f"MAKER_{i}", spoken + ",") for i, (_, spoken) in enumerate(MAKERS)]
 WORDS += [(f"VARIANT_{name}", spoken + ",") for name, spoken in VARIANTS]
 WORDS += [(f"AIRLINE_{i}", AIRLINE_SAID.get(name, name) + ",") for i, name in enumerate(AIRLINES)]
-WORDS += PHRASES
+WORDS += PHRASES + READ + NAVAID_TYPES + ATC_USES
+WORDS = [(name, RESPELT.get(args.name, {}).get(text, text)) for name, text in WORDS]
+
+def eight_bit(samples):
+    return [max(-128, min(127, int(round(v / 256)))) for v in samples]
+
 
 lines = [
     "// Generated by tools/gen_voice.py from " + os.path.basename(args.model) + " - do not edit.",
-    f"// The spoken alert words, as 16-bit mono samples, squeezed with a drive of {args.drive:g}.",
+    f"// The spoken words, as 8-bit mono samples, squeezed with a drive of {args.drive:g}.",
+    f"namespace voice_{args.name} {{",
 ]
 rate = None
 total = 0
@@ -150,30 +191,44 @@ for name, text in WORDS:
     if rate is not None and r != rate:
         sys.exit("piper changed its rate between words")
     rate = r
-    clip = trim_and_level(r, samples)
-    total += len(clip) * 2
-    lines.append(f"const int16_t VOICE_{name}[] = {{  // \"{text}\", {len(clip) / r:.2f}s")
-    for i in range(0, len(clip), 16):
-        lines.append("    " + ", ".join(str(s) for s in clip[i:i + 16]) + ",")
+    clip = eight_bit(trim_and_level(r, samples))
+    total += len(clip)
+    lines.append(f"const int8_t {name}[] = {{  // \"{text}\", {len(clip) / r:.2f}s")
+    for i in range(0, len(clip), 32):
+        lines.append("    " + ",".join(str(v) for v in clip[i:i + 32]) + ",")
     lines.append("};")
     print(f"{name}: {len(clip) / r:.2f}s")
-lines.insert(2, f"constexpr uint32_t VOICE_RATE = {rate};")
-# And the letters and digits indexed, for a callsign to be spelt from.
-for kind, count, first in (("LETTER", 26, 65), ("DIGIT", 10, 48)):
-    names = [f"VOICE_{kind}_{chr(first + i) if kind == 'LETTER' else i}" for i in range(count)]
-    lines.append(f"const int16_t *const VOICE_{kind}S[] = {{" + ", ".join(names) + "};")
-    lines.append(f"const size_t VOICE_{kind}_LENS[] = {{" + ", ".join(f"sizeof({n}) / 2" for n in names) + "};")
-# And the makers, by the name a type name begins with, longest first.
-lines.append("struct VoiceMaker {\n    const char *name;\n    const int16_t *samples;\n    size_t count;\n};")
-lines.append("const VoiceMaker VOICE_MAKERS[] = {")
+
+
+def clip(name):
+    return f"{{{name}, sizeof({name})}}"
+
+
+# The makers, by the name a type name begins with, longest first; and the
+# airlines, by their name in the airline table.
+lines.append("const NamedClip MAKERS[] = {")
 for i, (name, _) in enumerate(MAKERS):
-    lines.append(f'    {{"{name}", VOICE_MAKER_{i}, sizeof(VOICE_MAKER_{i}) / 2}},')
+    lines.append(f'    {{"{name}", {clip(f"MAKER_{i}")}}},')
 lines.append("};")
-# And the airlines, by their name in the airline table.
-lines.append("const VoiceMaker VOICE_AIRLINES[] = {")
+lines.append("const NamedClip AIRLINES[] = {")
 for i, name in enumerate(AIRLINES):
-    lines.append(f'    {{"{name}", VOICE_AIRLINE_{i}, sizeof(VOICE_AIRLINE_{i}) / 2}},')
+    lines.append(f'    {{"{name}", {clip(f"AIRLINE_{i}")}}},')
 lines.append("};")
+# All of it, in the order src/sound.cpp's Voice has it.
+lines.append("const Voice VOICE = {")
+lines.append(f"    {rate},")
+lines.append("    " + ", ".join(clip(w) for w in ("EMERGENCY", "MILITARY", "RARE", "WATCHLIST")) + ",")
+lines.append("    {" + ", ".join(clip(f"LETTER_{chr(65 + i)}") for i in range(26)) + "},")
+lines.append("    {" + ", ".join(clip(f"DIGIT_{i}") for i in range(10)) + "},")
+lines.append("    MAKERS, sizeof(MAKERS) / sizeof(MAKERS[0]),")
+lines.append("    " + ", ".join(clip(f"VARIANT_{v}") for v, _ in VARIANTS) + ",")
+lines.append("    AIRLINES, sizeof(AIRLINES) / sizeof(AIRLINES[0]),")
+lines.append("    " + ", ".join(clip(w) for w, _ in PHRASES) + ",")
+lines.append("    " + ", ".join(clip(w) for w, _ in READ) + ",")
+lines.append("    {" + ", ".join(clip(w) for w, _ in NAVAID_TYPES) + "},")
+lines.append("    {" + ", ".join(clip(w) for w, _ in ATC_USES) + "},")
+lines.append("};")
+lines.append(f"}}  // namespace voice_{args.name}")
 print(f"{len(type_names)} type names, every one with a maker; {len(AIRLINES)} airlines")
 with open(args.out, "w") as f:
     f.write("\n".join(lines) + "\n")

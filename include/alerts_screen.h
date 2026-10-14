@@ -2,6 +2,8 @@
 
 #include <Arduino.h>
 
+#include "config.h"
+
 enum class AlertsAction {
     NONE,
     BACK,  // caller should apply and persist the values below
@@ -18,6 +20,10 @@ void alertsScreenSetCard(bool present);
 // The watchlist as it came back from the watchlist screen.
 void alertsScreenSetWatchlist(const String &watchlist);
 
+// Read aloud, and the voice for everywhere without one of its own - see
+// sound.h. Picking one says a few words in it.
+void alertsScreenSetVoice(bool readAloud, Accent elsewhere);
+
 void alertsScreenDraw();
 AlertsAction alertsScreenHandleTouch(int x, int y);
 
@@ -25,3 +31,5 @@ uint8_t alertsScreenMask();
 bool alertsScreenAutoRecord();
 bool alertsScreenAutoFollow();
 String alertsScreenWatchlist();
+bool alertsScreenReadAloud();
+Accent alertsScreenElsewhereAccent();

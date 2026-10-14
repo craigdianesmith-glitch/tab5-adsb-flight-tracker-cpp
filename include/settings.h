@@ -35,6 +35,8 @@ struct AppSettings {
     String watchlist;   // as typed: entries separated by spaces or commas
     bool autoRecord;    // record the radar while an alerted aircraft is about
     bool autoFollow;    // follow an alerted aircraft on the radar as its alert fires
+    bool readAloud;          // say an aircraft's details, and a navaid's or an airport's card, as they open
+    Accent elsewhereAccent;  // the voice for everywhere without one of its own - see sound.h
 
     // Empty ssid means "use the credentials compiled in from secrets.h", so a
     // device that's never had WiFi set on-screen behaves exactly as before.
@@ -56,3 +58,4 @@ void saveRadarRange(int rangeNm);
 void saveRadarZoom(const String &code, float viewNm);
 void saveWifi(const String &ssid, const String &pass);
 void saveAlerts(uint8_t alertMask, const String &watchlist, bool autoRecord, bool autoFollow);
+void saveVoice(bool readAloud, Accent elsewhere);

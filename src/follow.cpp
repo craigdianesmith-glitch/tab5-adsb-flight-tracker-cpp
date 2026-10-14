@@ -515,6 +515,9 @@ constexpr size_t SIM_HISTORY_MAX = 12;  // there can be a hundred contacts, in t
 constexpr float FINAL_START_AGL_FT = 2500.0f;
 constexpr float FINAL_START_NM = 8.0f;
 constexpr int GO_AROUND_FPM = 500;
+// On the ground this recently, it is not out on final, whatever the feed
+// says of it now - see start().
+constexpr uint32_t OFF_GROUND_WITHIN_MS = 60000;
 // Its thrust picking up: on a runway, this much faster than at its report
 // before, and at least this fast.
 constexpr int THRUST_GAIN_KT = 8;
@@ -549,6 +552,23 @@ constexpr float TAXI_CARRY_S = 12.0f;
 bool lowReport(const FollowSample &s) { return s.ground || (s.hasAlt && s.altFt < ESTIMATE_MAX_FT); }
 
 bool taxiing(const FollowSample &s) { return s.ground && s.hasGs && s.gsKt >= STOPPED_KT && s.hasTrack; }
+
+// Its latest report on the ground in `history` from before `ms`, no more
+// than `withinMs` before it; null if there is none.
+const FollowSample *groundBefore(const std::vector<FollowSample> &history, uint32_t ms, uint32_t withinMs) {
+    for (auto it = history.rbegin(); it != history.rend(); ++it) {
+        if (it->ms >= ms) {
+            continue;
+        }
+        if (ms - it->ms > withinMs) {
+            break;
+        }
+        if (it->ground) {
+            return &*it;
+        }
+    }
+    return nullptr;
+}
 
 float smoothstep(float u) { return u * u * (3.0f - 2.0f * u); }
 
@@ -735,6 +755,19 @@ void RunwaySim::start(const FollowSample &prev, bool hadPrev) {
         if (s.hasVs && s.vsFpm >= CLIMBING_FPM) {
             return;
         }
+        // On the ground a moment ago, it is not out on final, however it is
+        // lined up. Some transponders say they are in the air from early in
+        // the take-off roll - an E190 at Glasgow did at 48kt, and was cleared
+        // to land - and some flick to it on a rollout. Departing, and down
+        // the runway at a roll, it is its take-off.
+        if (const FollowSample *g = groundBefore(history_, s.ms, OFF_GROUND_WITHIN_MS)) {
+            if (followDeparting(history_, *g) && gs >= TAKEOFF_ROLLING_KT && findLineup(s, l) &&
+                l.along >= -ON_RUNWAY_OFFSET_NM) {
+                phase_ = TAKEOFF;
+                rw_ = lineOf(s, l);
+            }
+            return;
+        }
         if (findLineup(s, l) && l.along >= -FINAL_START_NM &&
             !(s.hasAlt && s.altFt - l.fieldFt > FINAL_START_AGL_FT)) {
             phase_ = LANDING;
@@ -800,8 +833,12 @@ FollowEstimate RunwaySim::model(uint32_t ms, float maxAgeS) const {
         }
         return takeoffFrom(rw_, along, 0, false, 0, 0, (when - rollMs_) / 1000.0f);
     }
-    case TAKEOFF:
-        return takeoffFrom(rw_, along, gs, !s.ground, s.hasAlt ? s.altFt : rw_.fieldFt, s.hasVs ? s.vsFpm : 0, t);
+    case TAKEOFF: {
+        // In the air by the feed's say, but slower than it lifts off at, not
+        // climbing, and over the runway still: on its roll - see start().
+        bool airborne = !s.ground && (gs >= ROTATE_KT || (s.hasVs && s.vsFpm >= CLIMBING_FPM) || along > rw_.len);
+        return takeoffFrom(rw_, along, gs, airborne, s.hasAlt ? s.altFt : rw_.fieldFt, s.hasVs ? s.vsFpm : 0, t);
+    }
     default:
         return landingFrom(rw_, along, gs, !s.ground, s.hasAlt, s.altFt, t);
     }

@@ -38,6 +38,9 @@ AppSettings loadSettings() {
     s.watchlist = prefs.isKey("watch") ? prefs.getString("watch") : String("");
     s.autoRecord = prefs.getBool("autorec", false);
     s.autoFollow = prefs.getBool("autofollow", false);
+    s.readAloud = prefs.getBool("readaloud", false);
+    uint8_t accent = prefs.getUChar("accent", (uint8_t)DEFAULT_ELSEWHERE_ACCENT);
+    s.elsewhereAccent = accent <= (uint8_t)Accent::AMERICAN ? (Accent)accent : DEFAULT_ELSEWHERE_ACCENT;
     // isKey() first: getString() on a missing key logs an ESP error line, and
     // an unconfigured device would print two of them on every boot.
     s.wifiSsid = prefs.isKey("ssid") ? prefs.getString("ssid") : String("");
@@ -163,5 +166,13 @@ void saveAlerts(uint8_t alertMask, const String &watchlist, bool autoRecord, boo
     prefs.putString("watch", watchlist);
     prefs.putBool("autorec", autoRecord);
     prefs.putBool("autofollow", autoFollow);
+    prefs.end();
+}
+
+void saveVoice(bool readAloud, Accent elsewhere) {
+    Preferences prefs;
+    prefs.begin(NAMESPACE, false);
+    prefs.putBool("readaloud", readAloud);
+    prefs.putUChar("accent", (uint8_t)elsewhere);
     prefs.end();
 }

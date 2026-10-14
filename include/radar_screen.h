@@ -118,7 +118,9 @@ struct RadarScene {
     bool everyAirport = false;
     // A drag's line has run off the edge of the plot, which is drawn at a
     // range that takes it: the map and the airports alone, the traffic left
-    // off until the plot is back at its own range, wherever it is let go.
+    // off until the plot is back at its own range, wherever it is let go. Or
+    // the radar is out on the map's own ranges - see radarScreenSetMapOnly(),
+    // which leaves off the airports too.
     bool mapOnly = false;
 };
 
@@ -224,6 +226,12 @@ bool radarScreenFreeLook(double &lat, double &lon);
 // Puts the radar back on its own centre, as HOME, AIRPORT and ALL do. True if
 // it had been dragged off it.
 bool radarScreenEndFreeLook();
+
+// Zoomed out past the traffic's ranges: the plot is the map alone - its
+// outlines and names, no traffic, navaids or airports - and the title says
+// so. For the plot drawn next, which ought to be a full one when this has
+// changed, for the title.
+void radarScreenSetMapOnly(bool on);
 
 // Whether the radar has the map under it - coasts and lakes, countries'
 // borders, and the state lines of the big federations, as the settings screen
