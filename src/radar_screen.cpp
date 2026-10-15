@@ -1,12 +1,16 @@
 #include "radar_screen.h"
 
+#include "aircraft_db.h"
+
 #include <M5Unified.h>
+#include <esp_heap_caps.h>
 #include <algorithm>
 #include <math.h>
 
 #include "airport_info.h"
 #include "airports.h"
 #include "coast.h"
+#include "filter.h"
 #include "names.h"
 #include "navaids.h"
 #include "alerts.h"
@@ -87,6 +91,9 @@ constexpr int IN_USE_BOX_T = RANGE_BOX_T - LEGEND_OFFSET;
 constexpr int MAX_LABELS = 64;
 constexpr int LABEL_H = 16;  // Font0 at size 2
 constexpr int LABEL_PAD = 4;
+// A label tried first where it was on the last plot may stay there with this
+// much room rather than LABEL_PAD - see PlacedNavaidLabel.
+constexpr int KEPT_LABEL_PAD = 1;
 
 // Where the centre's airport code goes, under the cross.
 constexpr int CENTRE_CODE_Y = CENTER_Y + 13;
@@ -125,6 +132,11 @@ bool overlapsAny(const LabelBox *boxes, int count, int x, int y, int w, int h, i
 // drawScope starts it afresh, as the first thing drawn on a plot - and with it
 // g_airfieldSpots and g_runwayBars below.
 std::vector<LabelBox> g_mapMarks;
+// And the contacts' own labels, as drawContacts() last placed them: the map's
+// names are drawn after the traffic, and keep off these.
+std::vector<LabelBox> g_contactLabels;
+// The fastest of the contacts it last drew, in knots - see radarFastestKt().
+float g_fastestKt = 0;
 
 void noteMark(int x, int y, int w, int h) {
     g_mapMarks.push_back({(int16_t)x, (int16_t)y, (int16_t)w, (int16_t)h});
@@ -213,6 +225,8 @@ bool g_ringsOn = false;   // and for the radar's range rings
 // Zoomed out past where there is traffic: the map alone - see
 // radarScreenSetMapOnly().
 bool g_mapOnly = false;
+bool g_filtered = false;  // a filter cuts the list - said under the title
+bool g_autoRange = false;  // following with auto zoom choosing the range - see radarScreenSetAutoRange()
 
 // Free look: a plot dragged off its own centre - see radarDragTo(). The
 // radar's and the zoom's each keep theirs, with what it was dragged away
@@ -286,9 +300,24 @@ void noteAirportHit(const String &code, int x, int y, const LabelBox &label) {
 struct Blip {
     int16_t x, y;
     String hex;
-    String label;  // what the chooser lists it as: callsign, type, altitude
+    // What the chooser lists it as - callsign, type, altitude - kept as its
+    // parts, each short enough to be held without the heap, and put together
+    // only if the chooser comes up: built for every contact on every draw, it
+    // was 32us a contact, a busy sky's 3.8ms a frame.
+    String callsign, type, altStr;
     bool ground;
 };
+
+String blipLabel(const Blip &b) {
+    String label = b.callsign;
+    if (b.type.length() && b.type != "----") {
+        label += "  " + b.type;
+    }
+    if (b.altStr != "?") {
+        label += "  " + (b.ground ? String("GND") : b.altStr + "ft");
+    }
+    return label;
+}
 // Above the poll's MAX_CONTACTS with room to spare: alerted aircraft are kept
 // beyond that cap and come last, so a tighter limit here made exactly the
 // ones worth tapping the ones that couldn't be.
@@ -302,7 +331,7 @@ int g_blipCount = 0;
 // a single hue leaves brightness free to do that.
 uint16_t colorDisabled;
 uint16_t colorBg, colorText, colorMuted, colorFaint, colorBtnBg, colorRing, colorRingText, colorBlip, colorNewBlip,
-    colorHome, colorTrail, colorAlert, colorEmergency, colorRec, colorRunway, colorCoast, colorCoastAlone,
+    colorHome, colorTrail, colorAlert, colorEmergency, colorCargo, colorRec, colorRunway, colorCoast, colorCoastAlone,
     colorLandName, colorWaterName;
 RadarPalette g_palette;
 
@@ -351,6 +380,7 @@ void ensureColors() {
     // from the sky around it at a glance, which no shade of green does.
     colorAlert = M5.Display.color565(0xFF, 0xB3, 0x2E);
     colorEmergency = M5.Display.color565(0xFF, 0x4D, 0x4D);
+    colorCargo = M5.Display.color565(0x7F, 0xC8, 0xFF);  // a cargo operator's label, as the table has it
     colorRec = M5.Display.color565(0xC0, 0x39, 0x2B);
     g_palette = {colorBg, colorText, colorMuted, colorFaint, colorBtnBg, colorRing, colorRec, colorDisabled};
     colorsReady = true;
@@ -360,6 +390,7 @@ void ensureColors() {
 // as distances instead of arbitrary fractions.
 int ringStep(int rangeNm) {
     if (rangeNm <= 5) return 1;  // following one down to an airport
+    if (rangeNm <= 8) return 2;  // and auto zoom's steps on the way
     if (rangeNm <= 15) return 5;
     if (rangeNm <= 30) return 10;
     if (rangeNm <= 60) return 20;
@@ -442,16 +473,257 @@ void drawScope(float rangeNm, float stepNm) {
 // The footer readouts sit in boxes, the way a scope's data blocks do. A
 // right-aligned one is placed from its right edge so that the box, rather
 // than the text inside it, lines up with the margin the plot is given.
-void footerBox(const String &text, int edgeX, int textY, bool rightAligned) {
+// Says where the box went. Below the raster, which draws it.
+LabelBox footerBox(const String &text, int edgeX, int textY, bool rightAligned);
+
+// The range readout: "40 nm range   rings every 10 nm" - "40 nm auto range"
+// while auto zoom has it, following.
+String rangeText(int rangeNm, int step, bool autoRange) {
+    return String(rangeNm) + (autoRange ? " nm auto range" : " nm range") +
+           (step ? "   rings every " + String(step) + " nm" : String());
+}
+
+// The count in the corner: "1 contact", "40 contacts   31 labelled".
+String contactsText(int plotted, int labelled) {
+    return String(plotted) + (plotted == 1 ? " contact" : " contacts") +
+           (labelled < plotted ? "   " + String(labelled) + " labelled" : "");
+}
+
+std::vector<LabelBox> g_trafficBoxes;  // see Background
+
+// A line's pixels noted for the next frame to put back - see Background - as
+// boxes along it rather than one round the whole: a long vector's box, on a
+// slant, is mostly plot with nothing of it there, put back and pushed for
+// nothing. Each piece as long as keeps what it takes in beside the line to
+// about what a push of its own costs, 1600 pixels - see mergeBoxes() - and
+// one for a line near level or upright. Its ends rounded to the pixel, a
+// pixel either side takes in every pixel the line is drawn with.
+void noteLine(int x0, int y0, int x1, int y1) {
+    int dx = x1 - x0, dy = y1 - y0;
+    int along = std::max(abs(dx), abs(dy)), across = std::min(abs(dx), abs(dy));
+    int pieces = across ? std::max(1, (int)ceilf(along / sqrtf(1600.0f * along / across))) : 1;
+    int ax = x0, ay = y0;
+    for (int i = 1; i <= pieces; i++) {
+        int bx = x0 + (int)lroundf((float)dx * i / pieces), by = y0 + (int)lroundf((float)dy * i / pieces);
+        g_trafficBoxes.push_back({(int16_t)(std::min(ax, bx) - 1), (int16_t)(std::min(ay, by) - 1),
+                                  (int16_t)(abs(bx - ax) + 3), (int16_t)(abs(by - ay) + 3)});
+        ax = bx;
+        ay = by;
+    }
+}
+
+// The count last drawn, for a refresh of the traffic alone to tell whether
+// the footer has changed.
+String g_countShown;
+
+// The count drawn, in the footer. Long, its box reaches into the plot's
+// column, which the footer's own erasing stops short of: noted with the
+// traffic, so a refresh of the traffic alone puts back what is under it and
+// a count grown shorter leaves nothing of the longer behind.
+void drawCount(const String &text) {
+    LabelBox b = footerBox(text, 1264, FOOTER_Y, true);
+    g_countShown = text;
+    if (b.x < PLOT_R) {
+        g_trafficBoxes.push_back(b);
+    }
+}
+
+// Font0's letters - 5 by 7, a byte a column - for the traffic's labels and the
+// map's names, which are drawn straight into the canvas's pixels.
+namespace glcd {
+#include <lgfx/Fonts/glcdfont.h>
+}
+
+
+// The traffic drawn straight into the canvas's pixels - its blips, vectors,
+// chevrons, rings and labels - by the canvas's own algorithms, ported line
+// for line from LovyanGFX so the pixels are the same, without the cost of a
+// call through it for each: in a busy sky the canvas's drawing was 47us a
+// contact for the vector, blip and chevrons, and 106us a label.
+struct Raster {
+    uint16_t *px;
+    int stride;
+    int l, t, r, b;  // the clip, inclusive, as the canvas keeps it
+    uint16_t ink;    // as the canvas stores a pixel, high byte first
+    uint16_t colour;
+
+    void use(uint16_t c) {
+        colour = c;
+        ink = __builtin_bswap16(c);
+    }
+    void hline(int x, int y, int w) {
+        if (y < t || y > b || w <= 0) {
+            return;
+        }
+        int x0 = std::max(x, l), x1 = std::min(x + w - 1, r);
+        uint16_t *p = px + y * stride + x0;
+        for (int i = x0; i <= x1; i++) {
+            *p++ = ink;
+        }
+    }
+    void vline(int x, int y, int h) {
+        if (x < l || x > r || h <= 0) {
+            return;
+        }
+        int y0 = std::max(y, t), y1 = std::min(y + h - 1, b);
+        uint16_t *p = px + y0 * stride + x;
+        for (int i = y0; i <= y1; i++, p += stride) {
+            *p = ink;
+        }
+    }
+    void rect(int x, int y, int w, int h) {
+        for (int i = 0; i < h; i++) {
+            hline(x, y + i, w);
+        }
+    }
+    // LGFXBase::drawLine.
+    void line(int x0, int y0, int x1, int y1) {
+        bool steep = abs(y1 - y0) > abs(x1 - x0);
+        int xstart = l, ystart = t, xend = r, yend = b;
+        if (steep) {
+            std::swap(xstart, ystart);
+            std::swap(xend, yend);
+            std::swap(x0, y0);
+            std::swap(x1, y1);
+        }
+        if (x0 > x1) {
+            std::swap(x0, x1);
+            std::swap(y0, y1);
+        }
+        if (x0 > xend || x1 < xstart) {
+            return;
+        }
+        xend = std::min(x1, xend);
+        int dy = abs(y1 - y0), ystep = y1 > y0 ? 1 : -1, dx = x1 - x0, err = dx >> 1;
+        while (x0 < xstart || y0 < ystart || y0 > yend) {
+            err -= dy;
+            if (err < 0) {
+                err += dx;
+                y0 += ystep;
+            }
+            if (++x0 > xend) {
+                return;
+            }
+        }
+        int xs = x0, dlen = 0;
+        if (ystep < 0) {
+            std::swap(ystart, yend);
+        }
+        yend += ystep;
+        do {
+            ++dlen;
+            if ((err -= dy) < 0) {
+                steep ? vline(y0, xs, dlen) : hline(xs, y0, dlen);
+                err += dx;
+                xs = x0 + 1;
+                dlen = 0;
+                y0 += ystep;
+                if (y0 == yend) {
+                    break;
+                }
+            }
+        } while (++x0 <= xend);
+        if (dlen) {
+            steep ? vline(y0, xs, dlen) : hline(xs, y0, dlen);
+        }
+    }
+    // LGFXBase::fillCircle.
+    void disc(int x, int y, int rad) {
+        hline(x - rad, y, (rad << 1) + 1);
+        if (rad <= 0) {
+            return;
+        }
+        int f = 1 - rad, ddFy = -(rad << 1), ddFx = 1, i = 0;
+        do {
+            int len = 0;
+            while (f < 0) {
+                f += (ddFx += 2);
+                ++len;
+            }
+            i += len;
+            f += (ddFy += 2);
+            if (len) {
+                rect(x - rad, y + i - len + 1, (rad << 1) + 1, len);
+            }
+            hline(x - i, y + rad, (i << 1) + 1);
+            hline(x - i, y - rad, (i << 1) + 1);
+            if (len) {
+                rect(x - rad, y - i, (rad << 1) + 1, len);
+            }
+        } while (i < --rad);
+    }
+    // LGFXBase::drawCircle.
+    void ring(int x, int y, int rad) {
+        if (rad <= 0) {
+            hline(x, y, 1);
+            return;
+        }
+        int f = 1 - rad, ddFy = -(rad << 1), ddFx = 1, i = 0, j = -1;
+        do {
+            while (f < 0) {
+                ++i;
+                f += (ddFx += 2);
+            }
+            f += (ddFy += 2);
+            hline(x - i, y + rad, i - j);
+            hline(x - i, y - rad, i - j);
+            hline(x + j + 1, y - rad, i - j);
+            hline(x + j + 1, y + rad, i - j);
+            vline(x + rad, y + j + 1, i - j);
+            vline(x + rad, y - i, i - j);
+            vline(x - rad, y - i, i - j);
+            vline(x - rad, y + j + 1, i - j);
+            j = i;
+        } while (i < --rad);
+    }
+    // Font0 at size 2, as the canvas draws it from the top left with no
+    // background: a glyph's five columns of eight bits, each bit a 2x2 block,
+    // on a cell 12 wide. A scan line at a time across the whole string, so
+    // each line of the cache it lands in is filled once.
+    void text(const String &s, int x, int y) {
+        int n = s.length();
+        const char *c = s.c_str();
+        for (int row = 0; row < 8; row++) {
+            for (int dy = 0; dy < 2; dy++) {
+                int sy = y + row * 2 + dy;
+                if (sy < t || sy > b) {
+                    continue;
+                }
+                for (int k = 0; k < n; k++) {
+                    const uint8_t *glyph = glcd::font + (uint8_t)c[k] * 5;
+                    int gx = x + k * 12;
+                    for (int col = 0; col < 5; col++) {
+                        if (glyph[col] >> row & 1) {
+                            hline(gx + col * 2, sy, 2);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    static int textWidth(const String &s) { return (int)s.length() * 12; }
+};
+
+// A box drawn through the raster as the canvas draws it - drawRect's four
+// lines, and the text in Font0 at size 2 - in a fifth of the time; the
+// canvas's text settings left as they were, for whatever is drawn next.
+LabelBox footerBox(const String &text, int edgeX, int textY, bool rightAligned) {
     auto &canvas = screen::canvas();
     canvas.setFont(&fonts::Font0);
     canvas.setTextSize(2);
-    int w = canvas.textWidth(text) + 2 * BOX_PAD_X;
-    int x = rightAligned ? edgeX - w : edgeX;
-    canvas.drawRect(x, textY - BOX_PAD_Y, w, BOX_H, colorRing);
     canvas.setTextColor(colorFaint);
     canvas.setTextDatum(rightAligned ? TR_DATUM : TL_DATUM);
-    canvas.drawString(text, rightAligned ? edgeX - BOX_PAD_X : edgeX + BOX_PAD_X, textY);
+    int w = Raster::textWidth(text) + 2 * BOX_PAD_X;
+    int x = rightAligned ? edgeX - w : edgeX, y = textY - BOX_PAD_Y;
+    Raster out = {(uint16_t *)canvas.getBuffer(), canvas.width(), 0, 0, canvas.width() - 1, canvas.height() - 1, 0, 0};
+    out.use(colorRing);
+    out.hline(x, y, w);
+    out.hline(x, y + BOX_H - 1, w);
+    out.vline(x, y + 1, BOX_H - 2);
+    out.vline(x + w - 1, y + 1, BOX_H - 2);
+    out.use(colorFaint);
+    out.text(text, x + BOX_PAD_X, textY);
+    return {(int16_t)x, (int16_t)y, (int16_t)w, (int16_t)BOX_H};
 }
 
 // Vertical trend as a shape rather than a colour or a brightness: the plot is
@@ -463,7 +735,7 @@ void footerBox(const String &text, int edgeX, int textY, bool rightAligned) {
 //
 // It sits directly over or under the blip, where the callsign (placed to one
 // side, on the same row) can't reach it.
-void drawTrend(int px, int py, const String &status, uint16_t color) {
+void drawTrend(Raster &out, int px, int py, const String &status) {
     int dir = 0;
     if (status == "CLIMB") {
         dir = -1;
@@ -473,14 +745,13 @@ void drawTrend(int px, int py, const String &status, uint16_t color) {
     if (dir == 0) {
         return;
     }
-    auto &canvas = screen::canvas();
     constexpr int GAP = 9, HEIGHT = 5, HALF_W = 5;
     // Two strokes: a single line reads as thin and accidental beside a 5px blip.
     for (int i = 0; i <= 1; i++) {
         int base = py + dir * (GAP + i);
         int tip = py + dir * (GAP + HEIGHT + i);
-        canvas.drawLine(px - HALF_W, base, px, tip, color);
-        canvas.drawLine(px, tip, px + HALF_W, base, color);
+        out.line(px - HALF_W, base, px, tip);
+        out.line(px, tip, px + HALF_W, base);
     }
 }
 
@@ -511,9 +782,40 @@ void drawAirfield(int x, int y, uint16_t color) {
 // symbols and a wall of codes over the map.
 constexpr int SPARSE_FROM_NM = 200;
 constexpr float SPARSE_PX = 32;
+// Whether the last drawAirports() put a symbol at the plot's middle - a free
+// look opened on an airport, from its zoom - so the middle's own small cross
+// isn't drawn over it.
+bool g_airportAtCentre = false;
+
+// Where an airport's label can go, in the order tried: under its symbol,
+// over it, or to either side.
+enum AirportSlot : uint8_t { AIRPORT_BELOW, AIRPORT_ABOVE, AIRPORT_RIGHT, AIRPORT_LEFT, AIRPORT_SLOT_COUNT };
+
+void airportLabelAt(int slot, int x, int y, int w, int &lx, int &ly) {
+    constexpr int OFF = AIRPORT_R + AIRPORT_TICK + 3;
+    lx = slot == AIRPORT_RIGHT ? x + OFF : slot == AIRPORT_LEFT ? x - OFF - w : x - w / 2;
+    ly = slot == AIRPORT_BELOW ? y + OFF : slot == AIRPORT_ABOVE ? y - OFF - LABEL_H : y - LABEL_H / 2;
+}
+
+// Where each airport's label went on the last plot - see PlacedNavaidLabel.
+struct PlacedAirportLabel {
+    String code;
+    uint8_t slot;
+};
+std::vector<PlacedAirportLabel> g_airportLabelsWere, g_airportLabelsNow;
 
 void drawAirports(double lat, double lon, int rangeNm, const String &centreCode, const String &originCode) {
     auto &canvas = screen::canvas();
+    // Every symbol before any label, as the navaids are, so a label keeps
+    // clear of the symbols of airports after it as well as before.
+    struct Shown {
+        String code;  // copied: airportsWithin()'s list is only lent
+        int16_t x, y;
+        int mark;  // its symbol's, in g_mapMarks
+        bool origin;
+    };
+    static std::vector<Shown> shown;
+    shown.clear();
     double nmPerDegLon = 60.0 * cos(lat * M_PI / 180.0);
     canvas.setTextSize(2);
     canvas.setTextColor(colorFaint);
@@ -542,31 +844,76 @@ void drawAirports(double lat, double lon, int rangeNm, const String &centreCode,
         }
         int x = CENTER_X + (int)lroundf(ox);
         int y = CENTER_Y - (int)lroundf(oy);
+        if (abs(x - CENTER_X) <= 2 && abs(y - CENTER_Y) <= 2) {
+            g_airportAtCentre = true;
+        }
         g_airfieldSpots.push_back({CENTER_X + ox, CENTER_Y - oy});
         bool origin = originCode.length() && a.code == originCode;
         drawAirfield(x, y, origin ? colorHome : colorFaint);
         constexpr int T1 = AIRPORT_R + AIRPORT_TICK;
         noteMark(x - T1, y - T1, 2 * T1 + 1, 2 * T1 + 1);
+        shown.push_back({a.code, (int16_t)x, (int16_t)y, (int)g_mapMarks.size() - 1, origin});
+    }
 
-        // Under the symbol unless that runs off the bottom of the plot, and
-        // kept inside its sides: one due east or west at the very edge of the
-        // range would otherwise lose a character to the clip.
-        int w = canvas.textWidth(a.code);
-        int lx = std::min(std::max(x - w / 2, PLOT_L), PLOT_R - w);
-        int ly = y + T1 + 3;
-        if (ly + LABEL_H > PLOT_B) {
-            ly = y - T1 - 3 - LABEL_H;
+    // Then their labels, each where it was on the last plot while that is
+    // still clear - so one going past a compass point as the map moves under
+    // a following doesn't flick from side to side - or else under its
+    // symbol, over it, or to either side. Clear of the other labels and of
+    // what is on the scope - the compass points, the ring distances, the
+    // centre's cross or the followed one's ring, the other airports' symbols,
+    // all of which a code used to be written over; and where nowhere is, left
+    // off - but for the airport a departure took off from, under its symbol.
+    g_airportLabelsNow.clear();
+    for (const Shown &sh : shown) {
+        int x = sh.x, y = sh.y;
+        int w = canvas.textWidth(sh.code);
+        int was = -1;
+        for (const PlacedAirportLabel &p : g_airportLabelsWere) {
+            if (p.code == sh.code) {
+                was = p.slot;
+                break;
+            }
         }
-        LabelBox label = {(int16_t)lx, (int16_t)ly, 0, (int16_t)LABEL_H};
-        if (g_mapLabelCount < MAX_MAP_LABELS &&
-            (origin || !overlapsAny(g_mapLabels, g_mapLabelCount, lx, ly, w, LABEL_H))) {
-            canvas.setTextColor(origin ? colorHome : colorFaint);
-            canvas.drawString(a.code, lx, ly);
-            label.w = (int16_t)w;
+        LabelBox label = {(int16_t)x, (int16_t)y, 0, (int16_t)LABEL_H};
+        bool placed = false;
+        for (int k = -1; k < AIRPORT_SLOT_COUNT && g_mapLabelCount < MAX_MAP_LABELS && !placed; k++) {
+            int slot = k < 0 ? was : k;
+            if (slot < 0 || (k >= 0 && slot == was)) {
+                continue;
+            }
+            int lx, ly;
+            airportLabelAt(slot, x, y, w, lx, ly);
+            if (lx < PLOT_L || lx + w > PLOT_R || ly < PLOT_T || ly + LABEL_H > PLOT_B) {
+                continue;
+            }
+            int pad = slot == was ? KEPT_LABEL_PAD : LABEL_PAD;
+            if (!overlapsAny(g_mapLabels, g_mapLabelCount, lx, ly, w, LABEL_H, pad) &&
+                !overlapsAny(g_mapMarks.data(), (int)g_mapMarks.size(), lx, ly, w, LABEL_H, pad, sh.mark)) {
+                label = {(int16_t)lx, (int16_t)ly, (int16_t)w, (int16_t)LABEL_H};
+                g_airportLabelsNow.push_back({sh.code, (uint8_t)slot});
+                placed = true;
+            }
+        }
+        if (!placed && sh.origin && g_mapLabelCount < MAX_MAP_LABELS) {
+            // Under its symbol, or over it off the bottom, and inside the
+            // plot's sides.
+            int lx, ly;
+            airportLabelAt(AIRPORT_BELOW, x, y, w, lx, ly);
+            if (ly + LABEL_H > PLOT_B) {
+                airportLabelAt(AIRPORT_ABOVE, x, y, w, lx, ly);
+            }
+            lx = std::min(std::max(lx, PLOT_L), PLOT_R - w);
+            label = {(int16_t)lx, (int16_t)ly, (int16_t)w, (int16_t)LABEL_H};
+            placed = true;
+        }
+        if (placed) {
+            canvas.setTextColor(sh.origin ? colorHome : colorFaint);
+            canvas.drawString(sh.code, label.x, label.y);
             g_mapLabels[g_mapLabelCount++] = label;
         }
-        noteAirportHit(a.code, x, y, label);
+        noteAirportHit(sh.code, x, y, label);
     }
+    std::swap(g_airportLabelsWere, g_airportLabelsNow);
 }
 
 // A navaid as a chart draws one, small: a VOR a hexagon with a dot in it,
@@ -639,7 +986,6 @@ struct PlacedNavaidLabel {
     uint8_t slot;
 };
 std::vector<PlacedNavaidLabel> g_navaidLabelsWere, g_navaidLabelsNow;
-constexpr int KEPT_LABEL_PAD = 1;
 
 // The navaids in range, under the airports: dimmer, as the part of the map
 // least often looked for, with ident and frequency beside each - to the right,
@@ -650,7 +996,9 @@ constexpr int KEPT_LABEL_PAD = 1;
 // One whose symbol would touch an airfield's is left off altogether: it is
 // that airport's own, and at a range where the two can't be told apart. The
 // airport's zoom, or a closer range, has room for it.
-void drawNavaids(double lat, double lon, float rangeNm) {
+//
+// Without `labels`, the symbols alone - still there to tap for a card.
+void drawNavaids(double lat, double lon, float rangeNm, bool labels = true) {
     auto &canvas = screen::canvas();
     double nmPerDegLon = 60.0 * cos(lat * M_PI / 180.0);
     constexpr float AIRFIELD_CLEAR = AIRPORT_R + AIRPORT_TICK + NAVAID_REACH;
@@ -705,7 +1053,7 @@ void drawNavaids(double lat, double lon, float rangeNm) {
         }
         LabelBox label = {0, (int16_t)(y - LABEL_H / 2), 0, (int16_t)LABEL_H};
         // Where it was first, then the rest in order.
-        for (int k = -1; k < SLOT_COUNT && g_mapLabelCount < MAX_MAP_LABELS; k++) {
+        for (int k = -1; labels && k < SLOT_COUNT && g_mapLabelCount < MAX_MAP_LABELS; k++) {
             int slot = k < 0 ? was : k;
             if (slot < 0 || (k >= 0 && slot == was)) {
                 continue;
@@ -731,34 +1079,78 @@ void drawNavaids(double lat, double lon, float rangeNm) {
     std::swap(g_navaidLabelsWere, g_navaidLabelsNow);
 }
 
-// What a name on the map keeps off: the labels placed before it, and every
-// mark on the plot - the ring distances and compass points, the centre, and
-// the airfield and navaid symbols.
+// What a name on the map keeps off: the labels placed before it, the
+// traffic's among them - a name half under a callsign was neither - and
+// every mark on the plot: the ring distances and compass points, the centre,
+// and the airfield and navaid symbols.
 bool nameBlocked(int x, int y, int w, int h) {
     return overlapsAny(g_mapLabels, g_mapLabelCount, x, y, w, h) ||
+           overlapsAny(g_contactLabels.data(), (int)g_contactLabels.size(), x, y, w, h) ||
            overlapsAny(g_mapMarks.data(), (int)g_mapMarks.size(), x, y, w, h);
 }
 
-// The names of the countries, regions, seas and lakes on the plot - see
-// names.h - over the map's outlines and the scope, under the traffic. With
-// the map, or not at all.
-void drawNames(double lat, double lon, float rangeNm) {
-    if (!g_coastOn) {
-        return;
-    }
+// The names of the countries, regions, seas and lakes on the plot, as the
+// last full draw placed them - see drawNames().
+std::vector<PlacedName> g_names;
+
+// The letters of g_names that fall inside x0..x1, y0..y1 (the far edges not
+// included). Under everything else: only onto the plot's background and the
+// map's own lines, so a contact, its vector or a trail crossing a name stays
+// whole - and drawing a letter again where it is already changes nothing.
+// In Font0's own letters, a pixel at a time - 5 by 7, a byte a column - which
+// the canvas's text drawing has no way to put under what is there.
+void drawNameLetters(int x0, int y0, int x1, int y1) {
     auto &canvas = screen::canvas();
-    static std::vector<PlacedName> names;
-    namesPlace({CENTER_X, CENTER_Y, RADIUS, lat, lon, rangeNm}, nameBlocked, names);
-    canvas.setTextDatum(TL_DATUM);
-    char letter[2] = {0, 0};
-    for (const PlacedName &n : names) {
-        canvas.setTextSize(n.size);
-        canvas.setTextColor(n.kind == NameKind::SEA || n.kind == NameKind::LAKE ? colorWaterName : colorLandName);
+    // As the canvas stores a pixel, high byte first - see drawCoast().
+    uint16_t *pixels = (uint16_t *)canvas.getBuffer();
+    int stride = canvas.width();
+    const uint16_t under[] = {__builtin_bswap16(colorBg), __builtin_bswap16(colorCoast),
+                              __builtin_bswap16(colorCoastAlone), __builtin_bswap16(colorRing)};
+    for (const PlacedName &n : g_names) {
+        if (n.x >= x1 || n.x + n.w <= x0 || n.y >= y1 || n.y + n.h <= y0) {
+            continue;
+        }
+        uint16_t ink = __builtin_bswap16(n.kind == NameKind::SEA || n.kind == NameKind::LAKE ? colorWaterName
+                                                                                           : colorLandName);
+        int s = n.size;
         nameLetters(n, [&](char c, int x, int y) {
-            letter[0] = c;
-            canvas.drawString(letter, x, y);
+            if (x >= x1 || x + 5 * s <= x0 || y >= y1 || y + 8 * s <= y0) {
+                return;
+            }
+            const uint8_t *glyph = glcd::font + (uint8_t)c * 5;
+            for (int col = 0; col < 5; col++) {
+                int left = std::max(x + col * s, x0), right = std::min(x + col * s + s, x1);
+                for (int row = 0; row < 8; row++) {
+                    if (!(glyph[col] >> row & 1)) {
+                        continue;
+                    }
+                    int top = std::max(y + row * s, y0), bottom = std::min(y + row * s + s, y1);
+                    for (int py = top; py < bottom; py++) {
+                        uint16_t *p = pixels + py * stride + left;
+                        for (int px = left; px < right; px++, p++) {
+                            if (*p == under[0] || *p == under[1] || *p == under[2] || *p == under[3]) {
+                                *p = ink;
+                            }
+                        }
+                    }
+                }
+            }
         });
     }
+}
+
+// The names placed afresh - see names.h - and drawn. Drawn after everything
+// but the traffic, to keep clear of its labels as they were when it was last
+// drawn, which for a refresh of the same sky is where they are now. So where
+// they go changes with the traffic, and the background a refresh puts back is
+// kept without them: refreshTraffic() draws them again into each box of it.
+void drawNames(double lat, double lon, float rangeNm) {
+    if (!g_coastOn) {
+        g_names.clear();
+        return;
+    }
+    namesPlace({CENTER_X, CENTER_Y, RADIUS, lat, lon, rangeNm}, nameBlocked, g_names);
+    drawNameLetters(PLOT_L, PLOT_T, PLOT_R, PLOT_B);
 }
 
 // A button's three looks: an ordinary one filled; a lit one - the centre in
@@ -890,9 +1282,88 @@ void drawFollowButton() {
                g_follow == FollowButton::OFF ? Look::PLAIN : Look::LIT);
 }
 
-// "Radar - CIV -", and under it what following is doing: asking for an
+// The sound's switch, at the end of the radar's and the zoom's titles, as the
+// table has it in its header: the voice speaks on these screens, the zoom's
+// clearances above all, and the table was the one place to quieten it.
+constexpr int MUTE_CX = 268, MUTE_CY = 24, MUTE_R = 14, MUTE_HIT = 22;
+bool g_soundMuted = false;
+
+void drawMuteIcon() {
+    auto &canvas = screen::canvas();
+    canvas.fillRect(MUTE_CX - MUTE_R - 2, MUTE_CY - MUTE_R - 2, 2 * MUTE_R + 5, 2 * MUTE_R + 5, colorBg);
+    uint16_t color = g_soundMuted ? colorDisabled : colorFaint;
+    int r = MUTE_R, cx = MUTE_CX, cy = MUTE_CY;
+    int boxW = (int)lroundf(r * 0.45f), boxH = (int)lroundf(r * 0.44f);
+    int left = cx - r, coneX = left + boxW;
+    int coneR = (int)lroundf(r * 0.30f), coneH = (int)lroundf(r * 0.92f);
+    canvas.fillRect(left, cy - boxH / 2, boxW + 1, boxH, color);
+    canvas.fillTriangle(coneX, cy - boxH / 2, coneX, cy + boxH / 2, cx + coneR, cy - coneH, color);
+    canvas.fillTriangle(coneX, cy + boxH / 2, cx + coneR, cy - coneH, cx + coneR, cy + coneH, color);
+    if (g_soundMuted) {
+        for (int i = -1; i <= 1; i++) {
+            canvas.drawLine(left + i, cy - coneH, cx + coneR + i, cy + coneH, color);
+        }
+    } else {
+        for (int i = 1; i <= 2; i++) {
+            int rr = coneR + i * (int)lroundf(r * 0.26f);
+            canvas.drawArc(cx, cy, rr, rr + 2, 300, 360, color);
+            canvas.drawArc(cx, cy, rr, rr + 2, 0, 60, color);
+        }
+    }
+    screen::markDirty(MUTE_CX - MUTE_R - 2, MUTE_CY - MUTE_R - 2, 2 * MUTE_R + 5, 2 * MUTE_R + 5);
+}
+
+// The filter's way in from the radar, beside the speaker - out over the
+// plot's corner, which its ring is well clear of up here: lit while a filter
+// is on - see filter.h. Not on the zoom, which is never filtered.
+constexpr int FILTER_CX = MUTE_CX + 46, FILTER_CY = MUTE_CY, FILTER_R = 13, FILTER_HIT = 22;
+bool g_livePlot = false;  // set round the live radar's plot draws, for them to put the funnel back
+
+// A funnel `r` across from its middle at (cx, cy), lit for a filter on.
+void drawFunnel(int cx, int cy, int r, bool lit) {
+    auto &canvas = screen::canvas();
+    canvas.fillRect(cx - r - 2, cy - r - 2, 2 * r + 5, 2 * r + 5, colorBg);
+    uint16_t color = lit ? colorText : colorFaint;
+    int top = cy - (int)lroundf(r * 0.80f), neck = cy + (int)lroundf(r * 0.15f), bottom = cy + (int)lroundf(r * 0.85f);
+    int spout = (int)lroundf(r * 0.22f);
+    canvas.fillTriangle(cx - r, top, cx + r, top, cx - spout, neck, color);
+    canvas.fillTriangle(cx + r, top, cx + spout, neck, cx - spout, neck, color);
+    canvas.fillRect(cx - spout, neck, 2 * spout + 1, bottom - neck, color);
+    screen::markDirty(cx - r - 2, cy - r - 2, 2 * r + 5, 2 * r + 5);
+}
+
+void drawFilterIcon() { drawFunnel(FILTER_CX, FILTER_CY, FILTER_R, g_filtered); }
+
+// The time - in UTC as aviation keeps it, "14:32Z", or a zone's, "14:32 BST"
+// - in the margin left of the plot, above its readouts, on the radar and the
+// zoom: for a tracker left on a desk or a wall. A setting on the display
+// page; redrawn as the minute turns over, by radarScreenTickClock().
+constexpr int CLOCK_Y = 588, CLOCK_H = 32;
+ClockZone g_clockZone = ClockZone::UTC;
+int g_clockMinute = -1;
+
+void drawClock() {
+    auto &canvas = screen::canvas();
+    canvas.fillRect(0, CLOCK_Y - CLOCK_H / 2, PLOT_L, CLOCK_H, colorBg);
+    time_t now = time(nullptr);
+    if (g_clockZone != ClockZone::OFF && now > 1600000000) {  // set from the network, not 1970
+        struct tm utc;
+        gmtime_r(&now, &utc);
+        char text[16];
+        clockZoneFormat(now, g_clockZone, text, sizeof(text));
+        canvas.setFont(&fonts::Font0);
+        canvas.setTextSize(3);
+        canvas.setTextDatum(ML_DATUM);
+        canvas.setTextColor(colorFaint);
+        canvas.drawString(text, 16, CLOCK_Y);
+        g_clockMinute = utc.tm_hour * 60 + utc.tm_min;
+    }
+    screen::markDirty(0, CLOCK_Y - CLOCK_H / 2, PLOT_L, CLOCK_H);
+}
+
+// "Radar - CIV" - no closing dash, which ran up against the speaker after it - and under it what following is doing: asking for an
 // aircraft to be tapped, or naming the one followed.
-void drawTitle(bool military) {
+void drawTitle() {
     auto &canvas = screen::canvas();
     canvas.fillRect(0, 0, PLOT_L, TITLE_BLOCK_H, colorBg);
     // Set here rather than trusted from whatever drew last: the table leaves
@@ -904,7 +1375,18 @@ void drawTitle(bool military) {
     const char *title = "Radar";
     canvas.drawString(title, 16, TITLE_Y);
     canvas.setTextColor(colorMuted);
-    canvas.drawString(military ? " - MIL -" : " - CIV -", 16 + canvas.textWidth(title), TITLE_Y);
+    // What it shows, by kind, as the table's title has it in words: two of
+    // them - "CRG+MIL" - a size down, to stay clear of the speaker.
+    String kinds = shownKinds(true);
+    int x = 16 + canvas.textWidth(title);
+    if (kinds.length() > 3) {
+        canvas.drawString(" - ", x, TITLE_Y);
+        x += canvas.textWidth(" - ");
+        canvas.setTextSize(2);
+        canvas.drawString(kinds, x, TITLE_Y);
+    } else {
+        canvas.drawString(" - " + kinds, x, TITLE_Y);
+    }
     canvas.setTextSize(2);
     if (g_follow == FollowButton::PICKING) {
         canvas.drawString("tap a plane to follow", 16, TITLE_LINE2_Y);
@@ -916,18 +1398,19 @@ void drawTitle(bool military) {
     } else if (g_mapOnly) {
         canvas.drawString("map only", 16, TITLE_LINE2_Y);
     } else if (g_radarLook.active) {
-        canvas.drawString("free look", 16, TITLE_LINE2_Y);
+        canvas.drawString(g_filtered ? "free look, filtered" : "free look", 16, TITLE_LINE2_Y);
+    } else if (g_filtered) {
+        canvas.drawString("filtered", 16, TITLE_LINE2_Y);
     }
+    drawMuteIcon();
+    drawFilterIcon();
     screen::markDirty(0, 0, PLOT_L, TITLE_BLOCK_H);
 }
 
-bool g_military = false;
-
 // Title and buttons: drawn on a full repaint, and again in part as the
 // controls change.
-void drawHeader(bool military) {
-    g_military = military;
-    drawTitle(military);
+void drawHeader() {
+    drawTitle();
     drawButton(BACK_Y, "Back", Look::PLAIN);
     drawCentreButtons();
     drawFollowButton();
@@ -1294,6 +1777,18 @@ void startDrag(int x, int y, bool zoom) {
 // the end of it where the middle would go, and beside that how far it is and
 // which way. Over the plot, once that has been drawn, at the range that was
 // drawn at.
+// What drawDragLine() last drew over: the line with the ring on its end, and
+// the box beside it - in the plot's column, where both are kept.
+LabelBox g_dragDrawn[2] = {};
+
+LabelBox clippedToPlot(int x0, int y0, int x1, int y1) {
+    x0 = std::max(x0, PLOT_L);
+    y0 = std::max(y0, PLOT_T);
+    x1 = std::min(x1, PLOT_R);
+    y1 = std::min(y1, PLOT_B);
+    return {(int16_t)x0, (int16_t)y0, (int16_t)std::max(0, x1 - x0), (int16_t)std::max(0, y1 - y0)};
+}
+
 void drawDragLine(float rangeNm) {
     auto &canvas = screen::canvas();
     canvas.clearClipRect();
@@ -1326,6 +1821,184 @@ void drawDragLine(float rangeNm) {
     canvas.setTextDatum(TL_DATUM);
     canvas.setTextColor(colorText);
     canvas.drawString(text, bx + BOX_PAD_X, by + BOX_PAD_Y);
+    g_dragDrawn[0] = clippedToPlot(std::min(CENTER_X, ex) - 13, std::min(CENTER_Y, ey) - 13, std::max(CENTER_X, ex) + 14,
+                                   std::max(CENTER_Y, ey) + 14);
+    g_dragDrawn[1] = clippedToPlot(bx, by, bx + w, by + BOX_H);
+}
+
+// The radar's plot as it was when a drag's line went out over it, for the
+// line to be moved over it a finger's move at a time: the plot itself doesn't
+// change while the line is out - see radarDragTo() - so where the line was
+// is put back from this, the line drawn where it is now, and only those two
+// pushed. Each move redrew and pushed the whole plot, 59ms of it at 60nm -
+// 17 a second, behind the finger. In PSRAM: the plot's column, 1MB.
+constexpr int PLOT_W = PLOT_R - PLOT_L, PLOT_H = PLOT_B - PLOT_T;
+struct DragCache {
+    uint16_t *pixels = nullptr;
+    bool valid = false;
+    bool zoom = false;  // the airport zoom's, whose drags work the same way
+    float rangeNm = 0;
+    double lat = 0, lon = 0;
+};
+DragCache g_dragCache;
+
+void keepPlotForDrag(bool zoom, float rangeNm, double lat, double lon) {
+    if (!g_dragCache.pixels) {
+        g_dragCache.pixels = (uint16_t *)heap_caps_malloc((size_t)PLOT_W * PLOT_H * 2, MALLOC_CAP_SPIRAM);
+        if (!g_dragCache.pixels) {
+            return;  // the slow way, then
+        }
+    }
+    const uint16_t *canvas = (const uint16_t *)screen::canvas().getBuffer();
+    int stride = screen::canvas().width();
+    for (int y = 0; y < PLOT_H; y++) {
+        memcpy(g_dragCache.pixels + (size_t)y * PLOT_W, canvas + (size_t)(PLOT_T + y) * stride + PLOT_L, PLOT_W * 2);
+    }
+    g_dragCache = {g_dragCache.pixels, true, zoom, rangeNm, lat, lon};
+}
+
+// The plot without its traffic or names - map, rings, airports and navaids,
+// as a full draw left them just before the names went on - so a refresh in
+// which only the traffic has moved puts back what was under it, with the
+// names, draws it where it is now and pushes those places, rather than
+// drawing and pushing the whole plot: see radarPlotDraw(). The names are left
+// out as where they go moves with the traffic. Another 1MB of PSRAM. Taken on the
+// second full draw of the same view, so a tap's own redraw isn't slowed by the
+// copy, and kept for as long as the view is the same. The plot is drawn whole
+// all the same at least every NAMES_MAX_MS, for the names to be placed afresh,
+// clear of where the labels have moved to since.
+struct BackgroundKey {
+    double lat, lon, homeLat, homeLon;
+    float zoomNm;  // the zoom's range, which unlike the radar's comes in fractions
+    int rangeNm, mapLevels;
+    uint32_t runwaysInUse, runwaysRecent;  // the zoom's runway ends marked, a bit each
+    bool zoom, coast, rings, navaids, airports, everyAirport, freeLook, markHome, mapOnly;
+    char centreCode[8];
+};
+struct Background {
+    uint16_t *pixels = nullptr;
+    bool valid = false;
+    bool pending = false;  // a full draw of `key` done: the next one takes the copy
+    BackgroundKey key;
+    uint32_t wholeMs = 0;  // when the plot was last drawn whole
+};
+Background g_background;
+constexpr uint32_t NAMES_MAX_MS = 60000;
+// Where the traffic was drawn - the last frame's, and this one's - to put
+// back from the background, and to push.
+std::vector<LabelBox> g_trafficWas;
+
+bool sameBackground(const BackgroundKey &a, const BackgroundKey &b) { return memcmp(&a, &b, sizeof(a)) == 0; }
+
+void keepBackground() {
+    if (!g_background.pixels) {
+        g_background.pixels = (uint16_t *)heap_caps_malloc((size_t)PLOT_W * PLOT_H * 2, MALLOC_CAP_SPIRAM);
+        if (!g_background.pixels) {
+            return;
+        }
+    }
+    const uint16_t *canvas = (const uint16_t *)screen::canvas().getBuffer();
+    int stride = screen::canvas().width();
+    for (int y = 0; y < PLOT_H; y++) {
+        memcpy(g_background.pixels + (size_t)y * PLOT_W, canvas + (size_t)(PLOT_T + y) * stride + PLOT_L, PLOT_W * 2);
+    }
+    g_background.valid = true;
+}
+
+// Whether putting back the last frame's boxes and pushing them and this
+// frame's would beat drawing the plot whole, as measured: about 2us a row of
+// a box's lines of cache to put back, and a push's 0.085ms and 53ns a pixel -
+// a box where it was and where it is, a pixel or two along, being one push
+// of up to twice its pixels. Drawn whole, a plot's background and push are
+// some 39ms besides its traffic: past 32ms - fifty aircraft or so - a crowd
+// is drawn whole, the background still kept.
+bool trafficCheap() {
+    float cost = 0;
+    for (const LabelBox &b : g_trafficBoxes) {
+        cost += b.h * (b.w / 32 + 2) * 0.0007f + 0.085f + 2 * b.w * b.h * 0.000053f;
+    }
+    return cost < 32.0f;
+}
+
+// A box of the plot put back as the background has it.
+void restoreBackground(const LabelBox &b) {
+    int x0 = std::max<int>(b.x, PLOT_L), x1 = std::min<int>(b.x + b.w, PLOT_R);
+    int y0 = std::max<int>(b.y, PLOT_T), y1 = std::min<int>(b.y + b.h, PLOT_B);
+    if (x1 <= x0 || y1 <= y0) {
+        return;
+    }
+    uint16_t *canvas = (uint16_t *)screen::canvas().getBuffer();
+    int stride = screen::canvas().width();
+    for (int y = y0; y < y1; y++) {
+        memcpy(canvas + (size_t)y * stride + x0, g_background.pixels + (size_t)(y - PLOT_T) * PLOT_W + (x0 - PLOT_L),
+               (size_t)(x1 - x0) * 2);
+    }
+}
+
+// Boxes run together where one push of the two costs less than two: a push
+// is 0.085ms and 53ns a pixel, so where the box round both takes in fewer
+// than 1600 pixels more than the two do apart - a contact's box where it was
+// and where it is, say, but not the pieces of a slanting vector (see
+// noteLine()), nor a crowd. Only boxes within NEAR of each other are weighed.
+void mergeBoxes(std::vector<screen::Region> &r) {
+    constexpr int NEAR = 32, EXTRA = 1600;
+    bool merged = true;
+    while (merged) {
+        merged = false;
+        for (size_t i = 0; i < r.size(); i++) {
+            for (size_t j = i + 1; j < r.size();) {
+                const screen::Region &a = r[i], &b = r[j];
+                if (a.x - NEAR < b.x + b.w && b.x - NEAR < a.x + a.w && a.y - NEAR < b.y + b.h && b.y - NEAR < a.y + a.h) {
+                    int x0 = std::min(a.x, b.x), y0 = std::min(a.y, b.y);
+                    int x1 = std::max(a.x + a.w, b.x + b.w), y1 = std::max(a.y + a.h, b.y + b.h);
+                    if ((x1 - x0) * (y1 - y0) - a.w * a.h - b.w * b.h < EXTRA) {
+                        r[i] = {(int16_t)x0, (int16_t)y0, (int16_t)(x1 - x0), (int16_t)(y1 - y0)};
+                        r[j] = r.back();
+                        r.pop_back();
+                        merged = true;
+                        continue;
+                    }
+                }
+                j++;
+            }
+        }
+    }
+}
+
+// Whether a drag's line can be moved over the plot kept for it, rather than
+// the plot drawn again: the same plot, nothing put up over it.
+bool dragKept(bool zoom, float rangeNm, double lat, double lon) {
+    return g_dragCache.valid && g_dragCache.zoom == zoom && g_dragCache.rangeNm == rangeNm &&
+           g_dragCache.lat == lat && g_dragCache.lon == lon && !overlayUp();
+}
+
+void restoreUnderDrag();
+
+// Moves the line over the kept plot, and pushes what that changed.
+void moveDragLine(float rangeNm) {
+    restoreUnderDrag();
+    drawDragLine(rangeNm);
+    for (const LabelBox &b : g_dragDrawn) {
+        screen::markDirty(b.x, b.y, b.w, b.h);
+    }
+    screen::flush();
+}
+
+// Where the line last was, put back as the plot was under it, and marked for
+// the push.
+void restoreUnderDrag() {
+    uint16_t *canvas = (uint16_t *)screen::canvas().getBuffer();
+    int stride = screen::canvas().width();
+    for (const LabelBox &b : g_dragDrawn) {
+        if (b.w <= 0 || b.h <= 0) {
+            continue;
+        }
+        for (int y = b.y; y < b.y + b.h; y++) {
+            memcpy(canvas + (size_t)y * stride + b.x, g_dragCache.pixels + (size_t)(y - PLOT_T) * PLOT_W + (b.x - PLOT_L),
+                   b.w * 2);
+        }
+        screen::markDirty(b.x, b.y, b.w, b.h);
+    }
 }
 
 // The list, with Cancel as its last row, over whatever is drawn under it.
@@ -1438,7 +2111,7 @@ int collectChoices(int x, int y, bool withAirports) {
     for (const auto &b : blips) {
         if (n < MAX_CHOICES) {
             const Blip &bl = g_blips[b.second];
-            g_choices[n++] = {Choice::AIRCRAFT, bl.hex, bl.label, bl.ground, nullptr};
+            g_choices[n++] = {Choice::AIRCRAFT, bl.hex, blipLabel(bl), bl.ground, nullptr};
         }
     }
     return n;
@@ -1515,7 +2188,7 @@ Target tapTarget(int x, int y, bool withAirports, String &outId) {
 }  // namespace
 
 void radarScreenDraw(const std::vector<Aircraft> &aircraft, const std::vector<uint8_t> &isNew, double lat, double lon,
-                     int rangeNm, bool military, bool full) {
+                     int rangeNm, bool full) {
     ensureColors();
     if (full) {
         g_choiceCount = 0;
@@ -1525,7 +2198,8 @@ void radarScreenDraw(const std::vector<Aircraft> &aircraft, const std::vector<ui
         g_cardSurvivesRedraw = false;
         g_airportCard = nullptr;
         screen::clear(colorBg);
-        drawHeader(military);
+        drawHeader();
+        drawClock();
     }
     // With a list up, a refresh is drawn under it and pushed along with it -
     // as it is with a drag's line over it.
@@ -1562,11 +2236,25 @@ void radarScreenDraw(const std::vector<Aircraft> &aircraft, const std::vector<ui
     scene.homeLat = lat;
     scene.homeLon = lon;
     scene.mapOnly = mapOnly;
+    scene.partial = !following && !dragged && !overlayUp();
+    scene.autoRange = following && g_autoRange;
+    if (!dragged || full) {
+        g_dragCache.valid = false;
+    }
+    if (dragged && dragKept(false, (float)shownNm, scene.lat, scene.lon)) {
+        moveDragLine((float)shownNm);
+        return;
+    }
+    g_livePlot = true;  // the filter's funnel, over the plot's corner - a replay has none
     radarPlotDraw(scene, full);
+    g_livePlot = false;
     if (following) {
         radarTelemetryDraw(LIVE_TEL_X, LIVE_TEL_Y, g_heights, millis(), INT32_MIN, g_lostS);
     }
     if (dragged) {
+        if (!overlayUp()) {
+            keepPlotForDrag(false, (float)shownNm, scene.lat, scene.lon);
+        }
         drawDragLine((float)shownNm);
     }
     if (g_choiceCount) {
@@ -1641,7 +2329,7 @@ void radarScreenSetControls(RadarCentre centre, bool airports, FollowButton foll
     }
     if (followChanged) {
         drawFollowButton();
-        drawTitle(g_military);
+        drawTitle();
     }
     screen::flush();
 }
@@ -1679,6 +2367,64 @@ struct ContactView {
     const String &followHex;  // ringed, and always labelled; empty for none
 };
 
+// Where a label `lw` by `lh` goes in `slot` - below and right, below and
+// left, above and right, above and left - beside a contact at (px, py), and
+// outside its ring if it is the one followed.
+void labelSlot(int slot, int px, int py, int lw, int lh, bool followed, int &x, int &y) {
+    int off = followed ? 21 : 9, below = followed ? 12 : 7, above = followed ? 12 + lh : 7 + lh;
+    x = slot % 2 == 0 ? px + off : px - off - lw;
+    y = slot < 2 ? py + below : py - above;
+}
+
+bool offPlotSide(int x, int lw) { return x < CENTER_X - RADIUS || x + lw > CENTER_X + RADIUS; }
+
+// The followed aircraft's label, in one place beside its ring for as long as
+// it can be, rather than wherever is clear at each frame - which, with the
+// map moving under it and auto zoom changing the range, had it hop from side
+// to side. On the radar, in the middle of the plot, its place is kept for it
+// before anything else is placed - see reserveFollowLabel() - so it never has
+// to move; in the zoom, where it moves over the runways, the side it had is
+// tried first, and kept when nowhere is clear.
+struct FollowLabel {
+    String hex;
+    int slot = 0;
+    bool reserved = false;  // for this plot, at `box`
+    LabelBox box = {0, 0, 0, 0};
+};
+FollowLabel g_followLabel;
+
+// Keeps the followed aircraft's label its place on the radar, where it was
+// last - or below and right of its ring, the first time - among the map's
+// labels, which the airports', navaids' and other contacts' labels and the
+// names all keep clear of. Projected as drawContacts() projects it.
+void reserveFollowLabel(const std::vector<Aircraft> &aircraft, double lat, double lon, float pxPerNm,
+                        const String &hex) {
+    g_followLabel.reserved = false;
+    double nmPerDegLon = 60.0 * cos(lat * M_PI / 180.0);
+    for (const Aircraft &ac : aircraft) {
+        if (ac.hex != hex || !ac.hasPos) {
+            continue;
+        }
+        double dNorth = (ac.lat - lat) * 60.0;
+        double dEast = (ac.lon - lon) * nmPerDegLon;
+        float px = CENTER_X + (float)dEast * pxPerNm;
+        float py = CENTER_Y - (float)dNorth * pxPerNm;
+        int lw = Raster::textWidth(ac.callsign), lh = LABEL_H;
+        int slot = g_followLabel.hex == hex ? g_followLabel.slot : 0, x, y;
+        labelSlot(slot, (int)px, (int)py, lw, lh, true, x, y);
+        if (offPlotSide(x, lw)) {
+            slot ^= 1;  // the other side, on the plot
+            labelSlot(slot, (int)px, (int)py, lw, lh, true, x, y);
+        }
+        LabelBox box = {(int16_t)x, (int16_t)y, (int16_t)lw, (int16_t)lh};
+        g_followLabel = {hex, slot, true, box};
+        if (g_mapLabelCount < MAX_MAP_LABELS) {
+            g_mapLabels[g_mapLabelCount++] = box;
+        }
+        return;
+    }
+}
+
 // Trails, then contacts with their vectors and callsigns, each one noted for
 // radarPlotHit(). Inside the plot's clip, which the caller sets.
 void drawContacts(const std::vector<Aircraft> &aircraft, const std::vector<uint8_t> &isNew,
@@ -1692,12 +2438,20 @@ void drawContacts(const std::vector<Aircraft> &aircraft, const std::vector<uint8
     labelled = 0;
     LabelBox taken[MAX_LABELS];
     int takenCount = 0;
+    g_contactLabels.clear();
+    g_trafficBoxes.clear();
     g_blipCount = 0;
+    g_fastestKt = 0;
+    int32_t clipX, clipY, clipW, clipH;
+    canvas.getClipRect(&clipX, &clipY, &clipW, &clipH);
+    Raster out = {(uint16_t *)canvas.getBuffer(), canvas.width(), (int)clipX, (int)clipY,
+                  (int)(clipX + clipW - 1), (int)(clipY + clipH - 1), 0, 0};
 
     // Trails first, so every blip sits on top of its own and anyone else's.
     if (trails != nullptr) {
         bool penDown = false;
         int lastX = 0, lastY = 0;
+        out.use(colorTrail);
         for (const replay::TrailPoint &p : *trails) {
             if (isnan(p.lat)) {
                 penDown = false;
@@ -1706,9 +2460,11 @@ void drawContacts(const std::vector<Aircraft> &aircraft, const std::vector<uint8
             int x = CENTER_X + (int)lroundf((float)((p.lon - v.lon) * nmPerDegLon) * v.pxPerNm);
             int y = CENTER_Y - (int)lroundf((float)((p.lat - v.lat) * 60.0) * v.pxPerNm);
             if (penDown) {
-                canvas.drawLine(lastX, lastY, x, y, colorTrail);
+                out.line(lastX, lastY, x, y);
+                noteLine(lastX, lastY, x, y);
             } else {
-                canvas.fillCircle(x, y, 1, colorTrail);
+                out.disc(x, y, 1);
+                g_trafficBoxes.push_back({(int16_t)(x - 2), (int16_t)(y - 2), 5, 5});
             }
             lastX = x;
             lastY = y;
@@ -1732,6 +2488,9 @@ void drawContacts(const std::vector<Aircraft> &aircraft, const std::vector<uint8
             continue;
         }
         plotted++;
+        if (!ac.posStale) {
+            g_fastestKt = std::max(g_fastestKt, ac.speedStr.toFloat());
+        }
 
         bool isNewHere = (i < isNew.size()) && isNew[i];
         // A position the feed has lost, kept from the last it had, dimmed to
@@ -1742,6 +2501,10 @@ void drawContacts(const std::vector<Aircraft> &aircraft, const std::vector<uint8
                          : isNewHere                    ? colorNewBlip
                                                         : colorBlip;
 
+        // What it covers - blip, chevrons and ring if followed, and apart
+        // from them its vector - for the next frame to put back from the
+        // background.
+        int gx0 = (int)px - 6, gy0 = (int)py - 16, gx1 = (int)px + 7, gy1 = (int)py + 17;
         if (ac.hasTrack) {
             // How far it will fly in the lead time at its current groundspeed,
             // with a floor so a slow or speed-less contact still shows which
@@ -1757,32 +2520,44 @@ void drawContacts(const std::vector<Aircraft> &aircraft, const std::vector<uint8
             // usual ranges comes near it.
             len = std::min(len, RADIUS / 2.0f);
             float a = ac.track * (float)M_PI / 180.0f;
-            canvas.drawLine((int)px, (int)py, (int)(px + sinf(a) * len), (int)(py - cosf(a) * len), color);
+            out.use(color);
+            int vx = (int)(px + sinf(a) * len), vy = (int)(py - cosf(a) * len);
+            out.line((int)px, (int)py, vx, vy);
+            noteLine((int)px, (int)py, vx, vy);
         }
         bool onGround = (ac.status == "GROUND" || ac.status == "TAXI");
         if (v.zoomed && onGround) {
-            canvas.fillCircle((int)px, (int)py, 5, colorBg);  // hollow, over its own vector
-            canvas.drawCircle((int)px, (int)py, 5, color);
-            canvas.drawCircle((int)px, (int)py, 4, color);
+            out.use(colorBg);
+            out.disc((int)px, (int)py, 5);  // hollow, over its own vector
+            out.use(color);
+            out.ring((int)px, (int)py, 5);
+            out.ring((int)px, (int)py, 4);
         } else {
-            canvas.fillCircle((int)px, (int)py, 5, color);
+            out.use(color);
+            out.disc((int)px, (int)py, 5);
         }
-        drawTrend((int)px, (int)py, ac.status, color);
+        drawTrend(out, (int)px, (int)py, ac.status);
         bool followed = v.followHex.length() && ac.hex == v.followHex;
         if (followed) {
             // Clear of the trend chevrons, which reach 15px above and below.
-            canvas.drawCircle((int)px, (int)py, 17, colorHome);
-            canvas.drawCircle((int)px, (int)py, 18, colorHome);
+            out.use(colorHome);
+            out.ring((int)px, (int)py, 17);
+            out.ring((int)px, (int)py, 18);
+            gx0 = std::min(gx0, (int)px - 19);
+            gy0 = std::min(gy0, (int)py - 19);
+            gx1 = std::max(gx1, (int)px + 20);
+            gy1 = std::max(gy1, (int)py + 20);
         }
+        g_trafficBoxes.push_back({(int16_t)gx0, (int16_t)gy0, (int16_t)(gx1 - gx0), (int16_t)(gy1 - gy0)});
         if (g_blipCount < MAX_BLIPS) {
-            String label = ac.callsign;
-            if (ac.type.length() && ac.type != "----") {
-                label += "  " + ac.type;
-            }
-            if (ac.altStr != "?") {
-                label += "  " + (onGround ? String("GND") : ac.altStr + "ft");
-            }
-            g_blips[g_blipCount++] = {(int16_t)px, (int16_t)py, ac.hex, label, onGround};
+            Blip &b = g_blips[g_blipCount++];
+            b.x = (int16_t)px;
+            b.y = (int16_t)py;
+            b.hex = ac.hex;
+            b.callsign = ac.callsign;
+            b.type = ac.type;
+            b.altStr = ac.altStr;
+            b.ground = onGround;
         }
 
         // The label flashes between red and an ordinary contact's colour. A
@@ -1793,35 +2568,84 @@ void drawContacts(const std::vector<Aircraft> &aircraft, const std::vector<uint8
         uint16_t labelColor = flash == AlertFlash::RED ? colorEmergency
                               : flash == AlertFlash::OFF ? (isNewHere ? colorNewBlip : colorBlip)
                               : ac.posStale              ? colorFaint
+                              : color == colorBlip && isCargo(ac.callsign) ? colorCargo
                                                          : color;
 
         String sub;
         if (v.zoomed && ac.altStr != "?") {
             sub = onGround ? String("GND") : ac.altStr + "ft";
         }
-        canvas.setTextSize(2);
-        int lw = std::max(canvas.textWidth(ac.callsign), sub.length() ? canvas.textWidth(sub) : 0);
-        int lh = sub.length() ? 2 * LABEL_H + 2 : LABEL_H;
-        // The followed one's goes outside its ring.
-        int lx = (int)px + (followed ? 21 : 9);
-        int ly = (int)py + (followed ? 12 : 7);
-        if (lx + lw > CENTER_X + RADIUS) {
-            lx = (int)px - (followed ? 21 : 9) - lw;  // would run off the plot - put it on the left
-        }
         bool forced = followed || flash != AlertFlash::NONE;
-        bool clear = forced || !overlapsAny(taken, takenCount, lx, ly, lw, lh);
+        // In the zoom, one stopped on the ground - parked at a stand, as a
+        // busy airport's dozens are - is its ring alone: their callsigns and
+        // GNDs were a heap over Heathrow's runways, and what is moving is
+        // what there is to read.
+        if (v.zoomed && ac.status == "GROUND" && !forced) {
+            continue;
+        }
+        int lw = std::max(Raster::textWidth(ac.callsign), sub.length() ? Raster::textWidth(sub) : 0);
+        int lh = sub.length() ? 2 * LABEL_H + 2 : LABEL_H;
+        // Below and to the right of it, or failing that the left, or above
+        // either side - clear of the other labels, and of the map's: the
+        // airports' and navaids' labels and symbols, the ring distances and
+        // compass points, which a callsign used to be written over. The
+        // followed one's goes outside its ring, and stays put - see
+        // FollowLabel: kept its place on the radar, and in the zoom tried
+        // first where it was.
+        bool sticky = followed && g_followLabel.hex == ac.hex;
+        int kept = sticky ? g_followLabel.slot : 0;
+        int lx, ly;
+        bool clear = false;
+        if (sticky && g_followLabel.reserved) {
+            lx = g_followLabel.box.x;
+            ly = g_followLabel.box.y;
+            clear = true;
+        } else {
+            // Where it goes if forced, with nowhere clear: where it was, if it
+            // is the one followed, or else below - on the side on the plot.
+            int chosen = kept;
+            labelSlot(chosen, (int)px, (int)py, lw, lh, followed, lx, ly);
+            if (offPlotSide(lx, lw)) {
+                chosen ^= 1;
+                labelSlot(chosen, (int)px, (int)py, lw, lh, followed, lx, ly);
+            }
+            for (int k = -1; k < 4 && !clear; k++) {
+                int slot = k < 0 ? kept : k, x, y;
+                if (k >= 0 && slot == kept) {
+                    continue;
+                }
+                labelSlot(slot, (int)px, (int)py, lw, lh, followed, x, y);
+                if (offPlotSide(x, lw)) {
+                    continue;
+                }
+                if (!overlapsAny(taken, takenCount, x, y, lw, lh) &&
+                    !overlapsAny(g_mapLabels, g_mapLabelCount, x, y, lw, lh, 2) &&
+                    !overlapsAny(g_mapMarks.data(), (int)g_mapMarks.size(), x, y, lw, lh, 2)) {
+                    lx = x;
+                    ly = y;
+                    clear = true;
+                    chosen = slot;
+                }
+            }
+            if (followed) {
+                g_followLabel.hex = ac.hex;
+                g_followLabel.slot = chosen;
+            }
+        }
+        clear = clear || forced;
         if (clear && (takenCount < MAX_LABELS || forced)) {
-            canvas.setTextColor(labelColor);
-            canvas.setTextDatum(TL_DATUM);
-            canvas.drawString(ac.callsign, lx, ly);
+            out.use(labelColor);
+            out.text(ac.callsign, lx, ly);
             if (sub.length()) {
                 // Dimmer than the callsign, unless the contact is alerted.
-                canvas.setTextColor(color == colorBlip || color == colorNewBlip ? colorFaint : color);
-                canvas.drawString(sub, lx, ly + LABEL_H + 2);
+                out.use(color == colorBlip || color == colorNewBlip ? colorFaint : color);
+                out.text(sub, lx, ly + LABEL_H + 2);
             }
             if (takenCount < MAX_LABELS) {
                 taken[takenCount++] = {(int16_t)lx, (int16_t)ly, (int16_t)lw, (int16_t)lh};
             }
+            g_contactLabels.push_back({(int16_t)lx, (int16_t)ly, (int16_t)lw, (int16_t)lh});
+            g_trafficBoxes.push_back({(int16_t)lx, (int16_t)ly, (int16_t)(lw + 1), (int16_t)(lh + 1)});
             labelled++;
         }
     }
@@ -1852,6 +2676,99 @@ void pushPlot(bool push, int leftTop) {
 
 }  // namespace
 
+// The last frame's traffic taken off a plot whose background is kept - see
+// Background - by putting back what was under it: the first half of a
+// refresh of the traffic alone. With the radar's names, which the background
+// is kept without, where the last full draw put them.
+void restoreTraffic(bool names) {
+    g_trafficWas.swap(g_trafficBoxes);
+    for (const LabelBox &b : g_trafficWas) {
+        restoreBackground(b);
+    }
+    if (names) {
+        for (const LabelBox &b : g_trafficWas) {
+            drawNameLetters(std::max<int>(b.x, PLOT_L), std::max<int>(b.y, PLOT_T), std::min<int>(b.x + b.w, PLOT_R),
+                            std::min<int>(b.y + b.h, PLOT_B));
+        }
+    }
+}
+
+// And the second, once the traffic is drawn where it is now: the places it
+// was and is pushed - or, if a crowd makes that the slower, the plot whole -
+// and the footer with them if `footer` says it has changed. The left
+// margin's readouts are the same for as long as the view is. Twenty aircraft
+// are a dozen boxes, a fraction of the 26.7ms the whole plot takes to push.
+void pushTraffic(bool push, bool footer) {
+    // Where the traffic was and is, clipped to the plot and run together.
+    static std::vector<screen::Region> boxes;
+    boxes.clear();
+    for (const std::vector<LabelBox> *list : {&g_trafficWas, &g_trafficBoxes}) {
+        for (const LabelBox &b : *list) {
+            int x0 = std::max<int>(b.x, PLOT_L), x1 = std::min<int>(b.x + b.w, PLOT_R);
+            int y0 = std::max<int>(b.y, PLOT_T), y1 = std::min<int>(b.y + b.h, PLOT_B);
+            if (x1 > x0 && y1 > y0) {
+                boxes.push_back({(int16_t)x0, (int16_t)y0, (int16_t)(x1 - x0), (int16_t)(y1 - y0)});
+            }
+        }
+    }
+    mergeBoxes(boxes);
+    // A push is 0.085ms and 53ns a pixel; the whole plot is 26.7ms.
+    float cost = 0;
+    for (const screen::Region &b : boxes) {
+        cost += 0.085f + b.w * b.h * 0.000053f;
+    }
+    bool whole = cost > 24.0f;
+    if (!push) {
+        for (const screen::Region &b : boxes) {
+            screen::markDirty(b.x, b.y, b.w, b.h);
+        }
+    } else if (whole) {
+        screen::markDirty(PLOT_L, PLOT_T, PLOT_R - PLOT_L, PLOT_B - PLOT_T);
+        screen::flush();
+    } else {
+        screen::pushRects(boxes.data(), (int)boxes.size());
+    }
+    if (footer) {
+        screen::markDirty(FOOT_L, FOOT_T, FOOT_R - FOOT_L, FOOT_B - FOOT_T);
+    }
+    if (push) {
+        screen::flush();
+    }
+}
+
+// A refresh of the radar's traffic alone - see Background.
+void refreshTraffic(const RadarScene &scene, double lat, double lon, int rangeNm, int step, uint32_t t0) {
+    auto &canvas = screen::canvas();
+    restoreTraffic(true);
+    canvas.setFont(&fonts::Font0);
+    canvas.setClipRect(PLOT_L, PLOT_T, PLOT_R - PLOT_L, PLOT_B - PLOT_T);
+    int plotted = 0, labelled = 0;
+    uint32_t t1 = micros();
+    drawContacts(scene.aircraft, scene.isNew, scene.trails, scene.flash,
+                 {lat, lon, (float)RADIUS / rangeNm, 60.0f, false, scene.followHex}, plotted, labelled);
+    canvas.clearClipRect();
+    // The footer's readouts, the same for as long as the view is but the
+    // count, drawn again over themselves - the traffic put back may have
+    // taken a piece out of one where it reaches into the plot's column - and
+    // the count erased and drawn afresh, and pushed, only when it changes.
+    String count = contactsText(plotted, labelled);
+    bool recount = !scene.mapOnly && count != g_countShown;
+    if (recount) {
+        canvas.fillRect(FOOT_L, FOOT_T, FOOT_R - FOOT_L, FOOT_B - FOOT_T, colorBg);
+    }
+    footerBox(rangeText(rangeNm, step, scene.autoRange), 16, FOOTER_Y, false);
+    if (!scene.mapOnly) {
+        footerBox("^ climb   v descent", 1264, FOOTER_Y - LEGEND_OFFSET, true);
+        drawCount(count);
+    }
+    uint32_t t2 = micros();
+    g_backgroundUs += t1 - t0;
+    g_contactsUs += t2 - t1;
+    g_plotFrames++;
+    pushTraffic(scene.push, recount);
+    g_pushUs += micros() - t2;
+}
+
 void radarPlotDraw(const RadarScene &scene, bool full) {
     ensureColors();
     uint32_t t0 = micros();
@@ -1859,13 +2776,8 @@ void radarPlotDraw(const RadarScene &scene, bool full) {
     double lat = scene.lat, lon = scene.lon;
     int rangeNm = scene.rangeNm;
     RadarCentre centre = scene.centre;
-    if (!full) {
-        screen::fillRect(PLOT_L, PLOT_T, PLOT_R - PLOT_L, PLOT_B - PLOT_T, colorBg);
-        canvas.fillRect(FOOT_L, FOOT_T, FOOT_R - FOOT_L, FOOT_B - FOOT_T, colorBg);
-    }
-    canvas.setFont(&fonts::Font0);
 
-    // Centred on the airport, the cross is tagged with its code so the centre
+    // Centred on the airport, the centre is its symbol and its code, so it
     // says where it is; centred on home, it is a bare cross. Airport mode with
     // nothing in range of the lookup falls back to home, since there is no
     // other point to centre on.
@@ -1877,15 +2789,51 @@ void radarPlotDraw(const RadarScene &scene, bool full) {
         lon = airport.lon;
         centreCode = airport.code;
     }
+    int step = g_ringsOn ? ringStep(rangeNm) : 0;
+    bool drawsAirports = (scene.airports && centreCode.length()) || following || scene.everyAirport;
+
+    // What the plot is of, all but its traffic: if it is what the background
+    // kept was, and only the traffic has moved, the refresh is of that alone.
+    BackgroundKey key;
+    memset(&key, 0, sizeof(key));  // padding and all, for the compare
+    key.lat = lat;
+    key.lon = lon;
+    key.homeLat = scene.homeLat;
+    key.homeLon = scene.homeLon;
+    key.rangeNm = rangeNm;
+    key.mapLevels = coastLevels();
+    key.coast = g_coastOn;
+    key.rings = step != 0;
+    key.navaids = g_navaidsOn;
+    key.airports = drawsAirports;
+    key.everyAirport = scene.everyAirport;
+    key.freeLook = scene.freeLook;
+    key.markHome = scene.markHome;
+    key.mapOnly = scene.mapOnly;
+    strncpy(key.centreCode, centreCode.c_str(), sizeof(key.centreCode) - 1);
+    // Kept for this view - which with a list up, say, it stays, though the
+    // plot is drawn whole under it.
+    bool canKeep = scene.partial && !following;
+    bool keptFor = g_background.valid && sameBackground(key, g_background.key);
+    if (!full && canKeep && keptFor && millis() - g_background.wholeMs < NAMES_MAX_MS && trafficCheap()) {
+        refreshTraffic(scene, lat, lon, rangeNm, step, t0);
+        return;
+    }
+
+    if (!full) {
+        screen::fillRect(PLOT_L, PLOT_T, PLOT_R - PLOT_L, PLOT_B - PLOT_T, colorBg);
+        canvas.fillRect(FOOT_L, FOOT_T, FOOT_R - FOOT_L, FOOT_B - FOOT_T, colorBg);
+    }
+    canvas.setFont(&fonts::Font0);
 
     // --- the map, then rings and bearings over it --------------------------
     drawCoast(lat, lon, (float)rangeNm);
-    int step = g_ringsOn ? ringStep(rangeNm) : 0;
     drawScope((float)rangeNm, (float)step);
 
     g_airportHitCount = 0;
     g_navaidHitCount = 0;
     g_mapLabelCount = 0;
+    g_airportAtCentre = false;
     if (centreCode.length()) {
         canvas.setTextSize(2);
         canvas.setTextColor(colorHome);
@@ -1896,14 +2844,15 @@ void radarPlotDraw(const RadarScene &scene, bool full) {
         noteAirportHit(airport.code, CENTER_X, CENTER_Y, label);
         g_mapLabels[g_mapLabelCount++] = label;
         g_airfieldSpots.push_back({(float)CENTER_X, (float)CENTER_Y});  // the cross is its symbol
+        // Its symbol, as every other airport has, in home's colour - and no
+        // cross: the cross is home's own, for the plot centred on home.
+        drawAirfield(CENTER_X, CENTER_Y, colorHome);
     }
     // Following, the centre is the aircraft, ringed where it is drawn.
     // Dragged off its own centre, the middle is nowhere in particular: a
     // smaller, dimmer cross says where it is, and home keeps its own where
     // home is, if that is still on the plot.
     if (scene.freeLook) {
-        canvas.drawLine(CENTER_X - 5, CENTER_Y, CENTER_X + 5, CENTER_Y, colorMuted);
-        canvas.drawLine(CENTER_X, CENTER_Y - 5, CENTER_X, CENTER_Y + 5, colorMuted);
         int hx = CENTER_X + (int)lround((scene.homeLon - lon) * 60.0 * cos(lat * M_PI / 180.0) / rangeNm * RADIUS);
         int hy = CENTER_Y - (int)lround((scene.homeLat - lat) * 60.0 / rangeNm * RADIUS);
         if (scene.markHome && insideScope(hx - 9, hy - 9, 18, 18, 0)) {
@@ -1911,7 +2860,7 @@ void radarPlotDraw(const RadarScene &scene, bool full) {
             canvas.drawLine(hx, hy - 9, hx, hy + 9, colorHome);
             noteMark(hx - 9, hy - 9, 19, 19);
         }
-    } else if (!following) {
+    } else if (!following && !centreCode.length()) {
         canvas.drawLine(CENTER_X - 9, CENTER_Y, CENTER_X + 9, CENTER_Y, colorHome);
         canvas.drawLine(CENTER_X, CENTER_Y - 9, CENTER_X, CENTER_Y + 9, colorHome);
     }
@@ -1925,13 +2874,42 @@ void radarPlotDraw(const RadarScene &scene, bool full) {
     // on a replay switched to HOME. Following, they are always on, whichever
     // view it was picked from: they say where it might be going - and
     // following a departure, where it came from.
-    if ((scene.airports && centreCode.length()) || following || scene.everyAirport) {
+    // Following, its label's place kept for it before the map's labels go on.
+    if (following) {
+        reserveFollowLabel(scene.aircraft, lat, lon, (float)RADIUS / rangeNm, scene.followHex);
+    } else {
+        g_followLabel.reserved = false;
+    }
+    if (drawsAirports) {
         drawAirports(lat, lon, rangeNm, centreCode, following ? scene.originCode : String());
     }
-    if (g_navaidsOn && !scene.mapOnly) {
-        drawNavaids(lat, lon, rangeNm);
+    // A free look's middle, a small dim cross - but not over an airport's
+    // symbol there, as one opened from its zoom is centred on: the airport
+    // says where the middle is, and a cross is home's.
+    if (scene.freeLook && !g_airportAtCentre) {
+        canvas.drawLine(CENTER_X - 5, CENTER_Y, CENTER_X + 5, CENTER_Y, colorMuted);
+        canvas.drawLine(CENTER_X, CENTER_Y - 5, CENTER_X, CENTER_Y + 5, colorMuted);
     }
-    // Clear of all of those.
+    // Past 150nm their labels would bury the traffic: the symbols alone,
+    // still there to tap for a card. With none drawn, none to tap.
+    constexpr int NAVAID_LABELS_MAX_NM = 150;
+    if (g_navaidsOn && !scene.mapOnly) {
+        drawNavaids(lat, lon, rangeNm, rangeNm <= NAVAID_LABELS_MAX_NM);
+    } else {
+        g_navaidHitCount = 0;
+    }
+
+    // The background kept before the names go on, as they move with the
+    // traffic - see drawNames().
+    if (canKeep && g_background.pending && sameBackground(key, g_background.key)) {
+        keepBackground();
+        g_background.pending = false;
+    } else if (!keptFor) {
+        g_background.valid = false;
+        g_background.pending = canKeep;
+        g_background.key = key;
+    }  // else a crowd, a list or the names' minute drawn whole over a background still kept
+    g_background.wholeMs = millis();
     drawNames(lat, lon, (float)rangeNm);
 
     int plotted = 0, labelled = 0;
@@ -1940,6 +2918,10 @@ void radarPlotDraw(const RadarScene &scene, bool full) {
                  {lat, lon, (float)RADIUS / rangeNm, 60.0f, false, scene.followHex}, plotted, labelled);
 
     canvas.clearClipRect();
+    // Out over the plot's corner, so wiped with it: put back each time.
+    if (g_livePlot) {
+        drawFilterIcon();
+    }
 
     // --- footings ---------------------------------------------------------
     // Stacked in the bottom right rather than run along the bottom left: the
@@ -1953,12 +2935,10 @@ void radarPlotDraw(const RadarScene &scene, bool full) {
     if (!full) {
         canvas.fillRect(0, RANGE_BOX_T, PLOT_L, BOX_H, colorBg);
     }
-    footerBox(String(rangeNm) + " nm range" + (step ? "   rings every " + String(step) + " nm" : String()), 16, FOOTER_Y,
-              false);
+    footerBox(rangeText(rangeNm, step, scene.autoRange), 16, FOOTER_Y, false);
     if (!scene.mapOnly) {
         footerBox("^ climb   v descent", 1264, FOOTER_Y - LEGEND_OFFSET, true);
-        footerBox(String(plotted) + " contacts" + (labelled < plotted ? "   " + String(labelled) + " labelled" : ""),
-                  1264, FOOTER_Y, true);
+        drawCount(contactsText(plotted, labelled));
     }
 
     uint32_t t2 = micros();
@@ -2400,6 +3380,7 @@ void drawZoomHeader() {
         what += ", " + String(closed) + " closed";
     }
     canvas.drawString(what, 16, TITLE_LINE2_Y);
+    drawMuteIcon();
     // FOLLOW where the radar has it, working the same way: a tap, then a
     // contact - one at the gate, say, to follow it out - with what it is
     // doing said under the title.
@@ -2432,6 +3413,11 @@ void drawZoomHeader() {
 bool radarZoomOnFollowed() { return g_zoomOnFollowed; }
 
 float radarZoomViewNm() { return g_zoomViewNm < g_zoom.framedNm - 0.01f ? g_zoomViewNm : 0.0f; }
+
+void radarZoomRefreshButtons() {
+    ensureColors();
+    drawZoomViewButtons();
+}
 
 void radarZoomSetViewNm(float nm) {
     g_zoomViewNm = nm > 0 ? std::min(nm, g_zoom.framedNm) : g_zoom.framedNm;
@@ -2475,7 +3461,8 @@ bool g_zoomMapOnly = false;
 // The zoom's plot and footer readouts, for frame `f`: what the live zoom and
 // a replay of one both draw. As radarPlotDraw(): with `full` the caller has
 // cleared the screen and flushes; without it, only the plot and the footer
-// are erased and redrawn, and pushed as `push` says.
+// are erased and redrawn, and pushed as `push` says - or with `partial`,
+// where only the traffic has moved since the last, only that: see Background.
 //
 // Zoomed in past its framing with an aircraft followed, it is the aircraft
 // that stays in the middle - touching down, rolling out and taxiing to its
@@ -2484,7 +3471,7 @@ bool g_zoomMapOnly = false;
 // where it was.
 bool zoomPlot(const ZoomFrame &framed, const std::vector<Aircraft> &aircraft,
               const std::vector<replay::TrailPoint> *trails, bool flash, const String &followHex, bool full,
-              bool push, uint32_t nowMs, InUseMemory &memory) {
+              bool push, bool partial, uint32_t nowMs, InUseMemory &memory) {
     auto &canvas = screen::canvas();
     uint32_t t0 = micros();
     ZoomFrame f = framed;
@@ -2499,70 +3486,127 @@ bool zoomPlot(const ZoomFrame &framed, const std::vector<Aircraft> &aircraft,
             }
         }
     }
-    if (!full) {
-        screen::fillRect(PLOT_L, PLOT_T, PLOT_R - PLOT_L, PLOT_B - PLOT_T, colorBg);
-        canvas.fillRect(FOOT_L, FOOT_T, FOOT_R - FOOT_L, FOOT_B - FOOT_T, colorBg);
-    }
-    canvas.setFont(&fonts::Font0);
-
     float range = f.rangeNm;
     float step = range > 3.0f ? 1.0f : range > 1.0f ? 0.5f : 0.25f;
-    drawScope(range, step);
-    g_mapLabelCount = 0;
-
-    canvas.setClipRect(PLOT_L, PLOT_T, PLOT_R - PLOT_L, PLOT_B - PLOT_T);
     bool inUse[MAX_ZOOM_RUNWAYS][2], recent[MAX_ZOOM_RUNWAYS][2];
     runwaysInUse(f, aircraft, inUse);
     portENTER_CRITICAL(&g_inUseMux);
     memory.update(f, inUse, nowMs, recent);
     portEXIT_CRITICAL(&g_inUseMux);
+    static const std::vector<uint8_t> noneNew;  // the radar marks new contacts; here they are all just traffic
+    g_followLabel.reserved = false;  // the radar's place for the followed one's label isn't the zoom's
+    // The lead in proportion to the range, so closer in the vectors are no
+    // longer on the plot than at the framing.
+    float leadS = ZOOM_LEAD_S * std::min(1.0f, range / f.framedNm);
+    ContactView view = {f.lat, f.lon, RADIUS / range, leadS, true, followHex};
+
+    // As the radar's, with the runways in use over the range when there are
+    // any - the ends in use now, or in a lull those lately.
+    auto footers = [&](const String &count) {
+        footerBox(nmText(range) + " nm range   rings every " + nmText(step) + " nm", 16, FOOTER_Y, false);
+        String used, lately;
+        for (int r = 0; r < f.runwayCount; r++) {
+            for (int k = 0; k < 2; k++) {
+                if (inUse[r][k]) {
+                    used += String(" ") + f.runways[r].end[k].ident;
+                } else if (recent[r][k]) {
+                    lately += String(" ") + f.runways[r].end[k].ident;
+                }
+            }
+        }
+        if (used.length()) {
+            footerBox("in use:" + used, 16, FOOTER_Y - LEGEND_OFFSET, false);
+        } else if (lately.length()) {
+            footerBox("last in use:" + lately, 16, FOOTER_Y - LEGEND_OFFSET, false);
+        }
+        // Not while a drag's line has it drawn without its traffic.
+        if (!g_zoomMapOnly) {
+            footerBox("o ground   ^ climb   v descent", 1264, FOOTER_Y - LEGEND_OFFSET, true);
+            drawCount(count);
+        }
+    };
+
+    // What the plot is of, all but its traffic, as the radar has it: the
+    // runway ends marked in use go with it, as they are drawn under it.
+    BackgroundKey key;
+    memset(&key, 0, sizeof(key));  // padding and all, for the compare
+    key.zoom = true;
+    key.lat = f.lat;
+    key.lon = f.lon;
+    key.zoomNm = range;
+    key.navaids = g_navaidsOn;
+    key.mapOnly = g_zoomMapOnly;
+    strncpy(key.centreCode, f.code.c_str(), sizeof(key.centreCode) - 1);
+    for (int r = 0; r < f.runwayCount; r++) {
+        for (int k = 0; k < 2; k++) {
+            key.runwaysInUse |= (uint32_t)inUse[r][k] << (2 * r + k);
+            key.runwaysRecent |= (uint32_t)recent[r][k] << (2 * r + k);
+        }
+    }
+    // Not centred on the aircraft followed: the runways move under it.
+    bool canKeep = partial && !onFollowed;
+    bool keptFor = g_background.valid && sameBackground(key, g_background.key);
+    if (!full && canKeep && keptFor && trafficCheap()) {
+        restoreTraffic(false);
+        canvas.setFont(&fonts::Font0);
+        canvas.setClipRect(PLOT_L, PLOT_T, PLOT_R - PLOT_L, PLOT_B - PLOT_T);
+        int plotted = 0, labelled = 0;
+        uint32_t t1 = micros();
+        drawContacts(aircraft, noneNew, trails, flash, view, plotted, labelled);
+        uint32_t t2 = micros();
+        canvas.clearClipRect();
+        // As the radar's refresh has its footer: see refreshTraffic().
+        String count = contactsText(plotted, labelled);
+        bool recount = !g_zoomMapOnly && count != g_countShown;
+        if (recount) {
+            canvas.fillRect(FOOT_L, FOOT_T, FOOT_R - FOOT_L, FOOT_B - FOOT_T, colorBg);
+        }
+        footers(count);
+        g_backgroundUs += t1 - t0;
+        g_contactsUs += t2 - t1;
+        g_plotFrames++;
+        pushTraffic(push, recount);
+        g_pushUs += micros() - t2;
+        return onFollowed;
+    }
+
+    if (!full) {
+        screen::fillRect(PLOT_L, PLOT_T, PLOT_R - PLOT_L, PLOT_B - PLOT_T, colorBg);
+        canvas.fillRect(FOOT_L, FOOT_T, FOOT_R - FOOT_L, FOOT_B - FOOT_T, colorBg);
+    }
+    canvas.setFont(&fonts::Font0);
+    drawScope(range, step);
+    g_mapLabelCount = 0;
+
+    canvas.setClipRect(PLOT_L, PLOT_T, PLOT_R - PLOT_L, PLOT_B - PLOT_T);
     drawRunways(f, inUse, recent);
     // Over the runways, which an airport's own often sits beside.
     g_navaidHitCount = 0;
     if (g_navaidsOn) {
         drawNavaids(f.lat, f.lon, range);
     }
-    static const std::vector<uint8_t> noneNew;  // the radar marks new contacts; here they are all just traffic
+    if (canKeep && g_background.pending && sameBackground(key, g_background.key)) {
+        keepBackground();
+        g_background.pending = false;
+    } else if (!keptFor) {
+        g_background.valid = false;
+        g_background.pending = canKeep;
+        g_background.key = key;
+    }
+    g_background.wholeMs = millis();
     int plotted = 0, labelled = 0;
     uint32_t t1 = micros();
-    // The lead in proportion to the range, so closer in the vectors are no
-    // longer on the plot than at the framing.
-    float leadS = ZOOM_LEAD_S * std::min(1.0f, range / f.framedNm);
-    drawContacts(aircraft, noneNew, trails, flash, {f.lat, f.lon, RADIUS / range, leadS, true, followHex}, plotted,
-                 labelled);
+    drawContacts(aircraft, noneNew, trails, flash, view, plotted, labelled);
     uint32_t t2 = micros();
     g_backgroundUs += t1 - t0;
     g_contactsUs += t2 - t1;
     g_plotFrames++;
     canvas.clearClipRect();
 
-    // As the radar's, with the runways in use over the range when there are any.
     if (!full) {
         canvas.fillRect(0, IN_USE_BOX_T, PLOT_L, RANGE_BOX_T + BOX_H - IN_USE_BOX_T, colorBg);
     }
-    footerBox(nmText(range) + " nm range   rings every " + nmText(step) + " nm", 16, FOOTER_Y, false);
-    // The ends in use now - or, in a lull, those lately.
-    String used, lately;
-    for (int r = 0; r < f.runwayCount; r++) {
-        for (int k = 0; k < 2; k++) {
-            if (inUse[r][k]) {
-                used += String(" ") + f.runways[r].end[k].ident;
-            } else if (recent[r][k]) {
-                lately += String(" ") + f.runways[r].end[k].ident;
-            }
-        }
-    }
-    if (used.length()) {
-        footerBox("in use:" + used, 16, FOOTER_Y - LEGEND_OFFSET, false);
-    } else if (lately.length()) {
-        footerBox("last in use:" + lately, 16, FOOTER_Y - LEGEND_OFFSET, false);
-    }
-    // Not while a drag's line has it drawn without its traffic.
-    if (!g_zoomMapOnly) {
-        footerBox("o ground   ^ climb   v descent", 1264, FOOTER_Y - LEGEND_OFFSET, true);
-        footerBox(String(plotted) + " contacts" + (labelled < plotted ? "   " + String(labelled) + " labelled" : ""),
-                  1264, FOOTER_Y, true);
-    }
+    footers(contactsText(plotted, labelled));
 
     if (!full) {
         uint32_t t3 = micros();
@@ -2588,6 +3632,7 @@ void radarZoomDraw(const std::vector<Aircraft> &aircraft, bool full) {
         g_airportCard = nullptr;
         screen::clear(colorBg);
         drawZoomHeader();
+        drawClock();
     }
     // With a list or card up, a refresh is drawn under it and pushed along
     // with it - as it is with a drag's line over it.
@@ -2611,10 +3656,18 @@ void radarZoomDraw(const std::vector<Aircraft> &aircraft, bool full) {
         view.rangeNm = dragRangeNm(view.rangeNm);
     }
     bool mapOnly = view.rangeNm != g_zoomViewNm;
+    if (!dragged || full) {
+        g_dragCache.valid = false;
+    }
+    if (dragged && !following && dragKept(true, view.rangeNm, view.lat, view.lon)) {
+        moveDragLine(view.rangeNm);
+        return;
+    }
     static const std::vector<Aircraft> noAircraft;
     g_zoomMapOnly = mapOnly;
     g_zoomOnFollowed = zoomPlot(view, mapOnly ? noAircraft : aircraft, nullptr, true, g_zoomFollowHex, full,
-                                !overlayUp() && !dragged, millis(), g_liveInUse);
+                                !overlayUp() && !dragged, !overlayUp() && !dragged && !mapOnly, millis(),
+                                g_liveInUse);
     g_zoomMapOnly = false;
     // Following into the zoom, its height against the field's.
     if (following) {
@@ -2631,6 +3684,9 @@ void radarZoomDraw(const std::vector<Aircraft> &aircraft, bool full) {
         drawAirportCard();
     }
     if (dragged) {
+        if (!overlayUp() && !following) {
+            keepPlotForDrag(true, view.rangeNm, view.lat, view.lon);
+        }
         drawDragLine(view.rangeNm);
     }
     if (full || overlayUp() || following || dragged) {
@@ -2647,7 +3703,7 @@ bool radarZoomPlotDraw(const RadarScene &scene, const String &code, bool full) {
     if (scene.zoomRangeNm > 0) {
         view.rangeNm = std::min(scene.zoomRangeNm, view.framedNm);
     }
-    zoomPlot(view, scene.aircraft, scene.trails, scene.flash, scene.followHex, full, scene.push, scene.nowMs,
+    zoomPlot(view, scene.aircraft, scene.trails, scene.flash, scene.followHex, full, scene.push, false, scene.nowMs,
              g_replayInUse);
     return true;
 }
@@ -2657,6 +3713,42 @@ void radarScreenSetNavaids(bool on) { g_navaidsOn = on; }
 void radarScreenSetCoast(bool on) { g_coastOn = on; }
 
 void radarScreenSetRings(bool on) { g_ringsOn = on; }
+
+void radarScreenSetMuted(bool muted, bool onScreen) {
+    g_soundMuted = muted;
+    if (onScreen) {
+        ensureColors();
+        drawMuteIcon();
+        screen::flush();
+    }
+}
+
+void radarScreenSetClock(ClockZone zone) {
+    if (zone != g_clockZone) {
+        g_clockZone = zone;
+        g_clockMinute = -1;  // drawn again at the next tick
+    }
+}
+
+void radarScreenTickClock() {
+    if (g_clockZone == ClockZone::OFF) {
+        return;
+    }
+    time_t now = time(nullptr);
+    struct tm utc;
+    gmtime_r(&now, &utc);
+    if (now > 1600000000 && utc.tm_hour * 60 + utc.tm_min != g_clockMinute) {
+        ensureColors();
+        drawClock();
+        screen::flush();
+    }
+}
+
+bool radarScreenHitMute(int x, int y) { return abs(x - MUTE_CX) <= MUTE_HIT && abs(y - MUTE_CY) <= MUTE_HIT; }
+
+bool radarScreenHitFilter(int x, int y) {
+    return abs(x - FILTER_CX) <= FILTER_HIT && abs(y - FILTER_CY) <= FILTER_HIT && !radarScreenHitMute(x, y);
+}
 
 void radarLiveRunwaysInUse(recorder::RunwaysInUse &out) {
     out = recorder::RunwaysInUse();
@@ -2734,7 +3826,7 @@ ZoomAction radarZoomHandleTouch(int x, int y, String &outHex) {
                 }
             }
             g_zoomViewNm = next;
-            return ZoomAction::REDRAW;
+            return ZoomAction::RANGE;
         }
         if (b == BTN_ZOOM_OUT) {
             if (g_zoomViewNm >= g_zoom.framedNm - 0.01f) {
@@ -2748,7 +3840,7 @@ ZoomAction radarZoomHandleTouch(int x, int y, String &outHex) {
                 }
             }
             g_zoomViewNm = next;
-            return ZoomAction::REDRAW;
+            return ZoomAction::RANGE;
         }
     }
     switch (tapTarget(x, y, false, outHex)) {
@@ -2885,6 +3977,30 @@ bool radarScreenFreeLook(double &lat, double &lon) {
 }
 
 void radarScreenSetMapOnly(bool on) { g_mapOnly = on; }
+
+void radarScreenRedrawTitle() {
+    ensureColors();
+    drawTitle();
+    screen::flush();  // on its own, so it isn't taken into a box with the plot after it
+}
+void radarScreenSetFiltered(bool on) { g_filtered = on; }
+
+void radarScreenSetAutoRange(bool on) { g_autoRange = on; }
+
+void radarDrawFunnel(int cx, int cy, int r, bool lit) {
+    ensureColors();
+    drawFunnel(cx, cy, r, lit);
+}
+
+float radarFastestKt() { return g_fastestKt; }
+
+void radarScreenLookAt(double lat, double lon, double homeLat, double homeLon) {
+    g_radarLook.active = true;
+    g_radarLook.lat = lat;
+    g_radarLook.lon = lon;
+    g_radarLook.fromLat = homeLat;
+    g_radarLook.fromLon = homeLon;
+}
 
 bool radarScreenEndFreeLook() {
     bool was = g_radarLook.active;
@@ -3100,3 +4216,6 @@ void radarTelemetryDraw(int x, int y, const std::vector<FollowSample> &samples, 
     canvas.setTextDatum(TR_DATUM);
     canvas.drawString("now", cx + cw, cy + ch + 6);
 }
+
+
+

@@ -33,3 +33,11 @@ struct CoastPlot {
 // pixels, so the caller marks the circle as changed. Says how many strokes
 // it took.
 int coastDraw(const CoastPlot &plot);
+
+// Starts building the thinned copies of the map the widest ranges draw from,
+// in the background on core 0 - see coast.cpp. Once, at start-up.
+void coastBegin();
+
+// How many of those there are yet, the full map counted: a plot drawn before
+// one is built and after it can differ by a pixel here and there.
+int coastLevels();

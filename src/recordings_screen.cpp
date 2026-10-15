@@ -156,7 +156,10 @@ void drawRow(int i) {
             detail += ", part " + String(row.header.part);  // carries on from the one below it
         }
         if (row.header.followHex.length()) {
-            detail += "    " + String(row.header.followRangeNm) + " nm around it";  // not home's radius
+            // Not home's radius: the range around the aircraft as it began,
+            // or auto zoom, which had it changing with the sky.
+            detail += row.header.followAuto ? String("    auto zoom")
+                                            : "    " + String(row.header.followRangeNm) + " nm around it";
         } else {
             detail += "    " + String(row.header.radiusNm) + " nm " + (row.header.military ? "military" : "civil");
         }

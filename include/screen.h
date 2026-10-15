@@ -72,6 +72,13 @@ int takeChanged(Region *out, int max);
 // `out`. Widened to even edges, which YUV 4:2:0's shared colour needs.
 bool toYuv420(uint8_t *out, size_t outBytes, const Region &r);
 
+// Regions pushed to the panel now, each as it is, outside the dirty list -
+// for a plot that knows the few small places it changed, which flush()'s
+// sixteen merged regions would have made one box of nearly the whole plot.
+// A transfer is 0.085ms and 53ns a pixel, measured: twenty small boxes cost a
+// fifth of the plot pushed whole. Kept for the encoder, as markDirty() would.
+void pushRects(const Region *rects, int n);
+
 // Writes the canvas to Serial as a screenshot, for tools/screenshot.py: a
 // header line, then the raw 1280x720 RGB565 pixels as the canvas holds them.
 // The canvas is landscape whatever the panel's rotation, so this is exactly

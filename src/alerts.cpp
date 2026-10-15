@@ -103,13 +103,13 @@ String watchlistProblem(const String &text) {
     return "Can't match " + bad + " - use letters, digits and dashes, 2 to 10 long";
 }
 
-uint8_t evaluateAlert(const Aircraft &ac, const AlertRules &rules, bool civilMode) {
+uint8_t evaluateAlert(const Aircraft &ac, const AlertRules &rules) {
     uint8_t reasons = 0;
     if ((rules.enabled & ALERT_EMERGENCY) &&
         (ac.squawk == "7700" || ac.squawk == "7600" || ac.squawk == "7500")) {
         reasons |= ALERT_EMERGENCY;
     }
-    if ((rules.enabled & ALERT_MILITARY) && civilMode && ac.military) {
+    if ((rules.enabled & ALERT_MILITARY) && ac.military) {
         reasons |= ALERT_MILITARY;
     }
     if ((rules.enabled & ALERT_WATCHLIST) && matchesWatchlist(ac, rules.watch)) {

@@ -99,6 +99,28 @@ File g_file;
 bool g_loaded = false;
 recorder::Header g_header;
 std::vector<Frame> g_frames;
+// Following, each change of the radar's range around the aircraft, and of a
+// zoom's, and when - see recorder.h's `R` and `Z` lines - in order. Absent
+// from older recordings.
+struct RangeAt {
+    uint32_t ms;
+    float nm;
+};
+std::vector<RangeAt> g_ranges, g_zoomRanges;
+// And the filter the table and the radar were showing the traffic through -
+// recorder.h's `Q` lines - from when each was put in force.
+struct FilterAt {
+    uint32_t ms;
+    TrafficFilterSet filter;
+};
+std::vector<FilterAt> g_filters;
+
+// The range a poll's view had at absolute `abs` ms: as the poll latest then
+// recorded it, or as changed since - `marks` - before the next.
+float rangeAt(const std::vector<RangeAt> &marks, uint32_t abs, uint32_t pollMs, float atPoll) {
+    auto it = std::upper_bound(marks.begin(), marks.end(), abs, [](uint32_t v, const RangeAt &r) { return v < r.ms; });
+    return it != marks.begin() && (it - 1)->ms > pollMs ? (it - 1)->nm : atPoll;
+}
 // The trail index is the one thing here that grows with the recording: a
 // point per aircraft per poll, so tens of thousands over a long one. Kept in
 // PSRAM, where there is room for it, rather than the internal RAM that the
@@ -386,6 +408,21 @@ bool load(const String &path, LoadProgress progress) {
                 f.provider = (uint8_t)(it - g_providers.begin() + 1);
             }
             g_frames.push_back(f);
+        } else if (g_line[0] == 'Q' && g_line[1] == ' ') {
+            char *end = nullptr;
+            uint32_t ms = strtoul(g_line + 2, &end, 10);
+            FilterAt f;
+            f.ms = ms;
+            if (parseFilterText(end, f.filter)) {
+                g_filters.push_back(f);
+            }
+        } else if ((g_line[0] == 'R' || g_line[0] == 'Z') && g_line[1] == ' ') {
+            char *end = nullptr;
+            uint32_t ms = strtoul(g_line + 2, &end, 10);
+            float nm = strtof(end, nullptr);
+            if (nm > 0) {
+                (g_line[0] == 'R' ? g_ranges : g_zoomRanges).push_back({ms, nm});
+            }
         } else if (g_line[0] == 'A' && !g_frames.empty()) {
             Aircraft a;
             if (recorder::parseAircraftLine(g_line, a)) {
@@ -425,6 +462,12 @@ void unload() {
     g_loaded = false;
     g_frames.clear();
     g_frames.shrink_to_fit();
+    g_ranges.clear();
+    g_ranges.shrink_to_fit();
+    g_zoomRanges.clear();
+    g_zoomRanges.shrink_to_fit();
+    g_filters.clear();
+    g_filters.shrink_to_fit();
     g_fixes.clear();
     g_fixes.shrink_to_fit();
     g_gaps.clear();
@@ -487,6 +530,42 @@ bool estimateAt(const String &hex, uint32_t t, FollowEstimate &out, uint32_t &lo
     out = sim.at(abs);
     lostMs = abs - sim.fresh().ms;
     return true;
+}
+
+float followRangeAt(uint32_t t) {
+    if (g_frames.empty()) {
+        return 0;
+    }
+    const Frame &f = g_frames[frameIndexAt(t)];
+    if (f.view.kind != View::FOLLOW) {
+        return 0;
+    }
+    return rangeAt(g_ranges, g_frames.front().ms + t, f.ms, f.view.rangeNm);
+}
+
+bool filterAt(uint32_t t, TrafficFilterSet &out) {
+    if (g_frames.empty() || g_filters.empty()) {
+        return false;
+    }
+    uint32_t abs = g_frames.front().ms + t;
+    auto it = std::upper_bound(g_filters.begin(), g_filters.end(), abs,
+                               [](uint32_t v, const FilterAt &f) { return v < f.ms; });
+    if (it == g_filters.begin()) {
+        return false;
+    }
+    out = (it - 1)->filter;
+    return true;
+}
+
+float zoomRangeAt(uint32_t t) {
+    if (g_frames.empty()) {
+        return 0;
+    }
+    const Frame &f = g_frames[frameIndexAt(t)];
+    if (f.view.kind != View::ZOOM) {
+        return 0;
+    }
+    return rangeAt(g_zoomRanges, g_frames.front().ms + t, f.ms, f.view.rangeNm);
 }
 
 bool followedAt(uint32_t t, Aircraft &out) {
@@ -617,6 +696,14 @@ void sceneAt(uint32_t t, std::vector<Aircraft> &aircraft, std::vector<TrailPoint
     }
 
     fillGaps(abs, g_frames[i].view.hex, aircraft);
+
+    // Through the filter the radar showed it through, as it was seen - the
+    // aircraft followed and any emergency kept - but not a zoom, which the
+    // filter never touches.
+    TrafficFilterSet filter;
+    if (g_frames[i].view.kind != View::ZOOM && filterAt(t, filter)) {
+        filterList(filter, aircraft, nullptr, String(g_frames[i].view.hex));
+    }
 
     // Trails only for the aircraft on the plot now: those that have left took
     // their trails with them, which keeps a long recording's plot readable.

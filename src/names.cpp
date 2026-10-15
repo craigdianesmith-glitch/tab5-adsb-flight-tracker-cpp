@@ -13,6 +13,8 @@ struct PlaceName {
     // fit the room its outline has around (lat, lon).
     float nmPerPx;
     uint8_t kind;
+    uint8_t extra;   // one of an area's spots besides its middle
+    uint16_t group;  // the area's: its spots alike
     const char *text;
 };
 
@@ -24,6 +26,10 @@ constexpr size_t NAME_COUNT = sizeof(NAMES) / sizeof(NAMES[0]);
 // A name takes this much of the room it has, so that it sits inside its
 // outline with some of the outline around it.
 constexpr float FILL = 0.8f;
+// A county's name needs more of its room than that before it is shown: eight
+// of them round Chicago at 60nm crowded the plot, where they are wanted
+// closer in.
+constexpr float FILL_OF[] = {FILL, FILL, FILL, FILL, 0.6f};
 // Smaller than this it can't be read, and is left off.
 constexpr int MIN_SIZE = 2;
 // Its kind's: the most the font is scaled up, so a country's name is never
@@ -32,9 +38,9 @@ constexpr int MIN_SIZE = 2;
 // wide, was a heading over the plot at 30nm; and the space between letters,
 // over the font's own pixel, at size 1 - and the most it spreads to, as a
 // name grows towards the next size.
-constexpr uint8_t MAX_SIZE[] = {3, 3, 2, 2};
-constexpr uint8_t SPACING[] = {2, 2, 1, 1};  // as tools/gen_names.py has them
-constexpr uint8_t MAX_SPREAD[] = {2, 2, 1, 1};
+constexpr uint8_t MAX_SIZE[] = {3, 3, 2, 2, 2};
+constexpr uint8_t SPACING[] = {2, 2, 1, 1, 1};  // as tools/gen_names.py has them
+constexpr uint8_t MAX_SPREAD[] = {2, 2, 1, 1, 1};
 // Between one name and the next, and from the plot's edge.
 constexpr int NAME_PAD = 8, EDGE_PAD = 4;
 // Where its spot is taken - by the cross at the middle of the plot, which is
@@ -47,6 +53,7 @@ struct Candidate {
     const PlaceName *name;
     float x, y;
     float size;  // the size it has room for, before it is made a whole one
+    float away;  // from the plot's middle, squared
 };
 
 int lettersOf(const char *line) {
@@ -86,37 +93,79 @@ int nameLineWidth(int letters, const PlacedName &n) {
     return letters ? letters * (NAME_ADVANCE * n.size + n.spacing) - n.spacing - n.size : 0;
 }
 
-void namesPlace(const NamePlot &plot, bool (*blocked)(int x, int y, int w, int h), std::vector<PlacedName> &out) {
-    out.clear();
-    float pxPerNm = plot.radius / plot.rangeNm;
-    double nmPerDegLon = 60.0 * cos(plot.lat * M_PI / 180.0);
-    float latReach = plot.rangeNm / 60.0f;
+namespace {
 
-    static std::vector<Candidate> candidates;
+// The names that could go on the last plot looked at, one an area, in the
+// order they are tried: all of it a matter of where the plot is and how far
+// it reaches, so worked out again only when that changes. At 2000nm it is a
+// look at some 18,000 spots - 13 to 17ms, every frame, when it wasn't kept -
+// where trying the few that come of it against the labels is next to nothing.
+struct Kept {
+    bool valid = false;
+    NamePlot plot;
+};
+Kept g_kept;
+std::vector<Candidate> g_candidates;
+
+bool samePlot(const NamePlot &a, const NamePlot &b) {
+    return a.centerX == b.centerX && a.centerY == b.centerY && a.radius == b.radius && a.lat == b.lat &&
+           a.lon == b.lon && a.rangeNm == b.rangeNm;
+}
+
+void findCandidates(const NamePlot &plot) {
+    std::vector<Candidate> &candidates = g_candidates;
     candidates.clear();
-    const PlaceName *first =
-        std::lower_bound(NAMES, NAMES + NAME_COUNT, (float)plot.lat - latReach,
-                         [](const PlaceName &n, float lat) { return n.lat < lat; });
-    for (const PlaceName *n = first; n < NAMES + NAME_COUNT && n->lat <= plot.lat + latReach; n++) {
-        float size = FILL * n->nmPerPx * pxPerNm;
+    // In floats, which the P4 does in hardware - doubles it works out in
+    // software, a call apiece - and a float's degree is good to a couple of
+    // metres, where a pixel is twenty-seven at the closest range.
+    float pxPerNm = plot.radius / plot.rangeNm;
+    float lat = (float)plot.lat, lon = (float)plot.lon;
+    float pxPerDegLon = 60.0f * cosf(lat * (float)M_PI / 180.0f) * pxPerNm, pxPerDegLat = 60.0f * pxPerNm;
+    float latReach = plot.rangeNm / 60.0f;
+    float radius2 = (float)plot.radius * plot.radius;
+    const PlaceName *first = std::lower_bound(NAMES, NAMES + NAME_COUNT, lat - latReach,
+                                              [](const PlaceName &n, float at) { return n.lat < at; });
+    for (const PlaceName *n = first; n < NAMES + NAME_COUNT && n->lat <= lat + latReach; n++) {
+        float size = FILL_OF[n->kind] * n->nmPerPx * pxPerNm;
         if (size < MIN_SIZE) {
             continue;
         }
-        double dLon = n->lon - plot.lon;
+        float dLon = n->lon - lon;
         if (dLon > 180) dLon -= 360;
         if (dLon < -180) dLon += 360;
-        float ox = (float)(dLon * nmPerDegLon * pxPerNm), oy = (float)((n->lat - plot.lat) * 60.0 * pxPerNm);
-        if (ox * ox + oy * oy > (float)plot.radius * plot.radius) {
+        float ox = dLon * pxPerDegLon, oy = (n->lat - lat) * pxPerDegLat;
+        if (ox * ox + oy * oy > radius2) {
             continue;  // its middle is off the plot
         }
-        candidates.push_back({n, plot.centerX + ox, plot.centerY - oy, size});
+        candidates.push_back({n, plot.centerX + ox, plot.centerY - oy, size, ox * ox + oy * oy});
     }
+    // One spot an area: its middle, if that is here, or else the nearest of
+    // its others to the plot's middle.
+    std::sort(candidates.begin(), candidates.end(), [](const Candidate &a, const Candidate &b) {
+        if (a.name->group != b.name->group) {
+            return a.name->group < b.name->group;
+        }
+        return a.name->extra != b.name->extra ? a.name->extra < b.name->extra : a.away < b.away;
+    });
+    candidates.erase(std::unique(candidates.begin(), candidates.end(),
+                                 [](const Candidate &a, const Candidate &b) { return a.name->group == b.name->group; }),
+                     candidates.end());
     std::sort(candidates.begin(), candidates.end(), [](const Candidate &a, const Candidate &b) {
         return a.name->kind != b.name->kind ? a.name->kind < b.name->kind : a.size > b.size;
     });
+}
 
+}  // namespace
+
+void namesPlace(const NamePlot &plot, bool (*blocked)(int x, int y, int w, int h), std::vector<PlacedName> &out) {
+    out.clear();
+    if (!g_kept.valid || !samePlot(g_kept.plot, plot)) {
+        findCandidates(plot);
+        g_kept.valid = true;
+        g_kept.plot = plot;
+    }
     float inner = plot.radius - EDGE_PAD;
-    for (const Candidate &c : candidates) {
+    for (const Candidate &c : g_candidates) {
         int kind = c.name->kind;
         PlacedName p = {c.name->text, (NameKind)kind, 0, 0, 0, 0, 0, 0};
         p.size = (uint8_t)std::min((int)c.size, (int)MAX_SIZE[kind]);
@@ -143,7 +192,7 @@ void namesPlace(const NamePlot &plot, bool (*blocked)(int x, int y, int w, int h
         p.h = (int16_t)(lines * NAME_HEIGHT * p.size + (lines - 1) * NAME_LINE_GAP * p.size);
         p.x = (int16_t)lroundf(c.x - p.w / 2.0f);
         int unitH = lines * NAME_HEIGHT + (lines - 1) * NAME_LINE_GAP;
-        float slack = (c.size / FILL * unitH - p.h) / 2.0f;  // its room above and below it, all of it
+        float slack = (c.size / FILL_OF[kind] * unitH - p.h) / 2.0f;  // its room above and below it, all of it
         float nudge = p.h + NUDGE_PAD;
         int tries = slack >= nudge ? 3 : 1;
         for (int t = 0; t < tries; t++) {

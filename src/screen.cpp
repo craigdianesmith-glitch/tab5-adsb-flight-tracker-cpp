@@ -401,6 +401,55 @@ void flush() {
 #endif
 }
 
+void pushRects(const Region *rects, int n) {
+    if (g_buffer == nullptr || n <= 0) {
+        return;
+    }
+    if (!g_ppaOk) {
+        for (int i = 0; i < n; i++) {
+            markDirty(rects[i].x, rects[i].y, rects[i].w, rects[i].h);
+        }
+        flush();
+        return;
+    }
+    // Any reaching under the overlay - which has to be painted over them
+    // again - the ordinary way, with all its care: the overlay is always set,
+    // showing or not, so it is only those boxes that count.
+    bool marked = false;
+    int top = CANVAS_H, bottom = 0;
+    for (int i = 0; i < n; i++) {
+        if (g_overlay != nullptr && intersects({rects[i].x, rects[i].y, rects[i].w, rects[i].h}, g_overlayRect)) {
+            markDirty(rects[i].x, rects[i].y, rects[i].w, rects[i].h);
+            marked = true;
+            continue;
+        }
+        top = std::min<int>(top, std::max<int>(0, rects[i].y));
+        bottom = std::max<int>(bottom, std::min<int>(CANVAS_H, rects[i].y + rects[i].h));
+    }
+    if (marked) {
+        flush();
+    }
+    if (bottom <= top) {
+        return;
+    }
+    // The rest written back in one go, every row any of them takes in: what
+    // that costs is the lines that are dirty, which are the ones that have to
+    // go anyway, and some 10us besides - where a call a row, a box at a time,
+    // comes to about 3us a row.
+    esp_cache_msync((uint8_t *)g_buffer + (size_t)top * ROW_BYTES, (size_t)(bottom - top) * ROW_BYTES,
+                    ESP_CACHE_MSYNC_FLAG_DIR_C2M);
+    for (int i = 0; i < n; i++) {
+        int x = std::max<int>(0, rects[i].x), y = std::max<int>(0, rects[i].y);
+        int r = std::min<int>(CANVAS_W, rects[i].x + rects[i].w), b = std::min<int>(CANVAS_H, rects[i].y + rects[i].h);
+        if (r <= x || b <= y ||
+            (g_overlay != nullptr && intersects({rects[i].x, rects[i].y, rects[i].w, rects[i].h}, g_overlayRect))) {
+            continue;
+        }
+        blitRect({(int16_t)x, (int16_t)y, (int16_t)(r - x), (int16_t)(b - y)});
+        addRect(g_changed, g_changedCount, x, y, r - x, b - y, false);
+    }
+}
+
 namespace {
 
 bool convertBlock(uint8_t *out, size_t outBytes, int x, int y, int w, int h) {

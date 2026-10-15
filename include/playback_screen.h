@@ -22,6 +22,9 @@ void playbackScreenClose();
 void playbackScreenSetCentre(RadarCentre centre);
 // The airports, as the live radar's ALL has them.
 void playbackScreenSetAirports(bool airports);
+// Each aircraft's last ten minutes drawn behind it - in a video exported too -
+// or not, as the display page has it.
+void playbackScreenSetTracks(bool on);
 void playbackScreenDraw();
 
 // Advances playback and redraws when there is something new to show. Call

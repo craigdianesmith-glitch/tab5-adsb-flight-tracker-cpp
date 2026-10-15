@@ -6,7 +6,10 @@
 
 // The names written on the map under a plot, faintly: its countries; their
 // regions - states, provinces, counties, council areas; its seas, bays and
-// straits; and its lakes. From Natural Earth, placed ahead of time by
+// straits; its lakes; and the United States' counties. A big area - a
+// state, a sea, a lake - has spots across it besides the one at its middle,
+// for its name to be found close in; it is shown once, at its middle if
+// that is on the plot, or at the nearest of the rest. From Natural Earth, placed ahead of time by
 // tools/gen_names.py.
 //
 // Each goes where its outline has the most room for it, sized to that room
@@ -16,7 +19,7 @@
 // grows with the range rather than in steps. Only where that spot is on the
 // plot and the whole name fits inside the ring, clear of the names before it
 // and of whatever the caller says is in the way.
-enum class NameKind : uint8_t { COUNTRY, SEA, REGION, LAKE };
+enum class NameKind : uint8_t { COUNTRY, SEA, REGION, LAKE, COUNTY };
 
 // A plot to name: a circle on the canvas, and what is under it.
 struct NamePlot {

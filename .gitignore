@@ -1,2 +1,3 @@
 include/secrets.h
 .pio/
+__pycache__/

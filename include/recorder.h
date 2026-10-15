@@ -4,6 +4,7 @@
 #include <vector>
 
 #include "adsb_client.h"
+#include "filter.h"
 
 // Recordings of the radar scene on the microSD card: every contact, at every
 // successful poll, for as long as a recording runs. Started by hand from the
@@ -24,8 +25,25 @@
 //
 // - and after the provider, where ZOOM IN had the radar around home or a
 // zoom closer in than its own range, the range shown, in nm: `... adsb.lol
-// 0.5`. A build that predates it reads the line as it always did, at the
-// view's own range -
+// 0.5`; and centred on a followed aircraft, the range it had then. A build
+// that predates it reads the line as it always did, at the view's own range.
+// Following, each change of that range - ZOOM IN or OUT, auto zoom, closing
+// in on a landing - has a line of its own, with when it was made, written
+// ahead of the next poll's `F` line; and so does each change of a zoom's:
+//
+//   R <ms> <nm>       the radar centred on the aircraft followed
+//   Z <ms> <nm>       an airport's zoom
+//
+// so a replay changes range when the live radar did, between polls as often
+// as not. And the filter the table and the radar showed the traffic through,
+// at the first poll of a file and again whenever it changes - see
+// filterText() -
+//
+//   Q <ms> 0 45000 0 600 -G- - -
+//
+// so a replay shows the radar through it as it was seen; the recording keeps
+// every aircraft all the same. Older builds pass over these, as over any line
+// they don't know -
 // - so that a replay shows each poll the way it was seen, and can tell an
 // aircraft that dropped out of a poll because a different provider answered
 // it from one the feed lost. Older files end the line at the epoch, or have a
@@ -76,6 +94,10 @@ struct Header {
     // Empty for any other recording, and absent from older files.
     String followHex;
     int followRangeNm = 0;
+    // And whether auto zoom had the range then - see the display of it in the
+    // recordings list - written after the range, where an older build's
+    // reading of the line stops short of it.
+    bool followAuto = false;
     RunwaysInUse runways;
 };
 
@@ -107,8 +129,17 @@ String activePath();  // the part being written now
 // `view` is the `F` line's view token, as above, and `provider` the name of
 // the source that answered. `rangeNm`, when not 0, is the range ZOOM IN had
 // the view at - the radar around home, or a zoom - written after them.
+// `marks`, if given, are the follow range's changes since the last poll -
+// see `R` above - on millis()'s clock.
+struct RangeMark {
+    uint32_t ms;
+    float nm;
+    bool zoom;  // a zoom's range rather than the radar's: a `Z` line
+};
+// `filter`, if given, is the filter in force, written when it has changed.
 void addFrame(const std::vector<Aircraft> &aircraft, const String &view, const char *provider,
-              float rangeNm = 0);
+              float rangeNm = 0, const std::vector<RangeMark> *marks = nullptr,
+              const TrafficFilterSet *filter = nullptr);
 
 // Every recording on the card, newest first.
 std::vector<String> list();

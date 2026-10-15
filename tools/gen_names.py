@@ -40,7 +40,7 @@ ROOT = Path(__file__).resolve().parent.parent
 DATA_URL = "https://raw.githubusercontent.com/nvkelso/natural-earth-vector/v5.1.2/geojson/"
 
 # As NameKind in include/names.h numbers them.
-COUNTRY, SEA, REGION, LAKE = range(4)
+COUNTRY, SEA, REGION, LAKE, COUNTY = range(5)
 LAYERS = [
     ("ne_10m_admin_0_map_units", COUNTRY, "NAME"),
     ("ne_10m_geography_marine_polys", SEA, "name"),
@@ -49,6 +49,9 @@ LAYERS = [
     ("ne_10m_lakes_europe", LAKE, "name"),
     ("ne_10m_lakes_north_america", LAKE, "name"),
     ("ne_10m_lakes_australia", LAKE, "name"),
+    # The United States' counties - Natural Earth's only second-order
+    # divisions - where the states are all its regions are.
+    ("ne_10m_admin_2_counties", COUNTY, "NAME"),
 ]
 # The marine areas that are areas of water, rather than a reef.
 SEA_CLASSES = {"ocean", "sea", "gulf", "bay", "strait", "sound", "channel", "fjord", "lagoon", "inlet", "river",
@@ -81,7 +84,16 @@ UNSPLIT = {
 # src/names.cpp has them: a letter every 6 and the letters 8 high, with this
 # much more between letters for each kind, and this between two lines.
 ADVANCE, HEIGHT, LINE_GAP = 6, 8, 3
-SPACING = {COUNTRY: 2, SEA: 2, REGION: 1, LAKE: 1}
+SPACING = {COUNTRY: 2, SEA: 2, REGION: 1, LAKE: 1, COUNTY: 1}
+# Spots of their own across a big area, this many nm apart, for its name to
+# be found close in, where its middle - a state's, a lake's - is off the
+# plot: a few to a region, a sea, a lake; none for a country, whose name is
+# for the wide ranges, or a county, small enough as it is. The device shows
+# each name once: at its middle if that is on the plot, or the nearest of
+# these. One with less room than this to a pixel isn't kept, being too
+# small to be shown at any range there is.
+EXTRA_SPACING_NM = {SEA: 100.0, REGION: 50.0, LAKE: 25.0}
+EXTRA_MIN_NM_PER_PX = 0.12
 # Two lines only where they give it this much more room than one.
 TWO_LINES_GAIN = 1.25
 
@@ -273,7 +285,7 @@ def box_shape(lines, kind):
 # A name's spot and the nm a pixel of it can stand for, for the lines it is
 # best on - or None, with no room for it anywhere.
 def place(job):
-    kind, name, polygons = job
+    kind, name, polygons, group, extras = job
     found = []
     for lines in layouts(name):
         width, height = box_shape(lines, kind)
@@ -298,13 +310,38 @@ def place(job):
                 d, x, y = spot
                 best = (d, lat0 + y / 60, lon0 + x / k)
         if best:
-            found.append((2 * best[0] / height, best[1], best[2], lines))
+            found.append((2 * best[0] / height, best[1], best[2], lines, parts, height))
     if not found:
         return None
     one = found[0]
     two = found[1] if len(found) > 1 else None
-    nm, lat, lon, lines = two if two and two[0] > one[0] * TWO_LINES_GAIN else one
-    return kind, "\n".join(lines), lat, lon, nm
+    nm, lat, lon, lines, parts, height = two if two and two[0] > one[0] * TWO_LINES_GAIN else one
+    text = "\n".join(lines)
+    out = [(kind, text, lat, lon, nm, 0, group)]
+    spacing = EXTRA_SPACING_NM.get(kind) if extras else None
+    if spacing:
+        # A grid across each part, the box's room measured at each point
+        # inside it - in the part's own aspect-scaled plane, so a step east
+        # is spacing / aspect there.
+        for size, xy, (bx0, by0, bx1, by1), lat0, lon0, k in parts:
+            if max(bx1 - bx0, by1 - by0) < spacing:
+                continue
+            outline = Outline([simplify(r, max(size * 0.002, 0.01)) for r in xy])
+            stepx = spacing * k / (60 * math.cos(math.radians(lat0)))
+            y = by0 + spacing / 2
+            while y < by1:
+                x = bx0 + stepx / 2
+                while x < bx1:
+                    plat, plon = lat0 + y / 60, lon0 + x / k
+                    away = math.hypot((plat - lat) * 60, (plon - lon) * 60 * math.cos(math.radians(lat)))
+                    if away >= spacing / 2:
+                        d = outline.dist(x, y)
+                        q = 2 * d / height
+                        if d > 0 and q >= EXTRA_MIN_NM_PER_PX:
+                            out.append((kind, text, plat, plon, q, 1, group))
+                    x += stepx
+                y += spacing
+    return out
 
 
 def main():
@@ -313,6 +350,9 @@ def main():
     # to be the one place.
     named = defaultdict(list)
     countries = set()
+    # The oceans: a name at their middle is enough - spots across them were
+    # ten thousand of open water.
+    oceans = set()
     for layer, kind, field in LAYERS:
         for feature in load(layer, directory)["features"]:
             props, geometry = feature["properties"], feature["geometry"]
@@ -320,6 +360,14 @@ def main():
                 continue
             if kind == SEA and props["featurecla"] not in SEA_CLASSES:
                 continue
+            if kind == SEA and props["featurecla"] == "ocean":
+                oceans.add(clean(props[field]))
+            if kind == COUNTY:
+                kinds = {"County": "County", "Parish": "Parish", "Borough": "Borough"}
+                suffix = kinds.get(props.get("TYPE_EN") or "")
+                if suffix and suffix.lower() not in (props[field] or "").lower():
+                    props = dict(props)
+                    props[field] = props[field] + " " + suffix
             name = clean(UNSPLIT.get(props["ADMIN"], props[field]) if kind == COUNTRY else props[field])
             if not name:
                 continue
@@ -353,10 +401,10 @@ def main():
         for i, polys in enumerate(features):
             together[root(i)] += polys
         for polys in together.values():
-            jobs.append((kind, name, polys))
+            jobs.append((kind, name, polys, len(jobs) + 1, name not in oceans))
 
     with multiprocessing.Pool() as pool:
-        results = [r for r in pool.imap_unordered(place, jobs, chunksize=4) if r]
+        results = [spot for r in pool.imap_unordered(place, jobs, chunksize=4) if r for spot in r]
     results.sort(key=lambda r: (r[2], r[3]))
 
     def literal(text):
@@ -366,18 +414,20 @@ def main():
         "// Generated by tools/gen_names.py from Natural Earth's 1:10m map units, first-order",
         "// divisions, marine areas and lakes - do not edit.",
         "// By latitude: where each name goes, the nm a pixel of it at size 1 can stand for",
-        "// there, its kind, and the name, its lines apart at a newline.",
+        "// there, its kind, whether it is one of an area's extra spots, the area's number -",
+        "// its spots alike - and the name, its lines apart at a newline.",
         "const PlaceName NAMES[] = {",
     ]
-    for kind, text, lat, lon, nm in results:
-        out.append(f"    {{{lat:.4f}f, {lon:.4f}f, {nm:.4e}f, {kind}, {literal(text)}}},")
+    for kind, text, lat, lon, nm, extra, group in results:
+        out.append(f"    {{{lat:.4f}f, {lon:.4f}f, {nm:.4e}f, {kind}, {extra}, {group}, {literal(text)}}},")
     out.append("};")
     (ROOT / "src" / "names_table.inc").write_text("\n".join(out) + "\n")
     counts = defaultdict(int)
     for r in results:
-        counts[r[0]] += 1
-    print(f"{len(results)} names of {len(jobs)}: {counts[COUNTRY]} countries, {counts[SEA]} seas, "
-          f"{counts[REGION]} regions, {counts[LAKE]} lakes")
+        counts[(r[0], r[5])] += 1
+    print(f"{len(results)} spots for {len(jobs)} areas: " + ", ".join(
+        f"{label} {counts[(k, 0)]} (+{counts[(k, 1)]} extra)" for k, label in
+        ((COUNTRY, "countries"), (SEA, "seas"), (REGION, "regions"), (LAKE, "lakes"), (COUNTY, "counties"))))
 
 
 if __name__ == "__main__":

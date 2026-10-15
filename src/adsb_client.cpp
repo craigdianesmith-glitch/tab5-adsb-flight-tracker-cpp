@@ -109,6 +109,7 @@ static const char *USER_AGENT =
 // Set inside requestInto so the request and the parse stay separable now that
 // both happen in there.
 static uint32_t g_tAfterGet = 0, g_tAfterParse = 0;
+static int g_bytes = 0;  // the response's size, as it declared it or as read
 #endif
 
 // One request on the shared client. Returns the HTTP status, or a negative
@@ -157,10 +158,16 @@ static int requestInto(const String &url, const AdsbEndpoint &ep, JsonDocument &
     // Only where it declared a length, though - HTTPClient de-chunks on the
     // getString()/writeToStream() paths but not on the raw stream, so a
     // chunked reply read straight would have the chunk headers still in it.
+#ifdef NET_PROFILE
+    g_bytes = g_http.getSize();
+#endif
     if (g_http.getSize() >= 0) {
         jerr = deserializeJson(doc, g_http.getStream(), DeserializationOption::Filter(filter));
     } else {
         String payload = g_http.getString();
+#ifdef NET_PROFILE
+        g_bytes = payload.length();
+#endif
         jerr = deserializeJson(doc, payload, DeserializationOption::Filter(filter));
     }
 #ifdef NET_PROFILE
@@ -205,13 +212,12 @@ static void parseInto(JsonDocument &doc, const AdsbEndpoint &ep, bool military, 
         a.hex = hex;
         String cs = String((const char *)(ac["flight"] | ""));
         // readsb passes on '@' for a callsign character the transponder sent
-        // as blank, so a callsign that is nothing but those was never set -
-        // shown as UNKNOWN rather than a row of @s. With no field at all, the
-        // hex is the only name there is.
-        bool sentBlank = cs.indexOf('@') >= 0;
+        // as blank, so a callsign that is nothing but those was never set.
+        // Without one it goes by its registration - below - or failing that
+        // its hex: "UNKNOWN", as it used to be for the first, named nothing.
         cs.replace("@", "");
         cs.trim();
-        a.callsign = cs.length() ? cs : (sentBlank ? String("UNKNOWN") : a.hex);
+        a.callsign = cs;
         a.type = (const char *)(ac["t"] | "----");
         // Where the feed carries readsb's dbFlags, bit 0 is the military one
         // (bits 1/2/3 are interesting/PIA/LADD). Where it doesn't, which feed
@@ -271,6 +277,9 @@ static void parseInto(JsonDocument &doc, const AdsbEndpoint &ep, bool military, 
         }
 
         a.reg = (const char *)(ac["r"] | "");
+        if (a.callsign.length() == 0) {
+            a.callsign = a.reg.length() ? a.reg : a.hex;
+        }
         a.squawk = (const char *)(ac["squawk"] | "");
         a.category = (const char *)(ac["category"] | "");
 
@@ -378,10 +387,10 @@ static bool fetchFrom(int idx, double lat, double lon, int radiusNm, bool milita
     parseInto(doc, ep, military, lat, lon, radiusNm, result);
 
 #ifdef NET_PROFILE
-    Serial.printf("[net] %s request %lums  parse %lums  build %lums  total %lums  %u aircraft\n", provider.name,
-                  (unsigned long)(g_tAfterGet - tStart), (unsigned long)(g_tAfterParse - g_tAfterGet),
-                  (unsigned long)(millis() - g_tAfterParse), (unsigned long)(millis() - tStart),
-                  (unsigned)result.size());
+    Serial.printf("[net] %s %dnm %dKB  request %lums  read+parse %lums  build %lums  total %lums  %u aircraft\n",
+                  provider.name, radiusNm, g_bytes / 1024, (unsigned long)(g_tAfterGet - tStart),
+                  (unsigned long)(g_tAfterParse - g_tAfterGet), (unsigned long)(millis() - g_tAfterParse),
+                  (unsigned long)(millis() - tStart), (unsigned)result.size());
 #endif
     out = std::move(result);
     return true;

@@ -83,6 +83,7 @@ bool g_airports = false;
 
 std::vector<Aircraft> g_scene;
 std::vector<replay::TrailPoint> g_trails;
+bool g_tracks = true;  // drawn - see playbackScreenSetTracks()
 const std::vector<uint8_t> g_noneNew;  // nothing is "new" in a replay
 // For a recording that follows an aircraft, the view last drawn: the airport
 // zoom's code, or "" for the radar centred on the aircraft. A change between
@@ -236,7 +237,32 @@ void drawHeader(bool forVideo) {
     const char *title = "Replay";
     canvas.drawString(title, 16, 24);
     canvas.setTextColor(p.muted);
-    canvas.drawString(h.military ? " - MIL -" : " - CIV -", 16 + canvas.textWidth(title), 24);
+    // What it shows by kind, as the live radar's title has it - through the
+    // filter it was recorded with, if it says - two of them a size down; and
+    // with a filter on, the radar's funnel lit after it.
+    TrafficFilterSet filter;
+    bool filtered = replay::filterAt(g_t, filter) && filter.active();
+    String kinds = kindsName(filter, h.military, true);
+    int x = 16 + canvas.textWidth(title);
+    if (kinds.length() > 3) {
+        canvas.drawString(" - ", x, 24);
+        x += canvas.textWidth(" - ");
+        canvas.setTextSize(2);
+        canvas.drawString(kinds, x, 24);
+        x += canvas.textWidth(kinds);
+        canvas.setTextSize(3);
+    } else {
+        canvas.drawString(" - " + kinds, x, 24);
+        x += canvas.textWidth(" - " + kinds);
+    }
+    if (filtered) {
+        constexpr int R = 11;
+        radarDrawFunnel(std::min(x + R + 7, PANEL_X + PANEL_W + 2 - R - 3), 24, R, true);
+        canvas.setFont(&fonts::Font0);  // its own drawing left as it found it, but to be sure
+        canvas.setTextSize(3);
+        canvas.setTextDatum(ML_DATUM);
+        canvas.setTextColor(p.muted);
+    }
     if (h.startEpoch) {
         time_t t = h.startEpoch;
         struct tm tm;
@@ -374,13 +400,13 @@ void drawViewPlot(RadarScene &scene, bool full);
 
 void drawPlot(bool full, bool push) {
     const recorder::Header &h = replay::header();
-    RadarScene scene{g_scene, g_noneNew, &g_trails, h.lat, h.lon, h.radiusNm, g_centre, g_airports};
+    RadarScene scene{g_scene, g_noneNew, g_tracks ? &g_trails : nullptr, h.lat, h.lon, h.radiusNm, g_centre, g_airports};
     scene.push = push;
     // At the range ZOOM IN had it at live, where it did.
     if (g_view.rangeNm > 0 && g_view.kind == replay::View::HOME) {
         scene.rangeNm = std::max(1, (int)lroundf(g_view.rangeNm));
     }
-    scene.zoomRangeNm = g_view.kind == replay::View::ZOOM ? g_view.rangeNm : 0.0f;
+    scene.zoomRangeNm = replay::zoomRangeAt(g_t);  // 0 but for a zoom: as ZOOM IN, OUT or auto zoom had it
     scene.nowMs = g_t;
     if (g_view.kind == replay::View::HOME) {
         radarPlotDraw(scene, full);
@@ -478,10 +504,15 @@ void drawViewPlot(RadarScene &scene, bool full) {
         scene.lat = lat;
         scene.lon = lon;
     }
-    // At the range it was shown at live, worked out the same way from the same
-    // poll - and from a poll missing it, the range it last had, as live.
+    // At the range it was shown at live, as the recording has it - ZOOM IN
+    // and OUT, auto zoom, closing in on a landing - or in an older recording
+    // worked out the way following then did, from the same poll; from a poll
+    // missing it, the range it last had, as live.
     Aircraft followed;
-    if (replay::followedAt(g_t, followed)) {
+    float recorded = replay::followRangeAt(g_t);
+    if (recorded > 0) {
+        g_followRange = (int)lroundf(recorded);
+    } else if (replay::followedAt(g_t, followed)) {
         g_followRange = followRangeFor(followed);
     }
     scene.rangeNm = g_followRange;
@@ -547,6 +578,7 @@ void playbackScreenClose() {
 
 void playbackScreenSetCentre(RadarCentre centre) { g_centre = centre; }
 void playbackScreenSetAirports(bool airports) { g_airports = airports; }
+void playbackScreenSetTracks(bool on) { g_tracks = on; }
 
 void playbackScreenDraw() {
     replay::sceneAt(g_t, g_scene, g_trails);

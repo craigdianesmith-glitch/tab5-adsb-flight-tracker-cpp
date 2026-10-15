@@ -1,9 +1,14 @@
 #include "display.h"
 
+#include "aircraft_db.h"
+
 #include <math.h>
+
+#include <algorithm>
 
 #include "alerts.h"
 #include "config.h"
+#include "filter.h"
 #include "screen.h"
 
 namespace {
@@ -25,16 +30,17 @@ constexpr int CELL_PAD_RIGHT = 8;
 constexpr float MIN_CELL_TEXT_SIZE = 1.2f;
 // The only column drawn differently - it carries an icon ahead of its text.
 constexpr int STATUS_COL = NUM_COLS - 1;
+constexpr int HDG_COL = 5;  // not one to sort by: which way each is pointing says nothing in order
 constexpr int TABLE_X = 8;
 constexpr int TABLE_W = 1264;
 constexpr int HEADER_Y = 68;
 constexpr int HEADER_H = 54;
 constexpr int TABLE_Y = HEADER_Y + HEADER_H;
-constexpr int ROW_HEIGHT = 52;
+constexpr int ROW_HEIGHT = DISPLAY_ROW_HEIGHT;  // in display.h, for the drag that scrolls it
 constexpr int MAX_CACHE_ROWS = 16;  // generous upper bound on any screen size we'd realistically run at
 
-uint16_t colorBg, colorWhite, colorHeaderBg, colorHeaderText, colorBorder, colorGrey, colorNew,
-    colorChanged, colorStale, colorMutedIcon, colorAlert, colorEmergency;
+uint16_t colorBg, colorWhite, colorHeaderBg, colorHeaderSorted, colorHeaderText, colorBorder, colorGrey, colorNew,
+    colorChanged, colorStale, colorMutedIcon, colorAlert, colorEmergency, colorCargo;
 
 constexpr int STATUS_ICON_SIZE = 18;
 
@@ -48,6 +54,8 @@ constexpr int RADAR_X = MUTE_X - ICON_GAP - ICON_SIZE;
 // The recordings, which were two screens away - or three, with the radar
 // coming back to an airport's zoom - behind the radar's Replays button.
 constexpr int REPLAYS_X = RADAR_X - ICON_GAP - ICON_SIZE;
+// The filter screen's way in, lit while a filter is on - see filter.h.
+constexpr int FILTER_X = REPLAYS_X - ICON_GAP - ICON_SIZE;
 
 // The strip left over between the last row that fits and the bottom of the
 // screen - too short for a row, tall enough for a line of size-2 text.
@@ -78,7 +86,10 @@ bool g_lastCellValid[MAX_CACHE_ROWS][NUM_COLS] = {};
 // millis() at which a cell's shading lapses; 0 means it isn't shaded.
 uint32_t g_highlightUntil[MAX_CACHE_ROWS][NUM_COLS] = {};
 bool g_showRefresh = true;
-bool g_military = false;
+// A filter on, and how many aircraft there were before it: the list given
+// to displayRenderAircraft() is what passed it.
+bool g_filterOn = false;
+int g_unfiltered = 0, g_lastUnfilteredShown = -1;
 String g_airportCode;
 String g_provider;
 bool g_muted = false;
@@ -93,6 +104,16 @@ uint32_t g_lastSuccessMs = 0;
 // building any Strings to say so.
 constexpr uint32_t STATUS_NONE = UINT32_MAX;  // sentinel that no real status packs to
 uint32_t g_lastStatusKey = STATUS_NONE;
+// More aircraft than rows: the first shown, dragged through by
+// displayScrollTo(), and how many there were at the last render. And the two
+// as the status line last said them.
+int g_scroll = 0, g_count = 0;
+// The column the rows are in order of - a tap on its header, again the other
+// way - and the aircraft each row shows, by hex, for a tap on it to find.
+int g_sortCol = 4;  // DIST, nearest first
+bool g_sortDesc = false;
+String g_rowHex[MAX_CACHE_ROWS];
+int g_lastScrollShown = -1, g_lastCountShown = -1;
 
 constexpr uint32_t NOTICE_MS = 4000;
 String g_notice;
@@ -167,6 +188,16 @@ void drawReplayIcon(int cx, int cy, int r, uint16_t color) {
                         (int)lroundf(px + onX * len), (int)lroundf(py + onY * len), color);
     int left = cx - (int)lroundf(r * 0.24f), up = (int)lroundf(r * 0.40f);
     canvas.fillTriangle(left, cy - up, left, cy + up, cx + (int)lroundf(r * 0.44f), cy, color);
+}
+
+// A funnel: a wide mouth narrowing to a spout.
+void drawFunnel(int cx, int cy, int r, uint16_t color) {
+    auto &canvas = screen::canvas();
+    int top = cy - (int)lroundf(r * 0.80f), neck = cy + (int)lroundf(r * 0.15f), bottom = cy + (int)lroundf(r * 0.85f);
+    int spout = (int)lroundf(r * 0.20f);
+    canvas.fillTriangle(cx - r, top, cx + r, top, cx - spout, neck, color);
+    canvas.fillTriangle(cx + r, top, cx + spout, neck, cx - spout, neck, color);
+    canvas.fillRect(cx - spout, neck, 2 * spout + 1, bottom - neck, color);
 }
 
 // Drawn like the others: a driver box, a cone flaring right as two triangles,
@@ -289,6 +320,7 @@ void displayInit() {
     colorBg = M5.Display.color565(0x10, 0x14, 0x18);
     colorWhite = M5.Display.color565(0xFF, 0xFF, 0xFF);
     colorHeaderBg = M5.Display.color565(0xB6, 0xF2, 0xB6);
+    colorHeaderSorted = M5.Display.color565(0x5E, 0xC9, 0x6E);  // the column the rows are in order of
     colorHeaderText = M5.Display.color565(0x10, 0x20, 0x10);
     colorBorder = M5.Display.color565(0x44, 0x44, 0x44);
     colorGrey = M5.Display.color565(0x88, 0x88, 0x88);
@@ -299,11 +331,64 @@ void displayInit() {
     // The same two as the radar's, so an alerted aircraft reads the same on both.
     colorAlert = M5.Display.color565(0xFF, 0xB3, 0x2E);
     colorEmergency = M5.Display.color565(0xFF, 0x4D, 0x4D);
+    colorCargo = M5.Display.color565(0x7F, 0xC8, 0xFF);  // a cargo operator's callsign - the radar's too
 
     int x = TABLE_X;
     for (int i = 0; i < NUM_COLS; i++) {
         colX[i] = x;
         x += COLUMNS[i].width;
+    }
+}
+
+// The column headings: the one the rows are sorted by a deeper green, with a
+// small triangle after its title pointing the way they run - up for smallest
+// first - the two centred together in the cell.
+static void drawColumnHeads() {
+    auto &canvas = screen::canvas();
+    // Its own font, set here: redrawn by a tap, the canvas still has the
+    // cells' FreeSans from the last refresh, and the headings came out in it.
+    canvas.setFont(&fonts::Font0);
+    constexpr int TRI_GAP = 10, TRI_W = 12;
+    int x = TABLE_X;
+    for (int i = 0; i < NUM_COLS; i++) {
+        int w = COLUMNS[i].width - 4;
+        bool sorted = (i == g_sortCol);
+        canvas.fillRect(x, HEADER_Y, w, HEADER_H, sorted ? colorHeaderSorted : colorHeaderBg);
+        canvas.setTextColor(colorHeaderText);
+        canvas.setTextSize(2);
+        canvas.setTextDatum(MC_DATUM);
+        int tw = canvas.textWidth(COLUMNS[i].title);
+        int cx = x + w / 2 - (sorted ? (TRI_GAP + TRI_W) / 2 : 0);
+        canvas.drawString(COLUMNS[i].title, cx, HEADER_Y + HEADER_H / 2);
+        if (sorted) {
+            int tx = cx + tw / 2 + TRI_GAP + TRI_W / 2, ty = HEADER_Y + HEADER_H / 2;
+            if (g_sortDesc) {
+                canvas.fillTriangle(tx - 6, ty - 4, tx + 6, ty - 4, tx, ty + 5, colorHeaderText);
+            } else {
+                canvas.fillTriangle(tx - 6, ty + 4, tx + 6, ty + 4, tx, ty - 5, colorHeaderText);
+            }
+        }
+        x += COLUMNS[i].width;
+    }
+    screen::markDirty(TABLE_X, HEADER_Y, TABLE_W, HEADER_H);
+}
+
+// What a row is sorted by, in its column: a number where the column holds one,
+// with what isn't known - a "?" - at the end whichever way the column runs.
+struct SortKey {
+    bool known;
+    float number;
+    const String *text;
+};
+static SortKey sortKey(const Aircraft &a, int col) {
+    switch (col) {
+    case 0: return {true, 0, &a.callsign};
+    case 1: return {a.type.length() > 0 && a.type != "----", 0, &a.type};
+    case 2: return {a.altStr != "?", a.altStr == "GND" ? 0.0f : (float)a.altStr.toInt(), nullptr};
+    case 3: return {a.speedStr != "?", (float)a.speedStr.toInt(), nullptr};
+    case 4: return {a.hasDist, a.distNm, nullptr};
+    case 5: return {a.hasTrack, a.track, nullptr};
+    default: return {a.status.length() > 0, 0, &a.status};
     }
 }
 
@@ -329,7 +414,35 @@ bool displayHitReplays(int x, int y) { return hitIcon(REPLAYS_X, x, y); }
 
 bool displayHitMute(int x, int y) { return hitIcon(MUTE_X, x, y); }
 
-bool displayHitRow(int x, int y, int &outRow) {
+bool displayHitFilter(int x, int y) { return hitIcon(FILTER_X, x, y); }
+
+bool displayHitHeader(int x, int y) {
+    if (y < HEADER_Y || y >= HEADER_Y + HEADER_H || x < TABLE_X || x >= TABLE_X + TABLE_W) {
+        return false;
+    }
+    int col = 0;
+    for (int cx = TABLE_X + COLUMNS[0].width; col < NUM_COLS - 1 && x >= cx; cx += COLUMNS[++col].width) {
+    }
+    if (col == HDG_COL) {
+        return true;  // a heading isn't an order: the tap is taken, and does nothing
+    }
+    g_sortDesc = (col == g_sortCol) ? !g_sortDesc : false;
+    g_sortCol = col;
+    g_scroll = 0;  // from the top of the new order
+    drawColumnHeads();
+    screen::flush();
+    return true;
+}
+
+void displaySetSort(int col, bool descending) {
+    g_sortCol = (col >= 0 && col < NUM_COLS && col != HDG_COL) ? col : 4;
+    g_sortDesc = descending;
+}
+
+int displaySortColumn() { return g_sortCol; }
+bool displaySortDescending() { return g_sortDesc; }
+
+bool displayHitRow(int x, int y, String &outHex) {
     if (x < TABLE_X || x >= TABLE_X + TABLE_W || y < TABLE_Y) {
         return false;
     }
@@ -340,7 +453,18 @@ bool displayHitRow(int x, int y, int &outRow) {
     if (row < 0 || row >= displayMaxRows()) {
         return false;
     }
-    outRow = row;
+    outHex = g_rowHex[row];
+    return outHex.length() > 0;
+}
+
+int displayScroll() { return g_scroll; }
+
+bool displayScrollTo(int first) {
+    first = std::max(0, std::min(first, g_count - displayMaxRows()));
+    if (first == g_scroll) {
+        return false;
+    }
+    g_scroll = first;
     return true;
 }
 
@@ -351,6 +475,7 @@ void displayInvalidate() {
     g_headerDrawn = false;
     g_lastWasEmpty = false;
     g_lastStatusKey = STATUS_NONE;
+    g_lastScrollShown = g_lastCountShown = -1;
     for (int r = 0; r < MAX_CACHE_ROWS; r++) {
         for (int c = 0; c < NUM_COLS; c++) {
             g_lastCellValid[r][c] = false;
@@ -366,6 +491,38 @@ void displaySetPollState(bool linkUp, bool lastPollOk, bool everSucceeded, uint3
     g_pollOk = lastPollOk;
     g_everSucceeded = everSucceeded;
     g_lastSuccessMs = lastSuccessMs;
+}
+
+// Which of the aircraft the rows are, when they aren't all of them - "1-11 of
+// 23 - drag for more" - in a strip of its own at the right of the status
+// line's, repainted only when it changes rather than with the age each second.
+constexpr int RANGE_W = 480;
+void drawRangeShown() {
+    if (g_scroll == g_lastScrollShown && g_count == g_lastCountShown && g_unfiltered == g_lastUnfilteredShown) {
+        return;
+    }
+    g_lastScrollShown = g_scroll;
+    g_lastCountShown = g_count;
+    g_lastUnfilteredShown = g_unfiltered;
+    auto &canvas = screen::canvas();
+    int rows = displayMaxRows();
+    int x = TABLE_X + TABLE_W - RANGE_W, y = TABLE_Y + rows * ROW_HEIGHT;
+    canvas.fillRect(x, y, RANGE_W, STATUS_H, colorBg);
+    String text;
+    if (g_count > rows) {
+        text = String(g_scroll + 1) + "-" + String(std::min(g_scroll + rows, g_count)) + " of " + String(g_count) +
+               (g_filterOn ? " filtered" : "") + " - drag for more";
+    } else if (g_filterOn) {
+        text = String(g_count) + " of " + String(g_unfiltered) + " pass the filter";
+    }
+    if (text.length()) {
+        canvas.setFont(&fonts::Font0);
+        canvas.setTextSize(2);
+        canvas.setTextColor(g_filterOn ? colorHeaderSorted : colorGrey);
+        canvas.setTextDatum(MR_DATUM);
+        canvas.drawString(text, TABLE_X + TABLE_W - 10, y + STATUS_H / 2);
+    }
+    screen::markDirty(x, y, RANGE_W, STATUS_H);
 }
 
 void displayTickStatus() {
@@ -397,6 +554,7 @@ void displayTickStatus() {
                    : state == NOTICE                       ? g_noticeGen
                                                            : 0;
     uint32_t key = (age << 3) | state;
+    drawRangeShown();
     if (key == g_lastStatusKey) {
         return;
     }
@@ -442,17 +600,25 @@ void displayTickStatus() {
     screen::flush();
 }
 
-void displaySetHeader(bool military, const String &airportCode, const String &provider) {
-    if (military == g_military && airportCode == g_airportCode && provider == g_provider) {
+void displaySetHeader(const String &airportCode, const String &provider) {
+    if (airportCode == g_airportCode && provider == g_provider) {
         return;
     }
-    g_military = military;
     g_airportCode = airportCode;
     g_provider = provider;
     // The subtitle is only drawn by a full repaint. A filter or location change
     // already causes one by another route, but a failover behind the scenes
     // does not, so ask for it here rather than leaving a stale source on show.
     displayInvalidate();
+}
+
+void displaySetFiltered(bool on, int unfiltered) {
+    g_unfiltered = unfiltered;
+    if (on == g_filterOn) {
+        return;
+    }
+    g_filterOn = on;
+    displayInvalidate();  // the funnel lit or not, and the empty table's words
 }
 
 void displaySetMuted(bool muted) {
@@ -502,14 +668,15 @@ void displayRenderAircraft(const std::vector<Aircraft> &aircraft, const std::vec
         canvas.setTextColor(colorWhite);
         const char *title = "ADSB Flights";
         canvas.drawString(title, 16, HEADER_MID_Y);
-        // Which traffic is being shown - so an empty table in military mode
-        // reads as "nothing about" rather than "something's broken" - and
+        // Which traffic is being shown - so a table filtered down to the
+        // military reads as "nothing about" rather than "something's broken"
+        // when it is empty, and one down to the cargo flights says so - and
         // where it is being shown from, which is the only place the location
         // now appears once the header's location button has moved into the
         // settings screen.
-        String sub = g_military ? " - Military" : " - Civilian";
+        String sub = " - " + shownKinds(false);
         if (g_airportCode.length()) {
-            sub += " (Nearest airport " + g_airportCode + ")";
+            sub += " near " + g_airportCode;
         }
         canvas.setTextColor(colorGrey);
         int subX = 16 + canvas.textWidth(title);
@@ -525,40 +692,40 @@ void displayRenderAircraft(const std::vector<Aircraft> &aircraft, const std::vec
             String via = "  via " + g_provider;
             int size = 2;
             canvas.setTextSize(size);
-            // The icons own everything from REPLAYS_X rightwards. A name long
+            // The icons own everything from FILTER_X rightwards. A name long
             // enough to reach them is dropped rather than drawn underneath.
-            while (size > 1 && x + canvas.textWidth(via) > REPLAYS_X - 12) {
+            while (size > 1 && x + canvas.textWidth(via) > FILTER_X - 12) {
                 canvas.setTextSize(--size);
             }
-            if (x + canvas.textWidth(via) <= REPLAYS_X - 12) {
+            if (x + canvas.textWidth(via) <= FILTER_X - 12) {
                 canvas.drawString(via, x, HEADER_MID_Y);
             }
             canvas.setTextSize(3);
         }
 
+        drawFunnel(FILTER_X + ICON_SIZE / 2, ICON_Y + ICON_SIZE / 2, ICON_SIZE / 2 - 10,
+                   g_filterOn ? colorHeaderSorted : colorGrey);
         drawReplayIcon(REPLAYS_X + ICON_SIZE / 2, ICON_Y + ICON_SIZE / 2, ICON_SIZE / 2 - 8, colorGrey);
         drawRadarIcon(RADAR_X + ICON_SIZE / 2, ICON_Y + ICON_SIZE / 2, ICON_SIZE / 2 - 6, colorGrey);
         drawSpeaker(MUTE_X + ICON_SIZE / 2, ICON_Y + ICON_SIZE / 2, ICON_SIZE / 2 - 8, g_muted,
                     g_muted ? colorMutedIcon : colorGrey);
         drawGear(COG_X + ICON_SIZE / 2, ICON_Y + ICON_SIZE / 2, ICON_SIZE / 2 - 6, colorGrey);
 
-        int x = TABLE_X;
-        for (int i = 0; i < NUM_COLS; i++) {
-            int w = COLUMNS[i].width - 4;
-            canvas.fillRect(x, HEADER_Y, w, HEADER_H, colorHeaderBg);
-            canvas.setTextColor(colorHeaderText);
-            canvas.setTextSize(2);
-            canvas.setTextDatum(MC_DATUM);
-            canvas.drawString(COLUMNS[i].title, x + w / 2, HEADER_Y + HEADER_H / 2);
-            x += COLUMNS[i].width;
-        }
+        drawColumnHeads();
         g_headerDrawn = true;
         g_lastStatusKey = STATUS_NONE;  // cleared along with the rest of the canvas
+        g_lastScrollShown = g_lastCountShown = g_lastUnfilteredShown = -1;
     }
 
     int maxRows = displayMaxRows();
+    // The list can have shrunk under a scroll.
+    g_count = (int)aircraft.size();
+    g_scroll = std::max(0, std::min(g_scroll, g_count - maxRows));
 
     if (aircraft.empty()) {
+        for (String &h : g_rowHex) {
+            h = "";
+        }
         if (!g_lastWasEmpty) {
             for (int r = 0; r < maxRows; r++) {
                 clearRow(r);
@@ -567,7 +734,7 @@ void displayRenderAircraft(const std::vector<Aircraft> &aircraft, const std::vec
             canvas.setTextColor(colorGrey);
             canvas.setTextSize(2);
             canvas.setTextDatum(ML_DATUM);
-            canvas.drawString("No aircraft in range", TABLE_X + 10, TABLE_Y + ROW_HEIGHT / 2);
+            canvas.drawString(g_filterOn && g_unfiltered ? "No aircraft pass the filter" : "No aircraft in range", TABLE_X + 10, TABLE_Y + ROW_HEIGHT / 2);
         }
     } else {
         if (g_lastWasEmpty) {
@@ -576,15 +743,37 @@ void displayRenderAircraft(const std::vector<Aircraft> &aircraft, const std::vec
             screen::markDirty(TABLE_X, TABLE_Y, TABLE_W, maxRows * ROW_HEIGHT);
         }
         int count = (int)aircraft.size();
+        // In order of the column picked: the poll's is nearest first, which
+        // is what the default asks for anyway - stable, so ties stay so.
+        static std::vector<int> order;
+        order.resize(count);
+        for (int i = 0; i < count; i++) {
+            order[i] = i;
+        }
+        std::stable_sort(order.begin(), order.end(), [&](int a, int b) {
+            SortKey ka = sortKey(aircraft[a], g_sortCol), kb = sortKey(aircraft[b], g_sortCol);
+            if (ka.known != kb.known) {
+                return ka.known;  // the unknown last, either way
+            }
+            if (!ka.known) {
+                return false;
+            }
+            int c = ka.text ? ka.text->compareTo(*kb.text) : (ka.number < kb.number ? -1 : ka.number > kb.number ? 1 : 0);
+            return g_sortDesc ? c > 0 : c < 0;
+        });
         for (int r = 0; r < maxRows; r++) {
-            if (r >= count) {
+            int shown = g_scroll + r;
+            if (shown >= count) {
+                g_rowHex[r] = "";
                 if (g_lastCellValid[r][0]) {
                     clearRow(r);
                 }
                 continue;
             }
-            const Aircraft &ac = aircraft[r];
-            bool rowIsNew = (r < (int)isNew.size()) && isNew[r];
+            int i = order[shown];
+            const Aircraft &ac = aircraft[i];
+            g_rowHex[r] = ac.hex;
+            bool rowIsNew = (i < (int)isNew.size()) && isNew[i];
             // An alert outlasts the one refresh a new row is green for, so it
             // wins: the row stays marked for as long as the aircraft is about.
             uint16_t color = (ac.alert & ALERT_EMERGENCY) ? colorEmergency
@@ -597,10 +786,12 @@ void displayRenderAircraft(const std::vector<Aircraft> &aircraft, const std::vec
             String speedKt = (ac.speedStr == "?") ? String("?") : (ac.speedStr + "kt");
             String values[NUM_COLS] = {ac.callsign, ac.type, alt, speedKt, dist, formatHeading(ac), ac.status};
             // Only the callsign flashes, between red and an ordinary row's white.
+            // A cargo operator's is blue, where nothing else colours it.
             AlertFlash flash = alertFlash(ac.hex);
             uint16_t callsignColor = flash == AlertFlash::RED ? colorEmergency
                                      : flash == AlertFlash::OFF ? colorWhite
-                                                                : color;
+                                     : color == colorWhite && isCargo(ac.callsign) ? colorCargo
+                                                                                   : color;
 
             for (int c = 0; c < NUM_COLS; c++) {
                 uint16_t cellColor = (c == 0) ? callsignColor : color;

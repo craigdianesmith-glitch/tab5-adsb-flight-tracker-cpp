@@ -15,5 +15,8 @@ void detailScreenSet(const Aircraft &ac, DetailFollow follow, DetailWatch watch)
 void detailScreenDraw();
 
 // WATCH: WATCH or UNWATCH was tapped - the watchlist decides which.
-enum class DetailAction { NONE, BACK, FOLLOW, UNFOLLOW, WATCH };
+// OPEN_FROM and OPEN_TO: one of the route's airports was tapped, for its
+// zoom - detailScreenRouteCode() says which airport.
+enum class DetailAction { NONE, BACK, FOLLOW, UNFOLLOW, WATCH, SAY, OPEN_FROM, OPEN_TO };
 DetailAction detailScreenHandleTouch(int x, int y);
+String detailScreenRouteCode(bool from);

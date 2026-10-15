@@ -144,7 +144,7 @@ Result handleTouch(int x, int y, String &text, size_t maxLen) {
     if (k[0] == '\0') {
         return Result::NONE;
     }
-    soundKeyClick();  // every live key, even one that turns out to do nothing
+    // Its tick is the one every tap has - see loop().
 
     if (strcmp(k, "OK") == 0) {
         return Result::SUBMIT;

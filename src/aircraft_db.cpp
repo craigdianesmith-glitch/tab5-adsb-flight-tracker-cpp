@@ -125,7 +125,10 @@ struct AirlineEntry {
     const char *prefix;  // 3-letter ICAO callsign prefix
     const char *name;
     uint32_t color;
+    bool cargo = false;
 };
+
+constexpr bool CARGO = true;
 
 const AirlineEntry AIRLINES[] = {
     {"BAW", "British Airways", 0x075AAA}, {"SHT", "British Airways", 0x075AAA},
@@ -146,6 +149,22 @@ const AirlineEntry AIRLINES[] = {
     {"PGT", "Pegasus Airlines", 0xFEDB00}, {"WIF", "Wideroe", 0x00854A},
     {"RJA", "Royal Jordanian", 0x6E1E3B}, {"GFA", "Gulf Air", 0x8A1538}, {"MSR", "EgyptAir", 0x004B87},
     {"ETH", "Ethiopian Airlines", 0x078930},
+    // Cargo operators: marked as cargo on the table and the radar, and the
+    // filter's Cargo chip. Their brand colours, as for the airlines above.
+    {"FDX", "FedEx", 0x4D148C, CARGO}, {"UPS", "UPS", 0x5C3D2E, CARGO}, {"DHK", "DHL", 0xD40511, CARGO},
+    {"BCS", "DHL", 0xD40511, CARGO}, {"DHX", "DHL", 0xD40511, CARGO}, {"BOX", "AeroLogic", 0x00305E, CARGO},
+    {"CLX", "Cargolux", 0xE3001B, CARGO}, {"ICV", "Cargolux", 0xE3001B, CARGO},
+    {"GTI", "Atlas Air", 0x002F6C, CARGO}, {"CKS", "Kalitta Air", 0xB22234, CARGO},
+    {"PAC", "Polar Air Cargo", 0x1D4F91, CARGO}, {"ABX", "ABX Air", 0x0033A0, CARGO},
+    {"ATN", "Air Transport International", 0x003C71, CARGO}, {"ABR", "ASL Airlines", 0x1E3C78, CARGO},
+    {"TAY", "ASL Airlines", 0x1E3C78, CARGO}, {"NPT", "West Atlantic", 0x00205B, CARGO},
+    {"GEC", "Lufthansa Cargo", 0x05164D, CARGO}, {"AZG", "Silk Way West", 0x0E4C92, CARGO},
+    {"CJT", "Cargojet", 0xC8102E, CARGO}, {"WGN", "Western Global", 0x1C3F94, CARGO},
+    {"MPH", "Martinair", 0xE87722, CARGO}, {"NCA", "Nippon Cargo Airlines", 0x0B3B8C, CARGO},
+    {"CKK", "China Cargo Airlines", 0x1A3F8F, CARGO}, {"CAO", "Air China Cargo", 0xC8102E, CARGO},
+    {"SQC", "Singapore Airlines Cargo", 0x1B3E94, CARGO}, {"AJT", "Amerijet", 0x0A3D91, CARGO},
+    {"NCR", "National Airlines", 0x00205B, CARGO}, {"SRR", "Star Air", 0x42B0D5, CARGO},
+    {"AWC", "Titan Airways", 0x003366, CARGO},
 };
 
 }  // namespace
@@ -185,8 +204,14 @@ bool lookupAirline(const String &callsign, AirlineInfo &out) {
         if (prefix == a.prefix) {
             out.name = a.name;
             out.color = a.color;
+            out.cargo = a.cargo;
             return true;
         }
     }
     return false;
+}
+
+bool isCargo(const String &callsign) {
+    AirlineInfo info;
+    return lookupAirline(callsign, info) && info.cargo;
 }

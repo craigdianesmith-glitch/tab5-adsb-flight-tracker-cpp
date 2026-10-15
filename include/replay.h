@@ -84,6 +84,19 @@ bool estimateAt(const String &hex, uint32_t t, FollowEstimate &out, uint32_t &lo
 // as it did live. False where nothing is followed or that poll lacks it.
 bool followedAt(uint32_t t, Aircraft &out);
 
+// Following, the range the live radar had around the aircraft at `t` - as it
+// was at the poll latest at `t`, or as it was changed since - or 0 where the
+// recording doesn't say, being older than that.
+float followRangeAt(uint32_t t);
+// And a zoom's: what ZOOM IN, OUT or auto zoom had it at, at `t`; 0 for its
+// framing.
+float zoomRangeAt(uint32_t t);
+
+// The filter the table and the radar showed the traffic through at `t`, as
+// the recording has it; false for none written - an older recording, whose
+// replay shows everything. sceneAt() puts the radar's views through it.
+bool filterAt(uint32_t t, TrafficFilterSet &out);
+
 // The scene `t` ms into the recording: the aircraft of the latest poll at
 // that point, each moved part of the way toward where the next poll found it
 // so the plot glides rather than jumps between polls, and the trail each has

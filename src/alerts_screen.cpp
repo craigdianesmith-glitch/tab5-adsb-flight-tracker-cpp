@@ -50,7 +50,7 @@ struct AlertToggle {
 };
 const AlertToggle TOGGLES[ALERT_COUNT] = {
     {ALERT_EMERGENCY, "Emergency squawks", "Squawk 7700, 7600 or 7500"},
-    {ALERT_MILITARY, "Military in civil mode", "Flags military passing through"},
+    {ALERT_MILITARY, "Military", "Flags military passing through"},
     {ALERT_RARE, "Rare and notable types", "A380, 747, Beluga, C-17..."},
     {ALERT_WATCHLIST, "Watchlist", "The entries listed on the right"},
 };

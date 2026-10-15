@@ -51,7 +51,7 @@ bool followDestination(const Aircraft &ac, Airport &out, float &distNm) {
     return false;
 }
 
-int followRangeFor(const Aircraft &ac) {
+int followRangeFor(const Aircraft &ac, bool fine) {
     Airport a;
     float d;
     if (!followDestination(ac, a, d)) {
@@ -59,6 +59,14 @@ int followRangeFor(const Aircraft &ac) {
     }
     // With a quarter again around it, so the airport sits inside the outer
     // ring rather than on it.
+    if (fine) {
+        for (int r : FOLLOW_FINE_STEPS_NM) {
+            if (d * 1.25f <= r) {
+                return r;
+            }
+        }
+        return FOLLOW_RANGE_NM;
+    }
     for (int r : FOLLOW_RANGE_STEPS_NM) {
         if (d * 1.25f <= r) {
             return r;

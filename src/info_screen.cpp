@@ -18,11 +18,17 @@ const char *const HELP[] = {
     "# The table",
     "The aircraft around your location, nearest first: callsign, type, altitude, speed, distance, heading and "
     "what each is doing. A new one is green for a moment; one an alert is for stays amber while it is about, or red "
-    "for an emergency.",
-    "- Tap a row for that aircraft's details. There, FOLLOW follows it on the radar and WATCH puts its callsign on "
-    "your watchlist.",
-    "- Hold a row to put its callsign on the watchlist, or take it off.",
-    "- The icons at the top right: Replays, the radar, the sound off or on, and Settings.",
+    "for an emergency. A cargo flight's callsign - FedEx, UPS, DHL - is sky blue.",
+    "- Tap a row for that aircraft's details. There, FOLLOW follows it on the radar, WATCH puts its callsign on "
+    "your watchlist, and SAY reads them out. Tap an airport of its route to open that airport's zoom.",
+    "- Hold a row to put its callsign on the watchlist, or take it off. With more aircraft than rows, drag the "
+    "table up or down for the rest. Tap a heading to sort by it, again to reverse.",
+    "- The icons at the top right: the filter, Replays, the radar, the sound off or on, and Settings.",
+    "- The filter (the funnel, here and on the radar) shows only the aircraft in a band of height and of speed, civil, cargo or military, and of the airlines "
+    "and types typed in (EZY RYR, A32 B738), leaving out the types under Hide types (TWR, the ground stations) - "
+    "on the table and the radar, and in a replay as it was recorded. The "
+    "funnel is lit while it is on. The aircraft followed, the zoom and alerts are never filtered, and a recording "
+    "keeps every aircraft.",
 
     "# The radar",
     "Everything in range, around the centre: each aircraft with its callsign, a line to where it will be in a "
@@ -48,7 +54,10 @@ const char *const HELP[] = {
     "# Following an aircraft",
     "Tap FOLLOW, then an aircraft. The radar centres on it and moves with it, closes in as it comes down to an "
     "airport, and hands it to that airport's zoom to watch it land - or, taking off, back to the radar as it climbs "
-    "away. Its height, climb and speed are charted on the left. FOLLOW again, or HOME, AIRPORT or ALL, stops it.",
+    "away. ZOOM IN and ZOOM OUT change the range around it until the next landing or take-off; with Auto zoom on, "
+    "in Settings, it widens while the sky around it is quiet and closes in as it fills, and in the airport's zoom "
+    "follows it in to the runway. Its height, "
+    "climb and speed are charted on the left. FOLLOW again, or HOME, AIRPORT or ALL, stops it.",
 
     "# Alerts",
     "Settings > Alerts picks what raises one: emergencies (squawk 7700, 7600 or 7500), military aircraft, rare "
@@ -68,8 +77,13 @@ const char *const HELP[] = {
     "computer to download - open the address it shows in a browser.",
 
     "# Settings",
-    "Civilian or military traffic, how far to look, how often to refresh, your location, the WiFi, the data "
-    "source, and the radar's navaids, map and rings. They take effect as you leave with Back.",
+    "How far to look, how often to refresh, your location, the WiFi, the data source, and the radar's navaids, "
+    "map, rings and auto zoom for following. Civil, cargo or military is the filter's. They take effect as you "
+    "leave with Back. Display has the "
+    "brightness, dimming when untouched, the radar's clock - UTC, or the local time of the UK, central Europe or "
+    "the US - and whether replays draw each aircraft's track. The speaker at the end "
+    "of the radar's title "
+    "mutes the sound, as the table's does.",
 };
 
 const char *const ABOUT[] = {
@@ -87,10 +101,11 @@ const char *const ABOUT[] = {
     "the law where you use it.",
 
     "# Credits",
+    "- Flight routes: adsbdb.com, free and crowd-sourced.",
     "- Live aircraft: adsb.lol, whose data is made available under the Open Database License 1.0, and adsb.fi "
     "(adsb.fi) - both run by volunteers, and free to use. Please keep the refresh interval generous.",
     "- Airports, their runways and frequencies, and navaids: OurAirports (ourairports.com). The map's coasts, "
-    "lakes and borders: Natural Earth (naturalearthdata.com). Both public domain.",
+    "lakes, borders and place names: Natural Earth (naturalearthdata.com). Both public domain.",
     "- Place search: Open-Meteo's geocoding API (open-meteo.com), CC BY 4.0.",
     "- Voices: Piper text-to-speech. Scottish, en_GB-alba-medium, from the Alba data of the CSTR, University of "
     "Edinburgh, CC BY 4.0; English, en_GB-cori-medium, from LibriVox recordings, public domain; American, "

@@ -24,24 +24,46 @@ bool displayHitReplays(int x, int y);
 // True if (x, y) is on the mute speaker in the header.
 bool displayHitMute(int x, int y);
 
-// True if (x, y) lands on a row the table actually drew, with outRow set to
-// its index. Bounded by the rows on screen rather than by the size of the
+// True if (x, y) is on the filter funnel in the header.
+bool displayHitFilter(int x, int y);
+
+// Whether the list the table is given has been filtered, and how many there
+// were before: the funnel lit, and the strip under the rows saying so.
+void displaySetFiltered(bool on, int unfiltered);
+
+// True if (x, y) lands on a row the table actually drew, with outHex set to
+// the hex of the aircraft on it - the rows being in whichever order was picked. Bounded by the rows on screen rather than by the size of the
 // result set: the poll keeps up to MAX_CONTACTS aircraft for the radar to
 // plot, so without the bound the gap below the last drawn row resolves to an
 // aircraft that was never on screen.
-bool displayHitRow(int x, int y, int &outRow);
+bool displayHitRow(int x, int y, String &outHex);
+
+// A tap on a column's heading: the rows put in its order - again, the other
+// way - and the headings redrawn to say so. True if it was on one; the caller
+// has the rows drawn again, and keeps the choice - see displaySetSort().
+bool displayHitHeader(int x, int y);
+void displaySetSort(int col, bool descending);
+int displaySortColumn();
+bool displaySortDescending();
+
+// More aircraft than rows: the first shown - the table dragged up or down
+// through them - and moving it, kept to the list. True if that changed it,
+// for the caller to have the table drawn again.
+int displayScroll();
+bool displayScrollTo(int first);
+constexpr int DISPLAY_ROW_HEIGHT = 52;
 
 // Drop the render cache - call when another screen has drawn over the shared
 // canvas, so the next render repaints from scratch.
 void displayInvalidate();
 
-// The header's subtitle: which traffic is being shown, the nearest airport to
+// The header's subtitle: the nearest airport to
 // the configured location (empty if nothing is near enough), and which
 // provider the data came from (empty until a poll has succeeded). Anything
 // changing here forces the full repaint that draws it - a failover picking a
 // different provider mid-run would otherwise not show until something else
 // happened to invalidate the header.
-void displaySetHeader(bool military, const String &airportCode, const String &provider);
+void displaySetHeader(const String &airportCode, const String &provider);
 
 // Whether the speaker icon is drawn muted. Repaints the icon on its own.
 void displaySetMuted(bool muted);

@@ -13,7 +13,7 @@ bool colorsReady = false;
 constexpr int BACK_X = 1140, BACK_Y = 8, BACK_W = 124, BACK_H = 44;
 // Beside Back in the title bar, as Share is on the recordings screen: the
 // two screens of reading, about the tracker rather than its settings.
-constexpr int ABOUT_X = BACK_X - 12 - BACK_W, HELP_X = ABOUT_X - 12 - BACK_W;
+constexpr int ABOUT_X = BACK_X - 12 - BACK_W, HELP_X = ABOUT_X - 12 - BACK_W, DISPLAY_X = HELP_X - 12 - BACK_W;
 
 // Two columns rather than one full-width stack: there are six things on this
 // screen now and 720px of height won't take them end to end, while 1280px of
@@ -29,28 +29,26 @@ constexpr int KNOB_R = 24;
 constexpr int BAND_ABOVE = 44, BAND_H = 88;
 
 // --- left column ---
-constexpr int SHOW_LABEL_Y = 84;
-constexpr int SEG_X = COL1_X, SEG_Y = 112, SEG_W = COL_W, SEG_H = 64;
-
-constexpr int RADIUS_LABEL_Y = 198;
-constexpr int RADIUS_VALUE_Y = 226;
-constexpr int RADIUS_SLIDER_X = COL1_X + SLIDER_INSET, RADIUS_SLIDER_Y = 290;
+// What was shown - civil or military - is the filter's now, by kind; the
+// range has the top of the column.
+constexpr int RADIUS_LABEL_Y = 84;
+constexpr int RADIUS_VALUE_Y = 112;
+constexpr int RADIUS_SLIDER_X = COL1_X + SLIDER_INSET, RADIUS_SLIDER_Y = 176;
 constexpr int RADIUS_TICKS_Y = RADIUS_SLIDER_Y + 38;
-constexpr int RADIUS_CAPS_Y = 358;
+constexpr int RADIUS_CAPS_Y = 244;
 
-// The radar's three switches, shorter than the other rows to fit them all -
-// and the rows above closed up a little, which is where the third one's room
-// came from.
-constexpr int RADAR_LABEL_Y = 398;
+// The radar's four switches, shorter than the other rows to fit them all.
+constexpr int RADAR_LABEL_Y = 284;
 constexpr int TOGGLE_H = 56, TOGGLE_GAP = 6;
-constexpr int NAVAIDS_X = COL1_X, NAVAIDS_Y = 424, NAVAIDS_W = COL_W, NAVAIDS_H = TOGGLE_H;
+constexpr int NAVAIDS_X = COL1_X, NAVAIDS_Y = 310, NAVAIDS_W = COL_W, NAVAIDS_H = TOGGLE_H;
 constexpr int COAST_X = COL1_X, COAST_Y = NAVAIDS_Y + TOGGLE_H + TOGGLE_GAP, COAST_W = COL_W, COAST_H = TOGGLE_H;
 constexpr int RINGS_X = COL1_X, RINGS_Y = COAST_Y + TOGGLE_H + TOGGLE_GAP, RINGS_W = COL_W, RINGS_H = TOGGLE_H;
+constexpr int AUTOZOOM_X = COL1_X, AUTOZOOM_Y = RINGS_Y + TOGGLE_H + TOGGLE_GAP, AUTOZOOM_W = COL_W,
+              AUTOZOOM_H = TOGGLE_H;
 
-// The space below the display toggles was the only room left for this, which
-// is no hardship: the source is the one thing here you set once and forget.
-constexpr int SOURCE_LABEL_Y = 616;
-constexpr int SRC_X = COL1_X, SRC_Y = 640, SRC_W = COL_W, SRC_H = 66;
+// The source under them, the one thing here set once and forgotten.
+constexpr int SOURCE_LABEL_Y = 580;
+constexpr int SRC_X = COL1_X, SRC_Y = 604, SRC_W = COL_W, SRC_H = 66;
 // Auto plus one per provider.
 constexpr int SRC_SEGMENTS = ADSB_PROVIDER_COUNT + 1;
 
@@ -76,13 +74,13 @@ constexpr int WIFI_X = COL2_X, WIFI_Y = WIFI_LABEL_Y + NAV_LABEL_ABOVE, WIFI_W =
 constexpr int ALERTS_LABEL_Y = WIFI_Y + NAV_H + NAV_GAP;
 constexpr int ALERTS_X = COL2_X, ALERTS_Y = ALERTS_LABEL_Y + NAV_LABEL_ABOVE, ALERTS_W = COL_W, ALERTS_H = NAV_H;
 
-TrafficFilter g_traffic = TrafficFilter::CIVIL;
 int g_radius = DEFAULT_RADIUS_NM;
 int g_interval = DEFAULT_POLL_INTERVAL_S;
 bool g_showRefresh = true;
 bool g_navaids = true;
 bool g_coast = true;
 bool g_rings = false;
+bool g_autoZoom = false;
 String g_locationLabel;
 String g_alertSummary;
 AdsbSource g_source = DEFAULT_ADSB_SOURCE;
@@ -110,11 +108,8 @@ void ensureColors() {
     colorsReady = true;
 }
 
-bool isMilitary() { return g_traffic == TrafficFilter::MILITARY; }
-
-// Military traffic is worth watching a good deal further out than civil, so
-// the range ceiling follows the choice above it.
-int maxRadius() { return isMilitary() ? MILITARY_MAX_RADIUS_NM : CIVIL_MAX_RADIUS_NM; }
+// The range ceiling rises with a filter on: see radiusCeilingNm().
+int maxRadius() { return radiusCeilingNm(trafficFilter().active()); }
 
 void clampRadius() {
     if (g_radius > maxRadius()) {
@@ -163,7 +158,8 @@ void drawRadiusSlider() {
 
     canvas.setTextColor(colorDim);
     canvas.setTextDatum(TL_DATUM);
-    canvas.drawString("60 nm civil, 150 nm military", RADIUS_SLIDER_X, RADIUS_CAPS_Y);
+    canvas.drawString(String(MAX_RADIUS_NM) + " nm, " + String(FILTERED_MAX_RADIUS_NM) + " nm with a filter on",
+                      RADIUS_SLIDER_X, RADIUS_CAPS_Y);
 
     screen::markDirty(COL1_X, top, COL_W, height);
 }
@@ -204,29 +200,9 @@ void drawIntervalSlider() {
     screen::markDirty(COL2_X, top, COL_W, height);
 }
 
-// One control with two halves rather than two switches: the two are mutually
-// exclusive, and a segmented control says so without needing to be explained.
-void drawSegments() {
-    auto &canvas = screen::canvas();
-    int half = SEG_W / 2;
-    canvas.fillRoundRect(SEG_X, SEG_Y, SEG_W, SEG_H, 8, colorOff);
-    canvas.fillRoundRect(isMilitary() ? SEG_X + half : SEG_X, SEG_Y, half, SEG_H, 8, colorOn);
-    canvas.drawRoundRect(SEG_X, SEG_Y, SEG_W, SEG_H, 8, colorBorder);
 
-    canvas.setFont(&fonts::Font0);
-    canvas.setTextSize(3);
-    canvas.setTextDatum(MC_DATUM);
-    canvas.setTextColor(isMilitary() ? colorDim : colorWhite);
-    canvas.drawString("Civilian", SEG_X + half / 2, SEG_Y + SEG_H / 2);
-    canvas.setTextColor(isMilitary() ? colorWhite : colorDim);
-    canvas.drawString("Military", SEG_X + half + half / 2, SEG_Y + SEG_H / 2);
-
-    screen::markDirty(SEG_X, SEG_Y, SEG_W, SEG_H);
-}
-
-// Reads as one control with three choices, for the same reason the traffic
-// filter does: they are mutually exclusive, and a segmented control says so
-// without a caption. "Auto" first because it is what almost everyone wants -
+// Reads as one control with three choices: they are mutually exclusive, and a
+// segmented control says so without a caption. "Auto" first because it is what almost everyone wants -
 // the named providers are there for pinning one deliberately.
 const char *sourceName(int seg) { return seg == 0 ? "Auto" : ADSB_PROVIDERS[seg - 1].name; }
 
@@ -304,6 +280,10 @@ void drawRingsToggle() {
     drawToggle(RINGS_X, RINGS_Y, RINGS_W, RINGS_H, "Range rings", "Off, the map is brighter", g_rings);
 }
 
+void drawAutoZoomToggle() {
+    drawToggle(AUTOZOOM_X, AUTOZOOM_Y, AUTOZOOM_W, AUTOZOOM_H, "Auto zoom", "Following, sized to the sky", g_autoZoom);
+}
+
 // The "leads somewhere else" rows share a shape: a title, a line of
 // current state underneath, and a chevron.
 void drawNavButton(int x, int y, int w, int h, const char *title, const String &detail) {
@@ -348,7 +328,7 @@ void drawWifiButton() {
 }
 
 void drawAlertsButton() {
-    drawNavButton(ALERTS_X, ALERTS_Y, ALERTS_W, ALERTS_H, "Alerts & recording", g_alertSummary);
+    drawNavButton(ALERTS_X, ALERTS_Y, ALERTS_W, ALERTS_H, "Alerts, voice & recording", g_alertSummary);
 }
 
 void sectionLabel(const char *text, int x, int y) {
@@ -369,9 +349,8 @@ bool inBand(int x, int y, int colX, int sliderY) {
 
 }  // namespace
 
-void settingsScreenSet(TrafficFilter traffic, int radiusNm, bool showRefresh, int pollIntervalS,
-                       const String &locationLabel, AdsbSource source) {
-    g_traffic = traffic;
+void settingsScreenSet(int radiusNm, bool showRefresh, int pollIntervalS, const String &locationLabel,
+                       AdsbSource source) {
     g_radius = radiusNm;
     g_showRefresh = showRefresh;
     g_interval = pollIntervalS;
@@ -391,6 +370,9 @@ bool settingsScreenCoast() { return g_coast; }
 
 void settingsScreenSetRings(bool on) { g_rings = on; }
 bool settingsScreenRings() { return g_rings; }
+
+void settingsScreenSetAutoZoom(bool on) { g_autoZoom = on; }
+bool settingsScreenAutoZoom() { return g_autoZoom; }
 
 void settingsScreenSetAlertSummary(const String &summary) { g_alertSummary = summary; }
 
@@ -421,15 +403,16 @@ void settingsScreenDraw() {
     canvas.drawString("About", ABOUT_X + BACK_W / 2, BACK_Y + BACK_H / 2);
     canvas.fillRoundRect(HELP_X, BACK_Y, BACK_W, BACK_H, 6, colorBtnBg);
     canvas.drawString("Help", HELP_X + BACK_W / 2, BACK_Y + BACK_H / 2);
+    canvas.fillRoundRect(DISPLAY_X, BACK_Y, BACK_W, BACK_H, 6, colorBtnBg);
+    canvas.drawString("Display", DISPLAY_X + BACK_W / 2, BACK_Y + BACK_H / 2);
 
-    sectionLabel("SHOW", COL1_X, SHOW_LABEL_Y);
-    drawSegments();
     sectionLabel("RANGE", COL1_X, RADIUS_LABEL_Y);
     drawRadiusSlider();
     sectionLabel("RADAR", COL1_X, RADAR_LABEL_Y);
     drawNavaidsToggle();
     drawCoastToggle();
     drawRingsToggle();
+    drawAutoZoomToggle();
     sectionLabel("DATA SOURCE", COL1_X, SOURCE_LABEL_Y);
     drawSourceSegments();
 
@@ -497,20 +480,11 @@ SettingsAction settingsScreenHandleTouch(int x, int y, bool pressed, bool clicke
     if (x >= ABOUT_X && x < ABOUT_X + BACK_W && y >= BACK_Y && y < BACK_Y + BACK_H) {
         return SettingsAction::OPEN_ABOUT;
     }
+    if (x >= DISPLAY_X && x < DISPLAY_X + BACK_W && y >= BACK_Y && y < BACK_Y + BACK_H) {
+        return SettingsAction::OPEN_DISPLAY;
+    }
     if (x >= HELP_X && x < HELP_X + BACK_W && y >= BACK_Y && y < BACK_Y + BACK_H) {
         return SettingsAction::OPEN_HELP;
-    }
-
-    if (y >= SEG_Y && y < SEG_Y + SEG_H && x >= SEG_X && x < SEG_X + SEG_W) {
-        TrafficFilter picked = (x < SEG_X + SEG_W / 2) ? TrafficFilter::CIVIL : TrafficFilter::MILITARY;
-        if (picked != g_traffic) {
-            g_traffic = picked;
-            clampRadius();  // the ceiling moves with the choice
-            drawSegments();
-            drawRadiusSlider();
-            screen::flush();
-        }
-        return SettingsAction::NONE;
     }
 
     if (x >= REFRESH_X && x < REFRESH_X + REFRESH_W && y >= REFRESH_Y && y < REFRESH_Y + REFRESH_H) {
@@ -537,6 +511,13 @@ SettingsAction settingsScreenHandleTouch(int x, int y, bool pressed, bool clicke
     if (x >= RINGS_X && x < RINGS_X + RINGS_W && y >= RINGS_Y && y < RINGS_Y + RINGS_H) {
         g_rings = !g_rings;
         drawRingsToggle();
+        screen::flush();
+        return SettingsAction::NONE;
+    }
+
+    if (x >= AUTOZOOM_X && x < AUTOZOOM_X + AUTOZOOM_W && y >= AUTOZOOM_Y && y < AUTOZOOM_Y + AUTOZOOM_H) {
+        g_autoZoom = !g_autoZoom;
+        drawAutoZoomToggle();
         screen::flush();
         return SettingsAction::NONE;
     }
@@ -569,7 +550,6 @@ SettingsAction settingsScreenHandleTouch(int x, int y, bool pressed, bool clicke
     return SettingsAction::NONE;
 }
 
-TrafficFilter settingsScreenTraffic() { return g_traffic; }
 int settingsScreenRadius() { return g_radius; }
 bool settingsScreenShowRefresh() { return g_showRefresh; }
 AdsbSource settingsScreenSource() { return g_source; }

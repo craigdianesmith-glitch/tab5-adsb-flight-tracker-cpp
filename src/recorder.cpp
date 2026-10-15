@@ -46,6 +46,7 @@ String g_path;
 Header g_header;
 void (*g_runwaysSource)(RunwaysInUse &out) = nullptr;
 uint32_t g_fileStartMs = 0;
+String g_filterWritten;  // the filter as this file last had it written - see addFrame()
 uint32_t g_fileBytes = 0;
 
 struct Lock {
@@ -197,7 +198,8 @@ bool openPartLocked(const Header &h) {
     // reads any other exactly as before.
     char follow[40] = "";
     if (h.followHex.length()) {
-        snprintf(follow, sizeof(follow), "follow %s %d\n", field(h.followHex, 8).c_str(), h.followRangeNm);
+        snprintf(follow, sizeof(follow), "follow %s %d%s\n", field(h.followHex, 8).c_str(), h.followRangeNm,
+                 h.followAuto ? " auto" : "");
     }
     // Last, after what the list reads, and kept short enough for a replay's
     // line buffer: a few ends are all an airport is ever working at once.
@@ -239,6 +241,7 @@ bool openPartLocked(const Header &h) {
     g_path = path;
     g_fileStartMs = millis();
     g_fileBytes = wrote;
+    g_filterWritten = "";  // written again at the first poll of each file
     return true;
 }
 
@@ -306,7 +309,8 @@ String activePath() {
     return g_path;
 }
 
-void addFrame(const std::vector<Aircraft> &aircraft, const String &view, const char *provider, float rangeNm) {
+void addFrame(const std::vector<Aircraft> &aircraft, const String &view, const char *provider, float rangeNm,
+              const std::vector<RangeMark> *marks, const TrafficFilterSet *filter) {
     Lock lock;
     if (!g_active) {
         return;
@@ -326,6 +330,26 @@ void addFrame(const std::vector<Aircraft> &aircraft, const String &view, const c
     String v = field(view, 16), p = field(provider ? String(provider) : String("?"), 16);
     v.replace(' ', '_');
     p.replace(' ', '_');
+    // The filter, when it has changed - or this file has yet to say.
+    if (filter != nullptr) {
+        String text = filterText(*filter);
+        if (text != g_filterWritten) {
+            snprintf(line, sizeof(line), "Q %lu %s\n", (unsigned long)(millis() - g_fileStartMs), text.c_str());
+            out += line;
+            g_filterWritten = text;
+        }
+    }
+    // The follow range's changes since the last poll, each when it was made
+    // - those from before this file began left to the one before.
+    if (marks != nullptr) {
+        for (const RangeMark &m : *marks) {
+            if ((int32_t)(m.ms - g_fileStartMs) >= 0) {
+                snprintf(line, sizeof(line), "%c %lu %g\n", m.zoom ? 'Z' : 'R', (unsigned long)(m.ms - g_fileStartMs),
+                         m.nm);
+                out += line;
+            }
+        }
+    }
     char range[16] = "";
     if (rangeNm > 0) {
         snprintf(range, sizeof(range), " %g", rangeNm);
@@ -497,6 +521,7 @@ bool parseHeaderLine(const char *line, Header &h) {
         const char *space = strchr(v, ' ');
         h.followHex = space ? String(v).substring(0, space - v) : String(v);
         h.followRangeNm = space ? atoi(space + 1) : 0;
+        h.followAuto = space && strstr(space + 1, " auto") != nullptr;
     } else if ((v = after(line, "runways"))) {
         h.runways = RunwaysInUse();
         char code[8], ident[8];

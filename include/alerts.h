@@ -31,10 +31,8 @@ std::vector<String> parseWatchlist(const String &text);
 // and at most a dash, between 2 and 10 long.
 String watchlistProblem(const String &text);
 
-// Which of the enabled rules this aircraft trips. `civilMode` says whether
-// civil traffic is what's being shown: in military mode every contact is
-// military, so that rule would flag the lot.
-uint8_t evaluateAlert(const Aircraft &ac, const AlertRules &rules, bool civilMode);
+// Which of the enabled rules this aircraft trips.
+uint8_t evaluateAlert(const Aircraft &ac, const AlertRules &rules);
 
 // The most important reason in the mask, worded for the banner.
 String alertReasonText(const Aircraft &ac, uint8_t reasons);

@@ -1,5 +1,7 @@
 #include "sound.h"
 
+#include <esp_heap_caps.h>
+
 #include <M5Unified.h>
 #include <math.h>
 
@@ -40,11 +42,13 @@ int g_noteCount = 0;
 int g_nextNote = 0;
 
 // The words, made by tools/gen_voice.py in each of three voices: a second or
-// so of 8-bit sound each, at the voice's own rate, played from flash by the
-// speaker's own task, so saying one costs the UI no more than a note does.
+// so of sound each, at the voice's own rate, as 4-bit IMA ADPCM - half what
+// 8-bit samples took, 3.7MB of flash between the three voices - turned back
+// into samples as each is said (see playClip()), and played by the speaker's
+// own task, so saying one costs the UI no more than a note does.
 struct Clip {
-    const int8_t *samples;
-    size_t count;
+    const uint8_t *adpcm;  // two samples a byte, the first in the low nibble
+    size_t count;          // samples
 };
 struct NamedClip {
     const char *name;
@@ -387,8 +391,8 @@ void readAircraft(const Aircraft &a, Region region) {
         say(g_voice->knots, AFTER_CALLSIGN_MS);
     }
     if (a.hasTrack) {
-        int heading = (int)lroundf(a.track) % 360;
-        char digits[4];
+        int heading = ((int)lroundf(a.track) % 360 + 360) % 360;
+        char digits[8];
         snprintf(digits, sizeof(digits), "%03d", heading == 0 ? 360 : heading);
         say(g_voice->heading);
         spell(digits);
@@ -609,6 +613,61 @@ void soundSampleAccent(Accent accent) {
     queueReading(r);
 }
 
+namespace {
+
+// IMA ADPCM's tables, as tools/ima_adpcm.py and tools/adpcm_search.c have them.
+constexpr int16_t ADPCM_STEP[89] = {
+    7,     8,     9,     10,    11,    12,    13,    14,    16,    17,    19,    21,    23,    25,    28,
+    31,    34,    37,    41,    45,    50,    55,    60,    66,    73,    80,    88,    97,    107,   118,
+    130,   143,   157,   173,   190,   209,   230,   253,   279,   307,   337,   371,   408,   449,   494,
+    544,   598,   658,   724,   796,   876,   963,   1060,  1166,  1282,  1411,  1552,  1707,  1878,  2066,
+    2272,  2499,  2749,  3024,  3327,  3660,  4026,  4428,  4871,  5358,  5894,  6484,  7132,  7845,  8630,
+    9493,  10442, 11487, 12635, 13899, 15289, 16818, 18500, 20350, 22385, 24623, 27086, 29794, 32767};
+constexpr int8_t ADPCM_INDEX[8] = {-1, -1, -1, -1, 2, 4, 6, 8};
+
+// A clip turned back into 16-bit samples - into one of two buffers in PSRAM
+// in turn, the speaker's task reading from the other until it has finished
+// with the word before - and handed to the speaker. A second of a word is a
+// millisecond's work.
+void playClip(const Clip &clip, uint32_t rate) {
+    static int16_t *buffers[2] = {nullptr, nullptr};
+    static size_t sizes[2] = {0, 0};
+    static int next = 0;
+    int b = next;
+    next ^= 1;
+    if (sizes[b] < clip.count) {
+        heap_caps_free(buffers[b]);
+        buffers[b] = (int16_t *)heap_caps_malloc(clip.count * sizeof(int16_t), MALLOC_CAP_SPIRAM);
+        sizes[b] = buffers[b] ? clip.count : 0;
+        if (buffers[b] == nullptr) {
+            return;
+        }
+    }
+    int16_t *out = buffers[b];
+    int pred = 0, index = 0;
+    for (size_t i = 0; i < clip.count; i++) {
+        int code = (clip.adpcm[i >> 1] >> ((i & 1) * 4)) & 15;
+        int step = ADPCM_STEP[index], delta = step >> 3;
+        if (code & 4) {
+            delta += step;
+        }
+        if (code & 2) {
+            delta += step >> 1;
+        }
+        if (code & 1) {
+            delta += step >> 2;
+        }
+        pred += (code & 8) ? -delta : delta;
+        pred = pred < -32768 ? -32768 : pred > 32767 ? 32767 : pred;
+        index += ADPCM_INDEX[code & 7];
+        index = index < 0 ? 0 : index > 88 ? 88 : index;
+        out[i] = (int16_t)pred;
+    }
+    M5.Speaker.playRaw(out, clip.count, rate, false, 1, ALERT_CHANNEL, true);
+}
+
+}  // namespace
+
 void soundTick() {
     // Nothing being said: the next announcement - a clearance is only worth
     // hearing as it happens, and goes stale in seconds - or else a reading
@@ -644,7 +703,7 @@ void soundTick() {
                 return;  // the pause after the clip before
             }
             const Spoken &s = g_spoken[g_nextSpoken++];
-            M5.Speaker.playRaw(s.clip.samples, s.clip.count, g_voice->rate, false, 1, ALERT_CHANNEL, true);
+            playClip(s.clip, g_voice->rate);
             g_speakAtMs = millis() + s.clip.count * 1000 / g_voice->rate + s.pauseMs;
             return;
         }

@@ -12,13 +12,14 @@ enum class SettingsAction {
     OPEN_ALERTS,
     OPEN_HELP,      // the how-to-use screen
     OPEN_ABOUT,     // version, disclaimer and credits
+    OPEN_DISPLAY,   // brightness, dimming and the clock
 };
 
 // Seeds the screen with the values currently in force. The label is only
 // displayed - the location itself is changed on the location screen, which
 // this screen is now the only way into.
-void settingsScreenSet(TrafficFilter traffic, int radiusNm, bool showRefresh, int pollIntervalS,
-                       const String &locationLabel, AdsbSource source);
+void settingsScreenSet(int radiusNm, bool showRefresh, int pollIntervalS, const String &locationLabel,
+                       AdsbSource source);
 
 // Whether the radar's navaids switch is on, to seed it and read it back.
 void settingsScreenSetNavaids(bool on);
@@ -30,6 +31,9 @@ void settingsScreenSetCoast(bool on);
 bool settingsScreenCoast();
 void settingsScreenSetRings(bool on);
 bool settingsScreenRings();
+// And following's auto zoom - see followRangeNow() in main.cpp.
+void settingsScreenSetAutoZoom(bool on);
+bool settingsScreenAutoZoom();
 
 // Updates the location shown on the button, after the location screen has
 // been in and changed it.
@@ -44,7 +48,6 @@ void settingsScreenDraw();
 // everything else acts on a completed tap.
 SettingsAction settingsScreenHandleTouch(int x, int y, bool pressed, bool clicked);
 
-TrafficFilter settingsScreenTraffic();
 int settingsScreenRadius();
 bool settingsScreenShowRefresh();
 int settingsScreenPollInterval();

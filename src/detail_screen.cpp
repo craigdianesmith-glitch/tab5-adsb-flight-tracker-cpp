@@ -1,9 +1,12 @@
 #include "detail_screen.h"
 
+#include "route.h"
+
 #include <M5Unified.h>
 #include <math.h>
 
 #include "aircraft_db.h"
+#include "radar_screen.h"
 #include "screen.h"
 
 namespace {
@@ -13,6 +16,8 @@ bool colorsReady = false;
 constexpr int BACK_X = 1140, BACK_Y = 8, BACK_W = 124, BACK_H = 44;
 constexpr int FOLLOW_W = 124, FOLLOW_X = BACK_X - 12 - FOLLOW_W;
 constexpr int WATCH_W = 124, WATCH_X = FOLLOW_X - 12 - WATCH_W;
+// SAY, left of the leftmost of those shown - see sayX().
+constexpr int SAY_W = 100;
 // The airline's banner, under the buttons.
 constexpr int BANNER_Y = BACK_Y + BACK_H + 4, BANNER_H = 32;
 // Label column widened to fit the bigger label font (e.g. "ALTITUDE (BARO)"
@@ -21,11 +26,19 @@ constexpr int BANNER_Y = BACK_Y + BACK_H + 4, BANNER_H = 32;
 constexpr int COL1_LABEL_X = 40, COL1_VALUE_X = 360, COL1_VALUE_MAX_W = 320;
 constexpr int COL2_LABEL_X = 700, COL2_VALUE_X = 1020, COL2_VALUE_MAX_W = 234;
 constexpr int ROW0_Y = 120, ROW_H = 80;
+// The route's two airports, as buttons - each opens its zoom - either side
+// of a ">", in its row's value column.
+constexpr int ROUTE_Y = ROW0_Y + 3 * ROW_H;
+constexpr int ROUTE_BTN_Y = ROUTE_Y - 12, ROUTE_BTN_H = 48, ROUTE_BTN_PAD = 22, ROUTE_ARROW_W = 48;
 
 Aircraft g_ac;
 bool g_hasAc = false;
 DetailFollow g_follow = DetailFollow::NONE;
 DetailWatch g_watch = DetailWatch::NONE;
+// The route's airports as drawn, where they are buttons: an airport the
+// zoom hasn't got is written as it is, and is no button.
+String g_fromCode, g_toCode;
+int g_fromX = 0, g_fromW = 0, g_toX = 0, g_toW = 0;
 
 uint16_t colorBg, colorWhite, colorGrey, colorBtnBg, colorClimb, colorDescend, colorLevel;
 
@@ -64,6 +77,33 @@ void field(int labelX, int valueX, int maxValueW, int y, const char *label, cons
         canvas.setTextSize(size);
     }
     canvas.drawString(value, valueX, y);
+}
+
+// Where SAY goes: beside the leftmost button shown - a replay's details have
+// neither FOLLOW nor WATCH.
+int sayX() {
+    int left = g_watch != DetailWatch::NONE ? WATCH_X : g_follow != DetailFollow::NONE ? FOLLOW_X : BACK_X;
+    return left - 12 - SAY_W;
+}
+
+// A route's airport at x: a button if the zoom has it, as text if not.
+// Returns how wide it is.
+int routeAirport(const String &code, int x) {
+    auto &canvas = screen::canvas();
+    canvas.setFont(&fonts::Font0);
+    canvas.setTextSize(3);
+    double lat, lon;
+    float range;
+    bool zoomable = radarZoomFrame(code, lat, lon, range);
+    int w = canvas.textWidth(code) + (zoomable ? 2 * ROUTE_BTN_PAD : 0);
+    if (zoomable) {
+        canvas.fillRoundRect(x, ROUTE_BTN_Y, w, ROUTE_BTN_H, 6, colorBtnBg);
+        canvas.drawRoundRect(x, ROUTE_BTN_Y, w, ROUTE_BTN_H, 6, colorGrey);
+    }
+    canvas.setTextColor(colorWhite);
+    canvas.setTextDatum(ML_DATUM);
+    canvas.drawString(code, x + (zoomable ? ROUTE_BTN_PAD : 0), ROUTE_BTN_Y + ROUTE_BTN_H / 2);
+    return zoomable ? w : 0;
 }
 
 }  // namespace
@@ -121,6 +161,9 @@ void detailScreenDraw() {
         canvas.drawString(g_watch == DetailWatch::WATCH ? "WATCH" : "UNWATCH", WATCH_X + WATCH_W / 2,
                           BACK_Y + BACK_H / 2);
     }
+    // Its details said aloud, now, whether or not read aloud is on.
+    canvas.fillRoundRect(sayX(), BACK_Y, SAY_W, BACK_H, 6, colorBtnBg);
+    canvas.drawString("SAY", sayX() + SAY_W / 2, BACK_Y + BACK_H / 2);
 
     // Livery banner: no real logo/image assets available, so this is the
     // airline's actual brand colour as a drawn band, not a bitmap. Clear of
@@ -135,6 +178,16 @@ void detailScreenDraw() {
         canvas.setTextColor(colorWhite);
         canvas.setTextDatum(ML_DATUM);
         canvas.drawString(airline.name, 26, BANNER_Y + BANNER_H / 2);
+        if (airline.cargo) {
+            // A tag beside the name, outlined in the banner's own white.
+            int x = 26 + canvas.textWidth(airline.name) + 18;
+            canvas.setTextSize(2);
+            int w = canvas.textWidth("CARGO") + 16, h = BANNER_H - 8;
+            canvas.drawRoundRect(x, BANNER_Y + 4, w, h, 4, colorWhite);
+            canvas.drawRoundRect(x + 1, BANNER_Y + 5, w - 2, h - 2, 3, colorWhite);
+            canvas.setTextDatum(MC_DATUM);
+            canvas.drawString("CARGO", x + w / 2, BANNER_Y + BANNER_H / 2);
+        }
     }
 
     canvas.drawFastHLine(16, BANNER_Y + BANNER_H + 8, 1248, colorGrey);
@@ -149,14 +202,37 @@ void detailScreenDraw() {
                                      : "unknown";
     String dist = g_ac.hasDist ? (String((int)lroundf(g_ac.distNm)) + " nm") : "unknown";
     String type = g_ac.type.length() ? lookupAircraftType(g_ac.type, g_ac.military) : "unknown";
-    String category = g_ac.category.length() ? g_ac.category : "unknown";
+    // Where it is from and going to, where adsbdb knows: in its row the
+    // airports' codes, and in the footer their towns. In place of the size
+    // category the transponder sends, which said little to anyone.
+    Route route;
+    RouteState routeState = routeFor(g_ac.callsign, route);
+    String routeText = routeState == RouteState::FOUND     ? route.fromCode + " > " + route.toCode
+                       : routeState == RouteState::LOOKING ? String("looking up...")
+                                                           : String("unknown");
     String squawk = g_ac.squawk.length() ? g_ac.squawk : "unknown";
     String reg = g_ac.reg.length() ? g_ac.reg : "unknown";
 
     field(COL1_LABEL_X, COL1_VALUE_X, COL1_VALUE_MAX_W, ROW0_Y + 0 * ROW_H, "CALLSIGN", g_ac.callsign, colorWhite);
     field(COL1_LABEL_X, COL1_VALUE_X, COL1_VALUE_MAX_W, ROW0_Y + 1 * ROW_H, "REGISTRATION", reg, colorWhite);
     field(COL1_LABEL_X, COL1_VALUE_X, COL1_VALUE_MAX_W, ROW0_Y + 2 * ROW_H, "TYPE", type, colorWhite);
-    field(COL1_LABEL_X, COL1_VALUE_X, COL1_VALUE_MAX_W, ROW0_Y + 3 * ROW_H, "CATEGORY", category, colorWhite);
+    g_fromCode = g_toCode = "";
+    g_fromW = g_toW = 0;
+    if (routeState == RouteState::FOUND) {
+        field(COL1_LABEL_X, COL1_VALUE_X, COL1_VALUE_MAX_W, ROUTE_Y, "ROUTE", "", colorWhite);
+        g_fromCode = route.fromCode;
+        g_toCode = route.toCode;
+        g_fromX = COL1_VALUE_X;
+        g_fromW = routeAirport(g_fromCode, g_fromX);
+        int arrowX = g_fromX + (g_fromW ? g_fromW : canvas.textWidth(g_fromCode));
+        canvas.setTextColor(colorGrey);
+        canvas.setTextDatum(MC_DATUM);
+        canvas.drawString(">", arrowX + ROUTE_ARROW_W / 2, ROUTE_BTN_Y + ROUTE_BTN_H / 2);
+        g_toX = arrowX + ROUTE_ARROW_W;
+        g_toW = routeAirport(g_toCode, g_toX);
+    } else {
+        field(COL1_LABEL_X, COL1_VALUE_X, COL1_VALUE_MAX_W, ROUTE_Y, "ROUTE", routeText, colorGrey);
+    }
     field(COL1_LABEL_X, COL1_VALUE_X, COL1_VALUE_MAX_W, ROW0_Y + 4 * ROW_H, "SQUAWK", squawk, colorWhite);
     field(COL1_LABEL_X, COL1_VALUE_X, COL1_VALUE_MAX_W, ROW0_Y + 5 * ROW_H, "STATUS", statusValue(g_ac.status),
           statusColor(g_ac.status));
@@ -174,6 +250,9 @@ void detailScreenDraw() {
     canvas.setTextColor(colorGrey);
     canvas.setTextDatum(TL_DATUM);
     String footer = "ICAO " + g_ac.hex;
+    if (routeState == RouteState::FOUND && route.fromCity.length() && route.toCity.length()) {
+        footer += "    " + route.fromCity + " to " + route.toCity;
+    }
     if (g_ac.hasPos) {
         footer += "    Position " + String(g_ac.lat, 4) + ", " + String(g_ac.lon, 4);
     }
@@ -183,8 +262,19 @@ void detailScreenDraw() {
 }
 
 DetailAction detailScreenHandleTouch(int x, int y) {
+    if (y >= ROUTE_BTN_Y - 8 && y < ROUTE_BTN_Y + ROUTE_BTN_H + 8) {
+        if (g_fromW && x >= g_fromX - 8 && x < g_fromX + g_fromW + 8) {
+            return DetailAction::OPEN_FROM;
+        }
+        if (g_toW && x >= g_toX - 8 && x < g_toX + g_toW + 8) {
+            return DetailAction::OPEN_TO;
+        }
+    }
     if (y < BACK_Y || y >= BACK_Y + BACK_H) {
         return DetailAction::NONE;
+    }
+    if (x >= sayX() && x < sayX() + SAY_W) {
+        return DetailAction::SAY;
     }
     if (x >= BACK_X && x < BACK_X + BACK_W) {
         return DetailAction::BACK;
@@ -197,3 +287,5 @@ DetailAction detailScreenHandleTouch(int x, int y) {
     }
     return DetailAction::NONE;
 }
+
+String detailScreenRouteCode(bool from) { return from ? g_fromCode : g_toCode; }

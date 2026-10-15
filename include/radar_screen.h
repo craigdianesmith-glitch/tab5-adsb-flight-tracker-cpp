@@ -4,6 +4,7 @@
 #include <vector>
 
 #include "adsb_client.h"
+#include "clock_zone.h"
 #include "config.h"
 #include "replay.h"
 #include "telemetry.h"
@@ -59,7 +60,7 @@ void radarScreenSetZoom(bool canIn, bool canOut, bool onScreen);
 // centre; that relies on the rest still being on the canvas from the last
 // full draw.
 void radarScreenDraw(const std::vector<Aircraft> &aircraft, const std::vector<uint8_t> &isNew, double lat, double lon,
-                     int rangeNm, bool military, bool full);
+                     int rangeNm, bool full);
 
 // Contacts are identified by ICAO hex rather than by index: a poll can land
 // between the plot being drawn and the screen being tapped, and an index into
@@ -116,6 +117,13 @@ struct RadarScene {
     // Every airport in range marked, whichever view it is: dragged off its
     // centre, or being dragged, they are what a drag is aimed by.
     bool everyAirport = false;
+    // Where nothing is drawn over the plot afterwards and its centre stays
+    // put - the live radar left to itself - a refresh may put back only what
+    // was under the traffic and push only where it moved: see radarPlotDraw().
+    bool partial = false;
+    // Following with auto zoom choosing the range, which the range readout
+    // says - never in a replay, which frames it as it always has.
+    bool autoRange = false;
     // A drag's line has run off the edge of the plot, which is drawn at a
     // range that takes it: the map and the airports alone, the traffic left
     // off until the plot is back at its own range, wherever it is let go. Or
@@ -146,8 +154,9 @@ bool radarPlotHit(int x, int y, String &outHex);
 // from the widest is UNZOOM, back to the radar; BACK is the Back button, to
 // the table. OPEN_RECORDINGS is Replays, where the radar has it. DRAG is the
 // radar's: a touch on the plot that may go on to drag it.
+// RANGE: ZOOM IN or OUT changed the range shown - drawn again, as REDRAW.
 enum class ZoomAction {
-    NONE, UNZOOM, BACK, TOGGLE_FOLLOW, TOGGLE_RECORD, OPEN_RECORDINGS, SELECT, DISMISS, REDRAW, DRAG
+    NONE, UNZOOM, BACK, TOGGLE_FOLLOW, TOGGLE_RECORD, OPEN_RECORDINGS, SELECT, DISMISS, REDRAW, RANGE, DRAG
 };
 
 // Where the zoom on the airport with IATA `code` would be framed: on the
@@ -176,6 +185,10 @@ bool radarZoomOnFollowed();
 // The range the zoom shows, as ZOOM IN and OUT have it, for a recording to
 // say - or 0 at its framing.
 float radarZoomViewNm();
+// ZOOM IN and OUT drawn again as the range now allows - after it has been
+// changed other than by them, auto zoom's doing - and marked to go with the
+// next push. Only with the zoom on screen.
+void radarZoomRefreshButtons();
 
 // Puts the zoom just opened back to a range radarZoomViewNm() gave, to come
 // back to it as it was left - 0 for its framing.
@@ -223,6 +236,10 @@ bool radarDragEnd();
 // Whether the radar has been dragged off its own centre, and where to.
 bool radarScreenFreeLook(double &lat, double &lon);
 
+// The radar put on a free look at (lat, lon), as if dragged there from home
+// at (homeLat, homeLon) - the centre a drag would have been measured from.
+void radarScreenLookAt(double lat, double lon, double homeLat, double homeLon);
+
 // Puts the radar back on its own centre, as HOME, AIRPORT and ALL do. True if
 // it had been dragged off it.
 bool radarScreenEndFreeLook();
@@ -232,6 +249,28 @@ bool radarScreenEndFreeLook();
 // so. For the plot drawn next, which ought to be a full one when this has
 // changed, for the title.
 void radarScreenSetMapOnly(bool on);
+// The title and what it says under it - map only, free look, filtered - drawn
+// again and pushed, for a refresh of the plot that changes what it says
+// without the whole screen being drawn again.
+void radarScreenRedrawTitle();
+
+// Following, whether auto zoom is choosing the range: see RadarScene.
+void radarScreenSetAutoRange(bool on);
+
+// The filter's funnel, `r` across from its middle at (cx, cy), lit for a
+// filter on - as the radar's title has it, for a replay's to say the same.
+void radarDrawFunnel(int cx, int cy, int r, bool lit);
+
+// The fastest of the contacts the last plot drew - the radar's or the zoom's,
+// whichever was drawn last - in knots: how soon a redraw would move one of
+// them a pixel. Those left off by the filter or beyond the outer ring don't
+// count, nor do those standing where the feed last had them.
+float radarFastestKt();
+// Whether a filter is on - see filter.h - for the title to say so and its
+// funnel to be lit.
+void radarScreenSetFiltered(bool on);
+// True if (x, y) is on that funnel, under the radar's speaker.
+bool radarScreenHitFilter(int x, int y);
 
 // Whether the radar has the map under it - coasts and lakes, countries'
 // borders, and the state lines of the big federations, as the settings screen
@@ -244,6 +283,17 @@ void radarScreenSetCoast(bool on);
 // the plot to itself. The airport zoom keeps its rings either way: it has no
 // map, and they are all that says how far out the traffic on final is.
 void radarScreenSetRings(bool on);
+
+// The sound's switch at the end of the radar's and the zoom's titles, as the
+// table's header has it: what it shows, redrawn with `onScreen`; and whether
+// a tap is on it.
+void radarScreenSetMuted(bool muted, bool onScreen);
+bool radarScreenHitMute(int x, int y);
+
+// The UTC clock in the radar's and the zoom's margin - a setting - and its
+// minute turning over, with one of them up: called every pass.
+void radarScreenSetClock(ClockZone zone);
+void radarScreenTickClock();
 
 // The runway ends the live zoom has lately seen in use, and how long ago,
 // for a recording's file to begin with - see recorder::RunwaysInUse.

@@ -8,11 +8,13 @@ constexpr double DEFAULT_LON = -4.4664;
 constexpr const char *DEFAULT_LABEL = "Erskine, UK";
 constexpr int DEFAULT_RADIUS_NM = 25;
 
-// The radius slider runs to the military ceiling; civil traffic is only ever
-// shown out to the lower one, however far the slider is pushed.
+// The poll radius, on the settings slider: out to MAX_RADIUS_NM - a busy sky
+// further out than that is more aircraft than the radar can show - and with
+// a filter on, there being fewer to show, as far as the feeds' area queries
+// go. See radiusCeilingNm().
 constexpr int RADIUS_MIN_NM = 5;
-constexpr int CIVIL_MAX_RADIUS_NM = 60;
-constexpr int MILITARY_MAX_RADIUS_NM = 150;
+constexpr int MAX_RADIUS_NM = 60;
+constexpr int FILTERED_MAX_RADIUS_NM = 250;
 
 // How often the sky is refetched, set on the settings screen. Whole seconds
 // in fives: below five the endpoint starts refusing, and past a minute the
@@ -47,6 +49,17 @@ constexpr int ZOOM_POLL_INTERVAL_S = 10;
 // that has stopped answering doesn't send the sky sailing on without it.
 constexpr int TWEEN_FRAMES = 2;
 constexpr uint32_t TWEEN_MAX_MS = 5000;
+// And more often still where the traffic moves across the plot fast enough to
+// be seen to - close in - so it glides rather than jumps: a frame for each
+// pixel the fastest contact moves, but no more than this often. Where only
+// the traffic has moved, a frame refreshes that alone, in about 10ms. The
+// radar following an aircraft, whose map moves with it, is drawn whole, and
+// kept to fewer; and no view spends more than a quarter of the time drawing,
+// so a crowd, or the zoom centred on the aircraft followed, is spaced out to
+// suit how long its frames take.
+constexpr uint32_t GLIDE_MIN_MS = 125;
+constexpr uint32_t GLIDE_FOLLOW_MIN_MS = 500;
+constexpr uint32_t GLIDE_DRAWING_SHARE = 4;  // a frame's own time, this many times over, between frames
 // Fetched past the zoom's range, so traffic a few miles out on final is in
 // the list: off the plot, but it says which runway is in use before it lands.
 constexpr int ZOOM_FETCH_EXTRA_NM = 4;
@@ -65,13 +78,25 @@ constexpr int FOLLOW_RANGE_NM = 20;
 // and the fetch around the aircraft with it, so the answers shrink too. Below
 // this height, and only then, an airport ahead is taken for its destination.
 constexpr int FOLLOW_RANGE_STEPS_NM[] = {5, 10, 15};
+// With auto zoom, these instead: smaller changes of scale on the way down,
+// each still keeping the airport just inside the edge.
+constexpr int FOLLOW_FINE_STEPS_NM[] = {5, 6, 8, 10, 12, 15};
+// Auto zoom, from the display page: in the climb and the cruise, the range
+// steps out while fewer than AUTO_ZOOM_FEW other aircraft are on the plot
+// and back in while more than AUTO_ZOOM_MANY are - airborne ones, through
+// the filter - no closer than AUTO_ZOOM_MIN_NM, the closer ranges being the
+// landing's. ZOOM IN and OUT, following, step through RADAR_RANGE_STEPS_NM
+// below, out to as far as the poll may reach.
+constexpr int AUTO_ZOOM_FEW = 8;
+constexpr int AUTO_ZOOM_MANY = 20;
+constexpr int AUTO_ZOOM_MIN_NM = 10;
 // The radar's ZOOM IN and OUT step through these - so at the default 25nm,
 // the same 5, 10, 15 and 20 as following closes in through on a landing.
 // Inside the poll radius only what is shown changes, the poll, the table and
 // the alerts going on covering the whole radius; out past it the radius
 // itself widens, to the settings' ceiling; in from the closest is the
 // airport's own zoom.
-constexpr int RADAR_RANGE_STEPS_NM[] = {5, 10, 15, 20, 30, 40, 60, 80, 100, 120};
+constexpr int RADAR_RANGE_STEPS_NM[] = {5, 10, 15, 20, 30, 40, 60, 80, 100, 120, 150, 200};
 // And out past the settings' ceiling, these: the map alone, with its names -
 // no traffic, navaids or airports - to look round, and drag, over a country
 // or a continent.

@@ -18,8 +18,9 @@ bool followDestination(const Aircraft &ac, Airport &out, float &distNm);
 
 // The range to show it at: FOLLOW_RANGE_NM in the cruise, closing in on
 // the way down - in steps, so the scale only changes now and then - to
-// keep its destination on the plot without the miles beyond it.
-int followRangeFor(const Aircraft &ac);
+// keep its destination on the plot without the miles beyond it. `fine` for
+// auto zoom's finer steps, FOLLOW_FINE_STEPS_NM.
+int followRangeFor(const Aircraft &ac, bool fine = false);
 
 // Where it probably is `ageS` seconds after `last`, its last report with a
 // current position, while the feed has lost it - as it often does at a

@@ -16,8 +16,14 @@ String lookupAircraftType(const String &icaoCode, bool military = false);
 struct AirlineInfo {
     String name;
     uint32_t color;  // 0xRRGGBB
+    bool cargo = false;  // a cargo operator: FedEx, UPS, DHL...
 };
 
 // Extracts the callsign's 3-letter ICAO airline prefix and looks it up.
 // Returns false (out untouched) if the callsign doesn't match a known airline.
 bool lookupAirline(const String &callsign, AirlineInfo &out);
+
+// Whether the callsign is a cargo operator's, as the airline table has it -
+// for the table and the radar to mark, and the filter's Cargo chip. A cargo
+// flight under a passenger airline's callsign - Qatar's, Emirates' - isn't one.
+bool isCargo(const String &callsign);

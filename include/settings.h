@@ -3,17 +3,19 @@
 #include <Arduino.h>
 
 #include "config.h"
+#include "clock_zone.h"
+#include "filter.h"
 
 // Civil and military are an either/or choice, not two independent filters -
 // which is also what sets the range ceiling, since the two have different ones.
-enum class TrafficFilter : uint8_t { CIVIL, MILITARY };
+
+constexpr uint8_t CLOCK_ZONE_AUTO = 0xFF;
 
 struct AppSettings {
     double lat;
     double lon;
     String label;
 
-    TrafficFilter traffic;
     int radiusNm;
     bool showRefresh;   // shade cells that changed on the last poll
     bool navaids;       // mark the VORs, DMEs and TACANs in range on the radar
@@ -37,6 +39,15 @@ struct AppSettings {
     bool autoFollow;    // follow an alerted aircraft on the radar as its alert fires
     bool readAloud;          // say an aircraft's details, and a navaid's or an airport's card, as they open
     Accent elsewhereAccent;  // the voice for everywhere without one of its own - see sound.h
+    uint8_t brightnessPct;   // the screen's, 10 to 100 - see display_page.h
+    uint8_t dimMinutes;      // dimmed after this long untouched; 0 for never
+    // The clock on the radar and the zoom: off, or the zone it keeps - or
+    // CLOCK_ZONE_AUTO, never picked, for the zone home is in.
+    uint8_t clockZone;
+    bool autoZoom;           // following, the radar's range sized to the sky round the aircraft
+    bool replayTracks;       // each aircraft's last ten minutes behind it in a replay
+    uint8_t tableSortCol;    // the table's order - see displayHitHeader()
+    bool tableSortDesc;
 
     // Empty ssid means "use the credentials compiled in from secrets.h", so a
     // device that's never had WiFi set on-screen behaves exactly as before.
@@ -46,8 +57,7 @@ struct AppSettings {
 
 AppSettings loadSettings();
 void saveLocation(double lat, double lon, const String &label);
-void saveFilters(TrafficFilter traffic, int radiusNm, bool showRefresh, int pollIntervalS,
-                 AdsbSource source);
+void saveFilters(int radiusNm, bool showRefresh, int pollIntervalS, AdsbSource source);
 void saveMuted(bool muted);
 void saveNavaids(bool navaids);
 void saveCoast(bool coast);
@@ -59,3 +69,9 @@ void saveRadarZoom(const String &code, float viewNm);
 void saveWifi(const String &ssid, const String &pass);
 void saveAlerts(uint8_t alertMask, const String &watchlist, bool autoRecord, bool autoFollow);
 void saveVoice(bool readAloud, Accent elsewhere);
+void saveTableSort(int col, bool descending);
+void saveDisplay(uint8_t brightnessPct, uint8_t dimMinutes, uint8_t clockZone, bool replayTracks);
+void saveAutoZoom(bool autoZoom);
+// The filter screen's, apart from the rest as it is put in force apart.
+TrafficFilterSet loadTrafficFilter();
+void saveTrafficFilter(const TrafficFilterSet &f);
