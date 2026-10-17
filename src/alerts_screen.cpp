@@ -41,7 +41,10 @@ constexpr int WATCH_X = COL2_X, WATCH_Y = 112, WATCH_W = COL_W, WATCH_H = 140;
 constexpr int REC_LABEL_Y = 284;
 constexpr int AUTOREC_Y = 312;
 constexpr int AUTOFOLLOW_Y = AUTOREC_Y + TOGGLE_STEP;
-constexpr int REC_NOTE_Y = AUTOFOLLOW_Y + TOGGLE_H + 14;
+// Where an auto-follow opens: on the radar, or in the 3D view.
+constexpr int FOLLOW_IN_LABEL_Y = AUTOFOLLOW_Y + TOGGLE_H + 10;
+constexpr int FOLLOW_IN_Y = FOLLOW_IN_LABEL_Y + 28, FOLLOW_IN_H = 56;
+constexpr int REC_NOTE_Y = FOLLOW_IN_Y + FOLLOW_IN_H + 14;
 
 struct AlertToggle {
     uint8_t bit;
@@ -58,6 +61,7 @@ const AlertToggle TOGGLES[ALERT_COUNT] = {
 uint8_t g_mask = ALERT_ALL;
 bool g_autoRecord = false;
 bool g_autoFollow = false;
+bool g_followIn3d = false;
 bool g_readAloud = false;
 Accent g_accent = DEFAULT_ELSEWHERE_ACCENT;
 bool g_cardPresent = true;
@@ -146,8 +150,11 @@ void drawAutoRecord() {
                g_autoRecord, g_cardPresent);
 }
 
+void drawFollowIn();
+
 void drawAutoFollow() {
     drawToggle(COL2_X, AUTOFOLLOW_Y, "Auto-follow alerts", "Follows the alerted flight", g_autoFollow);
+    drawFollowIn();
 }
 
 void drawReadAloud() {
@@ -169,6 +176,31 @@ void drawAccents() {
         canvas.drawString(ACCENTS[i], COL1_X + i * seg + seg / 2, ACCENT_Y + ACCENT_H / 2);
     }
     screen::markDirty(COL1_X, ACCENT_Y, COL_W, ACCENT_H);
+}
+
+// Radar or 3D: where an auto-follow opens - greyed while auto-follow is off.
+void drawFollowIn() {
+    auto &canvas = screen::canvas();
+    static const char *const WHERE[] = {"Radar", "3D"};
+    int seg = COL_W / 2, chosen = g_followIn3d ? 1 : 0;
+    canvas.fillRect(COL2_X, FOLLOW_IN_LABEL_Y, COL_W, FOLLOW_IN_Y + FOLLOW_IN_H - FOLLOW_IN_LABEL_Y, colorBg);
+    canvas.setFont(&fonts::Font0);
+    canvas.setTextSize(2);
+    canvas.setTextDatum(TL_DATUM);
+    canvas.setTextColor(g_autoFollow ? colorGrey : colorDim);
+    canvas.drawString("FOLLOW IN", COL2_X, FOLLOW_IN_LABEL_Y);
+    canvas.fillRoundRect(COL2_X, FOLLOW_IN_Y, COL_W, FOLLOW_IN_H, 8, colorOff);
+    if (g_autoFollow) {
+        canvas.fillRoundRect(COL2_X + chosen * seg, FOLLOW_IN_Y, seg, FOLLOW_IN_H, 8, colorOn);
+    }
+    canvas.drawRoundRect(COL2_X, FOLLOW_IN_Y, COL_W, FOLLOW_IN_H, 8, colorBorder);
+    canvas.setTextSize(3);
+    canvas.setTextDatum(MC_DATUM);
+    for (int i = 0; i < 2; i++) {
+        canvas.setTextColor(g_autoFollow && i == chosen ? colorWhite : colorDim);
+        canvas.drawString(WHERE[i], COL2_X + i * seg + seg / 2, FOLLOW_IN_Y + FOLLOW_IN_H / 2);
+    }
+    screen::markDirty(COL2_X, FOLLOW_IN_LABEL_Y, COL_W, FOLLOW_IN_Y + FOLLOW_IN_H - FOLLOW_IN_LABEL_Y);
 }
 
 // The entries themselves, wrapped onto as many lines as the button holds, so
@@ -251,10 +283,11 @@ bool inside(int x, int y, int rx, int ry, int rw, int rh) { return x >= rx && x 
 
 void alertsScreenSetCard(bool present) { g_cardPresent = present; }
 
-void alertsScreenSet(uint8_t alertMask, bool autoRecord, bool autoFollow, const String &watchlist) {
+void alertsScreenSet(uint8_t alertMask, bool autoRecord, bool autoFollow, bool followIn3d, const String &watchlist) {
     g_mask = alertMask;
     g_autoRecord = autoRecord;
     g_autoFollow = autoFollow;
+    g_followIn3d = followIn3d;
     g_watchlist = watchlist;
 }
 
@@ -324,6 +357,12 @@ AlertsAction alertsScreenHandleTouch(int x, int y) {
         screen::flush();
         return AlertsAction::NONE;
     }
+    if (inside(x, y, COL2_X, FOLLOW_IN_Y, COL_W, FOLLOW_IN_H) && g_autoFollow) {
+        g_followIn3d = x >= COL2_X + COL_W / 2;
+        drawFollowIn();
+        screen::flush();
+        return AlertsAction::NONE;
+    }
     if (inside(x, y, WATCH_X, WATCH_Y, WATCH_W, WATCH_H)) {
         return AlertsAction::OPEN_WATCHLIST;
     }
@@ -347,6 +386,7 @@ AlertsAction alertsScreenHandleTouch(int x, int y) {
 uint8_t alertsScreenMask() { return g_mask; }
 bool alertsScreenAutoRecord() { return g_autoRecord; }
 bool alertsScreenAutoFollow() { return g_autoFollow; }
+bool alertsScreenFollowIn3d() { return g_followIn3d; }
 String alertsScreenWatchlist() { return g_watchlist; }
 bool alertsScreenReadAloud() { return g_readAloud; }
 Accent alertsScreenElsewhereAccent() { return g_accent; }

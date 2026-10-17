@@ -41,3 +41,14 @@ void coastBegin();
 // How many of those there are yet, the full map counted: a plot drawn before
 // one is built and after it can differ by a pixel here and there.
 int coastLevels();
+
+// The outlines within `rangeKm` of (lat, lon), for a view in 3D of the
+// country under an aircraft: each line's kind and its points - latitude and
+// longitude, in degrees, in pairs - passed to `line` in turn. A coast or a
+// lake's shore has the land on its left. In full in the cells within
+// `fullKm`; further off from thinned copies (see coastLevels()) - `level` 1
+// or 2, whose points are a couple of kilometres apart, or four. A cell's
+// lines come from one table or the other, and every table cuts its lines at
+// the same cells' edges, so a coast from near to far is unbroken.
+void coastLines(double lat, double lon, float rangeKm, float fullKm, int level,
+                void (*line)(void *context, OutlineKind kind, const double *latLon, int points), void *context);

@@ -11,7 +11,7 @@ enum class AlertsAction {
 };
 
 // Seeds the screen with the values in force. Reached from the settings screen.
-void alertsScreenSet(uint8_t alertMask, bool autoRecord, bool autoFollow, const String &watchlist);
+void alertsScreenSet(uint8_t alertMask, bool autoRecord, bool autoFollow, bool followIn3d, const String &watchlist);
 
 // Whether there is a card to record to. Without one the auto-record switch is
 // greyed out and can't be changed, though what it was set to is kept.
@@ -30,6 +30,8 @@ AlertsAction alertsScreenHandleTouch(int x, int y);
 uint8_t alertsScreenMask();
 bool alertsScreenAutoRecord();
 bool alertsScreenAutoFollow();
+// Where an auto-follow opens: the 3D view, or the radar.
+bool alertsScreenFollowIn3d();
 String alertsScreenWatchlist();
 bool alertsScreenReadAloud();
 Accent alertsScreenElsewhereAccent();

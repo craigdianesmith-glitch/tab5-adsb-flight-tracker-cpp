@@ -5,7 +5,12 @@
 #include <driver/ppa.h>
 #include <esp_cache.h>
 #include <esp_heap_caps.h>
+#include <esp_timer.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/semphr.h>
 #include <lgfx/v1/platforms/esp32p4/Panel_DSI.hpp>
+#include <soc/dma2d_struct.h>
+#include <soc/ppa_struct.h>
 
 #include <algorithm>
 
@@ -25,7 +30,29 @@ int g_panelW = 0, g_panelH = 0;
 
 ppa_client_handle_t g_srm = nullptr;
 ppa_client_handle_t g_fillClient = nullptr;
+// Turns at the PPA: a band pushed straight to the panel - the 3D view's,
+// from one core - holds it from its start to its end, and a blit of the
+// canvas, from the other, waits for it rather than going at once. Two
+// clients sending together from two cores now and then lost a push's end.
+// And the ends of a rotate-and-copy and of a fill, given from the PPA's
+// interrupt.
+//
+// Every rotate-and-copy, the canvas's blits and the 3D view's bands alike,
+// goes through the one client, g_srm, and none blocks: each is sent and its
+// end waited for, PPA_WAIT_MS at most. A blocking blit whose end never came
+// froze the board for good on 17 Oct - the loop waiting on it, in the 3D
+// view's details strip - and two clients, a blit's and the bands', taking
+// turns from two cores, had lost ends before. Should one still not finish in
+// time, the PPA is given up for the rest of the session and the CPU pushes
+// the screen instead: slower, but going on.
+SemaphoreHandle_t g_pushTurn = nullptr, g_pushDone = nullptr, g_fillDone = nullptr;
+constexpr uint32_t PPA_WAIT_MS = 500, PPA_TURN_MS = 2000;
+volatile bool g_ppaStuck = false;
 bool g_ppaOk = false;
+// A part of the screen whose pixels the panel has rather than the canvas -
+// the 3D view's, sent straight to it a band at a time - for a screenshot to
+// take from the panel's framebuffer instead, and a blit to keep off.
+int g_liveX = 0, g_liveY = 0, g_liveW = 0, g_liveH = 0;
 ppa_srm_rotation_angle_t g_angle = PPA_SRM_ROTATION_ANGLE_90;
 
 struct Rect {
@@ -145,12 +172,157 @@ void writeBackDirty() {
     }
 }
 
-// Deliberately blocking, one transfer at a time. Queueing these as
-// PPA_TRANS_MODE_NON_BLOCKING and waiting only on the last was measured
-// *slower* - 16.8us per KB against 12.5 - because the CPU was never what the
-// transfers were waiting on, and the queue and completion interrupt cost more
-// than the round trip they replaced.
-void blitRect(const Rect &r) {
+// The ends of transfers, given from the PPA's interrupt - and how long the
+// rotate-and-copies take, start to finish, for the bench to say.
+volatile int64_t g_pushStartUs = 0;
+volatile uint32_t g_pushBusyUs = 0, g_pushCount = 0;
+
+bool IRAM_ATTR pushDone(ppa_client_handle_t, ppa_event_data_t *, void *done) {
+    g_pushBusyUs = g_pushBusyUs + (uint32_t)(esp_timer_get_time() - g_pushStartUs);
+    g_pushCount = g_pushCount + 1;
+    BaseType_t woken = pdFALSE;
+    xSemaphoreGiveFromISR((SemaphoreHandle_t)done, &woken);
+    return woken == pdTRUE;
+}
+
+bool IRAM_ATTR fillDone(ppa_client_handle_t, ppa_event_data_t *, void *done) {
+    BaseType_t woken = pdFALSE;
+    xSemaphoreGiveFromISR((SemaphoreHandle_t)done, &woken);
+    return woken == pdTRUE;
+}
+
+// The last few transfers, for a stall's report: which - b a blit, B a band, f
+// a fill - from which core, where to and how big, and when sent and done (0
+// for not yet). Noted under the turn, so one at a time.
+struct Sent {
+    char kind;
+    uint8_t core;
+    int16_t x, y, w, h;
+    uint32_t sentUs, doneUs;
+};
+constexpr int SENT_KEPT = 16;
+Sent g_sent[SENT_KEPT];
+uint32_t g_sentCount = 0;
+
+void noteSent(char kind, int x, int y, int w, int h) {
+    g_sent[g_sentCount++ % SENT_KEPT] = {kind, (uint8_t)xPortGetCoreID(), (int16_t)x, (int16_t)y, (int16_t)w,
+                                         (int16_t)h, (uint32_t)esp_timer_get_time(), 0};
+}
+
+void noteDone() {
+    if (g_sentCount != 0) {
+        g_sent[(g_sentCount - 1) % SENT_KEPT].doneUs = (uint32_t)esp_timer_get_time();
+    }
+}
+
+// What the stall left behind: the transfers before it, and the 2D-DMA's
+// channels and the PPA's own state - whether the hardware finished and its
+// end went unheard, or never finished.
+void ppaReport() {
+    uint32_t now = (uint32_t)esp_timer_get_time();
+    Serial.println("[screen] the transfers before it - kind, core, x y w h, sent, took:");
+    for (int i = SENT_KEPT; i >= 1; i--) {
+        if (g_sentCount < (uint32_t)i) {
+            continue;
+        }
+        const Sent &t = g_sent[(g_sentCount - i) % SENT_KEPT];
+        Serial.printf("  %c core %u  %d %d %d %d  %uus ago, ", t.kind, t.core, t.x, t.y, t.w, t.h,
+                      (unsigned)(now - t.sentUs));
+        if (t.doneUs != 0) {
+            Serial.printf("took %uus\n", (unsigned)(t.doneUs - t.sentUs));
+        } else {
+            Serial.println("NOT DONE");
+        }
+    }
+    for (int c = 0; c < 3; c++) {
+        auto &ch = DMA2D.out_channel[c];
+        Serial.printf("  dma2d tx%d: raw %08x st %08x ena %08x state %08x dscr %08x link %08x conf0 %08x\n", c,
+                      (unsigned)ch.out_int_raw.val, (unsigned)ch.out_int_st.val, (unsigned)ch.out_int_ena.val,
+                      (unsigned)ch.out_state.val, (unsigned)ch.out_dscr.val, (unsigned)ch.out_link_addr.val,
+                      (unsigned)ch.out_conf0.val);
+    }
+    for (int c = 0; c < 2; c++) {
+        auto &ch = DMA2D.in_channel[c];
+        Serial.printf("  dma2d rx%d: raw %08x st %08x ena %08x state %08x dscr %08x link %08x conf0 %08x\n", c,
+                      (unsigned)ch.in_int_raw.val, (unsigned)ch.in_int_st.val, (unsigned)ch.in_int_ena.val,
+                      (unsigned)ch.in_state.val, (unsigned)ch.in_dscr.val, (unsigned)ch.in_link_addr.val,
+                      (unsigned)ch.in_conf0.val);
+    }
+    Serial.printf("  ppa: raw %08x st %08x ena %08x sr_status %08x sr_param_err %08x\n", (unsigned)PPA.int_raw.val,
+                  (unsigned)PPA.int_st.val, (unsigned)PPA.int_ena.val, (unsigned)PPA.sr_status.val,
+                  (unsigned)PPA.sr_param_err_st.val);
+}
+
+// The PPA given up, said once - with what it left behind - and the CPU pushes
+// the screen from here on.
+void ppaGiveUp(const char *what) {
+    if (!g_ppaStuck) {
+        g_ppaStuck = true;
+        Serial.printf("[screen] a PPA %s never finished - the CPU pushes the screen from now on\n", what);
+        ppaReport();
+    }
+}
+
+// Fallback for a board where the PPA didn't come up, or has been given up:
+// LovyanGFX's own push, clipped to the dirty region so it at least isn't
+// pushing the whole screen.
+void blitRectFallback(const Rect &r) {
+    M5.Display.setClipRect(r.x, r.y, r.w, r.h);
+    g_canvas.pushSprite(0, 0);
+    M5.Display.clearClipRect();
+}
+
+// A band straight onto the panel by the CPU - turned and its bytes swapped as
+// the PPA would have them, as dumpToSerial() reads them back - and written
+// back from the cache for the panel's DMA to read: the 3D view's, once the
+// PPA has been given up.
+void pushBandByCpu(const uint16_t *pixels, int x, int y, int w, int rows) {
+    uint16_t *fb = (uint16_t *)g_fb;
+    bool ninety = g_angle == PPA_SRM_ROTATION_ANGLE_90;
+    for (int r = 0; r < rows; r++) {
+        const uint16_t *from = pixels + (size_t)r * w;
+        int cy = y + r, fx = ninety ? cy : CANVAS_H - 1 - cy;
+        for (int c = 0; c < w; c++) {
+            int cx = x + c, fy = ninety ? CANVAS_W - 1 - cx : cx;
+            fb[(size_t)fy * g_panelW + fx] = __builtin_bswap16(from[c]);
+        }
+    }
+    int top = ninety ? CANVAS_W - x - w : x;
+    esp_cache_msync((uint8_t *)g_fb + (size_t)top * g_panelW * 2, (size_t)w * g_panelW * 2,
+                    ESP_CACHE_MSYNC_FLAG_DIR_C2M | ESP_CACHE_MSYNC_FLAG_UNALIGNED);
+}
+
+// One transfer at a time, the turn taken, and waited for. Queueing them and
+// waiting only on the last was measured *slower* - 16.8us per KB against
+// 12.5 - because the CPU was never what the transfers were waiting on, and
+// the queue and completion interrupt cost more than the round trip they
+// replaced.
+void blitRect(const Rect &given) {
+    if (g_ppaStuck) {
+        blitRectFallback(given);
+        return;
+    }
+    // At least 16 pixels each way - grown down and right, or up and left at
+    // the canvas's edge - the PPA having been seen never to finish a band
+    // only 4 rows high; the canvas holds the whole screen, so the rest is
+    // only drawn again as it is. Not where that would reach the panel's live
+    // part, which the canvas hasn't.
+    Rect r = given;
+    if (r.w < 16 || r.h < 16) {
+        Rect g = r;
+        if (g.w < 16) {
+            g.w = 16;
+            g.x = (int16_t)std::min<int>(g.x, CANVAS_W - 16);
+        }
+        if (g.h < 16) {
+            g.h = 16;
+            g.y = (int16_t)std::min<int>(g.y, CANVAS_H - 16);
+        }
+        Rect live = {(int16_t)g_liveX, (int16_t)g_liveY, (int16_t)g_liveW, (int16_t)g_liveH};
+        if (g_liveW <= 0 || !intersects(g, live) || intersects(given, live)) {
+            r = g;
+        }
+    }
     ppa_srm_oper_config_t op = {};
     op.in.buffer = g_buffer;
     op.in.pic_w = CANVAS_W;
@@ -182,29 +354,137 @@ void blitRect(const Rect &r) {
     // The PPA's RGB565 byte order is the opposite of the one LovyanGFX uses for
     // this panel; without this every colour comes out channel-swapped.
     op.byte_swap = true;
-    op.mode = PPA_TRANS_MODE_BLOCKING;
+    op.mode = PPA_TRANS_MODE_NON_BLOCKING;
+    op.user_data = g_pushDone;
 
+    if (xSemaphoreTake(g_pushTurn, pdMS_TO_TICKS(PPA_TURN_MS)) != pdTRUE) {
+        ppaGiveUp("band push, holding the turn,");
+        blitRectFallback(r);
+        return;
+    }
+    g_pushStartUs = esp_timer_get_time();
+    noteSent('b', r.x, r.y, r.w, r.h);
     esp_err_t err = ppa_do_scale_rotate_mirror(g_srm, &op);
+    bool finished = err == ESP_OK && xSemaphoreTake(g_pushDone, pdMS_TO_TICKS(PPA_WAIT_MS)) == pdTRUE;
+    if (finished) {
+        noteDone();
+    }
+    xSemaphoreGive(g_pushTurn);
     if (err != ESP_OK) {
         // Worth knowing about: a full queue would otherwise drop the transfer
         // and leave that region of the panel showing the previous frame.
         Serial.printf("[screen] PPA blit failed: %s\n", esp_err_to_name(err));
+        blitRectFallback(r);
+    } else if (!finished) {
+        ppaGiveUp("blit");
+        blitRectFallback(r);
     }
 }
 
-// Fallback for a board where the PPA didn't come up: LovyanGFX's own push,
-// clipped to the dirty region so it at least isn't pushing the whole screen.
-void blitRectFallback(const Rect &r) {
-    M5.Display.setClipRect(r.x, r.y, r.w, r.h);
-    g_canvas.pushSprite(0, 0);
-    M5.Display.clearClipRect();
-}
+bool g_pushing = false;
 
 }  // namespace
 
 M5Canvas &canvas() { return g_canvas; }
 
+bool pushBandStart(const uint16_t *pixels, int x, int y, int w, int rows) {
+    if (!g_ppaOk) {
+        return false;
+    }
+    if (g_ppaStuck) {
+        pushBandByCpu(pixels, x, y, w, rows);
+        return true;
+    }
+    esp_cache_msync((void *)pixels, ((size_t)w * rows * 2 + 63) & ~(size_t)63, ESP_CACHE_MSYNC_FLAG_DIR_C2M);
+    ppa_srm_oper_config_t op = {};
+    op.in.buffer = pixels;
+    op.in.pic_w = w;
+    op.in.pic_h = rows;
+    op.in.block_w = w;
+    op.in.block_h = rows;
+    op.in.srm_cm = PPA_SRM_COLOR_MODE_RGB565;
+    op.out.buffer = g_fb;
+    op.out.buffer_size = g_fbBytes;
+    op.out.pic_w = g_panelW;
+    op.out.pic_h = g_panelH;
+    // As blitRect() places a rect.
+    if (g_angle == PPA_SRM_ROTATION_ANGLE_90) {
+        op.out.block_offset_x = y;
+        op.out.block_offset_y = CANVAS_W - x - w;
+    } else {
+        op.out.block_offset_x = CANVAS_H - y - rows;
+        op.out.block_offset_y = x;
+    }
+    op.out.srm_cm = PPA_SRM_COLOR_MODE_RGB565;
+    op.rotation_angle = g_angle;
+    op.scale_x = 1.0f;
+    op.scale_y = 1.0f;
+    op.byte_swap = true;
+    op.mode = PPA_TRANS_MODE_NON_BLOCKING;
+    op.user_data = g_pushDone;
+    if (xSemaphoreTake(g_pushTurn, pdMS_TO_TICKS(PPA_TURN_MS)) != pdTRUE) {
+        ppaGiveUp("blit, holding the turn,");
+        pushBandByCpu(pixels, x, y, w, rows);
+        return true;
+    }
+    g_pushStartUs = esp_timer_get_time();
+    noteSent('B', x, y, w, rows);
+    esp_err_t err = ppa_do_scale_rotate_mirror(g_srm, &op);
+    if (err != ESP_OK) {
+        xSemaphoreGive(g_pushTurn);
+        Serial.printf("[screen] band push refused: %s (x %d y %d w %d rows %d)\n", esp_err_to_name(err), x, y, w, rows);
+        return false;
+    }
+    g_pushing = true;
+    return true;
+}
+
+const char *pushTurnHolder() {
+    TaskHandle_t holder = g_pushTurn != nullptr ? xSemaphoreGetMutexHolder(g_pushTurn) : nullptr;
+    return holder != nullptr ? pcTaskGetName(holder) : "";
+}
+
+void pushStats(uint32_t &busyUs, uint32_t &count) {
+    busyUs = g_pushBusyUs;
+    count = g_pushCount;
+    g_pushBusyUs = 0;
+    g_pushCount = 0;
+}
+
+// The band given up on, if it doesn't come in time: the PPA with it, and the
+// next frame's bands pushed by the CPU.
+bool pushBandWait() {
+    if (!g_pushing) {
+        return true;
+    }
+    bool finished = xSemaphoreTake(g_pushDone, pdMS_TO_TICKS(PPA_WAIT_MS)) == pdTRUE;
+    if (finished) {
+        noteDone();
+    }
+    g_pushing = false;
+    xSemaphoreGive(g_pushTurn);
+    if (!finished) {
+        ppaGiveUp("band push");
+    }
+    return finished;
+}
+
+#ifdef BENCH3D
+void benchGiveUpPpa() {
+    Serial.println("[screen] the PPA given up, for the bench");
+    g_ppaStuck = true;
+}
+
+bool pushBand(const uint16_t *pixels, int x, int y, int w, int rows, int client) {
+    (void)client;
+    return pushBandStart(pixels, x, y, w, rows) && pushBandWait();
+}
+#endif
+
 bool init() {
+    g_pushTurn = xSemaphoreCreateMutex();
+    g_pushDone = xSemaphoreCreateBinary();
+    g_fillDone = xSemaphoreCreateBinary();
     auto panel = (lgfx::Panel_DSI *)M5.Display.getPanel();
     g_fb = panel->config_detail().buffer;
     g_panelW = panel->config().panel_width;
@@ -223,12 +503,18 @@ bool init() {
     if (g_fb != nullptr) {
         ppa_client_config_t srmCfg = {};
         srmCfg.oper_type = PPA_OPERATION_SRM;
-        srmCfg.max_pending_trans_num = 1;  // sufficient while every transfer is blocking
+        srmCfg.max_pending_trans_num = 1;  // one at a time, the turn taken
         ppa_client_config_t fillCfg = {};
         fillCfg.oper_type = PPA_OPERATION_FILL;
         fillCfg.max_pending_trans_num = 1;
-        g_ppaOk = (ppa_register_client(&srmCfg, &g_srm) == ESP_OK) &&
-                  (ppa_register_client(&fillCfg, &g_fillClient) == ESP_OK);
+        ppa_event_callbacks_t pushed = {}, filled = {};
+        pushed.on_trans_done = pushDone;
+        filled.on_trans_done = fillDone;
+        g_ppaOk = g_pushTurn != nullptr && g_pushDone != nullptr && g_fillDone != nullptr &&
+                  ppa_register_client(&srmCfg, &g_srm) == ESP_OK &&
+                  ppa_client_register_event_callbacks(g_srm, &pushed) == ESP_OK &&
+                  ppa_register_client(&fillCfg, &g_fillClient) == ESP_OK &&
+                  ppa_client_register_event_callbacks(g_fillClient, &filled) == ESP_OK;
     }
     if (!g_ppaOk) {
         Serial.println("[screen] PPA unavailable - falling back to CPU pushSprite");
@@ -246,7 +532,7 @@ void setRotation(int lgfxRotation) {
 }
 
 void fillRect(int x, int y, int w, int h, uint16_t color) {
-    if (!g_ppaOk) {
+    if (!g_ppaOk || g_ppaStuck) {
         g_canvas.fillRect(x, y, w, h, color);
         markDirty(x, y, w, h);
         return;
@@ -269,7 +555,8 @@ void fillRect(int x, int y, int w, int h, uint16_t color) {
     op.fill_block_w = w;
     op.fill_block_h = h;
     op.fill_argb_color.val = argb;
-    op.mode = PPA_TRANS_MODE_BLOCKING;
+    op.mode = PPA_TRANS_MODE_NON_BLOCKING;
+    op.user_data = g_fillDone;
 
     // Whole rows either side of the DMA, which is what a canvas row being a
     // whole number of cache lines allows: written back first so no stale CPU
@@ -279,7 +566,21 @@ void fillRect(int x, int y, int w, int h, uint16_t color) {
     uint8_t *rows = (uint8_t *)g_buffer + (size_t)y * ROW_BYTES;
     size_t rowsBytes = (size_t)h * ROW_BYTES;
     esp_cache_msync(rows, rowsBytes, ESP_CACHE_MSYNC_FLAG_DIR_C2M);
-    if (ppa_do_fill(g_fillClient, &op) != ESP_OK) {
+    bool filled = false;
+    if (xSemaphoreTake(g_pushTurn, pdMS_TO_TICKS(PPA_TURN_MS)) == pdTRUE) {
+        noteSent('f', x, y, w, h);
+        filled = ppa_do_fill(g_fillClient, &op) == ESP_OK;
+        if (filled && xSemaphoreTake(g_fillDone, pdMS_TO_TICKS(PPA_WAIT_MS)) != pdTRUE) {
+            filled = false;
+            ppaGiveUp("fill");
+        } else if (filled) {
+            noteDone();
+        }
+        xSemaphoreGive(g_pushTurn);
+    } else {
+        ppaGiveUp("band push, holding the turn,");
+    }
+    if (!filled) {
         g_canvas.fillRect(x, y, w, h, color);
     } else {
         esp_cache_msync(rows, rowsBytes, ESP_CACHE_MSYNC_FLAG_DIR_M2C);
@@ -511,8 +812,47 @@ bool toYuv420(uint8_t *out, size_t outBytes) {
     return convertBlock(out, outBytes, 0, 0, CANVAS_W, CANVAS_H);
 }
 
+void setLiveRect(int x, int y, int w, int h) {
+    g_liveX = x, g_liveY = y, g_liveW = w, g_liveH = h;
+}
+
 void dumpToSerial() {
     if (g_buffer == nullptr) {
+        return;
+    }
+    if (g_liveW > 0 && g_fb != nullptr) {
+        // A row at a time, the live part of it from the framebuffer: turned
+        // back from the panel's portrait as blitRect() turns a pixel into it,
+        // and in the canvas's byte order again, the PPA having swapped it.
+        Serial.setTxTimeoutMs(SERIAL_TX_TIMEOUT_DUMP_MS);
+        Serial.flush();
+        Serial.printf("\nSCREENSHOT %d %d\n", CANVAS_W, CANVAS_H);
+        esp_cache_msync(g_fb, g_fbBytes, ESP_CACHE_MSYNC_FLAG_DIR_M2C);
+        static uint16_t row[CANVAS_W];
+        const uint16_t *fb = (const uint16_t *)g_fb;
+        for (int y = 0; y < CANVAS_H; y++) {
+            memcpy(row, g_buffer + (size_t)y * CANVAS_W, sizeof row);
+            if (y >= g_liveY && y < g_liveY + g_liveH) {
+                for (int x = g_liveX; x < g_liveX + g_liveW; x++) {
+                    int fx = g_angle == PPA_SRM_ROTATION_ANGLE_90 ? y : CANVAS_H - 1 - y;
+                    int fy = g_angle == PPA_SRM_ROTATION_ANGLE_90 ? CANVAS_W - 1 - x : x;
+                    row[x] = __builtin_bswap16(fb[(size_t)fy * g_panelW + fx]);
+                }
+            }
+            const uint8_t *p = (const uint8_t *)row;
+            size_t left = sizeof row;
+            while (left > 0) {
+                size_t n = Serial.write(p, std::min<size_t>(left, 4096));
+                p += n;
+                left -= n;
+                if (n == 0) {
+                    delay(1);
+                }
+            }
+        }
+        Serial.flush();
+        Serial.print("\nSCREENSHOT END\n");
+        Serial.setTxTimeoutMs(SERIAL_TX_TIMEOUT_MS);
         return;
     }
     // Waited on as long as it takes: the tool is reading, and a write given up

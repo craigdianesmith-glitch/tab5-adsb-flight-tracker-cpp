@@ -1,0 +1,1864 @@
+#include "view3d.h"
+
+#include <M5Unified.h>
+#include <esp_freertos_hooks.h>
+#include <esp_heap_caps.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/semphr.h>
+#include <freertos/task.h>
+#include <math.h>
+#include <time.h>
+
+#include <algorithm>
+#include <atomic>
+
+#include "airfield_pack.h"
+#include "airports.h"
+#include "clock_zone.h"
+#include "ground_follow.h"
+#include "ground_route.h"
+#include "coast.h"
+#include "labels3d.h"
+#include "navaids.h"
+#include "psram_alloc.h"
+#include "runways.h"
+#include "scene3d.h"
+#include "screen.h"
+#include "telemetry.h"
+
+namespace view3d {
+namespace {
+
+namespace s3 = scene3d;
+using s3::Vec3;
+
+constexpr float DEG = (float)M_PI / 180;
+
+Vec3 operator+(Vec3 a, Vec3 b) { return {a.x + b.x, a.y + b.y, a.z + b.z}; }
+Vec3 operator-(Vec3 a, Vec3 b) { return {a.x - b.x, a.y - b.y, a.z - b.z}; }
+Vec3 operator*(Vec3 a, float k) { return {a.x * k, a.y * k, a.z * k}; }
+float length(Vec3 a) { return sqrtf(a.x * a.x + a.y * a.y + a.z * a.z); }
+
+// --- where things go on the screen ------------------------------------------
+
+// The picture, 960x544 in from the top left; the radar's buttons, the same
+// size and in the same column down the right as on the radar, so that Back
+// is where it always is; and the flight's details under the picture.
+constexpr int VIEW_X = 16, VIEW_Y = 16, VIEW_W = 960, VIEW_H = 544;
+constexpr int BTN_W = 150, BTN_H = 50, BTN_X = 1280 - 16 - BTN_W;
+enum Button : uint8_t { B_BACK, B_CINEMA, B_CHASE, B_ORBIT, B_TOWER, B_ZOOM_IN, B_ZOOM_OUT, BUTTONS };
+// Back; the cameras; how close - grouped as the radar groups its own.
+constexpr int BTN_Y[BUTTONS] = {8, 84, 144, 204, 264, 340, 400};
+const char *const BTN_NAME[BUTTONS] = {"Back", "CINEMA", "CHASE", "ORBIT", "TOWER", "ZOOM IN", "ZOOM OUT"};
+constexpr int STRIP_Y = VIEW_Y + VIEW_H + 16, STRIP_H = 720 - 8 - STRIP_Y;
+
+// The radar's colours.
+uint16_t colorBg, colorText, colorMuted, colorFaint, colorBtnBg, colorDisabled;
+
+void colors() {
+    colorBg = M5.Display.color565(0x04, 0x12, 0x0A);
+    colorText = M5.Display.color565(0xCF, 0xFF, 0xE2);
+    colorMuted = M5.Display.color565(0x7C, 0xD9, 0xA0);
+    colorFaint = M5.Display.color565(0x5A, 0x9E, 0x78);
+    colorBtnBg = M5.Display.color565(0x14, 0x3A, 0x28);
+    colorDisabled = M5.Display.color565(0x4A, 0x55, 0x50);
+}
+
+// --- drawing it --------------------------------------------------------------
+
+// Two colour buffers and a depth buffer, each a band of the picture, in the
+// chip's own memory: the helper draws a band into one while the PPA sends
+// the last from the other to the panel. Taken while the view is up, and given
+// back when it goes - the WiFi and TLS live on the same memory. Bands of 16
+// rows, 30KB each; or, with the memory too broken up for three blocks that
+// big - as it can be, the view opened a second time - fewer rows: a frame
+// pushed in more pieces, a little slower, rather than no view at all.
+void *g_pipe[3] = {};
+int g_rows = 16;
+size_t pipeBytes(int rows) { return ((size_t)VIEW_W * rows * 2 + 63) & ~(size_t)63; }
+
+TaskHandle_t g_helper = nullptr;
+SemaphoreHandle_t g_done = nullptr;
+bool g_open = false, g_drawing = false, g_prepared = false;
+
+// The labels for the frame being drawn, stamped into its bands as each is.
+labels3d::Labeller g_labeller;
+labels3d::Placed g_placed[labels3d::MOST];
+int g_placedCount = 0;
+uint16_t g_ink = 0xFFFF, g_dim = 0;
+
+// Where the drawing core has got to, for busy().
+enum class Step : uint8_t { IDLE, DRAWING, LABELLING, WAITING, PUSHING };
+const char *const STEP_NAMES[] = {"idle", "drawing", "labelling", "waiting for the push of the one before", "pushing"};
+volatile Step g_step = Step::IDLE;
+volatile int g_stepBand = 0;
+// How long the last frame took to draw, for the log - and, summed over
+// frames until the log takes them, each stage of it (see s3::drawBandInto())
+// and the waits for the PPA to finish the band before.
+volatile uint32_t g_drawUs = 0;
+uint32_t g_drawStageUs[6] = {}, g_pushWaitUs = 0;
+
+#ifdef BENCH3D
+int g_benchSun = 0;  // see benchSun()
+#endif
+
+// The loop's share of the drawing. Once it has the next frame prepared, as it
+// often has well before the helper has drawn this one - an airfield seen from
+// the ground, its buildings and the aircraft across the screen, takes longer
+// to draw than to prepare - it draws bands of this one too: into colour
+// buffers and a depth buffer of its own, each band then handed to the helper
+// to push, the PPA having the one owner. The helper takes its bands from the
+// top - the sky's, quick to draw, so it is soon back to push the loop's - and
+// the loop from the bottom, where the airfield and the aircraft are, until
+// they meet.
+enum : uint8_t { BAND_FREE, BAND_DRAWING, BAND_READY, BAND_PUSHING };
+struct Shared {
+    void *color = nullptr;
+    int band = 0;
+    std::atomic<uint8_t> state{BAND_FREE};
+};
+Shared g_share[2];
+void *g_shareDepth = nullptr;
+// The bands still to take, packed so the two cores never take the same one:
+// the next from the top in the low 16 bits, one past the next from the bottom
+// in the high.
+std::atomic<uint32_t> g_bands{0};
+uint32_t bandsFrom(int top, int bottom) { return (uint32_t)top | (uint32_t)bottom << 16; }
+// The band at the top still to take, for the helper - -1 if none is.
+int bandFromTop() {
+    uint32_t v = g_bands.load();
+    for (;;) {
+        int top = (int)(v & 0xFFFF), bottom = (int)(v >> 16);
+        if (top >= bottom) {
+            return -1;
+        }
+        if (g_bands.compare_exchange_weak(v, bandsFrom(top + 1, bottom))) {
+            return top;
+        }
+    }
+}
+// And at the bottom, for the loop.
+int bandFromBottom() {
+    uint32_t v = g_bands.load();
+    for (;;) {
+        int top = (int)(v & 0xFFFF), bottom = (int)(v >> 16);
+        if (top >= bottom) {
+            return -1;
+        }
+        if (g_bands.compare_exchange_weak(v, bandsFrom(top, bottom - 1))) {
+            return bottom - 1;
+        }
+    }
+}
+bool bandsLeft() {
+    uint32_t v = g_bands.load();
+    return (v & 0xFFFF) < (v >> 16);
+}
+// Where the bands to share end: where the last band is short, not it or the
+// one before - it is pushed as a whole band's worth with the rows of the one
+// before in front of it, from the helper's own buffer - which the helper
+// draws after the rest.
+int g_bandLimit = 0;
+// How many bands the loop drew, and the stages of its drawing, for the log.
+volatile uint32_t g_loopBands = 0;
+uint32_t g_loopStageUs[6] = {};
+
+// On the helper: every band of the frame flipped to, each pushed while the
+// next is drawn - its own, and those the loop draws.
+void drawFrame() {
+    uint16_t *color[2] = {(uint16_t *)g_pipe[0], (uint16_t *)g_pipe[1]};
+    uint16_t *depth = (uint16_t *)g_pipe[2];
+    int bands = s3::bandCount();
+    bool pushing = false;
+    int sharing = -1;   // which of the loop's buffers the push in flight is from, if one is
+    int mine = 0;       // which of its own buffers the next band of its own goes into
+    uint32_t start = micros(), busyFrom = start;
+    // The push in flight seen through - the loop's buffer it was from given
+    // back - false if the PPA never finished it.
+    auto pushed = [&]() {
+        g_step = Step::WAITING;
+        uint32_t w0 = micros();
+        if (pushing && !screen::pushBandWait()) {
+            return false;
+        }
+        g_pushWaitUs += micros() - w0;
+        pushing = false;
+        if (sharing >= 0) {
+            g_share[sharing].state.store(BAND_FREE);
+            sharing = -1;
+        }
+        return true;
+    };
+    // The frame given up - the PPA stuck - with nothing left for the loop to
+    // take or to wait on.
+    int tail = g_bandLimit;  // the next of those only it draws, after the rest
+    auto giveUp = [&]() {
+        g_bands.store(0);
+        tail = bands;
+        for (Shared &s : g_share) {
+            s.state.store(BAND_FREE);
+        }
+        g_step = Step::IDLE;
+    };
+    for (;;) {
+        // A band the loop has drawn: pushed first, so its buffer is back for
+        // the next.
+        int ready = -1;
+        for (int k = 0; k < 2 && ready < 0; k++) {
+            if (g_share[k].state.load() == BAND_READY) {
+                ready = k;
+            }
+        }
+        if (ready >= 0) {
+            if (!pushed()) {
+                giveUp();
+                return;
+            }
+            Shared &s = g_share[ready];
+            s.state.store(BAND_PUSHING);
+            int y = s.band * g_rows;
+            g_step = Step::PUSHING;
+            pushing = screen::pushBandStart((uint16_t *)s.color, VIEW_X, VIEW_Y + y, VIEW_W, std::min(g_rows, VIEW_H - y));
+            if (!pushing) {
+                giveUp();
+                return;
+            }
+            sharing = ready;
+            continue;
+        }
+        int b = bandFromTop();
+        if (b < 0 && !bandsLeft() && tail < bands) {
+            b = tail++;
+        }
+        if (b < 0) {
+            // None left to take: the loop's still being drawn waited for.
+            bool waiting = false;
+            for (Shared &s : g_share) {
+                uint8_t state = s.state.load();
+                waiting = waiting || state == BAND_DRAWING || state == BAND_READY;
+            }
+            if (!waiting) {
+                break;
+            }
+            continue;
+        }
+        uint16_t *c = color[mine];
+        int y = b * g_rows, rows = std::min(g_rows, VIEW_H - y);
+        g_stepBand = b;
+        g_step = Step::DRAWING;
+        s3::drawBandInto(b, c, depth, g_drawStageUs);
+        g_step = Step::LABELLING;
+        labels3d::stamp(c, y, rows, VIEW_W, g_placed, g_placedCount, g_ink, g_dim);
+        if (!pushed()) {
+            giveUp();
+            return;
+        }
+        // The last band, short of the others where they don't divide the
+        // view's height, pushed as a whole band's worth - the rows of the one
+        // before it below its own - because the PPA has been seen never to
+        // finish a band only a few rows high: 960 by 4, on 17 Oct, the frame
+        // stopped for good. The band before is this core's - the loop never
+        // takes it - in its other buffer, and its push is done with by now.
+        uint16_t *push = c;
+        int pushY = y, pushRows = rows;
+        if (rows < g_rows && b > 0) {
+            uint16_t *before = color[mine ^ 1];
+            int again = g_rows - rows;
+            memmove(before, before + (size_t)rows * VIEW_W, (size_t)again * VIEW_W * 2);
+            memcpy(before + (size_t)again * VIEW_W, c, (size_t)rows * VIEW_W * 2);
+            push = before;
+            pushY = y - again;
+            pushRows = g_rows;
+        }
+        g_step = Step::PUSHING;
+        pushing = screen::pushBandStart(push, VIEW_X, VIEW_Y + pushY, VIEW_W, pushRows);
+        if (!pushing) {
+            giveUp();
+            return;
+        }
+        mine ^= 1;
+        // Never long without a pause, an eighth of the time back: this core's
+        // idle task has to run within the task watchdog's five seconds or
+        // the board is reset, and the poll on this core has to get on - and
+        // a frame can take seconds to draw: the camera right up against an
+        // aircraft, its every triangle across the screen.
+        uint32_t busy = micros() - busyFrom;
+        if (busy > 25000) {
+            vTaskDelay(pdMS_TO_TICKS(std::max<uint32_t>(1, busy / 8000)));
+            busyFrom = micros();
+        }
+    }
+    if (!pushed()) {
+        giveUp();
+        return;
+    }
+    g_drawUs = micros() - start;
+    g_step = Step::IDLE;
+}
+
+// On the loop, the next frame prepared: bands of the one being drawn, while
+// there are any to take and a buffer of its own free to take them - a buffer
+// waits for the helper to push it, which it does as soon as it is done with
+// the band in hand.
+void helpDraw() {
+    if (g_shareDepth == nullptr) {
+        return;
+    }
+    uint32_t since = millis();
+    for (;;) {
+        int k = -1;
+        for (int i = 0; i < 2 && k < 0; i++) {
+            if (g_share[i].color != nullptr && g_share[i].state.load() == BAND_FREE) {
+                k = i;
+            }
+        }
+        if (k < 0) {
+            // Both handed over, the helper not yet at them: waited for - but
+            // not for ever, should the PPA have stopped with them.
+            if (!bandsLeft() || millis() - since > 200) {
+                return;
+            }
+            continue;
+        }
+        // Marked as being drawn before the band is taken, so the helper,
+        // finding none left, waits for it.
+        Shared &s = g_share[k];
+        s.state.store(BAND_DRAWING);
+        int b = bandFromBottom();
+        if (b < 0) {
+            s.state.store(BAND_FREE);
+            return;
+        }
+        int y = b * g_rows, rows = std::min(g_rows, VIEW_H - y);
+        s3::drawBandInto(b, (uint16_t *)s.color, (uint16_t *)g_shareDepth, g_loopStageUs);
+        labels3d::stamp((uint16_t *)s.color, y, rows, VIEW_W, g_placed, g_placedCount, g_ink, g_dim);
+        s.band = b;
+        s.state.store(BAND_READY);
+        g_loopBands = g_loopBands + 1;  // only this task writes it
+        since = millis();
+    }
+}
+
+// When this core's idle task last ran - see helperTask() - and the longest
+// it has gone without, for the log.
+volatile uint32_t g_idle0Ms = 0, g_idle0GapMs = 0;
+bool idle0Ran() {
+    g_idle0Ms = millis();
+    return true;
+}
+
+// What the helper is woken for: a frame to draw, and the next one's
+// buildings to work out - see s3::prepareSolids().
+constexpr uint32_t WAKE_DRAW = 1, WAKE_SOLIDS = 2;
+// How many frames' buildings it worked out, for the log.
+volatile uint32_t g_solidsAside = 0;
+
+void helperTask(void *) {
+    for (;;) {
+        uint32_t woken = 0;
+        xTaskNotifyWait(0, UINT32_MAX, &woken, portMAX_DELAY);
+        if (woken & WAKE_DRAW) {
+            drawFrame();
+            xSemaphoreGive(g_done);
+        }
+        // Then the next frame's buildings, being prepared on the other core,
+        // if it hasn't come to them yet: at a big airport as long as the
+        // drawing, and this core idle otherwise. At the poll's priority, so
+        // they don't keep it from the network; the other core does them
+        // itself if they're still waiting when it needs them.
+        vTaskPrioritySet(nullptr, 1);
+        if (s3::prepareSolids()) {
+            g_solidsAside = g_solidsAside + 1;  // only this task writes it
+        }
+        vTaskPrioritySet(nullptr, 3);
+        // The core's idle task kept in: frame after frame, with the poll on
+        // this core busy too, it can go without for the task watchdog's five
+        // seconds, which resets the board - the more so with the PPA given
+        // up and every band pushed by this core. So with a fifth of a second
+        // gone by since it last ran, a moment off - longer if that hasn't
+        // let it in, the poll having taken it.
+        uint32_t starved = millis() - g_idle0Ms;
+        if (starved > g_idle0GapMs) {
+            g_idle0GapMs = starved;
+        }
+        if (starved > 200) {
+            vTaskDelay(pdMS_TO_TICKS(starved > 1000 ? 10 : 2));
+        }
+    }
+}
+
+// The frame being drawn finished - this core drawing bands of it too, while
+// there are any - false if it hasn't been in a second.
+bool finishDrawing() {
+    if (g_drawing) {
+        helpDraw();
+    }
+    if (g_drawing && xSemaphoreTake(g_done, pdMS_TO_TICKS(1000)) == pdTRUE) {
+        g_drawing = false;
+    }
+    return !g_drawing;
+}
+
+// --- where it is ---------------------------------------------------------------
+
+// Metres east, north and up of a point on the ground, through WGS84's
+// earth-centred frame - the earth's curve and all.
+struct Enu {
+    double x0, y0, z0, sp, cp, sl, cl;
+    static void ecef(double lat, double lon, double h, double &x, double &y, double &z) {
+        constexpr double A = 6378137.0, E2 = 6.69437999014e-3;
+        double p = lat * M_PI / 180, l = lon * M_PI / 180, n = A / sqrt(1 - E2 * sin(p) * sin(p));
+        x = (n + h) * cos(p) * cos(l);
+        y = (n + h) * cos(p) * sin(l);
+        z = (n * (1 - E2) + h) * sin(p);
+    }
+    void at(double lat, double lon) {
+        ecef(lat, lon, 0, x0, y0, z0);
+        sp = sin(lat * M_PI / 180), cp = cos(lat * M_PI / 180);
+        sl = sin(lon * M_PI / 180), cl = cos(lon * M_PI / 180);
+    }
+    Vec3 of(double lat, double lon, double h) const {
+        double x, y, z;
+        ecef(lat, lon, h, x, y, z);
+        double dx = x - x0, dy = y - y0, dz = z - z0;
+        return {(float)(-sl * dx + cl * dy), (float)(-sp * cl * dx - sp * sl * dy + cp * dz),
+                (float)(cp * cl * dx + cp * sl * dy + sp * dz)};
+    }
+};
+
+// What is round it: an airfield, low near one - laid out flat, metres east
+// and north of the middle of its runways and up from them - or, high up, the
+// country below, round, through the earth's frame from a point under it.
+enum class Where : uint8_t { NOWHERE, AIRFIELD, COUNTRY };
+Where g_where = Where::NOWHERE;
+// Counted up each time the view's frame moves - a new airfield, the country's
+// middle moved on - for what was placed in the old one to be placed again.
+uint32_t g_frameGen = 0;
+char g_airport[5] = "";
+double g_lat0 = 0, g_lon0 = 0, g_cosLat0 = 1;
+float g_fieldFt = 0;
+char g_endName[24][4];  // the airfield's runway ends, as setAirfield() has them, two to a runway
+int g_runways = 0;
+Enu g_enu;
+double g_enuLat = 0, g_enuLon = 0;
+uint32_t g_whereMs = 0;
+
+Vec3 local(double lat, double lon) {
+    return {(float)((lon - g_lon0) * 111320.0 * g_cosLat0), (float)((lat - g_lat0) * 110574.0), 0};
+}
+
+// The airfield's taxiways as a network, from its real layout - empty without
+// one - and the followed aircraft taxiing on it, as its reports have it -
+// see ground_follow.h - while on the ground and slower than a runway's roll.
+ground::Network g_network;
+ground::Follower g_follower;
+// Its speed as the follower has it, knots, while it does; -1 otherwise.
+int g_taxiKt = -1;
+// What the follower last said it was doing, in the log.
+char g_taxiSaid[40] = "";
+// The others standing on the ground, for the stands they take.
+airfield::List<ground::Vec2> g_standing;
+// The airfield's real layout, as loaded; empty without one.
+airfield::Layout g_layout;
+#ifdef BENCH3D
+// The airfield's stands, and points on its taxiways with their way, as
+// latitude and longitude, for the bench's made-up traffic - see
+// benchStands(). Taken as the airfield is built, read by the poll.
+constexpr int BENCH_STANDS = 400, BENCH_WAYS = 16;
+double g_benchStandLat[BENCH_STANDS], g_benchStandLon[BENCH_STANDS];
+double g_benchWayLat[BENCH_WAYS], g_benchWayLon[BENCH_WAYS];
+float g_benchWayTrack[BENCH_WAYS];
+std::atomic<int> g_benchStands{0}, g_benchWays{0};
+#endif
+
+bool buildAirfield(const char *code) {
+    int count = 0;
+    const Runway *runways = runwaysAt(code, count);
+    if (runways == nullptr || count == 0) {
+        return false;
+    }
+    double lat0 = 0, lon0 = 0;
+    int open = 0;
+    for (int i = 0; i < count; i++) {
+        if (!runways[i].closed) {
+            lat0 += (runways[i].end[0].lat + runways[i].end[1].lat) / 2.0;
+            lon0 += (runways[i].end[0].lon + runways[i].end[1].lon) / 2.0;
+            open++;
+        }
+    }
+    if (open == 0) {
+        return false;
+    }
+    uint32_t t0 = millis();
+    g_lat0 = lat0 / open;
+    g_lon0 = lon0 / open;
+    g_cosLat0 = cos(g_lat0 * M_PI / 180);
+    g_fieldFt = runways[0].elevationFt;
+    s3::RunwaySpec specs[12];
+    int n = 0;
+    for (int i = 0; i < count && n < 12; i++) {
+        if (runways[i].closed) {
+            continue;
+        }
+        s3::RunwaySpec &spec = specs[n];
+        for (int e = 0; e < 2; e++) {
+            spec.end[e] = local(runways[i].end[e].lat, runways[i].end[e].lon);
+            snprintf(spec.name[e], sizeof spec.name[e], "%s", runways[i].end[e].ident);
+            snprintf(g_endName[n * 2 + e], sizeof g_endName[0], "%s", runways[i].end[e].ident);
+        }
+        spec.width = runways[i].widthFt * 0.3048f;
+        n++;
+    }
+    Vec3 beacons[4];
+    int beaconCount = 0;
+    for (const Navaid *nav : navaidsWithin(g_lat0, g_lon0, 2)) {
+        if (beaconCount < 4 && nav->type != NavaidType::TACAN && nav->type != NavaidType::DME &&
+            nav->type != NavaidType::NDB_DME) {
+            beacons[beaconCount++] = local(nav->lat, nav->lon);
+        }
+    }
+    // Its real taxiways, stands and buildings, if the card has them - in the
+    // frame here, should the layout's (0, 0) be anywhere else.
+    airfield::Layout &layout = g_layout;
+    bool real = airfield::load(code, layout);
+    if (real) {
+        Vec3 offset = local(layout.lat0, layout.lon0);
+        if (fabsf(offset.x) > 0.01f || fabsf(offset.y) > 0.01f) {
+            layout.moveBy(offset.x, offset.y);
+        }
+        g_network.build(layout);
+    } else {
+        g_network = ground::Network();
+    }
+#ifdef BENCH3D
+    g_benchStands = 0;
+    g_benchWays = 0;
+    if (real) {
+        auto latLon = [](float x, float y, double &lat, double &lon) {
+            lat = g_lat0 + y / 110574.0;
+            lon = g_lon0 + x / (111320.0 * g_cosLat0);
+        };
+        int n = 0;
+        for (const airfield::Stand &st : layout.stands) {
+            if (n < BENCH_STANDS) {
+                latLon(st.at.x, st.at.y, g_benchStandLat[n], g_benchStandLon[n]);
+                n++;
+            }
+        }
+        // A taxiway's middle every so many of them, the way along it.
+        int w = 0, taxiways = 0;
+        for (const airfield::Way &way : layout.ways) {
+            taxiways += way.kind == airfield::WayKind::TAXIWAY && way.between.size() >= 2;
+        }
+        int every = std::max(1, taxiways / BENCH_WAYS), k = 0;
+        for (const airfield::Way &way : layout.ways) {
+            if (way.kind != airfield::WayKind::TAXIWAY || way.between.size() < 2 || k++ % every != 0 || w >= BENCH_WAYS) {
+                continue;
+            }
+            size_t i = way.between.size() / 2 - (way.between.size() % 2 == 0 ? 1 : 0);
+            i = std::min(i, way.between.size() - 2);
+            const airfield::Point &p = way.between[i], &q = way.between[i + 1];
+            latLon(p.x, p.y, g_benchWayLat[w], g_benchWayLon[w]);
+            g_benchWayTrack[w] = fmodf(atan2f(q.x - p.x, q.y - p.y) * 180 / (float)M_PI + 360, 360);
+            w++;
+        }
+        g_benchStands = n;
+        g_benchWays = w;
+    }
+#endif
+    g_follower.end();
+    g_taxiKt = -1;
+    s3::setGroundLines(nullptr, 0);
+    s3::setFarRunways(nullptr, 0);
+    s3::setAirfield(specs, n, beacons, beaconCount, real ? &layout : nullptr);
+    g_runways = n;
+    snprintf(g_airport, sizeof g_airport, "%s", code);
+    g_where = Where::AIRFIELD;
+    g_frameGen++;
+    if (real) {
+        Serial.printf("[3d] at %s: %d runways, %d beacons; its layout: %u ways, %u stands, %u buildings; in %lums\n",
+                      code, n, beaconCount, (unsigned)layout.ways.size(), (unsigned)layout.stands.size(),
+                      (unsigned)layout.buildings.size(), (unsigned long)(millis() - t0));
+    } else {
+        Serial.printf("[3d] at %s: %d runways, %d beacons, in %lums\n", code, n, beaconCount,
+                      (unsigned long)(millis() - t0));
+    }
+    return true;
+}
+
+void sinkLine(void *context, OutlineKind kind, const double *latLon, int points) {
+    auto *out = (std::vector<s3::GroundLine, PsramAllocator<s3::GroundLine>> *)context;
+    for (int i = 0; i + 1 < points; i++) {
+        out->push_back({g_enu.of(latLon[2 * i], latLon[2 * i + 1], 0),
+                        g_enu.of(latLon[2 * i + 2], latLon[2 * i + 3], 0), (s3::GroundKind)kind});
+    }
+}
+
+void buildCountry(double lat, double lon) {
+    uint32_t t0 = millis();
+    g_enu.at(lat, lon);
+    g_enuLat = lat;
+    g_enuLon = lon;
+    std::vector<s3::GroundLine, PsramAllocator<s3::GroundLine>> lines;
+    coastLines(lat, lon, 520, 90, 2, sinkLine, &lines);
+    s3::setGroundLines(lines.data(), (int)lines.size());
+    int count = 0;
+    const Runway *all = allRunways(count);
+    std::vector<s3::RunwaySpec, PsramAllocator<s3::RunwaySpec>> far;
+    double cosLat = cos(lat * M_PI / 180);
+    for (int i = 0; i < count; i++) {
+        const Runway &r = all[i];
+        double dn = (r.end[0].lat - lat) * 111.0, de = (r.end[0].lon - lon) * 111.0 * cosLat;
+        if (!r.closed && dn * dn + de * de < 400.0 * 400.0) {
+            s3::RunwaySpec spec{};
+            for (int e = 0; e < 2; e++) {
+                spec.end[e] = g_enu.of(r.end[e].lat, r.end[e].lon, r.elevationFt * 0.3048);
+            }
+            spec.width = r.widthFt * 0.3048f;
+            far.push_back(spec);
+        }
+    }
+    s3::clearAirfield();
+    s3::setFarRunways(far.data(), (int)far.size());
+    g_where = Where::COUNTRY;
+    g_frameGen++;
+    g_airport[0] = 0;
+    g_runways = 0;
+    Serial.printf("[3d] high up: %u lines, %u runways, in %lums\n", (unsigned)lines.size(), (unsigned)far.size(),
+                  (unsigned long)(millis() - t0));
+}
+
+float distanceKm(double lat0, double lon0, double lat1, double lon1) {
+    double dn = (lat1 - lat0) * 111.2, de = (lon1 - lon0) * 111.2 * cos(lat0 * M_PI / 180);
+    return (float)sqrt(dn * dn + de * de);
+}
+
+// Once a second: the airfield it is taking off from or landing on, or one it
+// is low near - within 10nm and under 5,000ft above it, and staying with it
+// until 15nm off or 7,000ft up, so as not to flick between the two - and
+// otherwise the country, built again once it is 150km from where it was.
+void choose(const Followed &f) {
+    uint32_t now = millis();
+    if (g_where != Where::NOWHERE && now - g_whereMs < 1000) {
+        return;
+    }
+    g_whereMs = now;
+    const FollowEstimate &e = f.now;
+    String want;
+    if (f.movement != RunwaySim::Movement::NONE && f.runway.airport != nullptr) {
+        want = f.runway.airport;
+    } else {
+        Airport a;
+        bool near = g_where == Where::AIRFIELD;
+        if (nearestAirport(e.lat, e.lon, a, near ? 15 : 10, true)) {
+            int count = 0;
+            const Runway *r = runwaysAt(a.code.c_str(), count);
+            float above = e.ground ? 0 : e.altFt - (count > 0 ? r[0].elevationFt : 0);
+            if (count > 0 && above < (near ? 7000 : 5000)) {
+                want = a.code;
+            }
+        }
+    }
+    if (want.length() > 0) {
+        if ((g_where == Where::AIRFIELD && want == g_airport) || buildAirfield(want.c_str())) {
+            return;
+        }
+    }
+    if (g_where != Where::COUNTRY || distanceKm(g_enuLat, g_enuLon, e.lat, e.lon) > 150) {
+        buildCountry(e.lat, e.lon);
+    }
+}
+
+// A report's place in the view's world.
+Vec3 place(double lat, double lon, float altFt, bool ground) {
+    if (g_where == Where::AIRFIELD) {
+        Vec3 p = local(lat, lon);
+        p.z = ground ? 0 : std::max(0.0f, (altFt - g_fieldFt) * 0.3048f);
+        return p;
+    }
+    return g_enu.of(lat, lon, altFt * 0.3048);
+}
+
+// --- what is there --------------------------------------------------------------
+
+// Each aircraft's look - its type's model, its airline's colours - worked
+// out once, the first time it is seen; and where it was last shown, and
+// which way it pointed, for one standing still to stay put.
+struct Known {
+    char hex[8];
+    s3::Look look;
+    uint32_t usedMs;
+    Vec3 at;
+    float heading;
+    Where where;
+    // On the ground at an airfield with real stands: the stand it is parked
+    // at (-1 none), worked out from where it was reported then - again only
+    // once it is reported elsewhere; and when it was last shown, for its
+    // taxiing to be eased from there.
+    int16_t stand = -1;
+    float standFromX = 0, standFromY = 0;
+    uint32_t shownMs = 0;
+};
+std::vector<Known, PsramAllocator<Known>> g_known;
+
+// Good until the next new aircraft is seen.
+// g_known by hex, for one to be found without comparing hundreds of strings:
+// open addressing on the 24-bit ICAO address (with a bit for the feed's "~"
+// addresses that aren't ICAO ones); each slot g_known's index, -1 empty.
+constexpr uint32_t KNOWN_SLOTS = 2048;  // a power of two, over three times the most kept
+struct KnownSlot {
+    uint32_t key;
+    int16_t at;
+};
+KnownSlot *g_knownSlots = nullptr;  // in PSRAM
+
+uint32_t keyOf(const char *hex) {
+    bool other = hex[0] == '~';
+    return (uint32_t)strtoul(hex + (other ? 1 : 0), nullptr, 16) | (other ? 0x80000000u : 0);
+}
+
+uint32_t slotOf(uint32_t key) { return (key * 2654435761u) >> 21 & (KNOWN_SLOTS - 1); }
+
+void indexKnown() {
+    if (g_knownSlots == nullptr) {
+        g_knownSlots = (KnownSlot *)heap_caps_malloc(sizeof(KnownSlot) * KNOWN_SLOTS, MALLOC_CAP_SPIRAM);
+    }
+    for (uint32_t i = 0; i < KNOWN_SLOTS; i++) {
+        g_knownSlots[i].at = -1;
+    }
+    for (size_t k = 0; k < g_known.size(); k++) {
+        uint32_t key = keyOf(g_known[k].hex), i = slotOf(key);
+        while (g_knownSlots[i].at >= 0) {
+            i = (i + 1) & (KNOWN_SLOTS - 1);
+        }
+        g_knownSlots[i] = {key, (int16_t)k};
+    }
+}
+
+// The least recently seen let go, down to 300, when there are over 380 - only
+// as a poll's traffic is worked out, before anything holds an index into
+// g_known; which leaves room for a whole poll of new ones, and the followed,
+// under KNOWN_SLOTS / 3 without another.
+void pruneKnown() {
+    if (g_known.size() > 380) {
+        std::sort(g_known.begin(), g_known.end(), [](const Known &a, const Known &b) { return a.usedMs > b.usedMs; });
+        g_known.resize(300);
+        indexKnown();
+    }
+}
+
+int knownIndexOf(const String &hex, const String &type, const String &callsign, bool military,
+                 const String &category) {
+    if (g_knownSlots == nullptr) {
+        indexKnown();
+    }
+    uint32_t key = keyOf(hex.c_str()), i = slotOf(key);
+    for (; g_knownSlots[i].at >= 0; i = (i + 1) & (KNOWN_SLOTS - 1)) {
+        if (g_knownSlots[i].key == key && strcmp(g_known[g_knownSlots[i].at].hex, hex.c_str()) == 0) {
+            g_known[g_knownSlots[i].at].usedMs = millis();
+            return g_knownSlots[i].at;
+        }
+    }
+    if (g_known.size() >= KNOWN_SLOTS / 3) {
+        pruneKnown();  // can't happen between polls: there are at most 300 traffic and one followed
+        return knownIndexOf(hex, type, callsign, military, category);
+    }
+    Known k{};
+    snprintf(k.hex, sizeof k.hex, "%s", hex.c_str());
+    k.look = s3::lookFor(type.c_str(), 0x1B2A55, military, category.c_str());
+    s3::paintAirline(k.look, callsign.c_str());
+    k.usedMs = millis();
+    k.where = Where::NOWHERE;
+    g_known.push_back(k);
+    g_knownSlots[i] = {key, (int16_t)(g_known.size() - 1)};
+    return (int)g_known.size() - 1;
+}
+
+Known &knownOf(const String &hex, const String &type, const String &callsign, bool military, const String &category) {
+    return g_known[knownIndexOf(hex, type, callsign, military, category)];
+}
+
+s3::Look lookOf(const String &hex, const String &type, const String &callsign, bool military, const String &category) {
+    return knownOf(hex, type, callsign, military, category).look;
+}
+
+// Standing still on the ground - under 6 knots, a stopped transponder's
+// speed wandering up to 4 or 5 - a report's track means nothing, and its
+// position wanders by tens of metres from one to the next:
+// so it keeps the heading it had, and the place it had too unless a report
+// puts it more than 30m away, which is a move.
+constexpr float STILL_KT = 6, STILL_M = 30;
+bool standingStill(bool ground, float gsKt) { return ground && gsKt < STILL_KT; }
+// Hovering - a helicopter in the air under 12 knots - its track is the drift's,
+// all round the compass: it keeps the heading it had, though not its place,
+// the drift being real.
+constexpr float HOVER_KT = 12;
+bool hovering(bool ground, float gsKt) { return !ground && gsKt < HOVER_KT; }
+
+// What a label says of one, and who it is, for each of the traffic in a
+// frame - in two, the frame being prepared's and the one being drawn's.
+struct Info {
+    char hex[8], callsign[10], height[10], type[6];
+    labels3d::Kind kind;
+};
+constexpr int MOST_TRAFFIC = 300;
+std::vector<s3::Aircraft, PsramAllocator<s3::Aircraft>> g_traffic;
+std::vector<Info, PsramAllocator<Info>> g_info[2];
+int g_preparing = 0;  // which of g_info is the frame being prepared's; the other, the drawn one's
+
+void heightText(char *out, size_t size, const FollowSample &s) {
+    if (s.ground) {
+        snprintf(out, size, "GND");
+    } else if (s.altFt >= 18000) {
+        snprintf(out, size, "FL%03d", (int)((s.altFt + 50) / 100));
+    } else {
+        snprintf(out, size, "%dft", (int)((s.altFt + 50) / 100) * 100);
+    }
+}
+
+// The traffic as last polled, worked out once a poll - or once the view's
+// frame moves - for each frame only to move it on: who each is, its look's
+// entry, its report as a sample, where it was reported in the view's frame
+// and the way its track runs there, what its label says. Done every frame -
+// the feed's words parsed, its look found among hundreds, the round earth's
+// maths in double precision, which the P4 does in software - it took 20ms
+// a frame high up.
+struct Polled {
+    FollowSample s;
+    Vec3 at;    // where it was reported, in the view's frame
+    Vec3 way;   // a metre along its track from there, in the view's frame
+    float heading;  // its track, radians anticlockwise from east
+    float speed;    // metres a second
+    float heightM;
+    int16_t known;  // its entry in g_known
+    bool moves;     // carried on along its track between polls
+    Info info;
+};
+std::vector<Polled, PsramAllocator<Polled>> g_polled;
+uint32_t g_polledMs = 0, g_polledGen = UINT32_MAX;
+String g_polledFollowed;
+
+void pollTraffic(const std::vector<Aircraft> &list, const String &followed) {
+    pruneKnown();
+    g_polled.clear();
+    for (const Aircraft &ac : list) {
+        if (!ac.hasPos || ac.hex == followed || (int)g_polled.size() >= MOST_TRAFFIC) {
+            continue;
+        }
+        Polled p{};
+        p.s = followSampleOf(ac, 0);
+        const FollowSample &s = p.s;
+        if (!s.hasAlt) {
+            continue;
+        }
+        p.at = place(s.lat, s.lon, s.altFt, s.ground);
+        p.heading = (90 - (s.hasTrack ? s.track : 0)) * DEG;
+        p.speed = s.gsKt * 0.5144f;
+        p.heightM = s.ground ? 0 : g_where == Where::AIRFIELD ? p.at.z : s.altFt * 0.3048f;
+        p.moves = (!s.ground || s.gsKt >= STILL_KT) && s.hasGs && s.hasTrack && !s.posStale;
+        if (p.moves) {
+            // The way it goes, in this frame: to a point a kilometre along its
+            // track, placed the same way.
+            double lat = s.lat + 1000 * cos(s.track * M_PI / 180) / 111320.0;
+            double lon = s.lon + 1000 * sin(s.track * M_PI / 180) / (111320.0 * cos(s.lat * M_PI / 180));
+            p.way = (place(lat, lon, s.altFt, s.ground) - p.at) * (1.0f / 1000);
+        }
+        p.known = (int16_t)knownIndexOf(ac.hex, ac.type, ac.callsign, ac.military, ac.category);
+        snprintf(p.info.hex, sizeof p.info.hex, "%s", ac.hex.c_str());
+        String call = ac.callsign;
+        call.trim();
+        snprintf(p.info.callsign, sizeof p.info.callsign, "%s", call.length() ? call.c_str() : ac.hex.c_str());
+        heightText(p.info.height, sizeof p.info.height, s);
+        snprintf(p.info.type, sizeof p.info.type, "%s", ac.type.c_str());
+        p.info.kind = !s.ground ? labels3d::Kind::AIRBORNE : s.gsKt > 3 ? labels3d::Kind::MOVING : labels3d::Kind::PARKED;
+        g_polled.push_back(p);
+    }
+}
+
+// The traffic as last polled, `polledMs` ago, moved on since along its track
+// at its speed - those near enough to matter, and not the one followed.
+void fillTraffic(const std::vector<Aircraft> &list, uint32_t polledMs, const String &followed, Vec3 from) {
+    if (polledMs != g_polledMs || g_frameGen != g_polledGen || followed != g_polledFollowed) {
+        pollTraffic(list, followed);
+        g_polledMs = polledMs;
+        g_polledGen = g_frameGen;
+        g_polledFollowed = followed;
+    }
+    float age = std::min(30.0f, (millis() - polledMs) / 1000.0f);
+    float reach = g_where == Where::AIRFIELD ? 25000 : 250000;
+    std::vector<Info, PsramAllocator<Info>> &info = g_info[g_preparing];
+    g_traffic.clear();
+    info.clear();
+    g_standing.clear();
+    uint32_t now = millis();
+    for (const Polled &p : g_polled) {
+        const FollowSample &s = p.s;
+        bool taxiways = s.ground && g_where == Where::AIRFIELD && !g_network.empty();
+        // Taxiing among real taxiways: carried on along them below, from
+        // where it was reported, rather than straight across the grass.
+        bool along = taxiways && p.moves;
+        Vec3 at = p.at;
+        if (p.moves && !along) {
+            at = at + p.way * (p.speed * age);
+        }
+        float dx = at.x - from.x, dy = at.y - from.y;
+        if (dx * dx + dy * dy > reach * reach) {
+            continue;
+        }
+        float heading = p.heading;
+        Known &k = g_known[p.known];
+        float since = k.where == g_where && k.shownMs != 0 ? std::min(1.0f, (now - k.shownMs) / 1000.0f) : -1;
+        // Taxiing among the airfield's real taxiways: from the line it was
+        // reported on, on along them the way it was going - straight on at
+        // each junction - as far as its speed takes it since; facing along
+        // them; eased there from where it was shown, so a new report's
+        // correction isn't a jump.
+        static airfield::List<ground::Vec2> ahead;
+        static airfield::List<uint8_t> aheadKinds;
+        ground::Place onLine;
+        if (along && g_network.snap({at.x, at.y}, heading, 40, onLine)) {
+            float line = g_network.heading(onLine);
+            float way = fabsf(remainderf(line - heading, 2 * (float)M_PI)) < (float)M_PI / 2 ? line : line + (float)M_PI;
+            g_network.ahead(onLine, way, p.speed * std::min(age, 20.0f), ahead, aheadKinds);
+            ground::Vec2 q = ahead.back();
+            heading = way;
+            size_t n = ahead.size();
+            if (n >= 2 && hypotf(ahead[n - 1].x - ahead[n - 2].x, ahead[n - 1].y - ahead[n - 2].y) > 0.1f) {
+                heading = atan2f(ahead[n - 1].y - ahead[n - 2].y, ahead[n - 1].x - ahead[n - 2].x);
+            }
+            Vec3 there = {q.x, q.y, at.z};
+            if (since >= 0 && length(there - k.at) < 80) {
+                at = k.at + (there - k.at) * std::min(1.0f, since / 0.6f);
+                float turn = remainderf(heading - k.heading, 2 * (float)M_PI);
+                if (fabsf(turn) < 2.1f) {
+                    heading = k.heading + turn * std::min(1.0f, since / 0.4f);
+                }
+            } else {
+                at = there;
+            }
+        } else if (along) {
+            at = at + p.way * (p.speed * age);  // off the lines: straight on, as anywhere
+        } else if (taxiways && standingStill(s.ground, s.gsKt)) {
+            // Parked: at its stand, nose in, if it is at one - the stand
+            // worked out again only when it is reported somewhere else.
+            const airfield::List<ground::StandWay> &stands = g_network.stands();
+            if (k.where != g_where || hypotf(at.x - k.standFromX, at.y - k.standFromY) > 10) {
+                k.stand = -1;
+                k.standFromX = at.x;
+                k.standFromY = at.y;
+                float best = 30;
+                for (size_t i = 0; i < stands.size(); i++) {
+                    if (!stands[i].ok) {
+                        continue;
+                    }
+                    float d = hypotf(at.x - stands[i].line.back().x, at.y - stands[i].line.back().y);
+                    if (d < best) {
+                        best = d;
+                        k.stand = (int16_t)i;
+                    }
+                }
+            }
+            if (k.stand >= 0 && (size_t)k.stand < stands.size()) {
+                at = {stands[k.stand].line.back().x, stands[k.stand].line.back().y, at.z};
+                heading = stands[k.stand].heading;
+                k.heading = heading;
+                k.at = at;
+            }
+        }
+        if (k.where == g_where && standingStill(s.ground, s.gsKt)) {
+            heading = k.heading;
+            if (length(at - k.at) < STILL_M) {
+                at = k.at;
+            }
+            if (g_where == Where::AIRFIELD && g_standing.size() < 200) {
+                g_standing.push_back({at.x, at.y});
+            }
+        } else if (k.where == g_where && hovering(s.ground, s.gsKt)) {
+            heading = k.heading;
+        }
+        k.at = at;
+        k.heading = heading;
+        k.where = g_where;
+        k.shownMs = now;
+        float speed = std::max(1.0f, p.speed);
+        s3::Pose pose = {at, heading, s.ground ? 0.0f : atanf(s.vsFpm * 0.00508f / speed) + 0.04f, 0};
+        g_traffic.push_back({pose, k.look, s3::configFor(p.heightM, s.gsKt, s.ground, false)});
+        info.push_back(p.info);
+    }
+}
+
+// --- the camera -----------------------------------------------------------------
+
+enum class Cam : uint8_t { CINEMA, CHASE, ORBIT, TOWER };
+Cam g_cam = Cam::CINEMA;
+float g_azimuth = 25, g_elevation = 12, g_zoom = 1;  // the orbit's, dragged; and how close, ZOOM IN and OUT
+s3::Director *g_director = nullptr;
+const char *g_shot = "";
+
+// Which runway, of those setAirfield() was given, `ident` is the end of.
+bool runwayOf(const char *ident, int &runway, int &end) {
+    for (int i = 0; ident != nullptr && i < g_runways * 2; i++) {
+        if (strcmp(g_endName[i], ident) == 0) {
+            runway = i / 2;
+            end = i % 2;
+            return true;
+        }
+    }
+    return false;
+}
+
+#ifdef BENCH3D
+uint32_t g_sweepUntilMs = 0, g_sweepSaidMs = 0;
+#endif
+
+s3::Camera cameraFor(const s3::Aircraft &followed, const Followed &f, float seconds, s3::Pose &shown,
+                     bool &replaying) {
+    const s3::Pose &pose = followed.pose;
+#ifdef BENCH3D
+    if (g_sweepUntilMs != 0) {
+        uint32_t now = millis();
+        if ((int32_t)(now - g_sweepUntilMs) >= 0) {
+            g_sweepUntilMs = 0;
+            Serial.println("[3d] sweep done");
+        } else {
+            // Rates that never line up, so the angles fill in as it goes.
+            float t = now / 1000.0f;
+            g_azimuth = fmodf(t * 97.0f, 360.0f);
+            g_elevation = -10 + 90 * (0.5f + 0.5f * sinf(t * 0.91f));
+            g_zoom = 0.3f * powf(4.0f / 0.3f, 0.5f + 0.5f * sinf(t * 0.37f));
+            if (now - g_sweepSaidMs >= 500) {
+                g_sweepSaidMs = now;
+                Serial.printf("[3d] sweep: azimuth %.0f elevation %.0f zoom %.2f, %s\n", g_azimuth, g_elevation,
+                              g_zoom, g_where == Where::AIRFIELD ? g_airport : "high up");
+            }
+        }
+    }
+#endif
+    float size = s3::sizeOf(followed.look);
+    replaying = false;
+    Vec3 eye;
+    switch (g_cam) {
+    // Zoomed in no nearer than 28 of its size: nearer, the eye was in a
+    // Chinook's rotor discs.
+    case Cam::CHASE:
+        g_shot = "chase";
+        return s3::orbitCamera(pose, 0, 10, std::max(28 * size, 55 * size / g_zoom), 50);
+    case Cam::ORBIT:
+        g_shot = "orbit";
+        return s3::orbitCamera(pose, g_azimuth, g_elevation, std::max(28 * size, 80 * size / g_zoom), 50);
+    case Cam::TOWER:
+        if (s3::towerEye(eye)) {
+            g_shot = "tower";
+            return s3::fixedCamera(pose, eye, std::min(0.9f, 0.3f * g_zoom), size);
+        }
+        break;
+    case Cam::CINEMA:
+        break;
+    }
+    if (g_where == Where::AIRFIELD) {
+        // The director's cuts, from what it is doing: on its runway, the
+        // approach and touchdown, the roll and climb-out; elsewhere a chase.
+        s3::Flight flight;
+        flight.aircraft = followed;
+        flight.speedKt = g_taxiKt >= 0 ? g_taxiKt : f.now.gsKt;
+        flight.climbFpm = f.now.vsFpm;
+        flight.onGround = f.now.ground;
+        flight.departing = f.movement == RunwaySim::Movement::TAKEOFF;
+        int runway = -1, end = 0;
+        if (f.movement != RunwaySim::Movement::NONE && runwayOf(f.runway.ident, runway, end)) {
+            flight.runway = runway;
+            flight.end = end;
+            if (flight.departing) {
+                s3::setDeparture(runway, end);
+            } else {
+                s3::setLanding(runway, end);
+            }
+        }
+        return g_director->next(flight, seconds, &g_shot, &shown, &replaying);
+    }
+    // High up: close behind, then wide, then from below, in turn - each
+    // held steady on it, none swinging round it.
+    float phase = fmodf(seconds, 30);
+    if (phase < 10) {
+        g_shot = "chase";
+        return s3::orbitCamera(pose, 25, 9, 70 * size, 48);
+    }
+    if (phase < 20) {
+        g_shot = "wide";
+        return s3::orbitCamera(pose, 140, 22, 900, 62);
+    }
+    g_shot = "from below";
+    return s3::orbitCamera(pose, 215, -18, 120 * size, 52);
+}
+
+// --- a frame -----------------------------------------------------------------------
+
+s3::Scene g_scene;
+s3::Pilot g_pilot;
+// Where the one followed is shown, and which way it points: the estimate
+// smoothed - see prepareNext().
+Vec3 g_shownAt{};
+float g_shownHeading = 0;
+bool g_haveShown = false;
+Where g_shownWhere = Where::NOWHERE;
+uint32_t g_openMs = 0;
+float g_lastSeconds = -1, g_lastTrack = 0, g_turn = 0;
+bool g_wasGround = false;
+float g_touchdownAt = -100;
+s3::Pose g_touchdownPose{};
+String g_followedHex;
+// The frame-rate governor's: aircraft drawn simpler sooner while frames run
+// long, finer again while they don't - as the bench found best.
+float g_detailPx = 60, g_tinyPx = 12;
+uint32_t g_frameMs = 0;
+// For the log, every ten seconds: frames, and the time preparing them and
+// waiting for the drawing.
+uint32_t g_statFromMs = 0, g_statFrames = 0, g_statPrepUs = 0, g_statWaitUs = 0;
+// And the drawing's own time, on the other core.
+uint32_t g_statDrawUs = 0;
+// And how many frames' buildings the drawing core had worked out, then.
+uint32_t g_statSolidsAsideFrom = 0;
+// And the drawing's stages and waits for the PPA, as they were then.
+uint32_t g_statStageFrom[6] = {}, g_statPushWaitFrom = 0, g_statLoopBandsFrom = 0;
+// And the preparing's steps, summed over those frames, for the costliest of
+// them said with it - and how much each frame had.
+uint32_t g_statStepUs[s3::STEPS] = {};
+uint32_t g_statTriangles = 0, g_statLines = 0;
+// And this view's own, round the scene's: the traffic placed, and the labels.
+uint32_t g_statTrafficUs = 0, g_statLabelsUs = 0;
+
+void prepareNext(const Followed &f, const std::vector<Aircraft> &traffic, uint32_t polledMs) {
+    choose(f);
+    float seconds = (millis() - g_openMs) / 1000.0f;
+    float dt = g_lastSeconds < 0 ? 0 : std::min(0.5f, seconds - g_lastSeconds);
+    g_lastSeconds = seconds;
+    const FollowEstimate &e = f.now;
+
+    // Where it is shown. Taxiing between reports, which the estimate holds
+    // it still for, moved on along its track at its speed. And each jump
+    // the estimate makes - a report putting it right, on the ground or in a
+    // turn - not shown as a jump: the shown position carried on by its speed
+    // and eased towards the estimate over a second or so, and its heading
+    // likewise; on a straight steady path that is the estimate exactly.
+    double lat = e.lat, lon = e.lon;
+    if (e.ground && !f.simulating && e.gsKt >= STILL_KT && f.reportMs != 0) {
+        double d = e.gsKt * 0.5144 * std::min(8.0f, (millis() - f.reportMs) / 1000.0f);
+        lat += d * cos(e.track * M_PI / 180) / 111320.0;
+        lon += d * sin(e.track * M_PI / 180) / (111320.0 * cos(lat * M_PI / 180));
+    }
+    Vec3 target = place(lat, lon, e.altFt, e.ground);
+    float targetHeading = (90 - e.track) * DEG;
+    if (g_haveShown && g_shownWhere == g_where && standingStill(e.ground, e.gsKt)) {
+        targetHeading = g_shownHeading;
+        if (length(target - g_shownAt) < STILL_M) {
+            target = g_shownAt;
+        }
+    } else if (g_haveShown && g_shownWhere == g_where && hovering(e.ground, e.gsKt)) {
+        targetHeading = g_shownHeading;
+    }
+    if (!g_haveShown || g_shownWhere != g_where || length(target - g_shownAt) > 2000 || dt <= 0) {
+        g_shownAt = target;
+        g_shownHeading = targetHeading;
+        g_haveShown = true;
+        g_shownWhere = g_where;
+    } else {
+        float speed = e.gsKt * 0.5144f;
+        g_shownAt = g_shownAt + Vec3{sinf(e.track * DEG) * speed, cosf(e.track * DEG) * speed,
+                                     e.ground ? 0.0f : e.vsFpm * 0.00508f} * dt;
+        g_shownAt = g_shownAt + (target - g_shownAt) * std::min(1.0f, dt / 0.8f);
+        g_shownHeading += remainderf(targetHeading - g_shownHeading, 2 * (float)M_PI) * std::min(1.0f, dt / 1.0f);
+    }
+    if (e.ground) {
+        g_shownAt.z = target.z;  // on the ground, on it
+    }
+
+    // On the ground at an airfield whose real taxiways are known - and not
+    // racing down a runway, landing or taking off, which the runway
+    // simulation has - the follower's: along the taxiways from report to
+    // report, never across the grass, nor backwards; to a stand, landed,
+    // or a holding point, departing, when the reports stop - see
+    // ground_follow.h. Handed over from a landing's roll at 40 knots, it
+    // keeps it until it is airborne or rolling for take-off.
+    bool taxiways = g_where == Where::AIRFIELD && e.ground && !g_network.empty();
+    // Rolling for take-off it is handed back to the runway simulation once
+    // it is shown where that has it - or at 80 knots, whatever - so there is
+    // no lurch.
+    bool rolling = e.gsKt > 40 &&
+                   (!g_follower.active() ||
+                    (f.movement == RunwaySim::Movement::TAKEOFF &&
+                     (e.gsKt > 80 || hypotf(g_follower.at().x - target.x, g_follower.at().y - target.y) < 15)));
+    g_taxiKt = -1;
+    if (taxiways && !rolling) {
+        ground::Follower::Input in{};
+        in.ms = millis();
+        in.dt = dt;
+        if (f.reportMs != 0 && f.report.hasPos) {
+            Vec3 r = place(f.report.lat, f.report.lon, 0, true);
+            in.reportMs = f.reportMs;
+            in.reportAt = {r.x, r.y};
+            in.reportHeading = f.report.hasTrack ? (90 - f.report.track) * DEG : NAN;
+            in.reportSpeed = f.report.hasGs ? f.report.gsKt * 0.5144f : 0;
+        }
+        in.takeoff = f.simulating && f.movement == RunwaySim::Movement::TAKEOFF;
+        in.simAt = {target.x, target.y};
+        in.simHeading = targetHeading;
+        in.simSpeed = e.gsKt * 0.5144f;
+        in.standing = g_standing.data();
+        in.standingCount = (int)g_standing.size();
+        in.arrived = f.landed;
+        if (!g_follower.active()) {
+            bool landed = f.movement == RunwaySim::Movement::LANDING;
+            g_follower.begin(g_network, {g_shownAt.x, g_shownAt.y}, g_shownHeading, e.gsKt * 0.5144f, landed, in);
+        }
+        g_follower.update(g_network, in);
+        g_shownAt = {g_follower.at().x, g_follower.at().y, target.z};
+        g_shownHeading = g_follower.heading();
+        g_taxiKt = (int)lroundf(g_follower.speed() / 0.5144f);
+        if (strcmp(g_taxiSaid, g_follower.doing()) != 0) {
+            snprintf(g_taxiSaid, sizeof g_taxiSaid, "%s", g_follower.doing());
+            Serial.printf("[3d] taxi: %s\n", g_taxiSaid);
+        }
+    } else if (g_follower.active()) {
+        g_follower.end();
+        g_taxiSaid[0] = 0;
+    }
+    int shownKt = g_taxiKt >= 0 ? g_taxiKt : e.gsKt;
+
+    // The one followed, flown: banked into its turns - the shown heading's
+    // turning - and pitched by its climb, its controls moving with it.
+    s3::Look look = lookOf(f.hex, f.type, f.callsign, f.military, f.category);
+    float turn = remainderf(g_shownHeading - g_lastTrack, 2 * (float)M_PI);
+    g_lastTrack = g_shownHeading;
+    if (dt > 0) {
+        g_turn += (turn / dt - g_turn) * std::min(1.0f, dt / 2);
+    }
+    g_pilot.fly(dt, look.family, g_turn, shownKt, e.vsFpm, e.ground);
+    Vec3 at = g_shownAt;
+    float heightM = g_where == Where::AIRFIELD ? at.z : e.altFt * 0.3048f;
+    s3::Pose pose = {at, g_shownHeading, g_pilot.pitch, g_pilot.roll};
+    s3::Config config = s3::configFor(heightM, shownKt, e.ground, f.movement == RunwaySim::Movement::TAKEOFF);
+    config.aileron = g_pilot.aileron;
+    config.elevator = g_pilot.elevator;
+    config.rudder = g_pilot.rudder;
+    g_scene.followed = {pose, look, config};
+    // Its tyres' smoke, where they touch.
+    if (g_where == Where::AIRFIELD && e.ground && !g_wasGround && f.movement == RunwaySim::Movement::LANDING) {
+        g_touchdownAt = seconds;
+        g_touchdownPose = pose;
+    }
+    g_wasGround = e.ground;
+    g_scene.smokeAge = seconds - g_touchdownAt < 3 ? seconds - g_touchdownAt : -1;
+    g_scene.touchdown = g_touchdownPose;
+
+    uint32_t t0 = micros();
+    fillTraffic(traffic, polledMs, f.hex, at);
+    g_statTrafficUs += micros() - t0;
+    g_scene.traffic = g_traffic.data();
+    g_scene.trafficCount = (int)g_traffic.size();
+    g_scene.seconds = seconds;
+    time_t now = time(nullptr);
+    g_scene.sun = now > 1600000000 ? s3::sunAt((int64_t)now, e.lat, e.lon) : s3::sunFor(s3::TimeOfDay::DAY);
+#ifdef BENCH3D
+    if (g_benchSun != 0) {
+        g_scene.sun = s3::sunFor(g_benchSun == 1   ? s3::TimeOfDay::DAY
+                                 : g_benchSun == 2 ? s3::TimeOfDay::DUSK
+                                                   : s3::TimeOfDay::NIGHT);
+    }
+#endif
+    bool high = g_where == Where::COUNTRY;
+    g_scene.earthRadius = high ? 6371000 : 0;
+    g_scene.visibility = high ? 140000 : 0;
+    g_scene.stemsAbove = high ? 0 : -1;
+    g_scene.trailsAbove = 8000;
+    g_scene.landAndSea = high;
+    g_scene.landingLights = !high;
+    g_scene.detailPx = g_detailPx;
+    g_scene.tinyPx = g_tinyPx;
+
+    s3::Pose shown;
+    bool replaying = false;
+    s3::Camera camera = cameraFor(g_scene.followed, f, seconds, shown, replaying);
+    if (replaying) {
+        g_scene.followed.pose = shown;
+    }
+    s3::prepareBegin(VIEW_W, VIEW_H, g_rows, true, g_scene, camera);
+    s3::prepareAircraft(0, 1);
+    s3::prepareEnd();
+}
+
+// Where on the picture each aircraft in the frame drawn is, and who, for a
+// tap to find.
+struct TapPoint {
+    int16_t x, y;
+    char hex[8];
+};
+TapPoint g_taps[49];
+int g_tapCount = 0;
+float g_labelledAt = -1;
+
+// The labels for the frame flipped to, about to be drawn.
+void placeLabels() {
+    static s3::Label anchors[48];
+    static labels3d::Candidate candidates[48];
+    const std::vector<Info, PsramAllocator<Info>> &info = g_info[g_preparing ^ 1];
+    int n = s3::labelAnchors(anchors, 48), count = 0;
+    g_tapCount = 0;
+    for (int i = 0; i < n; i++) {
+        int k = anchors[i].index;
+        if (k < 0 || k >= (int)info.size()) {
+            continue;
+        }
+        const Info &in = info[k];
+        candidates[count++] = {anchors[i].x, anchors[i].y, anchors[i].sizePx, (uint32_t)strtoul(in.hex, nullptr, 16),
+                               in.kind, in.callsign, in.height, in.type};
+        TapPoint &t = g_taps[g_tapCount++];
+        t = {(int16_t)anchors[i].x, (int16_t)(anchors[i].y + std::min(anchors[i].sizePx / 4, 30.0f)), {}};
+        snprintf(t.hex, sizeof t.hex, "%s", in.hex);
+    }
+    labels3d::Rect keep[1];
+    int keepCount = 0;
+    float x, y, reach;
+    if (s3::followedOnScreen(x, y, reach)) {
+        keep[keepCount++] = {(int)(x - reach), (int)(y - reach * 0.45f), (int)(x + reach), (int)(y + reach * 0.45f)};
+        TapPoint &t = g_taps[g_tapCount++];
+        t = {(int16_t)x, (int16_t)y, {}};
+        snprintf(t.hex, sizeof t.hex, "%s", g_followedHex.c_str());
+    }
+    float now = millis() / 1000.0f, dt = now - g_labelledAt;
+    if (g_labelledAt < 0 || dt > 1) {
+        g_labeller.reset();
+        dt = 0;
+    }
+    g_labelledAt = now;
+    g_placedCount = g_labeller.place(candidates, count, keep, keepCount, VIEW_W, VIEW_H, dt, g_placed, labels3d::MOST);
+}
+
+// --- around the picture ---------------------------------------------------------------
+
+bool buttonGreyed(int i) {
+    return (i == B_TOWER && g_where != Where::AIRFIELD) || ((i == B_ZOOM_IN || i == B_ZOOM_OUT) && g_cam == Cam::CINEMA);
+}
+
+bool buttonLit(int i) {
+    return (i == B_CINEMA && g_cam == Cam::CINEMA) || (i == B_CHASE && g_cam == Cam::CHASE) ||
+           (i == B_ORBIT && g_cam == Cam::ORBIT) || (i == B_TOWER && g_cam == Cam::TOWER);
+}
+
+// As the radar draws its own.
+void drawButtons() {
+    auto &c = screen::canvas();
+    c.setFont(&fonts::Font0);
+    c.setTextSize(2);
+    c.setTextDatum(MC_DATUM);
+    for (int i = 0; i < BUTTONS; i++) {
+        int y = BTN_Y[i];
+        bool greyed = buttonGreyed(i), lit = buttonLit(i);
+        c.fillRect(BTN_X, y, BTN_W, BTN_H, colorBg);
+        if (greyed) {
+            c.drawRoundRect(BTN_X, y, BTN_W, BTN_H, 6, colorDisabled);
+        } else {
+            c.fillRoundRect(BTN_X, y, BTN_W, BTN_H, 6, lit ? colorMuted : colorBtnBg);
+        }
+        c.setTextColor(greyed ? colorDisabled : lit ? colorBg : colorText);
+        c.drawString(BTN_NAME[i], BTN_X + BTN_W / 2, y + BTN_H / 2);
+    }
+    screen::markDirty(BTN_X, BTN_Y[0], BTN_W, BTN_Y[BUTTONS - 1] + BTN_H - BTN_Y[0]);
+}
+
+// The flight: who, how high and fast, the time where it is; and the shot.
+// Pushed through the canvas between frames, every half second.
+uint32_t g_stripMs = 0;
+Where g_stripWhere = Where::NOWHERE;
+
+void drawStrip(const Followed &f) {
+    auto &c = screen::canvas();
+    c.fillRect(VIEW_X, STRIP_Y, VIEW_W, STRIP_H, colorBg);
+    c.setFont(&fonts::Font0);
+    c.setTextDatum(TL_DATUM);
+    String call = f.callsign;
+    call.trim();
+    String who = (call.length() ? call : f.hex) + "   " + f.type;
+    c.setTextSize(3);
+    c.setTextColor(colorText);
+    c.drawString(who, VIEW_X, STRIP_Y + 4);
+    const FollowEstimate &e = f.now;
+    char height[16], clock[16] = "", line[96];
+    if (e.ground) {
+        snprintf(height, sizeof height, "on the ground");
+    } else if (e.altFt >= 18000) {
+        snprintf(height, sizeof height, "FL%03d", (int)((e.altFt + 50) / 100));
+    } else {
+        snprintf(height, sizeof height, "%d ft", (int)((e.altFt + 50) / 100) * 100);
+    }
+    time_t now = time(nullptr);
+    if (now > 1600000000) {
+        timeZoneFormat(now, timeZoneAt(e.lat, e.lon), clock, sizeof clock);
+    }
+    snprintf(line, sizeof line, "%s   %d kt   %+d fpm   %s", height, g_taxiKt >= 0 ? g_taxiKt : e.gsKt,
+             e.ground ? 0 : e.vsFpm, clock);
+    c.setTextSize(2);
+    c.setTextColor(colorMuted);
+    c.drawString(line, VIEW_X, STRIP_Y + 44);
+    const char *camera = g_cam == Cam::CINEMA ? "CINEMA" : g_cam == Cam::CHASE ? "CHASE" : g_cam == Cam::ORBIT ? "ORBIT"
+                                                                                                               : "TOWER";
+    if (g_where == Where::AIRFIELD) {
+        snprintf(line, sizeof line, "%s - %s     at %s", camera, g_shot, g_airport);
+    } else {
+        snprintf(line, sizeof line, "%s - %s     high up", camera, g_shot);
+    }
+    c.setTextColor(colorFaint);
+    c.drawString(line, VIEW_X, STRIP_Y + 72);
+    screen::markDirty(VIEW_X, STRIP_Y, VIEW_W, STRIP_H);
+    // TOWER greys and lights with where it is.
+    if (g_stripWhere != g_where) {
+        g_stripWhere = g_where;
+        if (g_cam == Cam::TOWER && g_where != Where::AIRFIELD) {
+            g_cam = Cam::CINEMA;
+        }
+        drawButtons();
+    }
+    screen::flush();
+}
+
+// --- touch ----------------------------------------------------------------------------
+
+bool g_onView = false, g_dragged = false;
+int g_downX = 0, g_downY = 0, g_lastX = 0, g_lastY = 0;
+
+Action press(int b) {
+    if (b == B_BACK) {
+        return Action::BACK;
+    }
+    if (buttonGreyed(b)) {
+        return Action::NONE;
+    }
+    switch (b) {
+    case B_CINEMA: g_cam = Cam::CINEMA; break;
+    case B_CHASE: g_cam = Cam::CHASE; break;
+    case B_ORBIT: g_cam = Cam::ORBIT; break;
+    case B_TOWER: g_cam = Cam::TOWER; break;
+    case B_ZOOM_IN: g_zoom = std::min(4.0f, g_zoom * 1.4f); break;
+    case B_ZOOM_OUT: g_zoom = std::max(0.3f, g_zoom / 1.4f); break;
+    default: break;
+    }
+    drawButtons();
+    screen::flush();
+    g_stripMs = 0;  // the shot named again at once
+    return Action::NONE;
+}
+
+}  // namespace
+
+#ifdef BENCH3D
+int g_forceRows = 0;  // see benchBandRows()
+#endif
+
+bool open() {
+    if (g_open) {
+        return true;
+    }
+    colors();
+    // Never bands of 4: the PPA has been seen never to finish a block that
+    // shallow, and every band would be one.
+    for (int rows : {16, 12, 8}) {
+#ifdef BENCH3D
+        if (g_forceRows != 0 && rows != g_forceRows) {
+            continue;
+        }
+#endif
+        bool all = true;
+        for (int i = 0; i < 3; i++) {
+            // The depth buffer only this core reads and writes: any of the
+            // chip's own memory, not just what DMA can reach, of which there
+            // is less in pieces this big.
+            g_pipe[i] = heap_caps_aligned_alloc(64, pipeBytes(rows),
+                                                i == 2 ? MALLOC_CAP_INTERNAL : MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA);
+            all = all && g_pipe[i] != nullptr;
+        }
+        if (all) {
+            g_rows = rows;
+            break;
+        }
+        for (void *&p : g_pipe) {
+            heap_caps_free(p);
+            p = nullptr;
+        }
+    }
+    if (g_pipe[0] == nullptr) {
+        Serial.printf("[3d] no room for the bands: %uKB free, the largest %uKB\n",
+                      (unsigned)(heap_caps_get_free_size(MALLOC_CAP_INTERNAL) / 1024),
+                      (unsigned)(heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL) / 1024));
+        return false;
+    }
+    // The loop's own, for its share of the drawing: a depth buffer and two
+    // colour buffers, or one - or none, and the helper draws it all. Only in
+    // the chip's own memory: tried in PSRAM, drawing there and through the
+    // same small cache as the helper's reading, it made the frames slower
+    // than no help at all.
+    g_shareDepth = heap_caps_aligned_alloc(64, pipeBytes(g_rows), MALLOC_CAP_INTERNAL);
+    for (Shared &sh : g_share) {
+        sh.color = g_shareDepth != nullptr
+                       ? heap_caps_aligned_alloc(64, pipeBytes(g_rows), MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA)
+                       : nullptr;
+        sh.state.store(BAND_FREE);
+    }
+    if (g_share[0].color == nullptr) {
+        heap_caps_free(g_share[1].color);
+        g_share[1].color = nullptr;
+        heap_caps_free(g_shareDepth);
+        g_shareDepth = nullptr;
+    }
+    if (g_helper == nullptr) {
+        g_done = xSemaphoreCreateBinary();
+        g_idle0Ms = millis();
+        esp_register_freertos_idle_hook_for_cpu(idle0Ran, 0);
+        xTaskCreatePinnedToCore(helperTask, "view3d", 6144, nullptr, 3, &g_helper, 0);
+    }
+    s3::setSolidsReady([] { xTaskNotify(g_helper, WAKE_SOLIDS, eSetBits); });
+    if (g_director == nullptr) {
+        g_director = new s3::Director();
+    }
+    s3::setClock([] { return (uint32_t)micros(); });
+    s3::buildModels();
+    g_dim = __builtin_bswap16(M5.Display.color565(0x3D, 0xE8, 0x7C));  // the radar's blip green
+    g_open = true;
+    g_drawing = false;
+    g_prepared = false;
+    g_openMs = millis();
+    g_lastSeconds = -1;
+    g_labelledAt = -1;
+    g_stripMs = 0;
+    g_frameMs = 0;
+    g_whereMs = 0;
+    g_stripWhere = Where::NOWHERE;
+    screen::setLiveRect(VIEW_X, VIEW_Y, VIEW_W, VIEW_H);
+    redraw();
+    Serial.printf("[3d] open, %d-row bands: internal RAM %uKB free, the largest block %uKB; the loop drawing "
+                  "into %d buffers of its own\n",
+                  g_rows, (unsigned)(heap_caps_get_free_size(MALLOC_CAP_INTERNAL) / 1024),
+                  (unsigned)(heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL) / 1024),
+                  (g_share[0].color != nullptr) + (g_share[1].color != nullptr));
+    return true;
+}
+
+void close() {
+    if (!g_open) {
+        return;
+    }
+    finishDrawing();
+    s3::setSolidsReady(nullptr);
+    g_open = false;
+    g_prepared = false;
+    screen::setLiveRect(0, 0, 0, 0);
+    for (void *&p : g_pipe) {
+        heap_caps_free(p);
+        p = nullptr;
+    }
+    for (Shared &sh : g_share) {
+        heap_caps_free(sh.color);
+        sh.color = nullptr;
+    }
+    heap_caps_free(g_shareDepth);
+    g_shareDepth = nullptr;
+    Serial.println("[3d] closed");
+}
+
+bool isOpen() { return g_open; }
+
+void redraw() {
+    colors();
+    screen::clear(colorBg);
+    drawButtons();
+    g_stripMs = 0;
+    screen::flush();
+}
+
+void frame(const Followed &flight, const std::vector<Aircraft> &traffic, uint32_t polledMs) {
+    uint32_t w0 = micros();
+    if (!g_open || !finishDrawing()) {
+        return;
+    }
+    g_statWaitUs += micros() - w0;
+    g_statDrawUs += g_drawUs;
+    // A new flight: its director, its pilot and its labels from the start.
+    if (flight.hex != g_followedHex) {
+        g_followedHex = flight.hex;
+        delete g_director;
+        g_director = new s3::Director();
+        g_pilot = s3::Pilot();
+        g_lastTrack = (90 - flight.now.track) * DEG;
+        g_turn = 0;
+        g_haveShown = false;
+        g_follower.end();
+        g_taxiSaid[0] = 0;
+        g_touchdownAt = -100;
+        g_labeller.reset();
+    }
+    // The governor: by how long the last frame took, all told.
+    uint32_t now = millis();
+    if (g_frameMs != 0) {
+        uint32_t took = now - g_frameMs;
+        if (took > 33) {
+            g_detailPx = std::min(400.0f, g_detailPx * 1.25f);
+            g_tinyPx = std::min(200.0f, g_tinyPx * 1.25f);
+        } else if (took < 25) {
+            g_detailPx = std::max(16.0f, g_detailPx / 1.1f);
+            g_tinyPx = std::max(5.0f, g_tinyPx / 1.1f);
+        }
+    }
+    g_frameMs = now;
+    // A frame that took long to draw, said with what was in it and where the
+    // camera was - the frame just drawn, before the next is handed over.
+    if (g_prepared && g_drawUs > 250000) {
+        s3::Counts c = s3::counts();
+        Serial.printf("[3d] slow frame: %ums drawing; %d triangles, %d lines, %d lights, %d coast crossings; "
+                      "aircraft %d full %d simple %d tiny; %s, azimuth %.0f elevation %.0f zoom %.2f, %s\n",
+                      (unsigned)(g_drawUs / 1000), c.triangles, c.lines, c.lights, c.crossings, c.aircraftFull,
+                      c.aircraftSimple, c.aircraftTiny, g_shot, g_azimuth, g_elevation, g_zoom,
+                      g_where == Where::AIRFIELD ? g_airport : "high up");
+        g_drawUs = 0;
+    }
+    if (g_prepared) {
+        s3::flip();
+        g_preparing ^= 1;
+        uint32_t l0 = micros();
+        placeLabels();
+        g_statLabelsUs += micros() - l0;
+        if (now - g_stripMs >= 500) {
+            g_stripMs = now;
+            drawStrip(flight);
+        }
+        g_drawing = true;
+        int bands = s3::bandCount();
+        g_bandLimit = VIEW_H - (bands - 1) * g_rows < g_rows ? bands - 2 : bands;
+        g_bands.store(bandsFrom(0, g_bandLimit));
+        xTaskNotify(g_helper, WAKE_DRAW, eSetBits);
+    }
+    uint32_t p0 = micros();
+    prepareNext(flight, traffic, polledMs);
+    g_statPrepUs += micros() - p0;
+    g_prepared = true;
+    g_statFrames++;
+    {
+        s3::Counts c = s3::counts();
+        for (int i = 0; i < s3::STEPS; i++) {
+            g_statStepUs[i] += c.stepUs[i];
+        }
+        g_statTriangles += c.triangles;
+        g_statLines += c.lines;
+    }
+    if (now - g_statFromMs >= 10000) {
+        if (g_statFromMs != 0) {
+            float n = std::max<uint32_t>(1, g_statFrames);
+            Serial.printf("[3d] %.1f fps; preparing %.1fms, drawing %.1fms, waiting for the drawing %.1fms; %d other "
+                          "aircraft, %s; internal RAM %uKB free; core 0 idle at most %ums apart\n",
+                          g_statFrames * 1000.0f / (now - g_statFromMs), g_statPrepUs / 1000.0f / n,
+                          g_statDrawUs / 1000.0f / n, g_statWaitUs / 1000.0f / n, (int)g_traffic.size(), g_shot,
+                          (unsigned)(heap_caps_get_free_size(MALLOC_CAP_INTERNAL) / 1024), (unsigned)g_idle0GapMs);
+            // The preparing's costliest steps, a frame on average.
+            int top[4] = {-1, -1, -1, -1};
+            for (int i = 0; i < s3::STEPS; i++) {
+                for (int k = 0; k < 4; k++) {
+                    if (top[k] < 0 || g_statStepUs[i] > g_statStepUs[top[k]]) {
+                        for (int j = 3; j > k; j--) {
+                            top[j] = top[j - 1];
+                        }
+                        top[k] = i;
+                        break;
+                    }
+                }
+            }
+            Serial.printf("[3d]   %u triangles, %u lines a frame; most of the preparing: %s %.1fms, %s %.1fms, %s %.1fms, "
+                          "%s %.1fms; the traffic placed %.1fms, labelled %.1fms; the solids on the drawing core in "
+                          "%u%% of frames, its stack %u spare\n",
+                          (unsigned)(g_statTriangles / n), (unsigned)(g_statLines / n), s3::stepName(top[0]),
+                          g_statStepUs[top[0]] / 1000.0f / n, s3::stepName(top[1]), g_statStepUs[top[1]] / 1000.0f / n,
+                          s3::stepName(top[2]), g_statStepUs[top[2]] / 1000.0f / n, s3::stepName(top[3]),
+                          g_statStepUs[top[3]] / 1000.0f / n, g_statTrafficUs / 1000.0f / n, g_statLabelsUs / 1000.0f / n,
+                          (unsigned)((g_solidsAside - g_statSolidsAsideFrom) * 100 / n),
+                          (unsigned)uxTaskGetStackHighWaterMark(g_helper));
+            // And the drawing's, on the other core.
+            // (both cores' together)
+            float stage[6];
+            for (int i = 0; i < 6; i++) {
+                stage[i] = (g_drawStageUs[i] + g_loopStageUs[i] - g_statStageFrom[i]) / 1000.0f / n;
+            }
+            Serial.printf("[3d]   drawing: sky %.1fms, ground %.1fms, shadows %.1fms, depth %.1fms, solids %.1fms, "
+                          "lines and lights %.1fms; waiting for the PPA %.1fms; %u%% of the bands drawn by the loop\n",
+                          stage[0], stage[1], stage[2], stage[3], stage[4], stage[5],
+                          (g_pushWaitUs - g_statPushWaitFrom) / 1000.0f / n,
+                          (unsigned)((g_loopBands - g_statLoopBandsFrom) * 100 / (n * s3::bandCount())));
+        }
+        g_idle0GapMs = 0;
+        memset(g_statStepUs, 0, sizeof g_statStepUs);
+        g_statTriangles = g_statLines = 0;
+        g_statTrafficUs = g_statLabelsUs = 0;
+        g_statFromMs = now;
+        g_statFrames = g_statPrepUs = g_statWaitUs = g_statDrawUs = 0;
+        g_statSolidsAsideFrom = g_solidsAside;
+        for (int i = 0; i < 6; i++) {
+            g_statStageFrom[i] = g_drawStageUs[i] + g_loopStageUs[i];
+        }
+        g_statPushWaitFrom = g_pushWaitUs;
+        g_statLoopBandsFrom = g_loopBands;
+    }
+}
+
+Action touch(int x, int y, bool landed) {
+    if (landed) {
+        g_onView = false;
+        for (int i = 0; i < BUTTONS; i++) {
+            if (x >= BTN_X - 16 && x < BTN_X + BTN_W + 16 && y >= BTN_Y[i] - 5 && y < BTN_Y[i] + BTN_H + 5) {
+                return press(i);
+            }
+        }
+        if (x >= VIEW_X && x < VIEW_X + VIEW_W && y >= VIEW_Y && y < VIEW_Y + VIEW_H) {
+            g_onView = true;
+            g_dragged = false;
+            g_downX = g_lastX = x;
+            g_downY = g_lastY = y;
+        }
+        return Action::NONE;
+    }
+    if (!g_onView) {
+        return Action::NONE;
+    }
+    // Moved across the picture: the camera round the aircraft with it.
+    if (!g_dragged && abs(x - g_downX) + abs(y - g_downY) > 12) {
+        g_dragged = true;
+        if (g_cam != Cam::ORBIT) {
+            g_cam = Cam::ORBIT;
+            drawButtons();
+            screen::flush();
+            g_stripMs = 0;
+        }
+    }
+    if (g_dragged) {
+        g_azimuth -= (x - g_lastX) * 0.4f;
+        g_elevation = std::max(-10.0f, std::min(80.0f, g_elevation + (y - g_lastY) * 0.25f));
+    }
+    g_lastX = x;
+    g_lastY = y;
+    return Action::NONE;
+}
+
+Action lift(String &hex) {
+    bool tap = g_onView && !g_dragged;
+    g_onView = false;
+    if (!tap) {
+        return Action::NONE;
+    }
+    int x = g_downX - VIEW_X, y = g_downY - VIEW_Y, best = 48 * 48;
+    const TapPoint *found = nullptr;
+    for (int i = 0; i < g_tapCount; i++) {
+        int dx = g_taps[i].x - x, dy = g_taps[i].y - y;
+        if (dx * dx + dy * dy < best) {
+            best = dx * dx + dy * dy;
+            found = &g_taps[i];
+        }
+    }
+    if (found == nullptr) {
+        return Action::NONE;
+    }
+    hex = found->hex;
+    return Action::DETAIL;
+}
+
+String busy() {
+    if (g_step == Step::IDLE) {
+        return g_drawing ? "idle, the frame's end not yet taken" : "idle";
+    }
+    char out[96];
+    snprintf(out, sizeof out, "%s band %d of %d", STEP_NAMES[(int)g_step], g_stepBand, s3::bandCount());
+    return out;
+}
+
+#ifdef BENCH3D
+void sweep(uint32_t seconds) {
+    if (!g_open) {
+        return;
+    }
+    g_cam = Cam::ORBIT;
+    g_sweepUntilMs = (millis() + seconds * 1000) | 1;
+    g_sweepSaidMs = 0;
+    drawButtons();
+    screen::flush();
+    Serial.printf("[3d] sweeping the orbit camera for %us\n", (unsigned)seconds);
+}
+
+void benchPress(char what) {
+    if (!g_open) {
+        return;
+    }
+    int b = what == 'c' ? B_CINEMA : what == 'h' ? B_CHASE : what == 'o' ? B_ORBIT : what == 't' ? B_TOWER
+          : what == '+' ? B_ZOOM_IN : what == '-' ? B_ZOOM_OUT : -1;
+    if (b >= 0) {
+        g_sweepUntilMs = 0;
+        press(b);
+        Serial.printf("[3d] pressed %s%s\n", BTN_NAME[b], buttonGreyed(b) ? ", greyed" : "");
+    }
+}
+
+void benchBandRows(int rows) {
+    g_forceRows = rows;
+    Serial.printf("[3d] bands of %d rows from the next open\n", rows);
+}
+
+void benchSolids() {
+    if (!g_open || !finishDrawing()) {
+        return;
+    }
+    s3::SolidsBench b = s3::benchSolids();
+    Serial.printf("[3d] the solids, a time: %u looked at, %u facing; their facing %uus, coloured %uus, placed and "
+                  "projected %uus, set up %uus, kept %uus\n",
+                  (unsigned)b.tested, (unsigned)b.facing, (unsigned)b.us[0], (unsigned)b.us[1], (unsigned)b.us[2],
+                  (unsigned)b.us[3], (unsigned)b.us[4]);
+    Serial.printf("[3d]   the ground's %u triangles read %uus, its step %uus\n", (unsigned)b.groundTris,
+                  (unsigned)b.groundReadUs, (unsigned)b.groundUs);
+    Serial.printf("[3d]   partly seen cells' triangles: %u, %u wholly outside a plane, %u wholly inside, %u cut\n",
+                  (unsigned)b.seen[0], (unsigned)b.seen[1], (unsigned)b.seen[2], (unsigned)b.seen[3]);
+}
+
+int benchStands(double *lat, double *lon, int max) {
+    int n = std::min(max, g_benchStands.load());
+    for (int i = 0; i < n; i++) {
+        lat[i] = g_benchStandLat[i];
+        lon[i] = g_benchStandLon[i];
+    }
+    return n;
+}
+
+int benchWays(double *lat, double *lon, float *track, int max) {
+    int n = std::min(max, g_benchWays.load());
+    for (int i = 0; i < n; i++) {
+        lat[i] = g_benchWayLat[i];
+        lon[i] = g_benchWayLon[i];
+        track[i] = g_benchWayTrack[i];
+    }
+    return n;
+}
+
+void benchSun(int which) {
+    g_benchSun = which;
+    Serial.printf("[3d] the sun %s\n", which == 1 ? "as by day" : which == 2 ? "as at dusk" : which == 3 ? "as by night" : "as it is");
+}
+
+bool benchTap(String &hex) {
+    if (!g_open) {
+        return false;
+    }
+    int pick = -1;
+    for (int i = 0; i < g_tapCount; i++) {
+        if (pick < 0 || g_followedHex == g_taps[pick].hex) {
+            pick = i;
+        }
+    }
+    if (pick < 0) {
+        return false;
+    }
+    hex = g_taps[pick].hex;
+    return true;
+}
+#endif
+
+}  // namespace view3d

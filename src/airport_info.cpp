@@ -12,17 +12,28 @@ namespace {
 #include "airport_info_table.inc"
 constexpr size_t AIRPORT_INFO_COUNT = sizeof(AIRPORT_INFO) / sizeof(AIRPORT_INFO[0]);
 
+// And the military's airfields', made by tools/gen_military.py: their own
+// cards, each counting its frequencies in their own list.
+#include "military_info.inc"
+constexpr size_t MILITARY_INFO_COUNT = sizeof(MILITARY_INFO) / sizeof(MILITARY_INFO[0]);
+
 }  // namespace
 
 const AirportInfo *airportInfo(const char *code) {
+    auto less = [](const AirportInfo &a, const char *c) { return strcmp(a.code, c) < 0; };
     const AirportInfo *end = AIRPORT_INFO + AIRPORT_INFO_COUNT;
-    const AirportInfo *a = std::lower_bound(AIRPORT_INFO, end, code,
-                                            [](const AirportInfo &a, const char *c) { return strcmp(a.code, c) < 0; });
+    const AirportInfo *a = std::lower_bound(AIRPORT_INFO, end, code, less);
+    if (a != end && strcmp(a->code, code) == 0) {
+        return a;
+    }
+    end = MILITARY_INFO + MILITARY_INFO_COUNT;
+    a = std::lower_bound(MILITARY_INFO, end, code, less);
     return a != end && strcmp(a->code, code) == 0 ? a : nullptr;
 }
 
 const AirportFrequency *airportFrequencies(const AirportInfo &airport) {
-    return AIRPORT_FREQUENCIES + airport.firstFrequency;
+    bool military = &airport >= MILITARY_INFO && &airport < MILITARY_INFO + MILITARY_INFO_COUNT;
+    return (military ? MILITARY_FREQUENCIES : AIRPORT_FREQUENCIES) + airport.firstFrequency;
 }
 
 const char *atcUseName(AtcUse use) {

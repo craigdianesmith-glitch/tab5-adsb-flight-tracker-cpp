@@ -47,6 +47,9 @@ constexpr int BTN_Y[BTN_COUNT] = {BACK_Y, HOME_Y, AIRPORT_Y, ALL_Y, FOLLOW_Y, RE
 // halfway into the gaps around it, so one that lands a little off still
 // gets it rather than nothing.
 constexpr int BTN_REACH_X = BTN_X - 24;
+// Following, beside FOLLOW in the margin between the plot and the column -
+// clear of the column's reach - the way to the 3D view of the aircraft.
+constexpr int B3D_W = 86, B3D_X = BTN_REACH_X - 6 - B3D_W;
 // The plot is as large as the 720px height allows: the full height, the
 // outer ring's label just fitting above it, with the title in the corner to
 // its left rather than in a band across the top. Its sides are what the
@@ -203,7 +206,7 @@ bool insideScope(int x, int y, int w, int h, int pad) {
 struct AirportHit {
     int16_t x, y;    // the symbol
     LabelBox label;  // where its code went, or w 0 where it was left off
-    char code[4];
+    char code[5];
 };
 constexpr int AIRPORT_TAP_R = 22;
 constexpr int AIRPORT_LABEL_PAD = 10;
@@ -323,7 +326,7 @@ String blipLabel(const Blip &b) {
 // ones worth tapping the ones that couldn't be.
 constexpr int MAX_BLIPS = 128;
 constexpr int TAP_RADIUS = 28;
-Blip g_blips[MAX_BLIPS];
+std::vector<Blip> g_blips(MAX_BLIPS);  // 9KB: on the heap - in the PSRAM - not the chip's own memory
 int g_blipCount = 0;
 
 // A phosphor-green ramp rather than the rest of the app's blue-grey: on a
@@ -332,7 +335,7 @@ int g_blipCount = 0;
 uint16_t colorDisabled;
 uint16_t colorBg, colorText, colorMuted, colorFaint, colorBtnBg, colorRing, colorRingText, colorBlip, colorNewBlip,
     colorHome, colorTrail, colorAlert, colorEmergency, colorCargo, colorRec, colorRunway, colorCoast, colorCoastAlone,
-    colorLandName, colorWaterName;
+    colorLandName, colorWaterName, colorMilitaryField;
 RadarPalette g_palette;
 
 // Where a plot's drawing time goes, for the [perf] line: the parts that
@@ -361,6 +364,9 @@ void ensureColors() {
     colorBlip = M5.Display.color565(0x3D, 0xE8, 0x7C);
     colorNewBlip = M5.Display.color565(0xE6, 0xFF, 0xEE);  // brightest: a new contact
     colorHome = M5.Display.color565(0xEA, 0xFF, 0xF0);
+    // A military airfield's symbol and code: as faint as a civil one's,
+    // turned olive - told apart on a look, without standing out.
+    colorMilitaryField = M5.Display.color565(0x8E, 0x92, 0x58);
     colorTrail = M5.Display.color565(0x2A, 0x7A, 0x4E);  // dimmer than any blip: where it was, not where it is
     // Greyed toward pavement, so a runway reads as ground under the traffic
     // rather than as a mark of the same kind as a contact.
@@ -813,6 +819,7 @@ void drawAirports(double lat, double lon, int rangeNm, const String &centreCode,
         int16_t x, y;
         int mark;  // its symbol's, in g_mapMarks
         bool origin;
+        bool military;
     };
     static std::vector<Shown> shown;
     shown.clear();
@@ -849,10 +856,10 @@ void drawAirports(double lat, double lon, int rangeNm, const String &centreCode,
         }
         g_airfieldSpots.push_back({CENTER_X + ox, CENTER_Y - oy});
         bool origin = originCode.length() && a.code == originCode;
-        drawAirfield(x, y, origin ? colorHome : colorFaint);
+        drawAirfield(x, y, origin ? colorHome : a.military ? colorMilitaryField : colorFaint);
         constexpr int T1 = AIRPORT_R + AIRPORT_TICK;
         noteMark(x - T1, y - T1, 2 * T1 + 1, 2 * T1 + 1);
-        shown.push_back({a.code, (int16_t)x, (int16_t)y, (int)g_mapMarks.size() - 1, origin});
+        shown.push_back({a.code, (int16_t)x, (int16_t)y, (int)g_mapMarks.size() - 1, origin, a.military});
     }
 
     // Then their labels, each where it was on the last plot while that is
@@ -907,7 +914,7 @@ void drawAirports(double lat, double lon, int rangeNm, const String &centreCode,
             placed = true;
         }
         if (placed) {
-            canvas.setTextColor(sh.origin ? colorHome : colorFaint);
+            canvas.setTextColor(sh.origin ? colorHome : sh.military ? colorMilitaryField : colorFaint);
             canvas.drawString(sh.code, label.x, label.y);
             g_mapLabels[g_mapLabelCount++] = label;
         }
@@ -1277,9 +1284,32 @@ void drawZoomButtons() {
     drawZoomButton(ZOOM_OUT_Y, false, g_canZoomOut ? Look::PLAIN : Look::GREYED);
 }
 
+// 3D, beside FOLLOW while following - or, not, the margin where it was.
+bool g_3dShown = false;
+void draw3dButton(bool following) {
+    auto &canvas = screen::canvas();
+    g_3dShown = following;
+    canvas.fillRect(B3D_X, FOLLOW_Y, B3D_W, BTN_H, colorBg);
+    if (following) {
+        canvas.fillRoundRect(B3D_X, FOLLOW_Y, B3D_W, BTN_H, 6, colorBtnBg);
+        canvas.setFont(&fonts::Font0);
+        canvas.setTextSize(2);
+        canvas.setTextDatum(MC_DATUM);
+        canvas.setTextColor(colorText);
+        canvas.drawString("3D", B3D_X + B3D_W / 2, FOLLOW_Y + BTN_H / 2);
+    }
+    screen::markDirty(B3D_X, FOLLOW_Y, B3D_W, BTN_H);
+}
+
+bool hit3dButton(int x, int y) {
+    return g_3dShown && x >= B3D_X - 4 && x < B3D_X + B3D_W + 4 && y >= FOLLOW_Y - BTN_GAP / 2 &&
+           y < FOLLOW_Y + BTN_H + BTN_GAP / 2;
+}
+
 void drawFollowButton() {
     drawButton(FOLLOW_Y, g_follow == FollowButton::PICKING ? "TAP PLANE" : "FOLLOW",
                g_follow == FollowButton::OFF ? Look::PLAIN : Look::LIT);
+    draw3dButton(g_follow == FollowButton::ON);
 }
 
 // The sound's switch, at the end of the radar's and the zoom's titles, as the
@@ -1341,6 +1371,7 @@ void drawFilterIcon() { drawFunnel(FILTER_CX, FILTER_CY, FILTER_R, g_filtered); 
 constexpr int CLOCK_Y = 588, CLOCK_H = 32;
 ClockZone g_clockZone = ClockZone::UTC;
 int g_clockMinute = -1;
+int g_clockAt = -1;  // following: the zone the aircraft is in, as timeZoneAt() has it; -1 for home's
 
 void drawClock() {
     auto &canvas = screen::canvas();
@@ -1350,12 +1381,19 @@ void drawClock() {
         struct tm utc;
         gmtime_r(&now, &utc);
         char text[16];
-        clockZoneFormat(now, g_clockZone, text, sizeof(text));
+        // Following: the time where the aircraft is, by a blip for it.
+        bool aircraft = g_clockAt >= 0 && g_clockZone != ClockZone::UTC;
+        if (aircraft) {
+            timeZoneFormat(now, g_clockAt, text, sizeof(text));
+            canvas.fillCircle(22, CLOCK_Y, 5, colorBlip);
+        } else {
+            clockZoneFormat(now, g_clockZone, text, sizeof(text));
+        }
         canvas.setFont(&fonts::Font0);
         canvas.setTextSize(3);
         canvas.setTextDatum(ML_DATUM);
-        canvas.setTextColor(colorFaint);
-        canvas.drawString(text, 16, CLOCK_Y);
+        canvas.setTextColor(aircraft ? colorText : colorFaint);
+        canvas.drawString(text, aircraft ? 36 : 16, CLOCK_Y);
         g_clockMinute = utc.tm_hour * 60 + utc.tm_min;
     }
     screen::markDirty(0, CLOCK_Y - CLOCK_H / 2, PLOT_L, CLOCK_H);
@@ -2209,7 +2247,7 @@ void radarScreenDraw(const std::vector<Aircraft> &aircraft, const std::vector<ui
     // home, or the airport nearest it. Dragged off that, it is centred where
     // it was let go - unless its own centre has since changed under it.
     Airport airport;
-    bool onAirport = !following && g_centre == RadarCentre::AIRPORT && nearestAirport(lat, lon, airport);
+    bool onAirport = !following && g_centre == RadarCentre::AIRPORT && nearestAirport(lat, lon, airport, 120.0f, false);
     double ownLat = onAirport ? airport.lat : lat, ownLon = onAirport ? airport.lon : lon;
     FreeLook &look = g_radarLook;
     if (look.active && (following || look.fromLat != lat || look.fromLon != lon)) {
@@ -2784,7 +2822,8 @@ void radarPlotDraw(const RadarScene &scene, bool full) {
     Airport airport;
     String centreCode;
     bool following = scene.followHex.length() > 0;
-    if (!following && !scene.freeLook && centre == RadarCentre::AIRPORT && nearestAirport(lat, lon, airport)) {
+    if (!following && !scene.freeLook && centre == RadarCentre::AIRPORT &&
+        nearestAirport(lat, lon, airport, 120.0f, false)) {
         lat = airport.lat;
         lon = airport.lon;
         centreCode = airport.code;
@@ -3007,7 +3046,7 @@ ZoomFrame g_zoom;
 // A replay's starts again, each time, from what the live zoom remembered as
 // the recording began - its `seed`, at the replay's 0.
 struct InUseMemory {
-    char code[4] = "";
+    char code[5] = "";
     uint32_t lastDrawnMs = 0;
     uint32_t ms[MAX_ZOOM_RUNWAYS][2];
     bool seen[MAX_ZOOM_RUNWAYS][2];
@@ -3394,6 +3433,7 @@ void drawZoomHeader() {
     }
     drawButton(FOLLOW_Y, g_zoomPicking ? "TAP PLANE" : "FOLLOW",
                g_zoomFollowHex.length() || g_zoomPicking ? Look::LIT : Look::PLAIN);
+    draw3dButton(g_zoomFollowHex.length() > 0);
     drawRecButton();
     drawReplaysButton();
     // Back to the table, as the radar's Back is - the radar coming back to
@@ -3730,6 +3770,14 @@ void radarScreenSetClock(ClockZone zone) {
     }
 }
 
+void radarScreenSetClockAt(bool on, double lat, double lon) {
+    int zone = on ? timeZoneAt(lat, lon) : -1;
+    if (zone != g_clockAt) {
+        g_clockAt = zone;
+        g_clockMinute = -1;  // drawn again at the next tick
+    }
+}
+
 void radarScreenTickClock() {
     if (g_clockZone == ClockZone::OFF) {
         return;
@@ -3752,7 +3800,7 @@ bool radarScreenHitFilter(int x, int y) {
 
 void radarLiveRunwaysInUse(recorder::RunwaysInUse &out) {
     out = recorder::RunwaysInUse();
-    char code[4];
+    char code[5];
     uint32_t ms[MAX_ZOOM_RUNWAYS][2];
     bool seen[MAX_ZOOM_RUNWAYS][2];
     portENTER_CRITICAL(&g_inUseMux);
@@ -3786,6 +3834,9 @@ void radarReplayRunwaysInUse(const recorder::RunwaysInUse &seed) {
 }
 
 ZoomAction radarZoomHandleTouch(int x, int y, String &outHex) {
+    if (!overlayUp() && hit3dButton(x, y)) {
+        return ZoomAction::OPEN_3D;
+    }
     if (!overlayUp()) {
         int b = buttonAt(x, y);
         if (b == BTN_BACK) {
@@ -3862,6 +3913,9 @@ ZoomAction radarZoomHandleTouch(int x, int y, String &outHex) {
 
 RadarAction radarScreenHandleTouch(int x, int y, String &outHex, String &outAirport) {
     // With the list up, every tap is the list's: outside it is a dismissal.
+    if (!overlayUp() && hit3dButton(x, y)) {
+        return RadarAction::OPEN_3D;
+    }
     if (!overlayUp()) {
         switch (buttonAt(x, y)) {
         case BTN_BACK:

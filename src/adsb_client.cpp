@@ -81,7 +81,57 @@ static String hostOf(const String &url) {
 // when _reuse is set and the response allows it, and stores the client by
 // reference, so the next fetch skips DNS, TCP and the handshake entirely.
 // The cost is one mbedTLS context resident instead of one per fetch.
-static WiFiClientSecure g_tls;
+// Its reads, though, made to wait for the network by sleeping. The
+// framework's readBytes() reads in blocks but takes "nothing there yet" for
+// an error and returns at once, and HTTPClient asks again straight away with
+// only a delay(0) - which lets nothing lower in - so a poll spun this core
+// from the first byte of a big reply to the last. With the 3D view drawing on
+// the same core, a 130KB reply kept the core's idle task out past the task
+// watchdog's five seconds, and the board was reset.
+//
+// And the whole of a reply given a time: HTTPClient asks for more for as long
+// as the connection stays open, so a server that stopped sending part way
+// and kept it open held the poll task for good - every poll after it never
+// made, the screens showing the sky as it was. Past the time, the connection
+// is closed, the reply fails, and the next poll goes ahead.
+class PoliteTls : public WiFiClientSecure {
+  public:
+    // Until when, on millis(), the reply under way may go on being read; 0
+    // for no limit.
+    void allowUntil(uint32_t ms) { untilMs_ = ms; }
+
+    size_t readBytes(char *buffer, size_t length) override {
+        size_t got = 0;
+        uint32_t since = millis();
+        while (got < length) {
+            if (untilMs_ != 0 && (int32_t)(millis() - untilMs_) > 0) {
+                Serial.println("[adsb] a reply still not in after 30s - dropped");
+                untilMs_ = 0;
+                stop();
+                break;
+            }
+            int r = read((uint8_t *)buffer + got, length - got);
+            if (r > 0) {
+                got += r;
+                since = millis();
+                continue;
+            }
+            // What has come, at once - its caller asks again for the rest -
+            // or, with nothing yet, a millisecond's sleep before looking
+            // again, until the connection goes or the time allowed is up.
+            if (got > 0 || !connected() || millis() - since >= getTimeout()) {
+                break;
+            }
+            vTaskDelay(1);
+        }
+        return got;
+    }
+    size_t readBytes(uint8_t *buffer, size_t length) override { return readBytes((char *)buffer, length); }
+
+  private:
+    uint32_t untilMs_ = 0;
+};
+static PoliteTls g_tls;
 static HTTPClient g_http;
 static bool g_tlsConfigured = false;
 // Which host that kept-alive socket is connected to. Reusing it for a request
@@ -133,6 +183,7 @@ static int requestInto(const String &url, const AdsbEndpoint &ep, JsonDocument &
     // endpoints delay rather than refuse when throttling, and a reply that
     // takes several seconds is still worth having. Only the poll task waits.
     g_http.setTimeout(12000);
+    g_tls.allowUntil(millis() + 30000);
 
     int code = g_http.GET();
 #ifdef NET_PROFILE
@@ -176,6 +227,7 @@ static int requestInto(const String &url, const AdsbEndpoint &ep, JsonDocument &
     // Leaves the socket open for the next poll; HTTPClient drains whatever the
     // filter stopped short of reading.
     g_http.end();
+    g_tls.allowUntil(0);
     return code;
 }
 

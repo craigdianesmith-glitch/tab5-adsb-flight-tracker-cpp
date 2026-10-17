@@ -60,6 +60,7 @@ AppSettings loadSettings() {
     s.watchlist = prefs.isKey("watch") ? prefs.getString("watch") : String("");
     s.autoRecord = prefs.getBool("autorec", false);
     s.autoFollow = prefs.getBool("autofollow", false);
+    s.followIn3d = prefs.getBool("follow3d", false);
     s.readAloud = prefs.getBool("readaloud", false);
     uint8_t accent = prefs.getUChar("accent", (uint8_t)DEFAULT_ELSEWHERE_ACCENT);
     s.elsewhereAccent = accent <= (uint8_t)Accent::AMERICAN ? (Accent)accent : DEFAULT_ELSEWHERE_ACCENT;
@@ -191,13 +192,14 @@ void saveWifi(const String &ssid, const String &pass) {
     prefs.end();
 }
 
-void saveAlerts(uint8_t alertMask, const String &watchlist, bool autoRecord, bool autoFollow) {
+void saveAlerts(uint8_t alertMask, const String &watchlist, bool autoRecord, bool autoFollow, bool followIn3d) {
     Preferences prefs;
     prefs.begin(NAMESPACE, false);
     prefs.putUChar("alerts", alertMask);
     prefs.putString("watch", watchlist);
     prefs.putBool("autorec", autoRecord);
     prefs.putBool("autofollow", autoFollow);
+    prefs.putBool("follow3d", followIn3d);
     prefs.end();
 }
 

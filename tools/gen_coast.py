@@ -7,7 +7,7 @@ and province lines of the big federations, where a plot can be a long way
 from any of the rest. Natural Earth (naturalearthdata.com) is public domain;
 this is its 1:10m set, the finest it has.
 
-    tools/gen_coast.py          # downloads the eight layers
+    tools/gen_coast.py          # downloads the ten layers
     tools/gen_coast.py DIR      # from the ne_10m_*.geojson files in DIR
 
 All of the work that can be done ahead is done here, so that the device only
@@ -26,6 +26,15 @@ radar has, so a second level with every bend under 250m taken out still had
 two thirds of the points - two thirds the flash again, to spare the widest
 ranges a third of their strokes. The other way, close in, the device draws a
 coast as a curve through its points - see src/coast.cpp.
+
+Every coast and lake shore runs with the land on its left. Natural Earth's
+don't all: of its coastlines about one in seven has the land on its right,
+and nearly all of its minor islands' do. Each is turned round where it
+needs to be - a coastline by testing a point a few metres either side of it
+against Natural Earth's land polygons, a lake's shore by whether it is the
+lake's outline or an island's in it. The radar doesn't care which way a line
+runs; a 3D view high up does, telling land from sea by which way a coast
+crosses each row of it.
 
 Left out: Natural Earth's own notes on a border - an overlay or a lease's
 limit - and every country's states but those of STATES_OF below.
@@ -101,6 +110,89 @@ def wanted(layer, props):
     if layer == "ne_10m_admin_1_states_provinces_lines":
         return props["ADM0_A3"] in STATES_OF and props["FEATURECLA"] in STATE_CLASSES
     return True
+
+
+# The land the coasts are tested against: Natural Earth's land polygons for
+# its coastlines, its minor islands' for theirs.
+LAND_OF = {"ne_10m_coastline": "ne_10m_land", "ne_10m_minor_islands_coastline": "ne_10m_minor_islands"}
+
+
+class Land:
+    """Whether a point is on land: a ray cast east from it, its crossings of
+    the polygons' edges counted - the edges kept in rows a tenth of a degree
+    of latitude deep, so a test looks at only those its row could cross."""
+
+    def __init__(self, geojson):
+        self.rows = defaultdict(list)
+        for feature in geojson["features"]:
+            geometry = feature["geometry"]
+            if not geometry:
+                continue
+            polygons = [geometry["coordinates"]] if geometry["type"] == "Polygon" else geometry["coordinates"]
+            for polygon in polygons:
+                for ring in polygon:
+                    for (x0, y0), (x1, y1) in zip(ring, ring[1:]):
+                        if y0 != y1:
+                            for row in range(math.floor(min(y0, y1) * 10), math.floor(max(y0, y1) * 10) + 1):
+                                self.rows[row].append((x0, y0, x1, y1))
+
+    def has(self, x, y):
+        crossings = 0
+        for x0, y0, x1, y1 in self.rows[math.floor(y * 10)]:
+            if (y0 <= y) != (y1 <= y) and x0 + (y - y0) * (x1 - x0) / (y1 - y0) > x:
+                crossings += 1
+        return crossings % 2 == 1
+
+
+def area(ring):
+    """Twice a ring's signed area: more than nothing, anticlockwise."""
+    return sum(x0 * y1 - x1 * y0 for (x0, y0), (x1, y1) in zip(ring, ring[1:]))
+
+
+def land_on_left(line, land):
+    """Which side of a coastline the land is: tested a few metres either side
+    of segments along it - a quarter, half and three quarters of the way, and
+    on through the rest until one says - +1 left, -1 right, 0 not known."""
+    n = len(line)
+    order = [n // 4, n // 2, (3 * n) // 4] + list(range(n - 1))
+    for i in order:
+        i = min(max(i, 0), n - 2)
+        (x0, y0), (x1, y1) = line[i][:2], line[i + 1][:2]
+        length = math.hypot(x1 - x0, y1 - y0)
+        if length == 0:
+            continue
+        mx, my = (x0 + x1) / 2, (y0 + y1) / 2
+        ox, oy = -(y1 - y0) / length * 1e-4, (x1 - x0) / length * 1e-4
+        left, right = land.has(mx + ox, my + oy), land.has(mx - ox, my - oy)
+        if left != right:
+            return 1 if left else -1
+    return 0
+
+
+def oriented(layer, geometry, land, tally):
+    """A feature's lines, each coast and shore turned so the land is on its
+    left: see the docstring at the top."""
+    if layer in LAND_OF:
+        out = []
+        for line in lines_of(geometry):
+            side = land_on_left(line, land)
+            if side == 0 and line[0] == line[-1]:
+                side = 1 if area(line) > 0 else -1  # an island it couldn't tell: land inside
+            tally["turned" if side < 0 else "kept"] += 1
+            out.append(line[::-1] if side < 0 else line)
+        return out
+    if geometry["type"] in ("Polygon", "MultiPolygon"):
+        # A lake: its outline clockwise, water on the right; an island in it
+        # anticlockwise - the land on the left of both.
+        polygons = [geometry["coordinates"]] if geometry["type"] == "Polygon" else geometry["coordinates"]
+        out = []
+        for polygon in polygons:
+            for i, ring in enumerate(polygon):
+                wanted = area(ring) < 0 if i == 0 else area(ring) > 0
+                tally["kept" if wanted else "turned"] += 1
+                out.append(ring if wanted else ring[::-1])
+        return out
+    return lines_of(geometry)
 
 
 def lines_of(geometry):
@@ -193,12 +285,16 @@ def main():
     cells = defaultdict(list)
     lines = points = 0
     for layer, kind in LAYERS:
+        land = Land(load(LAND_OF[layer], directory)) if layer in LAND_OF else None
+        tally = defaultdict(int)
         for feature in load(layer, directory)["features"]:
             if feature["geometry"] and wanted(layer, feature["properties"]):
-                for line in lines_of(feature["geometry"]):
+                for line in oriented(layer, feature["geometry"], land, tally):
                     cut_into_cells([(p[0], p[1]) for p in line], UNIT, cells, kind)
                     lines += 1
                     points += len(line)
+        if tally:
+            print(f"  {layer}: {tally['kept']} the right way round, {tally['turned']} turned round")
 
     ids = sorted(cells)
     starts, data = [], bytearray()

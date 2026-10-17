@@ -92,7 +92,7 @@ private:
     size_t len_ = 0, pos_ = 0;
 };
 
-LineReader g_reader;
+LineReader &g_reader = *new LineReader();  // 4KB: on the heap - in the PSRAM - not the chip's own memory
 char g_line[320];
 
 File g_file;
@@ -130,7 +130,9 @@ std::vector<Gap, PsramAllocator<Gap>> g_gaps;
 // For each aircraft followed, one per poll that reported it while it was: a
 // few hundred over a landing at the zoom's ten seconds, so small enough to
 // keep anywhere.
-std::map<String, std::vector<FollowSample>> g_heights;
+std::map<String, std::vector<FollowSample>, std::less<String>,
+         PsramAllocator<std::pair<const String, std::vector<FollowSample>>>>
+    g_heights;  // in the PSRAM
 std::vector<String> g_providers;  // the names the polls give, in the order first met
 
 // Each low contact's RunwaySim, fed its fixes up to the moment last shown
@@ -142,7 +144,7 @@ struct SimFeed {
     RunwaySim sim;
     size_t next;  // the next of its fixes to feed it, in g_fixes
 };
-std::map<uint32_t, SimFeed> g_sims;
+std::map<uint32_t, SimFeed, std::less<uint32_t>, PsramAllocator<std::pair<const uint32_t, SimFeed>>> g_sims;  // in the PSRAM
 uint32_t g_simsAt = 0;
 constexpr uint32_t SIM_WARMUP_MS = 300000;
 constexpr size_t SIMS_MAX = 64;

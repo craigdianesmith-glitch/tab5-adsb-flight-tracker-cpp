@@ -222,7 +222,7 @@ bool scanLineup(const FollowSample &last, bool onGround, Lineup &out) {
 
 }  // namespace
 
-bool followDeparting(const std::vector<FollowSample> &history, const FollowSample &last) {
+bool followDeparting(const SampleList &history, const FollowSample &last) {
     if (!last.ground) {
         return false;
     }
@@ -248,7 +248,43 @@ namespace {
 // Which way it was going, from where it was before, for a report that
 // doesn't say: the bearing from the latest earlier position far enough off
 // to give one, from the last minute.
-bool trackFromHistory(const std::vector<FollowSample> &history, const FollowSample &last, float &track) {
+// In the air, carried on between reports round the turn it is in - its
+// track's change from a report a few seconds before - rather than straight
+// off it at a tangent: a fighter in a 40-degree bank was a hundred metres off
+// its circle in five seconds, and put back with a swerve at every report. A
+// turn slower than the least of these is taken for none, one faster for a
+// misreading; and one is followed round for no longer than the most, then
+// straight on.
+constexpr float TURN_MIN_DEG_S = 0.4f, TURN_MAX_DEG_S = 8.0f, TURN_CARRY_S = 30.0f;
+constexpr uint32_t TURN_FROM_MS = 2500, TURN_WITHIN_MS = 30000;
+
+// Its rate of turn, degrees a second, right positive: from its track now and
+// in a report at least a few seconds before, so a jitter in the track isn't
+// read as a turn. False if it isn't turning, or nothing says.
+bool turnRateFromHistory(const SampleList &history, const FollowSample &last, float &rate) {
+    if (!last.hasTrack) {
+        return false;
+    }
+    for (auto it = history.rbegin(); it != history.rend(); ++it) {
+        const FollowSample &s = *it;
+        if (s.ms >= last.ms || !s.hasTrack || s.ground) {
+            continue;
+        }
+        uint32_t span = last.ms - s.ms;
+        if (span < TURN_FROM_MS) {
+            continue;
+        }
+        if (span > TURN_WITHIN_MS) {
+            return false;
+        }
+        float turned = fmodf(last.track - s.track + 540.0f, 360.0f) - 180.0f;
+        rate = turned / (span / 1000.0f);
+        return fabsf(rate) >= TURN_MIN_DEG_S && fabsf(rate) <= TURN_MAX_DEG_S;
+    }
+    return false;
+}
+
+bool trackFromHistory(const SampleList &history, const FollowSample &last, float &track) {
     for (auto it = history.rbegin(); it != history.rend(); ++it) {
         const FollowSample &s = *it;
         if (s.ms >= last.ms || !s.hasPos || s.posStale) {
@@ -277,7 +313,7 @@ bool trackFromHistory(const std::vector<FollowSample> &history, const FollowSamp
 //
 // With `linedUp`, for one stopped there, it has to be on the centreline and
 // pointing along the runway, which gives the direction - no movement to go by.
-bool runwayUnder(const FollowSample &last, const std::vector<FollowSample> &history, Lineup &out,
+bool runwayUnder(const FollowSample &last, const SampleList &history, Lineup &out,
                  bool linedUp = false) {
     float nmPerDegLon = 60.0f * cosf(last.lat * (float)M_PI / 180.0f);
     for (const Airport &a : airportsWithin(last.lat, last.lon, 5.0f)) {
@@ -450,7 +486,7 @@ FollowEstimate landingFrom(const RunwayLine &r, float along, float gs, bool airb
 
 }  // namespace
 
-FollowEstimate estimateFollowed(const FollowSample &given, float ageS, const std::vector<FollowSample> &history) {
+FollowEstimate estimateFollowed(const FollowSample &given, float ageS, const SampleList &history) {
     FollowSample last = given;
     if (!last.hasTrack) {
         last.hasTrack = trackFromHistory(history, last, last.track);
@@ -496,10 +532,21 @@ FollowEstimate estimateFollowed(const FollowSample &given, float ageS, const std
             e.how = "held: no track";
             return e;
         }
-        e.how = "straight on";
-        float d = gs * ageS / 3600.0f;
-        float a = last.track * (float)M_PI / 180.0f;
-        place(sinf(a) * d, cosf(a) * d);
+        float rate = 0;
+        if (turnRateFromHistory(history, last, rate)) {
+            // Round the arc for as long as it is likely to keep turning
+            // unseen, then straight on the way it was heading by then.
+            e.how = "round its turn";
+            float t = std::min(ageS, TURN_CARRY_S), w = rate * (float)M_PI / 180.0f, v = gs / 3600.0f;
+            float a0 = last.track * (float)M_PI / 180.0f, a1 = a0 + w * t, rest = v * (ageS - t);
+            place(v / w * (cosf(a0) - cosf(a1)) + sinf(a1) * rest, v / w * (sinf(a1) - sinf(a0)) + cosf(a1) * rest);
+            e.track = fmodf(last.track + rate * t + 720.0f, 360.0f);
+        } else {
+            e.how = "straight on";
+            float d = gs * ageS / 3600.0f;
+            float a = last.track * (float)M_PI / 180.0f;
+            place(sinf(a) * d, cosf(a) * d);
+        }
         if (last.hasAlt && last.hasVs) {
             e.altFt = std::max((int32_t)0, last.altFt + (int32_t)(last.vsFpm * ageS / 60.0f));
         }
@@ -563,7 +610,7 @@ bool taxiing(const FollowSample &s) { return s.ground && s.hasGs && s.gsKt >= ST
 
 // Its latest report on the ground in `history` from before `ms`, no more
 // than `withinMs` before it; null if there is none.
-const FollowSample *groundBefore(const std::vector<FollowSample> &history, uint32_t ms, uint32_t withinMs) {
+const FollowSample *groundBefore(const SampleList &history, uint32_t ms, uint32_t withinMs) {
     for (auto it = history.rbegin(); it != history.rend(); ++it) {
         if (it->ms >= ms) {
             continue;
@@ -625,7 +672,7 @@ void RunwaySim::report(const FollowSample &s) {
             history_.erase(history_.begin());
         }
     } else if (!history_.empty()) {
-        std::vector<FollowSample>().swap(history_);  // climbed away: its room back
+        SampleList().swap(history_);  // climbed away: its room back
     }
     if (!s.ground) {
         airMs_ = s.ms;

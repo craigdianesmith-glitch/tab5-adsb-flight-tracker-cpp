@@ -25,6 +25,7 @@ enum class RadarAction {
     ZOOM_AIRPORT,     // outAirport is the IATA code of the tapped airport
     DISMISS,          // the list of targets closed without a pick; redraw to take it off
     DRAG,             // landed on the plot with nothing under it: see radarDragTo()
+    OPEN_3D,          // following: the 3D view of it
 };
 
 // What the record button shows. NO_CARD greys out Replays along with it:
@@ -156,7 +157,7 @@ bool radarPlotHit(int x, int y, String &outHex);
 // radar's: a touch on the plot that may go on to drag it.
 // RANGE: ZOOM IN or OUT changed the range shown - drawn again, as REDRAW.
 enum class ZoomAction {
-    NONE, UNZOOM, BACK, TOGGLE_FOLLOW, TOGGLE_RECORD, OPEN_RECORDINGS, SELECT, DISMISS, REDRAW, RANGE, DRAG
+    NONE, UNZOOM, BACK, TOGGLE_FOLLOW, TOGGLE_RECORD, OPEN_RECORDINGS, SELECT, DISMISS, REDRAW, RANGE, DRAG, OPEN_3D
 };
 
 // Where the zoom on the airport with IATA `code` would be framed: on the
@@ -294,6 +295,11 @@ bool radarScreenHitMute(int x, int y);
 // minute turning over, with one of them up: called every pass.
 void radarScreenSetClock(ClockZone zone);
 void radarScreenTickClock();
+// Following, the time where the aircraft is - at (lat, lon) - instead, by a
+// blip: its zone's, anywhere in the world, changing as it crosses from one
+// zone into the next. Unless the clock is set to UTC, the same everywhere,
+// or is off. Called every pass; `on` false for home's time again.
+void radarScreenSetClockAt(bool on, double lat, double lon);
 
 // The runway ends the live zoom has lately seen in use, and how long ago,
 // for a recording's file to begin with - see recorder::RunwaysInUse.

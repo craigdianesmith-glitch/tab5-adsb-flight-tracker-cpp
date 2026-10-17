@@ -9,7 +9,7 @@
 namespace {
 
 struct AirportEntry {
-    char code[4];
+    char code[5];  // three letters, or four for an airfield known only by its ICAO code
     float lat;
     float lon;
 };
@@ -1101,7 +1101,16 @@ const AirportEntry AIRPORTS[] = {
     {"ZUH", 22.0064f, 113.3760f}, {"ZYI", 27.8107f, 107.2472f}, {"ZYL", 24.9640f, 91.8647f},
 };
 
-// The scans below are of the whole table, 3244 entries, and are asked for
+// The military's airfields, which the table above leaves out: some five
+// hundred, from the same dataset by tools/gen_military.py - which writes
+// their runways and cards for src/runways.cpp and src/airport_info.cpp too.
+#include "military_airports.inc"
+constexpr size_t AIRPORT_COUNT = sizeof(AIRPORTS) / sizeof(AIRPORTS[0]);
+constexpr size_t MILITARY_COUNT = sizeof(MILITARY_AIRPORTS) / sizeof(MILITARY_AIRPORTS[0]);
+
+bool isMilitary(const AirportEntry *e) { return e >= MILITARY_AIRPORTS && e < MILITARY_AIRPORTS + MILITARY_COUNT; }
+
+// The scans below are of the whole table, 3244 entries, and the military's, and are asked for
 // by the radar about its centre, by following about the aircraft, by the
 // estimates about every low contact and by the ground's elevation - each
 // about a different point, often in turn. So each keeps a few answers rather
@@ -1113,6 +1122,7 @@ constexpr int CACHE_SLOTS = 4;
 struct NearestCache {
     double lat = 1e9, lon = 1e9;
     float maxNm = -1.0f;
+    bool military = false;
     const AirportEntry *entry = nullptr;
     uint32_t used = 0;
 };
@@ -1152,10 +1162,10 @@ inline float dist2(const AirportEntry &a, float lat, float lon, float cosLat, fl
 
 }  // namespace
 
-bool nearestAirport(double lat, double lon, Airport &out, float maxNm) {
+bool nearestAirport(double lat, double lon, Airport &out, float maxNm, bool military) {
     NearestCache *hit = nullptr;
     for (NearestCache &c : g_nearest) {
-        if (c.lat == lat && c.lon == lon && c.maxNm == maxNm) {
+        if (c.lat == lat && c.lon == lon && c.maxNm == maxNm && c.military == military) {
             hit = &c;
             break;
         }
@@ -1175,10 +1185,18 @@ bool nearestAirport(double lat, double lon, Airport &out, float maxNm) {
                 bestEntry = &a;
             }
         }
+        for (size_t i = 0; military && i < MILITARY_COUNT; i++) {
+            float d2 = dist2(MILITARY_AIRPORTS[i], flat, flon, cosLat, best);
+            if (d2 < best) {
+                best = d2;
+                bestEntry = &MILITARY_AIRPORTS[i];
+            }
+        }
         hit = &oldest(g_nearest);
         hit->lat = lat;
         hit->lon = lon;
         hit->maxNm = maxNm;
+        hit->military = military;
         hit->entry = bestEntry;
     }
     hit->used = ++g_cacheUse;
@@ -1188,26 +1206,31 @@ bool nearestAirport(double lat, double lon, Airport &out, float maxNm) {
     out.code = hit->entry->code;
     out.lat = hit->entry->lat;
     out.lon = hit->entry->lon;
+    out.military = isMilitary(hit->entry);
     return true;
 }
 
 bool airportByCode(const String &code, Airport &out) {
-    // The table is in code order, as generated.
-    const AirportEntry *end = AIRPORTS + sizeof(AIRPORTS) / sizeof(AIRPORTS[0]);
-    const AirportEntry *a = std::lower_bound(
-        AIRPORTS, end, code.c_str(), [](const AirportEntry &e, const char *c) { return strcmp(e.code, c) < 0; });
-    if (a == end || code != a->code) {
-        return false;
+    // Each table is in code order, as generated.
+    for (int table = 0; table < 2; table++) {
+        const AirportEntry *first = table == 0 ? AIRPORTS : MILITARY_AIRPORTS;
+        const AirportEntry *end = first + (table == 0 ? AIRPORT_COUNT : MILITARY_COUNT);
+        const AirportEntry *a = std::lower_bound(
+            first, end, code.c_str(), [](const AirportEntry &e, const char *c) { return strcmp(e.code, c) < 0; });
+        if (a != end && code == a->code) {
+            out.code = a->code;
+            out.lat = a->lat;
+            out.lon = a->lon;
+            out.military = table == 1;
+            return true;
+        }
     }
-    out.code = a->code;
-    out.lat = a->lat;
-    out.lon = a->lon;
-    return true;
+    return false;
 }
 
-String nearestAirportCode(double lat, double lon, float maxNm) {
+String nearestAirportCode(double lat, double lon, float maxNm, bool military) {
     Airport a;
-    return nearestAirport(lat, lon, a, maxNm) ? a.code : String("");
+    return nearestAirport(lat, lon, a, maxNm, military) ? a.code : String("");
 }
 
 const std::vector<Airport> &airportsWithin(double lat, double lon, float rangeNm) {
@@ -1229,6 +1252,12 @@ const std::vector<Airport> &airportsWithin(double lat, double lon, float rangeNm
             found.push_back({d2, &a});
         }
     }
+    for (const auto &a : MILITARY_AIRPORTS) {
+        float d2 = dist2(a, flat, flon, cosLat, max2);
+        if (d2 <= max2) {
+            found.push_back({d2, &a});
+        }
+    }
     std::sort(found.begin(), found.end(),
               [](const std::pair<float, const AirportEntry *> &a, const std::pair<float, const AirportEntry *> &b) {
                   return a.first < b.first;
@@ -1236,7 +1265,7 @@ const std::vector<Airport> &airportsWithin(double lat, double lon, float rangeNm
     WithinCache &c = oldest(g_within);
     c.airports.clear();
     for (const auto &f : found) {
-        c.airports.push_back({f.second->code, f.second->lat, f.second->lon});
+        c.airports.push_back({f.second->code, f.second->lat, f.second->lon, isMilitary(f.second)});
     }
     c.lat = lat;
     c.lon = lon;

@@ -79,6 +79,33 @@ bool toYuv420(uint8_t *out, size_t outBytes, const Region &r);
 // fifth of the plot pushed whole. Kept for the encoder, as markDirty() would.
 void pushRects(const Region *rects, int n);
 
+// A band `w` pixels wide and `rows` tall, from `pixels` - one row after
+// another, anywhere a DMA can read, 64-byte aligned - straight to the panel
+// with its top-left at (x, y), past the canvas: the push started, and then -
+// before `pixels` is touched again, or another push started - waited for, for
+// the caller to draw the next band while this one goes. One push at a time,
+// and the canvas's flushes waiting their turn behind one under way.
+bool pushBandStart(const uint16_t *pixels, int x, int y, int w, int rows);
+bool pushBandWait();
+// The task holding the turn at the PPA - a band's push under way, or a
+// blit - for a hang's report: "" if none.
+const char *pushTurnHolder();
+// The time the pushes since the last call took, start to finish, and how
+// many there were.
+void pushStats(uint32_t &busyUs, uint32_t &count);
+#ifdef BENCH3D
+// The PPA given up, as though a transfer had never finished - for the bench
+// to try the CPU's pushes in its place.
+void benchGiveUpPpa();
+// Both halves in one, for the bench: `client` 0 or 1, by the core.
+bool pushBand(const uint16_t *pixels, int x, int y, int w, int rows, int client);
+#endif
+
+// A part of the screen - x, y, w, h - whose pixels the panel holds rather
+// than the canvas, as the 3D view's are, for a screenshot to take from the
+// panel instead; w 0 for none.
+void setLiveRect(int x, int y, int w, int h);
+
 // Writes the canvas to Serial as a screenshot, for tools/screenshot.py: a
 // header line, then the raw 1280x720 RGB565 pixels as the canvas holds them.
 // The canvas is landscape whatever the panel's rotation, so this is exactly

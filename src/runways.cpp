@@ -13,16 +13,35 @@ const Runway RUNWAYS[] = {
 #include "runways_table.inc"
 };
 
+// The military's airfields', made by tools/gen_military.py.
+#include "military_runways.inc"
+
 }  // namespace
 
 const Runway *runwaysAt(const String &code, int &count) {
     auto less = [](const Runway &r, const char *c) { return strcmp(r.code, c) < 0; };
-    const Runway *end = RUNWAYS + sizeof(RUNWAYS) / sizeof(RUNWAYS[0]);
-    const Runway *first = std::lower_bound(RUNWAYS, end, code.c_str(), less);
-    const Runway *last = first;
-    while (last != end && code == last->code) {
-        last++;
+    for (int table = 0; table < 2; table++) {
+        const Runway *begin = table == 0 ? RUNWAYS : MILITARY_RUNWAYS;
+        const Runway *end = begin + (table == 0 ? sizeof(RUNWAYS) / sizeof(RUNWAYS[0])
+                                                : sizeof(MILITARY_RUNWAYS) / sizeof(MILITARY_RUNWAYS[0]));
+        const Runway *first = std::lower_bound(begin, end, code.c_str(), less);
+        const Runway *last = first;
+        while (last != end && code == last->code) {
+            last++;
+        }
+        count = (int)(last - first);
+        if (count) {
+            return first;
+        }
     }
-    count = (int)(last - first);
-    return count ? first : nullptr;
+    return nullptr;
+}
+
+const Runway *allRunways(int &count, bool military) {
+    if (military) {
+        count = (int)(sizeof(MILITARY_RUNWAYS) / sizeof(MILITARY_RUNWAYS[0]));
+        return MILITARY_RUNWAYS;
+    }
+    count = (int)(sizeof(RUNWAYS) / sizeof(RUNWAYS[0]));
+    return RUNWAYS;
 }

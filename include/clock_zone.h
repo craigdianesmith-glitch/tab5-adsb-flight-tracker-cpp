@@ -23,3 +23,11 @@ void clockZoneFormat(time_t utc, ClockZone z, char *out, size_t size);
 // continent's middle, the US's by longitude across the mainland - and UTC
 // anywhere else.
 ClockZone clockZoneFor(double lat, double lon);
+
+// The whole world's zones, from the table tools/gen_timezones.py makes: the
+// one (lat, lon) is in - an index, the same for everywhere whose clocks agree
+// all year round - and the time in one, "22:47 CEST" or "06:12 +03", into
+// `out`, which wants 16 bytes. For the clock to keep the time where an
+// aircraft followed is.
+int timeZoneAt(double lat, double lon);
+void timeZoneFormat(time_t utc, int zone, char *out, size_t size);

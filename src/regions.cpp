@@ -22,7 +22,7 @@ struct RegionShape {
     uint16_t firstRing, ringCount;
 };
 struct AirportRegion {
-    char code[4];
+    char code[5];
     Region region;
 };
 
@@ -75,7 +75,7 @@ Region regionNear(float lat, float lon) {
         return Region::ELSEWHERE;
     }
     Airport a;
-    if (nearestAirport(lat, lon, a, REGION_AIRPORT_NM)) {
+    if (nearestAirport(lat, lon, a, REGION_AIRPORT_NM, false)) {
         return airportRegion(a.code.c_str());
     }
     return regionAt(lat, lon);

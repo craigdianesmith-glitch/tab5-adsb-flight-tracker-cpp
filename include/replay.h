@@ -43,7 +43,7 @@ uint32_t epochAt(uint32_t t);
 struct View {
     enum Kind : uint8_t { HOME, FOLLOW, ZOOM };
     Kind kind = HOME;
-    char code[4] = "";  // ZOOM's airport
+    char code[5] = "";  // ZOOM's airport
     char hex[8] = "";   // the aircraft followed, in either FOLLOW or ZOOM; "" for none
     // HOME's or ZOOM's range as ZOOM IN had it; 0 for the view's own - the
     // recording's radius, or the zoom's framing.

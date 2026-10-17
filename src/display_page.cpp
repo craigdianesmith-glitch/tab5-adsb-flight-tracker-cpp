@@ -147,7 +147,7 @@ void drawReplayTracks() { drawSwitch(COL2_X, "Replay tracks", "Trails behind eac
 // The zones as chips, the one picked lit, and under them the time it gives.
 void drawClockZones() {
     auto &canvas = screen::canvas();
-    int h = CLOCK_NOTE_Y + 24 - CLOCK_Y;
+    int h = CLOCK_NOTE_Y + 48 - CLOCK_Y;
     canvas.fillRect(COL2_X, CLOCK_Y, COL_W, h, colorBg);
     canvas.setFont(&fonts::Font0);
     canvas.setTextSize(3);
@@ -170,6 +170,9 @@ void drawClockZones() {
         char text[16];
         clockZoneFormat(now, g_clock, text, sizeof(text));
         canvas.drawString(String("On the radar and the zoom: ") + text, COL2_X, CLOCK_NOTE_Y);
+        if (g_clock != ClockZone::UTC) {
+            canvas.drawString("Following a flight: the time where it is", COL2_X, CLOCK_NOTE_Y + 24);
+        }
     }
     screen::markDirty(COL2_X, CLOCK_Y, COL_W, h);
 }

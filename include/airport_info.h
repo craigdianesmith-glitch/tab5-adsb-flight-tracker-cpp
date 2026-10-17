@@ -25,7 +25,7 @@ struct AirportFrequency {
 };
 
 struct AirportInfo {
-    char code[4];  // IATA
+    char code[5];  // IATA - or ICAO, for a military airfield without an IATA code
     char icao[5];  // "EGPF", or "" for the few the dataset has none for
     int16_t elevationFt;
     uint16_t firstFrequency;  // its own, in the table of them all
@@ -34,7 +34,8 @@ struct AirportInfo {
     const char *name;         // "Glasgow Airport", in ASCII, 66 characters at most
 };
 
-// The airport with IATA `code`, or nullptr if the table hasn't got it.
+// The airport with `code` - civil, or one of the military's airfields - or
+// nullptr if neither table has it.
 const AirportInfo *airportInfo(const char *code);
 
 // Its frequencies, frequencyCount of them: by use, in AtcUse's order, and by

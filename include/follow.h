@@ -7,6 +7,16 @@
 #include "airports.h"
 #include "telemetry.h"
 
+// A run of reports: on the Tab5 in its PSRAM - there is one for every
+// contact tracked, a hundred or more, and the chip's own memory is for the
+// WiFi, TLS and the 3D view's drawing.
+#ifdef ESP_PLATFORM
+#include "psram_alloc.h"
+using SampleList = std::vector<FollowSample, PsramAllocator<FollowSample>>;
+#else
+using SampleList = std::vector<FollowSample>;
+#endif
+
 // What following makes of a followed aircraft's report - kept apart from the
 // live screen so a replay of one works it out the same way.
 
@@ -50,12 +60,12 @@ struct FollowEstimate {
     int vsFpm;
     const char *how;  // which of the above it was taken to be doing, for the log
 };
-FollowEstimate estimateFollowed(const FollowSample &last, float ageS, const std::vector<FollowSample> &history);
+FollowEstimate estimateFollowed(const FollowSample &last, float ageS, const SampleList &history);
 
 // Whether `last`, a report on the ground, is of an aircraft departing rather
 // than one that has just landed: none of the reports in `history` in the
 // few minutes before it has it in the air.
-bool followDeparting(const std::vector<FollowSample> &history, const FollowSample &last);
+bool followDeparting(const SampleList &history, const FollowSample &last);
 
 // A runway as a line: one end, its threshold, and the way down it from there.
 struct RunwayLine {
@@ -105,6 +115,10 @@ public:
     // How long since its last current position it is kept for, lost.
     uint32_t keepMs() const;
     bool haveFresh() const { return haveFresh_; }
+    // Whether it was reported in the air in the `withinMs` before `ms`.
+    bool airborneWithin(uint32_t ms, uint32_t withinMs) const {
+        return seenAir_ && (int32_t)(ms - airMs_) <= (int32_t)withinMs;
+    }
     const FollowSample &fresh() const { return fresh_; }  // its last report with a current position
     const char *phase() const;                              // for the log
     // The take-off or landing under way, for the zoom to announce: lined up
@@ -120,7 +134,7 @@ private:
     void start(const FollowSample &prev, bool hadPrev);
     uint32_t waitFor(const FollowSample &prev, bool hadPrev) const;
 
-    std::vector<FollowSample> history_;  // its low reports of the last few minutes, oldest first
+    SampleList history_;  // its low reports of the last few minutes, oldest first
     uint32_t airMs_ = 0;                 // its last report in the air, if seenAir_
     bool seenAir_ = false;
     FollowSample fresh_ = {};

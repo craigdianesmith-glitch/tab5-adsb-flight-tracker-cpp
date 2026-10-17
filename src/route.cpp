@@ -8,6 +8,7 @@
 #include <map>
 
 #include "config.h"
+#include "psram_alloc.h"
 
 namespace {
 
@@ -17,7 +18,7 @@ struct Entry {
 };
 // The answers so far, by callsign - a few dozen at most, the oldest let go.
 constexpr size_t MAX_KEPT = 48;
-std::map<String, Entry> g_routes;
+std::map<String, Entry, std::less<String>, PsramAllocator<std::pair<const String, Entry>>> g_routes;  // in the PSRAM
 SemaphoreHandle_t g_lock = nullptr;
 QueueHandle_t g_queue = nullptr;
 volatile uint32_t g_generation = 0;

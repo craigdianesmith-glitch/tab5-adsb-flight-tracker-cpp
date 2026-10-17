@@ -719,6 +719,74 @@ void coastBegin() {
 
 int coastLevels() { return g_levelCount.load(std::memory_order_acquire); }
 
+void coastLines(double lat, double lon, float rangeKm, float fullKm, int level,
+                void (*line)(void *context, OutlineKind kind, const double *latLon, int points), void *context) {
+#ifndef ESP_PLATFORM
+    static bool built = false;
+    if (!built) {
+        buildLevels();
+        built = true;
+    }
+#endif
+    int levels = g_levelCount.load(std::memory_order_acquire);
+    const Level &thinned = g_levels[std::max(0, std::min(level, levels - 1))];
+    double kmPerLon = 111.0 * cos(lat * M_PI / 180);
+    double dLat = rangeKm / 111.0, dLon = rangeKm / (111.0 * std::max(0.05, cos(lat * M_PI / 180)));
+    int south = std::max(0, (int)floor(lat - dLat + 90)), north = std::min(179, (int)floor(lat + dLat + 90));
+    int west = (int)floor(lon - dLon + 180), east = (int)floor(lon + dLon + 180);
+    std::vector<double> points;
+    const uint16_t *cellsEnd = COAST_CELLS + COAST_CELL_COUNT;
+    for (int row = south; row <= north; row++) {
+        // A row's cells west to east, cut at the date line as coastDraw()'s are.
+        for (int k = (int)floor(west / 360.0); k <= (int)floor(east / 360.0); k++) {
+            int first = std::max(west, k * 360), last = std::min(east, k * 360 + 359);
+            uint16_t lo = (uint16_t)(row * 360 + (first - k * 360)), hi = (uint16_t)(row * 360 + (last - k * 360));
+            for (const uint16_t *cell = std::lower_bound(COAST_CELLS, cellsEnd, lo); cell < cellsEnd && *cell <= hi;
+                 cell++) {
+                double cellLat = row - 90.0, cellLon = *cell - row * 360 - 180.0 + k * 360.0;
+                size_t index = (size_t)(cell - COAST_CELLS);
+                // In full if any of the cell is within fullKm: its nearest
+                // point to (lat, lon).
+                double nearLat = std::max(cellLat, std::min(cellLat + 1, lat)),
+                       nearLon = std::max(cellLon, std::min(cellLon + 1, lon));
+                double dn = (nearLat - lat) * 111.0, de = (nearLon - lon) * kmPerLon;
+                const Level &from = dn * dn + de * de <= (double)fullKm * fullKm ? g_levels[0] : thinned;
+                const uint8_t *p = from.lines + from.starts[index], *end = from.lines + from.starts[index + 1];
+                int kind = 0, x = 0, y = 0;
+                points.clear();
+                auto put = [&]() {
+                    points.push_back(cellLat + y / (double)COAST_UNIT);
+                    points.push_back(cellLon + x / (double)COAST_UNIT);
+                };
+                auto done = [&]() {
+                    if (points.size() >= 4) {
+                        line(context, (OutlineKind)kind, points.data(), (int)points.size() / 2);
+                    }
+                    points.clear();
+                };
+                while (p + 5 <= end) {
+                    int head = p[0] | p[1] << 8, flags = head >> START_BITS, steps = p[4];
+                    if (!(flags & CONTINUES)) {
+                        done();
+                        kind = flags & KIND_MASK;
+                        x = head & ((1 << START_BITS) - 1);
+                        y = p[2] | p[3] << 8;
+                        put();
+                    }
+                    p += 5;
+                    steps = std::min(steps, (int)(end - p) / 2);
+                    for (int i = 0; i < steps; i++, p += 2) {
+                        x += (int8_t)p[0];
+                        y += (int8_t)p[1];
+                        put();
+                    }
+                }
+                done();
+            }
+        }
+    }
+}
+
 int coastDraw(const CoastPlot &plot) {
     if (plot.rangeNm <= 0 || plot.radius <= RING_CLEAR) {
         return 0;
