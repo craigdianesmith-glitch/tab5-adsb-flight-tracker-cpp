@@ -110,6 +110,9 @@ const char *const ABOUT[] = {
     "- Time zones, for the clock while following: timezone-boundary-builder, from OpenStreetMap data, "
     "(c) OpenStreetMap contributors, under the Open Database License 1.0, as is the table made from it; and the "
     "IANA time zone database, public domain.",
+    "- Airfields in the 3D view - taxiways, aprons, stands and buildings, from the card's airfields.bin: "
+    "(c) OpenStreetMap contributors (openstreetmap.org/copyright), under the Open Database License 1.0, as is "
+    "the file made from them by tools/gen_airfields.py.",
     "- Voices: Piper text-to-speech. Scottish, en_GB-alba-medium, from the Alba data of the CSTR, University of "
     "Edinburgh, CC BY 4.0; English, en_GB-cori-medium, from LibriVox recordings, public domain; American, "
     "en_US-amy-medium, from Mycroft AI's Mimic 3 voices, CC BY-SA 4.0.",

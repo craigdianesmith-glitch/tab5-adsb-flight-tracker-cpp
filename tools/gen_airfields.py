@@ -4,6 +4,7 @@ aprons, stands, holding points and buildings of the app's airports, where the
 view otherwise makes up a layout from the runways alone.
 
     tools/gen_airfields.py fetch [--box S,W,N,E | --codes GLA,EDI] [--cache DIR]
+    tools/gen_airfields.py extract FILE.osm.pbf [--box ... | --codes ...] [--cache DIR] [--nodes STORAGE]
     tools/gen_airfields.py build [--box ... | --codes ...] [--cache DIR] [--out airfields.bin]
 
 fetch: each airport's - the civil table's in src/airports.cpp and the
@@ -16,6 +17,14 @@ on where it left off, and an airport is only asked for again once its file is
 deleted. The public server takes half a minute or so an airport; it is asked
 politely, one at a time, waiting between, and backing off when it is busy.
 The default box is the UK and Ireland.
+
+extract: the same answers, every airport's in the box that it has, from an
+OpenStreetMap extract on disk - Geofabrik's, a country's or a continent's, or
+the planet - rather than from the Overpass API, which would take days for
+the world. Two passes over the file: the aerodromes within 2km of the app's
+points, then everything inside them that fetch asks for. Needs pyosmium and
+shapely; a continent's node locations want --nodes dense_file_array,FILE
+(a sparse file on disk) rather than the default, in memory.
 
 build: the cache made into the one file the Tab5 reads from its SD card,
 airfields.bin - copied to the card's overhead folder. Each airport's layout in
@@ -150,6 +159,275 @@ def fetch(args):
             failed += 1
         time.sleep(3)  # politely
     print(f"fetched {done}, failed {failed}, the rest already cached", flush=True)
+
+
+# --- extract ------------------------------------------------------------------------
+
+def extract(args):
+    import math
+    import osmium
+    from shapely.affinity import affine_transform
+    from shapely.geometry import LineString, Point, Polygon
+    from shapely.strtree import STRtree
+
+    cache = Path(args.cache).expanduser()
+    cache.mkdir(parents=True, exist_ok=True)
+    pbf = str(Path(args.pbf).expanduser())
+    todo = chosen(args)
+    started = time.time()
+
+    def latlon(points):
+        return [{"lat": round(p[1], 7), "lon": round(p[0], 7)} for p in points]
+
+    def rings(area):
+        out = []
+        for outer in area.outer_rings():
+            out.append(("outer", [(n.lon, n.lat) for n in outer]))
+            for inner in area.inner_rings(outer):
+                out.append(("inner", [(n.lon, n.lat) for n in inner]))
+        return out
+
+    def polygon(rings_):
+        outers = [Polygon(r) for role, r in rings_ if role == "outer" and len(r) >= 4]
+        inners = [Polygon(r) for role, r in rings_ if role == "inner" and len(r) >= 4]
+        shape = None
+        for o in outers:
+            shape = o if shape is None else shape.union(o)
+        for i in inners:
+            shape = shape.difference(i) if shape is not None else None
+        return shape if shape is not None and shape.is_valid and not shape.is_empty else (
+            shape.buffer(0) if shape is not None else None)
+
+    # 1. The aerodromes - a few thousand of the planet's billions of objects -
+    # found, and their outlines made from their own nodes alone, without
+    # every node's location kept: three quick reads, each filtered as the file
+    # is decoded. Each as Overpass's .field has it - its element - and its
+    # shape, from a closed way or a multipolygon's member ways.
+    from shapely.ops import polygonize, unary_union
+    aero_ways, aero_rels = {}, {}
+    for o in (osmium.FileProcessor(pbf, osmium.osm.WAY | osmium.osm.RELATION)
+              .with_filter(osmium.filter.TagFilter(("aeroway", "aerodrome")))):
+        if o.is_way():
+            aero_ways[o.id] = (dict(o.tags), [n.ref for n in o.nodes])
+        elif o.is_relation():
+            aero_rels[o.id] = (dict(o.tags), [(m.type, m.ref, m.role) for m in o.members])
+    member_ids = {ref for _, members in aero_rels.values() for kind, ref, _ in members if kind == "w"}
+    member_nodes = {}
+    if member_ids:
+        for o in osmium.FileProcessor(pbf, osmium.osm.WAY).with_filter(osmium.filter.IdFilter(member_ids)):
+            member_nodes[o.id] = [n.ref for n in o.nodes]
+    node_ids = {n for _, nodes in aero_ways.values() for n in nodes}
+    node_ids.update(n for nodes in member_nodes.values() for n in nodes)
+    where = {}
+    if node_ids:
+        for o in osmium.FileProcessor(pbf, osmium.osm.NODE).with_filter(osmium.filter.IdFilter(node_ids)):
+            if o.location.valid():
+                where[o.id] = (o.location.lon, o.location.lat)
+    print(f"{len(aero_ways)} aerodromes as ways, {len(aero_rels)} as relations, {len(where)} of their nodes "
+          f"({time.time() - started:.0f}s)", flush=True)
+
+    def ring_shapes(lines):
+        merged = unary_union([LineString(line) for line in lines if len(line) >= 2])
+        return [p for p in polygonize(merged) if p.is_valid and p.area > 0]
+
+    fields = []  # (element, shape)
+    for way_id, (tags, nodes) in aero_ways.items():
+        points = [where[n] for n in nodes if n in where]
+        if len(points) < 4 or nodes[0] != nodes[-1] or len(points) != len(nodes):
+            continue
+        shape = Polygon(points)
+        if not shape.is_valid:
+            shape = shape.buffer(0)
+        if shape.is_empty:
+            continue
+        fields.append(({"type": "way", "id": way_id, "nodes": nodes, "tags": tags, "geometry": latlon(points)},
+                       shape))
+    for rel_id, (tags, members) in aero_rels.items():
+        lines = {"outer": [], "inner": []}
+        for kind, ref, role in members:
+            if kind != "w" or ref not in member_nodes:
+                continue
+            line = [where[n] for n in member_nodes[ref] if n in where]
+            if len(line) >= 2:
+                lines["inner" if role == "inner" else "outer"].append(line)
+        outer = ring_shapes(lines["outer"])
+        if not outer:
+            continue
+        shape = unary_union(outer)
+        for hole in ring_shapes(lines["inner"]):
+            shape = shape.difference(hole)
+        if shape.is_empty:
+            continue
+        fields.append(({"type": "relation", "id": rel_id, "tags": tags,
+                        "members": [{"type": "way", "ref": 0, "role": role, "geometry": latlon(line)}
+                                    for role in ("outer", "inner") for line in lines[role]]}, shape))
+    print(f"{len(fields)} aerodromes in {pbf} ({time.time() - started:.0f}s)", flush=True)
+
+    # Each of the app's airports' aerodromes: those within 2km of its point,
+    # measured in metres about it - as fetch's around:2000.
+    tree = STRtree([shape for _, shape in fields])
+    mine = {}  # field index -> codes
+    found = {}  # code -> field indexes
+    for code, (lat, lon, military) in todo.items():
+        k = 111320.0 * math.cos(math.radians(lat))
+        near = tree.query(Point(lon, lat).buffer(2500 / k))
+        hits = []
+        for i in near:
+            # The distance in metres: the shape's corners taken about the point.
+            metres = affine_transform(fields[i][1], [k, 0, 0, 110574.0, -lon * k, -lat * 110574.0])
+            if metres.distance(Point(0, 0)) <= 2000:
+                hits.append(int(i))
+        if hits:
+            found[code] = hits
+            for i in hits:
+                mine.setdefault(i, []).append(code)
+    print(f"{len(found)} of the {len(todo)} airports have an aerodrome here", flush=True)
+    if not found:
+        return
+    wanted = sorted(mine)
+    shapes = [fields[i][1] for i in wanted]
+    wanted_tree = STRtree(shapes)
+    elements = {code: [fields[i][0] for i in found[code]] for code in found}
+
+    def owners(geometry):
+        return {c for j in wanted_tree.query(geometry, predicate="intersects") for c in mine[wanted[int(j)]]}
+
+    # Cells of a fiftieth of a degree over each wanted aerodrome and one more
+    # round it: most of the world's buildings are passed over by the cell of
+    # their first corner, before any shape is made for them.
+    STEP = 50
+    near = set()
+    for shape in shapes:
+        w, s_, e, n = shape.bounds
+        for y in range(math.floor(s_ * STEP) - 1, math.floor(n * STEP) + 2):
+            for x in range(math.floor(w * STEP) - 1, math.floor(e * STEP) + 2):
+                near.add((y, x))
+
+    def nearby(lon, lat):
+        return (math.floor(lat * STEP), math.floor(lon * STEP)) in near
+
+    if args.near:
+        extract_near(args, pbf, shapes, owners, elements, cache, started)
+        return
+
+    # 2. Everything inside them that fetch asks for: aeroway other than the
+    # aerodrome, buildings, towers and windsocks - a multipolygon's as its
+    # rings, which build joins as it would Overpass's member ways.
+    fp = (osmium.FileProcessor(pbf).with_locations(args.nodes)
+          .with_areas(osmium.filter.KeyFilter("aeroway", "building"))
+          .with_filter(osmium.filter.KeyFilter("aeroway", "building", "man_made")))
+    kept = seen = 0
+    shown = time.time()
+    for o in fp:
+        seen += 1
+        if seen % 1000000 == 0 and time.time() - shown > 60:
+            shown = time.time()
+            print(f"  {seen // 1000000}M looked at, {kept} kept ({time.time() - started:.0f}s)", flush=True)
+        if o.is_area() and o.from_way():
+            continue  # its way is taken as it is
+        tags = o.tags
+        aeroway, man_made = tags.get("aeroway"), tags.get("man_made")
+        if aeroway == "aerodrome":
+            continue
+        if o.is_area():
+            if not (aeroway or "building" in tags):
+                continue
+            first = next(iter(o.outer_rings()), None)
+            if first is None or len(first) == 0 or not nearby(first[0].lon, first[0].lat):
+                continue
+            rs = rings(o)
+            shape = polygon(rs)
+            if shape is None:
+                continue
+            codes = owners(shape)
+            if codes:
+                element = {"type": "relation", "id": o.orig_id(), "tags": dict(tags),
+                           "members": [{"type": "way", "ref": 0, "role": role, "geometry": latlon(r)}
+                                       for role, r in rs]}
+        elif o.is_node():
+            if not (aeroway or "building" in tags or man_made in ("tower", "windsock")):
+                continue
+            if not o.location.valid() or not nearby(o.location.lon, o.location.lat):
+                continue
+            codes = owners(Point(o.location.lon, o.location.lat))
+            if codes:
+                element = {"type": "node", "id": o.id, "lat": round(o.location.lat, 7),
+                           "lon": round(o.location.lon, 7), "tags": dict(tags)}
+        elif o.is_way():
+            if not (aeroway or "building" in tags or man_made == "tower"):
+                continue
+            try:
+                if len(o.nodes) == 0 or not nearby(o.nodes[0].lon, o.nodes[0].lat):
+                    continue
+                points = [(n.lon, n.lat) for n in o.nodes]
+            except osmium.InvalidLocationError:
+                continue
+            if len(points) < 2:
+                continue
+            codes = owners(LineString(points) if points[0] != points[-1] or len(points) < 4 else Polygon(points))
+            if codes:
+                element = {"type": "way", "id": o.id, "nodes": [n.ref for n in o.nodes], "tags": dict(tags),
+                           "geometry": latlon(points)}
+        else:
+            continue
+        if codes:
+            kept += 1
+            for code in codes:
+                elements[code].append(element)
+    for code, items in elements.items():
+        (cache / f"{code}.json").write_text(json.dumps({"elements": items}))
+    print(f"{kept} elements for {len(elements)} airports, cached in {cache} ({time.time() - started:.0f}s)",
+          flush=True)
+
+
+def extract_near(args, pbf, shapes, owners, elements, cache, started):
+    """extract's second step for the planet, by tools/airfield_near: the cells
+    over and round each aerodrome wanted - a 200th of a degree square, and one
+    more about it - written for it to keep the nodes of; then each object it
+    finds there shared out among the airports whose aerodromes it lies in."""
+    import math
+    import subprocess
+    import tempfile
+    from shapely.geometry import LineString, MultiLineString, Point, box
+
+    cells = set()
+    for shape in shapes:
+        w, s, e, n = shape.bounds
+        grown = shape.buffer(1 / 200)
+        for y in range(math.floor(s * 200) - 1, math.floor(n * 200) + 2):
+            for x in range(math.floor(w * 200) - 1, math.floor(e * 200) + 2):
+                if grown.intersects(box(x / 200, y / 200, (x + 1) / 200, (y + 1) / 200)):
+                    cells.add((y, x))
+    with tempfile.NamedTemporaryFile("w", suffix=".cells", delete=False) as f:
+        f.write("".join(f"{y} {x}\n" for y, x in cells))
+        cells_path = f.name
+    print(f"{len(cells)} cells for the near tool ({time.time() - started:.0f}s)", flush=True)
+    kept = read = 0
+    proc = subprocess.Popen([str(Path(args.near).expanduser()), pbf, cells_path], stdout=subprocess.PIPE)
+    for line in proc.stdout:
+        e = json.loads(line)
+        read += 1
+        if e["type"] == "node":
+            geometry = Point(e["lon"], e["lat"])
+        elif e["type"] == "way":
+            geometry = LineString([(p["lon"], p["lat"]) for p in e["geometry"]])
+        else:
+            lines = [[(p["lon"], p["lat"]) for p in m["geometry"]] for m in e["members"] if len(m["geometry"]) >= 2]
+            if not lines:
+                continue
+            geometry = MultiLineString(lines)
+        codes = owners(geometry)
+        if codes:
+            kept += 1
+            for code in codes:
+                elements[code].append(e)
+    if proc.wait() != 0:
+        sys.exit(f"the near tool failed: {proc.returncode}")
+    Path(cells_path).unlink()
+    for code, items in elements.items():
+        (cache / f"{code}.json").write_text(json.dumps({"elements": items}))
+    print(f"{kept} of {read} found kept, for {len(elements)} airports, cached in {cache} "
+          f"({time.time() - started:.0f}s)", flush=True)
 
 
 # --- build --------------------------------------------------------------------------
@@ -533,7 +811,13 @@ def build(args):
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    ap.add_argument("what", choices=["fetch", "build"])
+    ap.add_argument("what", choices=["fetch", "extract", "build"])
+    ap.add_argument("pbf", nargs="?", help="extract: the OpenStreetMap extract, .osm.pbf")
+    ap.add_argument("--near", help="extract: tools/airfield_near's program, built - for the planet, whose every "
+                                   "node's location pyosmium can't keep in memory")
+    ap.add_argument("--nodes", default="flex_mem",
+                    help="extract: where node locations are kept - flex_mem, or dense_file_array,FILE for a "
+                         "continent or the planet")
     ap.add_argument("--box", help="S,W,N,E in degrees; the UK and Ireland if neither this nor --codes")
     ap.add_argument("--codes", help="airport codes, comma separated, as the app's tables have them")
     ap.add_argument("--cache", default="~/.cache/overhead-airfields")
@@ -541,6 +825,10 @@ def main():
     args = ap.parse_args()
     if args.what == "fetch":
         fetch(args)
+    elif args.what == "extract":
+        if not args.pbf:
+            sys.exit("extract needs the .osm.pbf file")
+        extract(args)
     else:
         build(args)
 
