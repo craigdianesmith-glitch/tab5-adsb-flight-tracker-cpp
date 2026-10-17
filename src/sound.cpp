@@ -1,6 +1,9 @@
 #include "sound.h"
 
 #include <esp_heap_caps.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/semphr.h>
+#include <freertos/task.h>
 
 #include <M5Unified.h>
 #include <math.h>
@@ -14,6 +17,26 @@ namespace {
 
 bool g_ready = false;
 bool g_muted = false;
+
+// What is to be said is handed to the speaker a note or a word at a time by a
+// task of its own - see soundTask() - not by the UI loop between screens: the
+// 3D view, opening on an alert's auto-follow, takes the loop for a second
+// or more building its airfield, and the alert stopped mid-word until it
+// was done. What is queued is the loop's to change and the task's to read,
+// so both hold this while they do.
+SemaphoreHandle_t g_lock = nullptr;
+struct Held {
+    Held() {
+        if (g_lock != nullptr) {
+            xSemaphoreTakeRecursive(g_lock, portMAX_DELAY);
+        }
+    }
+    ~Held() {
+        if (g_lock != nullptr) {
+            xSemaphoreGiveRecursive(g_lock);
+        }
+    }
+};
 
 // Everything shares one virtual channel and queues rather than interrupting,
 // so a new-flight blip that lands during the boot rise waits its turn instead
@@ -479,6 +502,17 @@ void soundInit() {
     }
     M5.Speaker.setVolume(SOUND_VOLUME);
     Serial.printf("[sound] speaker ready, volume %d\n", SOUND_VOLUME);
+    g_lock = xSemaphoreCreateRecursiveMutex();
+    // A step above the loop on its core: it takes a moment every 10ms, and a
+    // millisecond to ready each word.
+    xTaskCreatePinnedToCore(
+        [](void *) {
+            for (;;) {
+                soundTick();
+                vTaskDelay(pdMS_TO_TICKS(10));
+            }
+        },
+        "sound", 4096, nullptr, 2, nullptr, 1);
 }
 
 void soundSetMuted(bool muted) { g_muted = muted; }
@@ -486,6 +520,7 @@ void soundSetMuted(bool muted) { g_muted = muted; }
 bool soundMuted() { return g_muted; }
 
 void soundSetElsewhereAccent(Accent accent) {
+    Held held;
     if ((int)accent < (int)(sizeof(VOICES) / sizeof(VOICES[0]))) {
         g_elsewhere = accent;
     }
@@ -518,6 +553,7 @@ void soundNewFlight() {
 }
 
 void soundAlert(uint8_t reasons, const String &callsign, const String &typeName, float lat, float lon) {
+    Held held;
     if (!g_ready || g_muted) {
         Serial.printf("[sound] alert for %s not sounded: %s\n", callsign.c_str(), g_muted ? "muted" : "no speaker");
         return;
@@ -546,6 +582,7 @@ void soundAlert(uint8_t reasons, const String &callsign, const String &typeName,
 }
 
 void soundAnnounce(const String &callsign, const String &runway, bool takeoff, const char *airport) {
+    Held held;
     String cs = callsign;
     cs.trim();
     if (!g_ready || g_muted || cs.length() == 0 || runway.length() == 0) {
@@ -560,6 +597,7 @@ void soundAnnounce(const String &callsign, const String &runway, bool takeoff, c
 }
 
 void soundReadAircraft(const Aircraft &ac, bool always) {
+    Held held;
     if (!g_readAloud && !always) {
         return;
     }
@@ -572,6 +610,7 @@ void soundReadAircraft(const Aircraft &ac, bool always) {
 }
 
 void soundReadNavaid(const Navaid &navaid, bool always) {
+    Held held;
     if (!g_readAloud && !always) {
         return;
     }
@@ -583,6 +622,7 @@ void soundReadNavaid(const Navaid &navaid, bool always) {
 }
 
 void soundReadAirport(const AirportInfo &airport, bool always) {
+    Held held;
     if ((!g_readAloud && !always) || airport.frequencyCount == 0) {
         return;
     }
@@ -594,6 +634,7 @@ void soundReadAirport(const AirportInfo &airport, bool always) {
 }
 
 void soundStopReading() {
+    Held held;
     g_reading = Reading();
     if (g_readingNow && g_notes != nullptr) {
         M5.Speaker.stop(ALERT_CHANNEL);
@@ -604,6 +645,7 @@ void soundStopReading() {
 }
 
 void soundSampleAccent(Accent accent) {
+    Held held;
     if ((int)accent >= (int)(sizeof(VOICES) / sizeof(VOICES[0]))) {
         return;
     }
@@ -669,6 +711,7 @@ void playClip(const Clip &clip, uint32_t rate) {
 }  // namespace
 
 void soundTick() {
+    Held held;
     // Nothing being said: the next announcement - a clearance is only worth
     // hearing as it happens, and goes stale in seconds - or else a reading
     // asked for, which can wait the few seconds one takes.
@@ -701,6 +744,13 @@ void soundTick() {
         if (g_nextSpoken < g_spokenCount && !g_muted) {
             if ((int32_t)(millis() - g_speakAtMs) < 0) {
                 return;  // the pause after the clip before
+            }
+            // A word well after its time - the speaker kept waiting - said in
+            // the log, as a pause in the middle of an alert is easy to miss.
+            uint32_t late = millis() - g_speakAtMs;
+            if (g_nextSpoken > 0 && late > 150) {
+                Serial.printf("[sound] word %d of %d %lums late\n", g_nextSpoken + 1, g_spokenCount,
+                              (unsigned long)late);
             }
             const Spoken &s = g_spoken[g_nextSpoken++];
             playClip(s.clip, g_voice->rate);

@@ -76,8 +76,8 @@ void soundStopReading();
 // for take-off."
 void soundSampleAccent(Accent accent);
 
-// Plays the next note of a queued alert once the one before has finished.
-// Call every loop.
+// Plays the next note or word of what is queued once the one before has
+// finished. Run every 10ms by the sound's own task, which soundInit() starts.
 void soundTick();
 
 // Silences the beeps without shutting the speaker down, so unmuting needs no

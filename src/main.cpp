@@ -4872,8 +4872,7 @@ void loop() {
     if (newFlight) {
         soundNewFlight();
     }
-    soundTick();
-    tickAlerts();
+    tickAlerts();  // what it says is played out by the sound's own task - see soundInit()
 
     // Each step of a callsign flash is a redraw of whichever of the screens
     // showing callsigns is up, from the data it already has.
