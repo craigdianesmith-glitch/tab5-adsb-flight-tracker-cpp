@@ -438,6 +438,8 @@ char g_airport[5] = "";
 double g_lat0 = 0, g_lon0 = 0, g_cosLat0 = 1;
 float g_fieldFt = 0;
 char g_endName[24][4];  // the airfield's runway ends, as setAirfield() has them, two to a runway
+Vec3 g_endAt[24];       // and where each is
+float g_runwayWidth[12];  // each runway's width, metres
 int g_runways = 0;
 Enu g_enu;
 double g_enuLat = 0, g_enuLon = 0;
@@ -505,8 +507,10 @@ bool buildAirfield(const char *code) {
             spec.end[e] = local(runways[i].end[e].lat, runways[i].end[e].lon);
             snprintf(spec.name[e], sizeof spec.name[e], "%s", runways[i].end[e].ident);
             snprintf(g_endName[n * 2 + e], sizeof g_endName[0], "%s", runways[i].end[e].ident);
+            g_endAt[n * 2 + e] = spec.end[e];
         }
         spec.width = runways[i].widthFt * 0.3048f;
+        g_runwayWidth[n] = spec.width;
         n++;
     }
     Vec3 beacons[4];
@@ -788,6 +792,14 @@ s3::Look lookOf(const String &hex, const String &type, const String &callsign, b
 // so it keeps the heading it had, and the place it had too unless a report
 // puts it more than 30m away, which is a move.
 constexpr float STILL_KT = 6, STILL_M = 30;
+// On a runway: on it, or this many metres past an end - a quarter of it
+// either side.
+constexpr float RUNWAY_SLACK = 60;
+// On a runway this fast, knots, an aircraft is landing or taking off; slower,
+// taxiing across or along it.
+constexpr int RUNWAY_ROLL_KT = 30;
+// Reported this near a stand's stop, it is at that stand.
+constexpr float AT_STAND_M = 35;
 bool standingStill(bool ground, float gsKt) { return ground && gsKt < STILL_KT; }
 // Hovering - a helicopter in the air under 12 knots - its track is the drift's,
 // all round the compass: it keeps the heading it had, though not its place,
@@ -875,9 +887,29 @@ void pollTraffic(const std::vector<Aircraft> &list, const String &followed) {
     }
 }
 
+// Which of the airfield's runways `at` is on - or just off an end of - or -1.
+int runwayAt(Vec3 at) {
+    for (int r = 0; r < g_runways; r++) {
+        Vec3 a = g_endAt[r * 2], b = g_endAt[r * 2 + 1];
+        float dx = b.x - a.x, dy = b.y - a.y, len = hypotf(dx, dy);
+        if (len < 1) {
+            continue;
+        }
+        float along = ((at.x - a.x) * dx + (at.y - a.y) * dy) / len;
+        float across = fabsf((at.x - a.x) * dy - (at.y - a.y) * dx) / len;
+        if (along > -RUNWAY_SLACK && along < len + RUNWAY_SLACK && across < g_runwayWidth[r] / 2 + RUNWAY_SLACK / 4) {
+            return r;
+        }
+    }
+    return -1;
+}
+
 // The traffic as last polled, `polledMs` ago, moved on since along its track
-// at its speed - those near enough to matter, and not the one followed.
-void fillTraffic(const std::vector<Aircraft> &list, uint32_t polledMs, const String &followed, Vec3 from) {
+// at its speed - those near enough to matter, and not the one followed. On
+// runway `busy` - the one the view's aircraft is landing on or taking off
+// from, -1 none - nothing else on the ground: the feed's lag can leave the
+// landing before still on it as the next take-off rolls.
+void fillTraffic(const std::vector<Aircraft> &list, uint32_t polledMs, const String &followed, Vec3 from, int busy) {
     if (polledMs != g_polledMs || g_frameGen != g_polledGen || followed != g_polledFollowed) {
         pollTraffic(list, followed);
         g_polledMs = polledMs;
@@ -938,7 +970,12 @@ void fillTraffic(const std::vector<Aircraft> &list, uint32_t polledMs, const Str
             }
         } else if (along) {
             at = at + p.way * (p.speed * age);  // off the lines: straight on, as anywhere
-        } else if (taxiways && standingStill(s.ground, s.gsKt)) {
+        }
+        // Parked at a stand: its stop, which the follower tells the stands
+        // taken by.
+        bool atStand = false;
+        ground::Vec2 stop = {0, 0};
+        if (!along && taxiways && standingStill(s.ground, s.gsKt)) {
             // Parked: at its stand, nose in, if it is at one - the stand
             // worked out again only when it is reported somewhere else.
             const airfield::List<ground::StandWay> &stands = g_network.stands();
@@ -959,8 +996,17 @@ void fillTraffic(const std::vector<Aircraft> &list, uint32_t polledMs, const Str
                 }
             }
             if (k.stand >= 0 && (size_t)k.stand < stands.size()) {
-                at = {stands[k.stand].line.back().x, stands[k.stand].line.back().y, at.z};
-                heading = stands[k.stand].heading;
+                // Its nose wheel on the stop, as OpenStreetMap has stands -
+                // its main wheels, where it is placed, back along the line -
+                // and its nose clear of the terminal.
+                const ground::StandWay &st = stands[k.stand];
+                float facing = st.heading;
+                ground::Vec2 q =
+                    ground::parkedAt(st, ground::parkBack(st, s3::noseWheelAhead(k.look), s3::noseAhead(k.look)), facing);
+                at = {q.x, q.y, at.z};
+                heading = facing;
+                atStand = true;
+                stop = st.line.back();
                 k.heading = heading;
                 k.at = at;
             }
@@ -971,7 +1017,7 @@ void fillTraffic(const std::vector<Aircraft> &list, uint32_t polledMs, const Str
                 at = k.at;
             }
             if (g_where == Where::AIRFIELD && g_standing.size() < 200) {
-                g_standing.push_back({at.x, at.y});
+                g_standing.push_back(atStand ? stop : ground::Vec2{at.x, at.y});
             }
         } else if (k.where == g_where && hovering(s.ground, s.gsKt)) {
             heading = k.heading;
@@ -980,6 +1026,16 @@ void fillTraffic(const std::vector<Aircraft> &list, uint32_t polledMs, const Str
         k.heading = heading;
         k.where = g_where;
         k.shownMs = now;
+        // No taxiing shown - its reports too few and far between to show
+        // it truly: on the ground, only stopped on a stand, or on a runway
+        // at a runway's speed, landing or taking off - not the runway the
+        // view's own is on.
+        if (s.ground && g_where == Where::AIRFIELD && !(atStand && standingStill(s.ground, s.gsKt))) {
+            int r = runwayAt(at);
+            if (r < 0 || r == busy || s.gsKt < RUNWAY_ROLL_KT) {
+                continue;
+            }
+        }
         float speed = std::max(1.0f, p.speed);
         s3::Pose pose = {at, heading, s.ground ? 0.0f : atanf(s.vsFpm * 0.00508f / speed) + 0.04f, 0};
         g_traffic.push_back({pose, k.look, s3::configFor(p.heightM, s.gsKt, s.ground, false)});
@@ -1180,6 +1236,7 @@ void prepareNext(const Followed &f, const std::vector<Aircraft> &traffic, uint32
     // ground_follow.h. Handed over from a landing's roll at 40 knots, it
     // keeps it until it is airborne or rolling for take-off.
     bool taxiways = g_where == Where::AIRFIELD && e.ground && !g_network.empty();
+    s3::Look look = lookOf(f.hex, f.type, f.callsign, f.military, f.category);
     // Rolling for take-off it is handed back to the runway simulation once
     // it is shown where that has it - or at 80 knots, whatever - so there is
     // no lurch.
@@ -1206,6 +1263,22 @@ void prepareNext(const Followed &f, const std::vector<Aircraft> &traffic, uint32
         in.standing = g_standing.data();
         in.standingCount = (int)g_standing.size();
         in.arrived = f.landed;
+        // The runway ends departures are using, as the zoom saw: where each
+        // starts.
+        static ground::Vec2 departFrom[8];
+        int departs = 0;
+        int runway, end;
+        for (int i = 0; strcmp(f.inUseAirport, g_airport) == 0 && i < f.inUseCount && departs < 8; i++) {
+            if (runwayOf(f.inUse[i], runway, end)) {
+                const Vec3 &at = g_endAt[runway * 2 + end];
+                departFrom[departs++] = {at.x, at.y};
+            }
+        }
+        in.departFrom = departFrom;
+        in.departFromCount = departs;
+        in.lost = f.lost;
+        in.noseWheel = s3::noseWheelAhead(look);
+        in.nose = s3::noseAhead(look);
         if (!g_follower.active()) {
             bool landed = f.movement == RunwaySim::Movement::LANDING;
             g_follower.begin(g_network, {g_shownAt.x, g_shownAt.y}, g_shownHeading, e.gsKt * 0.5144f, landed, in);
@@ -1226,7 +1299,6 @@ void prepareNext(const Followed &f, const std::vector<Aircraft> &traffic, uint32
 
     // The one followed, flown: banked into its turns - the shown heading's
     // turning - and pitched by its climb, its controls moving with it.
-    s3::Look look = lookOf(f.hex, f.type, f.callsign, f.military, f.category);
     float turn = remainderf(g_shownHeading - g_lastTrack, 2 * (float)M_PI);
     g_lastTrack = g_shownHeading;
     if (dt > 0) {
@@ -1250,8 +1322,18 @@ void prepareNext(const Followed &f, const std::vector<Aircraft> &traffic, uint32
     g_scene.smokeAge = seconds - g_touchdownAt < 3 ? seconds - g_touchdownAt : -1;
     g_scene.touchdown = g_touchdownPose;
 
+    // The runway the view's aircraft is landing on or taking off from - its
+    // own, kept clear of the rest.
+    int busy = -1, end;
+    if (g_where == Where::AIRFIELD) {
+        if (f.movement != RunwaySim::Movement::NONE && f.runway.ident != nullptr) {
+            runwayOf(f.runway.ident, busy, end);
+        } else if (e.ground) {
+            busy = runwayAt(at);
+        }
+    }
     uint32_t t0 = micros();
-    fillTraffic(traffic, polledMs, f.hex, at);
+    fillTraffic(traffic, polledMs, f.hex, at, busy);
     g_statTrafficUs += micros() - t0;
     g_scene.traffic = g_traffic.data();
     g_scene.trafficCount = (int)g_traffic.size();
@@ -1405,6 +1487,10 @@ void drawStrip(const Followed &f) {
         snprintf(line, sizeof line, "%s - %s     at %s", camera, g_shot, g_airport);
     } else {
         snprintf(line, sizeof line, "%s - %s     high up", camera, g_shot);
+    }
+    if (f.note.length()) {
+        size_t used = strlen(line);
+        snprintf(line + used, sizeof line - used, "     %s", f.note.c_str());
     }
     c.setTextColor(colorFaint);
     c.drawString(line, VIEW_X, STRIP_Y + 72);
@@ -1564,6 +1650,23 @@ void close() {
 }
 
 bool isOpen() { return g_open; }
+
+bool parkingLost() { return g_open && g_follower.active() && g_follower.parking(); }
+
+const char *airport() { return g_open && g_where == Where::AIRFIELD ? g_airport : ""; }
+
+bool atStand(double lat, double lon) {
+    if (!g_open || g_where != Where::AIRFIELD || g_network.empty()) {
+        return false;
+    }
+    Vec3 p = local(lat, lon);
+    for (const ground::StandWay &st : g_network.stands()) {
+        if (st.ok && hypotf(p.x - st.line.back().x, p.y - st.line.back().y) < AT_STAND_M) {
+            return true;
+        }
+    }
+    return false;
+}
 
 void redraw() {
     colors();

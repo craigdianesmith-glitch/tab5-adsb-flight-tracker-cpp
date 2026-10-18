@@ -96,6 +96,12 @@ void paintAirline(Look &look, const char *callsign);
 // How big it is against an A320, for a camera to stand off by: its length.
 float sizeOf(const Look &look);
 
+// How far ahead of its main wheels - where a Pose has it - its nose wheel is,
+// and the tip of its nose, in metres: for one parked with its nose wheel on a
+// stand's stop, as OpenStreetMap maps them, to be placed by its main wheels.
+float noseWheelAhead(const Look &look);
+float noseAhead(const Look &look);
+
 // A type of each family, as its ICAO code - "A320" for the narrowbodies:
 // what the made-up traffic of the preview and the bench is labelled as.
 const char *typeOf(Family family);

@@ -1,6 +1,9 @@
 #include "airfield_pack.h"
 
+#include <math.h>
 #include <string.h>
+
+#include <algorithm>
 
 #ifdef ESP_PLATFORM
 #include <Arduino.h>
@@ -57,6 +60,52 @@ void Layout::moveBy(float dx, float dy) {
     for (Point &p : windsocks) {
         move(p);
     }
+}
+
+float Layout::roomAhead(Point from, float heading, float reach) const {
+    float dx = cosf(heading), dy = sinf(heading);
+    float x0 = std::min(from.x, from.x + dx * reach), x1 = std::max(from.x, from.x + dx * reach);
+    float y0 = std::min(from.y, from.y + dy * reach), y1 = std::max(from.y, from.y + dy * reach);
+    auto cross = [](float ax, float ay, float bx, float by) { return ax * by - ay * bx; };
+    float room = reach;
+    for (const Area &b : buildings) {
+        // Only those whose box the way ahead crosses.
+        float bx0 = 1e30f, by0 = 1e30f, bx1 = -1e30f, by1 = -1e30f;
+        for (const Point &c : b.corners) {
+            bx0 = std::min(bx0, c.x), by0 = std::min(by0, c.y);
+            bx1 = std::max(bx1, c.x), by1 = std::max(by1, c.y);
+        }
+        if (bx0 > x1 || bx1 < x0 || by0 > y1 || by1 < y0) {
+            continue;
+        }
+        for (size_t t = 0; t + 2 < b.triangles.size(); t += 3) {
+            const Point *p[3] = {&b.corners[b.triangles[t]], &b.corners[b.triangles[t + 1]],
+                                 &b.corners[b.triangles[t + 2]]};
+            // In it already: no room at all.
+            float s[3];
+            for (int k = 0; k < 3; k++) {
+                const Point &a = *p[k], &c = *p[(k + 1) % 3];
+                s[k] = cross(c.x - a.x, c.y - a.y, from.x - a.x, from.y - a.y);
+            }
+            if ((s[0] >= 0 && s[1] >= 0 && s[2] >= 0) || (s[0] <= 0 && s[1] <= 0 && s[2] <= 0)) {
+                return 0;
+            }
+            // Where the way ahead first crosses one of its edges.
+            for (int k = 0; k < 3; k++) {
+                const Point &a = *p[k], &c = *p[(k + 1) % 3];
+                float ex = c.x - a.x, ey = c.y - a.y, d = cross(dx, dy, ex, ey);
+                if (fabsf(d) < 1e-6f) {
+                    continue;
+                }
+                float wx = a.x - from.x, wy = a.y - from.y;
+                float along = cross(wx, wy, ex, ey) / d, on = cross(wx, wy, dx, dy) / d;
+                if (along >= 0 && along < room && on >= 0 && on <= 1) {
+                    room = along;
+                }
+            }
+        }
+    }
+    return room;
 }
 
 namespace {

@@ -12,6 +12,15 @@
 // an aircraft does, its nose along the way.
 namespace ground {
 
+// Its usual speeds and how it gets to them, metres a second and per second.
+constexpr float TAXI_SPEED = 12.5f;  // 24 knots, on a straight taxiway
+constexpr float STAND_SPEED = 5;     // in along a stand's line, 10 knots, creeping the last of it
+constexpr float PUSH_SPEED = 1.5f;   // pushed back
+constexpr float TAXI_ACCEL = 0.5f, TAXI_BRAKE = 1.0f;
+// On a runway: braking for a turn off it, and slowing, landed, regardless;
+// and gathering speed, rolling for take-off.
+constexpr float RUNWAY_BRAKE = 1.5f, ROLLOUT_SLOWING = 0.6f, ROLL_ACCEL = 2.5f;
+
 // A way to go, ready to be taxied.
 class Plan {
   public:
@@ -34,6 +43,10 @@ class Plan {
     float nearest(Vec2 p, float within, float &off) const;
     // What the point `s` along is on.
     uint8_t kindAt(float s) const;
+    // Where the turn it is in, `s` along, starts - its rounded corner,
+    // begun well before the corner itself - looking back no more than
+    // `within`: `s` itself on a straight.
+    float turnStart(float s, float within) const;
     const airfield::List<Vec2> &points() const { return points_; }
 
   private:
@@ -41,6 +54,7 @@ class Plan {
     airfield::List<float> at_;       // along it to each point
     airfield::List<float> fastest_;  // the speed each point's turn can be taken at
     airfield::List<uint8_t> kinds_;
+    airfield::List<uint8_t> arc_;  // whether the part to each point is part of a rounded corner
     bool stop_ = true;
 };
 
@@ -67,8 +81,10 @@ class Taxi {
     bool arrived() const { return plan_.empty() || (s_ >= plan_.length() - 0.05f && speed_ < 0.05f); }
     // At its plan's end, stopped or not - one that goes on at speed.
     bool atEnd() const { return !plan_.empty() && s_ >= plan_.length() - 0.05f; }
-    // Pushed back: going backwards, tail first.
+    // Pushed back: going backwards, tail first - at no more than this, metres
+    // a second.
     bool pushing = false;
+    float pushSpeed = PUSH_SPEED;
     // Landed, rolling out: slowing down the runway all the while, never
     // speeding up on it.
     bool landing = false;
@@ -98,14 +114,5 @@ class Taxi {
 // one to keep, however near the line through those either side: part of a
 // curve onto the way from the way it faces.
 constexpr uint8_t KEEP = 0x80;
-
-// Its usual speeds and how it gets to them, metres a second and per second.
-constexpr float TAXI_SPEED = 12.5f;  // 24 knots, on a straight taxiway
-constexpr float STAND_SPEED = 5;     // in along a stand's line, 10 knots, creeping the last of it
-constexpr float PUSH_SPEED = 1.5f;   // pushed back
-constexpr float TAXI_ACCEL = 0.5f, TAXI_BRAKE = 1.0f;
-// On a runway: braking for a turn off it, and slowing, landed, regardless;
-// and gathering speed, rolling for take-off.
-constexpr float RUNWAY_BRAKE = 1.5f, ROLLOUT_SLOWING = 0.6f, ROLL_ACCEL = 2.5f;
 
 }  // namespace ground

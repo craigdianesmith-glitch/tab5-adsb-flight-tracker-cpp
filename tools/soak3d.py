@@ -5,7 +5,7 @@ an aircraft's details and Back, and the view closed and opened again - and
 the firmware's log read all the while, for how it fared.
 
     python tools/soak3d.py [--minutes 60] [--scenarios 0123456789] [--sun real|day|dusk|night] [--traffic]
-                           [--port /dev/ttyACM0]
+                           [--speech] [--port /dev/ttyACM0]
 
 Needs firmware built with the 3D bench in it, which makes up the flights and
 takes the commands (see main.cpp's "##k" and the rest):
@@ -50,6 +50,10 @@ ap.add_argument("--port", default="/dev/ttyACM0")
 ap.add_argument("--out", default=time.strftime("soak-%Y%m%d-%H%M"))
 ap.add_argument("--sun", choices=["real", "day", "dusk", "night"], default="real",
                 help="the 3D view's sun: as it is, or held at a time of day, for runs to compare like with like")
+ap.add_argument("--speech", action="store_true",
+                help="speech all the while: an alert, a runway announcement or a card read out every 25 seconds or "
+                     "so, and every fourth time a whole airport's worth in one of the three voices - for the words "
+                     "to be seen not to stall the 3D view, nor it them")
 ap.add_argument("--traffic", action="store_true",
                 help="made-up traffic about each airfield - parked on its stands, taxiing its taxiways - as the "
                      "polls would bring it, for the traffic to be tried with the network down")
@@ -92,9 +96,30 @@ def reader():
 threading.Thread(target=reader, daemon=True).start()
 
 
+write_lock = threading.Lock()
+
+
 def send(command):
-    port.write(("##" + command).encode())
+    with write_lock:  # the speech thread sends too: one command at a time
+        port.write(("##" + command).encode())
     log.write(f"{time.strftime('%H:%M:%S')} [soak3d] >> ##{command}\n")
+
+
+# Speech, with --speech: the alerts, the runway announcements and the cards,
+# short ones every 25 seconds or so and every fourth a long one - an alert, a
+# landing and an aircraft's details at Glasgow, Heathrow or JFK in its voice.
+SHORT_SPEECH = ["E", "W", "R", "M", "T", "L", "N", "A"]
+LONG_SPEECH = ["C", "G", "U"]
+
+
+def speaker():
+    n = 0
+    while not stop.is_set():
+        wait(25)
+        if stop.is_set():
+            break
+        send(LONG_SPEECH[(n // 4) % len(LONG_SPEECH)] if n % 4 == 3 else SHORT_SPEECH[n % len(SHORT_SPEECH)])
+        n += 1
 
 
 def wait(seconds):
@@ -128,6 +153,8 @@ try:
     print(f"soak: {args.minutes:g} minutes of {args.scenarios}, log in {out}/log.txt", flush=True)
     send("Z" + str(["real", "day", "dusk", "night"].index(args.sun)))
     send("r1" if args.traffic else "r0")
+    if args.speech:
+        threading.Thread(target=speaker, daemon=True).start()
     while time.time() < deadline and not stop.is_set():
         for n in args.scenarios:
             if time.time() >= deadline:
@@ -161,12 +188,14 @@ FPS = re.compile(r"\[3d\] ([\d.]+) fps; preparing ([\d.]+)ms, (?:drawing [\d.]+m
                  r"(\d+)KB free(?:; core 0 idle at most (\d+)ms apart)?")
 OPEN = re.compile(r"\[3d\] open, (\d+)-row bands: internal RAM (\d+)KB free, the largest block (\d+)KB")
 TROUBLE = ("[hang]", "[screen]", "no room for the bands", "Guru", "panic", "abort", "Backtrace", "assert")
+LATE = re.compile(r"\[sound\] word \d+ of \d+ (\d+)ms late")
 
 
 def summarise(n, t0, t1):
     with lock:
         said = [text for when, text in lines if t0 <= when < t1]
     fps, prep, gaps, ram, opens, slow, trouble, resets, taps = [], [], [], [], [], [], [], 0, []
+    said_count, late, dropped = 0, [], []
     for text in said:
         m = FPS.search(text)
         if m:
@@ -186,6 +215,13 @@ def summarise(n, t0, t1):
             resets += 1
         if "nothing to tap" in text:
             taps.append(text)
+        if text.startswith("[sound] ") and (": " in text and " spoken" in text):
+            said_count += 1
+        m = LATE.search(text)
+        if m:
+            late.append(int(m.group(1)))
+        if text.startswith("[sound] ") and ("dropped" in text or "not sounded" in text or "failed" in text):
+            dropped.append(text)
     return {
         "n": n,
         "minutes": (t1 - t0) / 60,
@@ -198,6 +234,9 @@ def summarise(n, t0, t1):
         "trouble": trouble,
         "resets": resets,
         "untapped": len(taps),
+        "said": said_count,
+        "late": late,
+        "dropped": dropped,
     }
 
 
@@ -207,8 +246,8 @@ lines_out = [
     f"{(time.time() - started) / 60:.0f} minutes",
     "",
     "| # | min | fps lowest / average | preparing, most | core 0 idle gap, most | internal RAM, least | "
-    "3D opens (bands, KB free, largest) | slow frames | resets | trouble |",
-    "|---|---|---|---|---|---|---|---|---|---|",
+    "3D opens (bands, KB free, largest) | slow frames | resets | trouble | said | words late, most |",
+    "|---|---|---|---|---|---|---|---|---|---|---|---|",
 ]
 for r in rows:
     fps = f"{r['fps'][0]:.1f} / {r['fps'][1]:.1f}" if r["fps"] else "-"
@@ -216,13 +255,14 @@ for r in rows:
     gap = f"{r['gap']}ms" if r["gap"] is not None else "-"
     ram = f"{r['ram']}KB" if r["ram"] is not None else "-"
     opens = ", ".join(f"{b}r {f}/{l}" for b, f, l in r["opens"]) or "-"
+    late = f"{len(r['late'])}, {max(r['late'])}ms" if r["late"] else "0"
     lines_out.append(f"| {r['n']} | {r['minutes']:.1f} | {fps} | {prep} | {gap} | {ram} | {opens} | "
-                     f"{len(r['slow'])} | {r['resets']} | {len(r['trouble'])} |")
-details = [r for r in rows if r["slow"] or r["trouble"] or r["resets"]]
+                     f"{len(r['slow'])} | {r['resets']} | {len(r['trouble'])} | {r['said']} | {late} |")
+details = [r for r in rows if r["slow"] or r["trouble"] or r["resets"] or r["dropped"]]
 if details:
     lines_out += ["", "## What went wrong", ""]
     for r in details:
-        for text in (r["trouble"] + r["slow"])[:12]:
+        for text in (r["trouble"] + r["slow"] + r["dropped"])[:12]:
             lines_out.append(f"- scenario {r['n']}: `{text}`")
 summary = "\n".join(lines_out) + "\n"
 (out / "summary.md").write_text(summary)

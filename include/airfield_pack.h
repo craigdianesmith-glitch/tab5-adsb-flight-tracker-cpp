@@ -86,6 +86,10 @@ struct Layout {
     bool empty() const { return ways.empty() && surfaces.empty() && buildings.empty(); }
     // Every point moved by (dx, dy): to a frame whose (0, 0) is elsewhere.
     void moveBy(float dx, float dy);
+    // How far from `from`, going `heading` - radians anticlockwise from east
+    // - before a building: `reach` if none is nearer, 0 if `from` is in one.
+    // For an aircraft parked on a stand to keep its nose out of the terminal.
+    float roomAhead(Point from, float heading, float reach) const;
 };
 
 // One airport's block of the file, unpacked into `out`: false, and `out` left

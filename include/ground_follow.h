@@ -39,6 +39,21 @@ class Follower {
         // Seen in the air in the last quarter of an hour: landed, so making
         // for a stand. Otherwise it is taken to be departing.
         bool arrived;
+        // The runway ends departures are taking off from - where each
+        // starts, as the airport zoom has lately seen them in use - for one
+        // departing to make for a holding point at one of those rather than
+        // whichever is nearest. None: any.
+        const Vec2 *departFrom;
+        int departFromCount;
+        // Its signal lost: the last poll came back without it. Landed, it
+        // taxies on by itself to a free stand and parks there - straight
+        // in, no waiting at the way in for a report to say which stand.
+        bool lost;
+        // How far ahead of where it is placed - its main wheels - its nose
+        // wheel is, and its nose, in metres: for it to park with its nose
+        // wheel on a stand's stop, as OpenStreetMap maps them, and its nose
+        // clear of the terminal. Both 0: its main wheels on the stop.
+        float noseWheel, nose;
     };
 
     // Taken over - from where it was shown, facing `heading`, going `speed`
@@ -48,6 +63,8 @@ class Follower {
     void update(const Network &net, const Input &in);
     void end() { active_ = false; }
     bool active() const { return active_; }
+    // Parked at a stand, or landed and making for one by itself.
+    bool parking() const { return active_ && (mode_ == Mode::PARKED || (mode_ == Mode::OWN_WAY && arriving_ && stand_ >= 0)); }
 
     Vec2 at() const { return taxi_.at(); }
     float heading() const { return taxi_.heading(); }
@@ -65,9 +82,9 @@ class Follower {
     // along way_ - or round to way_ further on, or across to it.
     void join(const Network &net, const Place &reported, float heading, const Input &in);
     void pushBack(const Network &net, const Input &in);
-    // way_ from runway end hold `hold` onto its runway, lined up: false if
-    // there is no way.
-    bool lineUp(const Network &net, int hold);
+    // way_ from `from` - runway end hold `hold`, or past it - going
+    // `heading`, onto its runway, lined up: false if there is no way.
+    bool lineUp(const Network &net, int hold, const Place &from, float heading);
     // Pushed back to the taxilane: on along it, tail first.
     void pushOn(const Network &net, const Input &in);
     // A report on a stand's line in, off the network - `moving` along it,
@@ -79,11 +96,35 @@ class Follower {
     // Put at `stand`, parked - seen there by a report at `seen`.
     void parkAt(const Network &net, int stand, Vec2 seen);
     int standNear(const Network &net, Vec2 p, float within) const;
+    // Where at `st` it parks - its main wheels, short of the stop - and the
+    // way it faces there; and its line in to there, into standLine_.
+    Vec2 parkPoint(const StandWay &st, float &heading) const;
+    const airfield::List<Vec2> &lineInto(const StandWay &st);
+    // Shown past where it parks at `st` - on its line on in towards the
+    // stop, where a first report put it - put back there, the plan to it
+    // otherwise starting behind it.
+    void notPast(const StandWay &st);
     void say(const char *what, const char *ref = nullptr);
+    // On by itself along the taxiways to where it is making for - its
+    // reports gone, or too far off them to go across to them.
+    void ownWay(const Network &net, const Input &in);
+    // Across from where it is shown onto a stand's `line`, at `from` along it
+    // or further on - see turnOnto() - its points onto `pts`; how far along
+    // the line it joins it.
+    float acrossOnto(const airfield::List<Vec2> &line, float from, airfield::List<Vec2> &pts,
+                     airfield::List<uint8_t> &ks);
+    // Its way on cut to where it can stop, braking as it does - rather than
+    // stopped dead where it is.
+    void stopSoon();
     // In step from here: the report's place `s` along the plan, at `speed`.
     void keepUpFrom(float s, float speed, uint32_t ms);
     // forksOnPlan_ for the plan just made.
     void placeForks();
+    // The way to search the network from `from` - where it is shown, snapped
+    // onto it: the way it faces; or either, slow and side on to the line
+    // there - as just pushed back off its stand's line - a turn either way
+    // onto it.
+    float searchHeading(const Network &net, const Place &from) const;
 
     bool active_ = false;
     Mode mode_ = Mode::FOLLOW;
@@ -100,14 +141,32 @@ class Follower {
     // and how far along the plan, once there is one.
     airfield::List<Vec2> forks_;
     airfield::List<float> forksOnPlan_;
+    // And where along the plan it waits for that report: before the turn
+    // there begins.
+    airfield::List<float> forksWait_;
     int stand_ = -1, hold_ = -1;
+    bool standSeen_ = false;  // a report has put it at stand_, or on its line: not a guess
+    // The stand its reports have had it standing at, one after the other,
+    // where it couldn't be taxied to: and how many.
+    int standingAt_ = -1, standingCount_ = 0;
     bool lineUp_ = false;  // way_ goes on from hold_ onto its runway
     bool rolling_ = false;  // the take-off simulated rolling: its plan down the runway
+    uint32_t takeoffJoinMs_ = 0;  // when it last joined the take-off's way, off its plan
+    uint32_t ownWayMs_ = 0;  // when it last looked again, by itself, for somewhere to go
+    int wildInRow_ = 0;  // reports passed over as wild, one after the other
     int parkedAt_ = -1;  // PARKED: which stand
     // Parked, where its reports put it - a few metres from the stand's stop,
     // as its aerial is - for it to be seen to move from there.
     Vec2 parkedSeen_ = {0, 0};
     bool haveParkedSeen_ = false;
+    // Parked: whether its last report was out towards the taxilane, and how
+    // far from where it was seen; and how far its reports wander about
+    // where it stands, on average, over how many.
+    bool outBefore_ = false, farBefore_ = false;
+    float goneBefore_ = 0, wander_ = 0;
+    int wanderN_ = 0;
+    // Just begun, its first report not yet taken: shown nowhere before.
+    bool justBegun_ = false;
     int leftStand_ = -1;  // pushed back from, its reports there not taken as back on it
     int pushFrom_ = -1;   // PUSH: from which stand
     bool pushOnward_ = false;  // PUSH: out on the taxilane, the second part
@@ -130,6 +189,8 @@ class Follower {
     bool speedingUp_ = false;
     float prevSpeed_ = 0;
     char doing_[40] = "";
+    float noseWheel_ = 0, nose_ = 0;  // the input's
+    airfield::List<Vec2> standLine_;
 };
 
 }  // namespace ground

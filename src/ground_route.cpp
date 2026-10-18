@@ -30,6 +30,9 @@ constexpr float END_SPAN = 12;
 // sharper still at 3.
 // A stand whose stop is within this of a terminal building is the terminal's.
 constexpr float AT_TERMINAL = 150;
+// An aircraft parked on a stand keeps its nose this far from the building
+// ahead; and the building is looked for this far ahead of the stop.
+constexpr float PARK_CLEAR = 3, ROOM_REACH = 80;
 constexpr float EXIT_FAST_COS = 0.766f, EXIT_MID_COS = 0.423f;
 constexpr float EXIT_FAST = 20, EXIT_MID = 13, EXIT_SLOW = 8, EXIT_SHARP = 3;
 
@@ -227,6 +230,8 @@ void Network::build(const airfield::Layout &layout) {
                 w.ok = true;
                 w.arrive = headingOf(unit(w.line.front(), pointAlong(w.line, std::min(8.0f, total))));
                 w.heading = headingOf(unit(pointAlong(w.line, std::max(0.0f, total - 5)), w.line.back()));
+                w.middle = outline(st);
+                w.room = layout.roomAhead({w.line.back().x, w.line.back().y}, w.heading, ROOM_REACH);
             }
         }
         if (w.ok) {
@@ -749,6 +754,45 @@ float lengthOf(const airfield::List<Vec2> &path) {
         total += dist(path[i - 1], path[i]);
     }
     return total;
+}
+
+float parkBack(const StandWay &st, float noseWheel, float nose) {
+    float back = std::max(st.middle ? 0.0f : noseWheel, nose - (st.room - PARK_CLEAR));
+    return std::max(0.0f, std::min(back, lengthOf(st.line)));
+}
+
+Vec2 parkedAt(const StandWay &st, float back, float &heading) {
+    if (st.line.empty()) {
+        heading = st.heading;
+        return {0, 0};
+    }
+    float h = st.heading;
+    Vec2 p = along(st.line, std::max(0.0f, lengthOf(st.line) - back), h);
+    heading = dist(p, st.line.back()) > 3 ? headingOf(unit(p, st.line.back())) : st.heading;
+    return p;
+}
+
+void lineIn(const StandWay &st, float back, airfield::List<Vec2> &out) {
+    out.clear();
+    if (st.line.empty()) {
+        return;
+    }
+    float want = std::max(0.0f, lengthOf(st.line) - back), at = 0;
+    out.push_back(st.line[0]);
+    for (size_t i = 1; i < st.line.size(); i++) {
+        Vec2 a = st.line[i - 1], b = st.line[i];
+        float d = dist(a, b);
+        if (at + d >= want) {
+            float t = d < 1e-4f ? 1 : (want - at) / d;
+            Vec2 p = {a.x + (b.x - a.x) * t, a.y + (b.y - a.y) * t};
+            if (dist(p, out.back()) > 0.05f) {
+                out.push_back(p);
+            }
+            return;
+        }
+        at += d;
+        out.push_back(b);
+    }
 }
 
 Vec2 along(const airfield::List<Vec2> &path, float distance, float &heading) {

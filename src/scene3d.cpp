@@ -416,6 +416,7 @@ struct Design {
     float length = 37.6f;  // nose to tail
     Vec3 blob[3][4]{};     // its shadow, simply: body and wings, flat
     float gearY = 3.8f;
+    float noseGear = 12.4f;  // how far ahead of the main wheels its nose wheel is
     // Where the trails of its engines start, at height - none for
     // propellers, whose exhaust is too warm and wet for nothing.
     Vec3 exhaust[4]{};
@@ -1293,6 +1294,7 @@ void buildTransport(Vector<ModelTri> &out, int level, const Transport &t, Design
         blobFor(d, t.wing, st[0].x - (st[0].x - tail.x) * 0.01f, w * 0.96f, z, tail.x + 0.1f, tail.w + w * 0.4f,
                 tail.z);
         d.gearY = t.gearY;
+        d.noseGear = t.noseX;
     }
 }
 
@@ -1411,6 +1413,7 @@ void buildFighter(Vector<ModelTri> &out, int level, const Fighter &f, Design &d)
         planeLights(d, f.wing, {tail.x, 0, tail.z}, z + h, z - h, f.wing.root.te + 1.0f);
         blobFor(d, f.wing, f.body[0].x, w * 0.5f, z, tail.x, tail.w, tail.z);
         d.gearY = f.gearY;
+        d.noseGear = f.noseX;
     }
 }
 
@@ -1573,6 +1576,7 @@ void buildRotorcraft(Vector<ModelTri> &out, int level, const Rotorcraft &r, Desi
         Vec3 disc2[4] = {rear + Vec3{k, -k, 0}, rear + Vec3{k, k, 0}, rear + Vec3{-k, k, 0}, rear + Vec3{-k, -k, 0}};
         memcpy(d.blob[2], disc2, sizeof disc2);
         d.gearY = r.skids ? r.skidY : r.gearY;
+        d.noseGear = r.skids ? 0 : r.noseX;
     }
 }
 
@@ -2664,9 +2668,9 @@ void buildApproachFrames(Vector<ModelLine> &out, const RunwayEnd &end) {
 // the last 600m; the centreline's white, alternating with red and then all red
 // towards the end; across each threshold, green to an aircraft coming in and
 // red to one rolling out towards it; the approach lights on their bars; and
-// the taxiways' blue edges.
+// the taxiways' green centrelines.
 const Rgb LAMP_WHITE = {255, 246, 224}, LAMP_YELLOW = {255, 200, 60}, LAMP_RED = {255, 50, 40},
-          LAMP_GREEN = {60, 255, 120}, LAMP_BLUE = {70, 110, 255};
+          LAMP_GREEN = {60, 255, 120};
 
 struct ModelLight {
     Vec3 at;
@@ -2779,6 +2783,8 @@ struct PaintLine {
 };
 // The paint's runs, in its cells' `lod`: see buildAirfield().
 constexpr uint8_t PAINT_BROAD = 0, PAINT_THIN = 1, PAINT_DASHES = 2;
+// The airfield lights' cells: the taxiways' marked so.
+constexpr uint8_t LIGHTS_TAXIWAY = 1;
 
 // A run of a list whose items are near one another, and a ball round them
 // all: for a frame to pass over a whole run out of view at once, rather than
@@ -2843,6 +2849,16 @@ inline void widen(Vec3 p, float reach, Vec3 &lo, Vec3 &hi) {
 
 constexpr float AIRFIELD_CELL = 200, COUNTRY_CELL = 20000;  // metres
 
+// A stand: its stop - where the nose wheel stops, as OpenStreetMap maps them
+// - the way an aircraft there faces, and how far on from the stop it is to
+// the building ahead. One drawn as its outline: its middle, `middle` set.
+struct StandStop {
+    Vec3 at;
+    float heading;
+    float room;
+    bool middle;
+};
+
 
 struct Models {
     Vector<ModelTri> ground, solids;
@@ -2878,7 +2894,7 @@ struct Models {
     Vector<Star> stars;
     Vector<Papi> papis;
     Vector<RunwayEnd> ends;  // two to a runway, in its order
-    Vector<Pose> stands;
+    Vector<StandStop> stands;
     Vec3 middle{}, tower{};
     float towerEyeZ = 33;  // the tower's cab, how high: where a camera in it looks out from
     bool built = false;
@@ -2947,6 +2963,100 @@ void simplified(const Vector<Vec3> &line, float tolerance, Vector<Vec3> &out) {
     }
 }
 
+// The taxiways' centreline lights, green: this far apart on the straight, and
+// none this near the end of a run of taxiway that meets others - see
+// taxiwayLine().
+constexpr float TAXI_LIGHTS_EVERY = 30, TAXI_LIGHTS_CLEAR = 15;
+
+// Whether `p` is on one of the runways, or within 5m of one's edge.
+bool onRunway(Vec3 p, const RunwaySpec *runways, int count) {
+    for (int i = 0; i < count; i++) {
+        Vec3 d = runways[i].end[1] - runways[i].end[0];
+        float len = length(d);
+        if (len < 1) {
+            continue;
+        }
+        Vec3 u = d * (1 / len), q = p - runways[i].end[0];
+        float a = dot(q, u);
+        if (a > -30 && a < len + 30 && fabsf(dot(q, leftOf(u))) < runways[i].width / 2 + 5) {
+            return true;
+        }
+    }
+    return false;
+}
+
+// Lights down the middle of a taxiway along `line`, from `from` metres after
+// its start to `to` metres before its end, into `out`: evenly, about
+// TAXI_LIGHTS_EVERY apart on the straight and half that round a bend; just
+// one in its middle if it is too short for both ends' room; none on a
+// runway.
+void taxiwayLine(const Vector<Vec3> &line, float from, float to, const RunwaySpec *runways, int count,
+                 Vector<ModelLight> &out) {
+    if (line.size() < 2) {
+        return;
+    }
+    Vector<float> along(line.size(), 0);
+    for (size_t i = 1; i < line.size(); i++) {
+        along[i] = along[i - 1] + length(line[i] - line[i - 1]);
+    }
+    float total = along.back();
+    if (total < 10) {
+        return;
+    }
+    // Every STEP along it: where, and the way it runs.
+    constexpr float STEP = 2;
+    int n = (int)ceilf(total / STEP);
+    Vector<Vec3> at(n + 1), way(n + 1);
+    for (int k = 0, i = 0; k <= n; k++) {
+        float s = std::min(total, k * STEP);
+        while (i + 2 < (int)line.size() && along[i + 1] < s) {
+            i++;
+        }
+        float len = along[i + 1] - along[i];
+        at[k] = line[i] + (line[i + 1] - line[i]) * (len > 1e-3f ? (s - along[i]) / len : 0);
+        way[k] = len > 1e-3f ? (line[i + 1] - line[i]) * (1 / len) : k > 0 ? way[k - 1] : Vec3{1, 0, 0};
+    }
+    // How far along it by a measure that counts a metre of bend - where it
+    // turns by more than 10 degrees in 20m - as two: lights evenly spaced by
+    // that are twice as close round its bends.
+    Vector<float> measure(n + 1, 0);
+    auto bend = [&](int k) {
+        return dot(way[std::max(0, k - 5)], way[std::min(n, k + 5)]) < 0.985f ? 2.0f : 1.0f;
+    };
+    for (int k = 1; k <= n; k++) {
+        float s = std::min(total, k * STEP), was = (k - 1) * STEP;
+        measure[k] = measure[k - 1] + (s - was) * (bend(k - 1) + bend(k)) / 2;
+    }
+    auto measured = [&](float s) {
+        int k = std::max(0, std::min(n - 1, (int)(s / STEP)));
+        float span = std::min(total, (k + 1) * STEP) - k * STEP;
+        return measure[k] + (measure[k + 1] - measure[k]) * (span > 1e-3f ? (s - k * STEP) / span : 0);
+    };
+    auto add = [&](float s) {
+        int k = std::max(0, std::min(n - 1, (int)(s / STEP)));
+        float span = std::min(total, (k + 1) * STEP) - k * STEP;
+        Vec3 p = at[k] + (at[k + 1] - at[k]) * (span > 1e-3f ? (s - k * STEP) / span : 0);
+        if (!onRunway(p, runways, count)) {
+            out.push_back({p + Vec3{0, 0, 0.1f}, LAMP_GREEN, 0.3f, {0, 0, 0}, LAMP_GREEN});
+        }
+    };
+    if (total - to - from < 1) {
+        add(total / 2);
+        return;
+    }
+    float m0 = measured(from), m1 = measured(total - to);
+    int lights = std::max(1, (int)lrintf((m1 - m0) / TAXI_LIGHTS_EVERY));
+    for (int j = 0, k = 0; j <= lights; j++) {
+        float want = m0 + (m1 - m0) * j / lights;
+        while (k + 1 < n && measure[k + 1] < want) {
+            k++;
+        }
+        float span = measure[k + 1] - measure[k];
+        float s = k * STEP + (std::min(total, (k + 1) * STEP) - k * STEP) * (span > 1e-6f ? (want - measure[k]) / span : 0);
+        add(std::max(0.0f, std::min(total, s)));
+    }
+}
+
 // Where along runway `r` the real taxiways leave it - each junction of one
 // that lies on the runway's pavement, give or take - and the side, left of
 // its first end looking down it (1) or right (-1), most of them go to.
@@ -2977,9 +3087,10 @@ void exitsOf(const airfield::Layout &l, const RunwaySpec &r, Vector<float> &alon
 // The real layout: aprons, then taxiways, painted in that order; their
 // centrelines, holding points and stands' lines in yellow; the buildings,
 // to their heights; stands and the tower where they are; and the taxiways'
-// lights - green down their middles, blue along their edges.
+// lights, green down their middles.
 void buildLayout(Models &m, const airfield::Layout &l, const RunwaySpec *runways, int count, Vector<ModelTri> &apron,
-                 Vector<ModelTri> &taxiways, Vector<ModelTri> &taxiwaysFar, Vector<ModelTri> &paint) {
+                 Vector<ModelTri> &taxiways, Vector<ModelTri> &taxiwaysFar, Vector<ModelTri> &paint,
+                 Vector<ModelLight> &taxiwayLights) {
     for (const airfield::Area &a : l.surfaces) {
         Rgb color = a.kind == 1 ? CONCRETE : TAXIWAY;
         for (size_t t = 0; t + 2 < a.triangles.size(); t += 3) {
@@ -2988,15 +3099,26 @@ void buildLayout(Models &m, const airfield::Layout &l, const RunwaySpec *runways
                              color});
         }
     }
-    // Far off, the taxiways' pavement coarser: each run of taxiway joined end
-    // to end through the junctions where nothing else does - just two meet,
-    // near enough straight on, near enough as wide - and along its line to
-    // within 5m: past COARSE_FROM that is a pixel or two, and a big airport's
-    // pavement far fewer triangles.
+    // The taxiways as runs, each joined end to end through the junctions
+    // where it goes straight on - near enough as wide - its branches runs of
+    // their own; with the junctions each ends at, and how many ways of any
+    // kind meet at each junction. Far off, their pavement coarser: along
+    // each run's line to within 5m - past COARSE_FROM that is a pixel or two,
+    // and a big airport's pavement far fewer triangles.
+    struct TaxiRun {
+        Vector<Vec3> line;
+        uint16_t ends[2];
+    };
+    Vector<TaxiRun> runs;
+    Vector<uint8_t> meeting(l.junctions.size(), 0);
     {
         Vector<Vector<uint16_t>> meets(l.junctions.size());
         for (size_t i = 0; i < l.ways.size(); i++) {
             const airfield::Way &w = l.ways[i];
+            meeting[w.from] = (uint8_t)std::min(255, meeting[w.from] + 1);
+            if (w.to != w.from) {
+                meeting[w.to] = (uint8_t)std::min(255, meeting[w.to] + 1);
+            }
             if (w.kind == airfield::WayKind::TAXIWAY) {
                 meets[w.from].push_back((uint16_t)i);
                 if (w.to != w.from) {
@@ -3009,13 +3131,14 @@ void buildLayout(Models &m, const airfield::Layout &l, const RunwaySpec *runways
         // On from the end of `chain` - at junction `j`, along way `last` -
         // the straightest way on: where just two meet, turning by less than
         // 60 degrees; where more do, by less than 30 - the main line through
-        // a junction, its branches runs of their own.
+        // a junction, its branches runs of their own. Returns the junction it
+        // ends at.
         auto extend = [&](uint16_t j, uint16_t last, float width) {
             for (int guard = 0; guard < 400 && chain.size() >= 2; guard++) {
                 Vec3 in = chain.back() - chain[chain.size() - 2];
                 float li = length(in);
                 if (li < 0.01f) {
-                    return;
+                    return j;
                 }
                 int best = -1;
                 float straightest = meets[j].size() == 2 ? 0.5f : 0.866f;
@@ -3037,7 +3160,7 @@ void buildLayout(Models &m, const airfield::Layout &l, const RunwaySpec *runways
                     }
                 }
                 if (best < 0) {
-                    return;
+                    return j;
                 }
                 const airfield::Way &w = l.ways[best];
                 lineOf(l, w, piece);
@@ -3049,6 +3172,7 @@ void buildLayout(Models &m, const airfield::Layout &l, const RunwaySpec *runways
                 last = (uint16_t)best;
                 j = w.to == j ? w.from : w.to;
             }
+            return j;
         };
         for (size_t i = 0; i < l.ways.size(); i++) {
             const airfield::Way &w = l.ways[i];
@@ -3057,9 +3181,9 @@ void buildLayout(Models &m, const airfield::Layout &l, const RunwaySpec *runways
             }
             used[i] = 1;
             lineOf(l, w, chain);
-            extend(w.to, (uint16_t)i, w.width);
+            uint16_t end = extend(w.to, (uint16_t)i, w.width);
             std::reverse(chain.begin(), chain.end());
-            extend(w.from, (uint16_t)i, w.width);
+            uint16_t start = extend(w.from, (uint16_t)i, w.width);
             float half = std::max(4.0f, w.width / 2);
             simplified(chain, 5, far);
             for (size_t p = 0; p + 1 < far.size(); p++) {
@@ -3070,6 +3194,7 @@ void buildLayout(Models &m, const airfield::Layout &l, const RunwaySpec *runways
                     strip(taxiwaysFar, a - dir * half, b + dir * half, half, TAXIWAY);
                 }
             }
+            runs.push_back({chain, {end, start}});
         }
     }
     Vector<Vec3> line, coarse;
@@ -3100,28 +3225,16 @@ void buildLayout(Models &m, const airfield::Layout &l, const RunwaySpec *runways
                 strip(paint, a, b, 0.15f, YELLOW);
             }
         }
-        // Its lights: green down the middle of a taxiway every 45m, blue at
-        // its edges every 90m.
-        if (w.kind == airfield::WayKind::TAXIWAY) {
-            float carried = 0;
-            for (size_t i = 0; i + 1 < line.size(); i++) {
-                Vec3 a = line[i], b = line[i + 1];
-                float len = length(b - a);
-                if (len < 0.01f) {
-                    continue;
-                }
-                Vec3 dir = (b - a) * (1 / len), side = leftOf(dir) * (half + 1);
-                for (float s = fmodf(45 - carried, 45); s < len; s += 45) {
-                    Vec3 p = a + dir * s + Vec3{0, 0, 0.1f};
-                    m.airfieldLights.push_back({p, LAMP_GREEN, 0.3f, {0, 0, 0}, LAMP_GREEN});
-                    if (((int)((carried + s) / 45)) % 2 == 0) {
-                        m.airfieldLights.push_back({p + side, LAMP_BLUE, 0.35f, {0, 0, 0}, LAMP_BLUE});
-                        m.airfieldLights.push_back({p - side, LAMP_BLUE, 0.35f, {0, 0, 0}, LAMP_BLUE});
-                    }
-                }
-                carried = fmodf(carried + len, 90);
-            }
-        }
+    }
+    // The lights: green down the middle of each run of taxiway, as a big
+    // airport has them - and no blue along its edges as well, which made
+    // thousands a scatter - evenly, every 30m or so on the straight and
+    // twice as often round a bend; none within 15m of a junction its run
+    // ends at, where the way on has its own, nor on a runway, which has its
+    // own.
+    for (const TaxiRun &r : runs) {
+        taxiwayLine(r.line, meeting[r.ends[0]] > 1 ? TAXI_LIGHTS_CLEAR : 0,
+                    meeting[r.ends[1]] > 1 ? TAXI_LIGHTS_CLEAR : 0, runways, count, taxiwayLights);
     }
     // Holding points: across the way, at the point - on a runway's, two solid
     // lines on the taxiway's side and two dashed on the runway's; elsewhere
@@ -3166,15 +3279,24 @@ void buildLayout(Models &m, const airfield::Layout &l, const RunwaySpec *runways
             }
         }
     }
-    // Stands: the lines in, and where an aircraft parks - facing the way the
-    // line comes in, or, with none, its nose to the nearest building.
+    // Stands: the lines in, and where an aircraft parks - its nose wheel
+    // where the line stops, facing the way it comes in; with no line, its
+    // nose to the nearest building; one drawn as its outline, the middle of
+    // the aircraft on the middle of it.
     for (const airfield::Stand &st : l.stands) {
         for (size_t i = 0; i + 1 < st.lead.size(); i++) {
             strip(paint, at(st.lead[i]), at(st.lead[i + 1]), 0.15f, YELLOW);
         }
+        bool outline = st.lead.size() >= 4 && length(at(st.lead.front()) - at(st.lead.back())) < 5;
         Vec3 p = at(st.at);
+        if (outline) {
+            p = {0, 0, 0};
+            for (size_t i = 0; i + 1 < st.lead.size(); i++) {
+                p = p + at(st.lead[i]) * (1.0f / (st.lead.size() - 1));
+            }
+        }
         float heading = 0;
-        if (st.lead.size() >= 2) {
+        if (st.lead.size() >= 2 && !outline) {
             Vec3 d = at(st.lead.back()) - at(st.lead[st.lead.size() - 2]);
             heading = atan2f(d.y, d.x);
         } else {
@@ -3190,7 +3312,7 @@ void buildLayout(Models &m, const airfield::Layout &l, const RunwaySpec *runways
                 }
             }
         }
-        m.stands.push_back({p, heading, 0});
+        m.stands.push_back({p, heading, l.roomAhead({p.x, p.y}, heading, 80), outline});
     }
     // The buildings: the roof's triangles at its height, and a wall up each
     // edge round it - each edge only one triangle has - facing out. The tower
@@ -3446,8 +3568,10 @@ void buildAirfield(Models &m, const RunwaySpec *runways, int count, const Vec3 *
     m.middle = middle;
 
     // The runways: their taxiways and ways on, then their asphalt, then their
-    // paint - the ground is painted in that order, with no depth to it.
+    // paint - the ground is painted in that order, with no depth to it. The
+    // taxiways' lights apart from the rest: see their cells below.
     Vector<ModelTri> taxiways, asphalt, rubberMarks, paint;
+    Vector<ModelLight> taxiwayLights;
     for (int i = 0; i < count; i++) {
         const RunwaySpec &r = runways[i];
         Vec3 d = r.end[1] - r.end[0];
@@ -3477,9 +3601,16 @@ void buildAirfield(Models &m, const RunwaySpec *runways, int count, const Vec3 *
             // on the runway's.
             strip(paint, r.end[0] - u * 60 + left * (side * TAXIWAY_OFFSET),
                   r.end[1] + u * 60 + left * (side * TAXIWAY_OFFSET), 0.15f, YELLOW);
+            // And their lights, green down the middles of the taxiway and its
+            // ways on.
+            Vector<Vec3> lit = {r.end[0] - u * 60 + left * (side * TAXIWAY_OFFSET),
+                                r.end[1] + u * 60 + left * (side * TAXIWAY_OFFSET)};
+            taxiwayLine(lit, 0, 0, runways, count, taxiwayLights);
             for (float c : connectors) {
                 Vec3 base = r.end[0] + u * c;
                 strip(paint, base + left * (side * half), base + left * (side * TAXIWAY_OFFSET), 0.15f, YELLOW);
+                lit = {base + left * (side * half), base + left * (side * TAXIWAY_OFFSET)};
+                taxiwayLine(lit, 0, TAXI_LIGHTS_CLEAR, runways, count, taxiwayLights);
                 for (int bar = 0; bar < 4; bar++) {
                     Vec3 at = base + left * (side * (half + 55 + bar * 0.9f));
                     if (bar < 2) {
@@ -3546,12 +3677,6 @@ void buildAirfield(Models &m, const RunwaySpec *runways, int count, const Vec3 *
         for (float x = 70; x + 30 <= len - 70; x += 50) {
             a.paint(paint, x, -0.45f, x + 30, 0.45f);
         }
-        for (float x = -60; x <= len + 60 && !real; x += 60) {
-            for (float o : {TAXIWAY_OFFSET - 14, TAXIWAY_OFFSET + 14}) {
-                m.airfieldLights.push_back({r.end[0] + u * x + left * (side * o) + Vec3{0, 0, 0.3f}, LAMP_BLUE, 0.35f,
-                                            {0, 0, 0}, LAMP_BLUE});
-            }
-        }
     }
 
     // The terminal: the apron, a building down its middle, piers out from it
@@ -3559,12 +3684,13 @@ void buildAirfield(Models &m, const RunwaySpec *runways, int count, const Vec3 *
     // the real ones.
     Vector<ModelTri> apron, taxiwaysFar;
     if (real) {
-        buildLayout(m, *layout, runways, count, apron, taxiways, taxiwaysFar, paint);
+        buildLayout(m, *layout, runways, count, apron, taxiways, taxiwaysFar, paint, taxiwayLights);
     } else {
     rect(apron, middle - axis * halfLength - across * halfDepth, middle + axis * halfLength - across * halfDepth,
          middle + axis * halfLength + across * halfDepth, middle - axis * halfLength + across * halfDepth, CONCRETE);
     orientedBox(m.solids, middle, axis, halfLength - 40, 28, 16, TERMINAL, ROOF);
-    constexpr float PIER_EVERY = 170, STAND_EVERY = 50, NOSE = 16.6f;
+    // An A320's nose is this far ahead of its nose wheel.
+    constexpr float PIER_EVERY = 170, STAND_EVERY = 50, NOSE_PAST = 4.4f;
     for (float a = -halfLength + 90; a <= halfLength - 90; a += PIER_EVERY) {
         for (float s : {1.0f, -1.0f}) {
             float from = 28, to = halfDepth - 50;
@@ -3575,10 +3701,11 @@ void buildAirfield(Models &m, const RunwaySpec *runways, int count, const Vec3 *
             orientedBox(m.solids, pierMiddle, across, (to - from) / 2, 10, 9, PIER, ROOF);
             for (float c = from + 30; c <= to - 10; c += STAND_EVERY) {
                 for (float side : {1.0f, -1.0f}) {
-                    // Gear far enough from the pier for the nose to stop 5m short of it.
-                    Vec3 gear = middle + axis * (a + side * (10 + 5 + NOSE)) + across * (s * c);
+                    // The stop far enough from the pier for an A320's nose to
+                    // stop 5m short of it.
+                    Vec3 stop = middle + axis * (a + side * (10 + 5 + NOSE_PAST)) + across * (s * c);
                     Vec3 nose = axis * -side;
-                    m.stands.push_back({gear, atan2f(nose.y, nose.x), 0});
+                    m.stands.push_back({stop, atan2f(nose.y, nose.x), 5 + NOSE_PAST, false});
                 }
             }
         }
@@ -3700,8 +3827,17 @@ void buildAirfield(Models &m, const RunwaySpec *runways, int count, const Vec3 *
         widen(l.a, 0, lo, hi);
         widen(l.b, 0, lo, hi);
     });
+    // The taxiways' lights after the rest, in cells of their own: far dimmer
+    // than the runways', they fade with distance - see prepareEnd().
+    size_t firstTaxiway = m.airfieldLights.size();
+    m.airfieldLights.insert(m.airfieldLights.end(), taxiwayLights.begin(), taxiwayLights.end());
     m.lightCells.clear();
-    intoCells(m.airfieldLights, 0, m.airfieldLights.size(), AIRFIELD_CELL, m.lightCells, light);
+    intoCells(m.airfieldLights, 0, firstTaxiway, AIRFIELD_CELL, m.lightCells, light);
+    size_t taxiwayCells = m.lightCells.size();
+    intoCells(m.airfieldLights, firstTaxiway, m.airfieldLights.size(), AIRFIELD_CELL, m.lightCells, light);
+    for (size_t c = taxiwayCells; c < m.lightCells.size(); c++) {
+        m.lightCells[c].lod = LIGHTS_TAXIWAY;
+    }
     m.townCells.clear();
     intoCells(m.townLights, 0, m.townLights.size(), AIRFIELD_CELL * 5, m.townCells, light);
     compact(m);
@@ -4334,6 +4470,10 @@ bool addSprite(Vec3 world, float size, float minPx, ScreenSprite &s) {
 // as lights carry further than what they light.
 // How much haze a light `distance` off is under: less than a colour is.
 float lightHaze(float distance) { return (1 - expf(-distance / (3 * g.pal.visibility))) * 0.8f; }
+// A taxiway's lights as bright as they are near within TAXI_LIGHTS_FULL,
+// metres; dimmer as the distance grows past it, fading out over the last
+// TAXI_LIGHTS_FADE before TAXI_LIGHTS_GONE.
+constexpr float TAXI_LIGHTS_FULL = 1200, TAXI_LIGHTS_FADE = 1500, TAXI_LIGHTS_GONE = 6000;
 
 // From where it is in the camera's space, its haze worked out already - an
 // airfield's lights, thousands of them, each a cell's.
@@ -5744,7 +5884,17 @@ void prepareEnd() {
             if (!inView(c)) {
                 continue;
             }
-            float haze = lightHaze(length(c.middle - g.eye));
+            float distance = length(c.middle - g.eye), haze = lightHaze(distance);
+            // A taxiway's lights a fraction of a runway's: dimmer the further
+            // off, and none at all past TAXI_LIGHTS_GONE - a big airport's
+            // thousands, seen from miles out, only a speckle.
+            if (c.lod == LIGHTS_TAXIWAY) {
+                if (distance > TAXI_LIGHTS_GONE) {
+                    continue;
+                }
+                haze = 1 - (1 - haze) * std::min(1.0f, TAXI_LIGHTS_FULL / distance) *
+                               std::min(1.0f, (TAXI_LIGHTS_GONE - distance) / TAXI_LIGHTS_FADE);
+            }
             GridBase base = gridBase(c.middle, m.unit);
             // Its few colours hazed and packed once for the cell, as each is
             // first wanted.
@@ -6802,6 +6952,16 @@ float sizeOf(const Look &look) {
     return designs()[std::min((int)look.family, (int)Family::COUNT - 1)].length * look.scale / 37.6f;
 }
 
+float noseWheelAhead(const Look &look) {
+    models();
+    return designs()[std::min((int)look.family, (int)Family::COUNT - 1)].noseGear * look.scale;
+}
+
+float noseAhead(const Look &look) {
+    models();
+    return designs()[std::min((int)look.family, (int)Family::COUNT - 1)].hi.x * look.scale;
+}
+
 void Pilot::fly(float dt, Family family, float turnRate, float speedKt, float climbFpm, bool onGround) {
     if (dt <= 0) {
         return;
@@ -6907,11 +7067,20 @@ Config configFor(float heightM, float speedKt, bool onGround, bool departing) {
     return c;
 }
 
+// An aircraft parked at a stand: its nose wheel on the stop - or its middle
+// on the middle of one drawn as its outline - and further back if that would
+// bring its nose within 3m of the building ahead.
+Pose parkedOn(const StandStop &s, const Look &look) {
+    float back = std::max(s.middle ? 0.0f : noseWheelAhead(look), noseAhead(look) - (s.room - 3));
+    return {s.at - Vec3{cosf(s.heading), sinf(s.heading), 0} * back, s.heading, 0};
+}
+
 int parkedAtStands(Aircraft *out, int max) {
     const Models &m = models();
     int n = std::min(max, (int)m.stands.size());
     for (int i = 0; i < n; i++) {
-        out[i] = {m.stands[i], mixLook(i, true), {}};
+        Look look = mixLook(i, true);
+        out[i] = {parkedOn(m.stands[i], look), look, {}};
     }
     return n;
 }
@@ -6925,8 +7094,12 @@ int busyTraffic(float t, Aircraft *out, int max) {
             n++;
         }
     };
-    for (const Pose &s : m.stands) {
-        add(s);
+    for (const StandStop &s : m.stands) {
+        if (n < max) {
+            Look look = mixLook(n, true);
+            out[n] = {parkedOn(s, look), look, {}};
+            n++;
+        }
     }
     // Three more arrivals behind the one landing, 75 seconds apart - a
     // little under three miles, at 136 knots.

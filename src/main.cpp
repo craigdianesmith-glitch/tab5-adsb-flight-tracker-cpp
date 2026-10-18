@@ -44,6 +44,7 @@
 #include "share_screen.h"
 #include "sound.h"
 #include "splash.h"
+#include "subject3d.h"
 #include "telemetry.h"
 #include "view3d.h"
 #include "watchlist_screen.h"
@@ -1300,6 +1301,9 @@ struct Track {
 // that much of the chip's own memory.
 std::map<String, Track, std::less<String>, PsramAllocator<std::pair<const String, Track>>> g_tracks;  // only touched by loop()
 
+// What the 3D view shows - see subject3d.h and update3dSubject().
+subject3d::Picker g_picker;
+
 // Not announced for the same again within this: a landing the sim loses
 // for a poll and picks up again is one landing.
 constexpr uint32_t ANNOUNCE_AGAIN_MS = 5UL * 60 * 1000;
@@ -2358,6 +2362,12 @@ void startFollow(const Aircraft &ac) {
     g_follow.airborne = !onGround(ac);
     g_follow.seenGround = onGround(ac);
     g_follow.rangeNm = followRangeFor(ac);
+    // Its runway simulation as its track has it - whether it was in the air
+    // lately, a take-off or landing under way - not begun again from nothing.
+    auto track = g_tracks.find(ac.hex);
+    if (track != g_tracks.end() && track->second.sim.haveFresh()) {
+        g_follow.sim = track->second.sim;
+    }
     noteHeight(ac);
     Serial.printf("[follow] %s (%s)\n", ac.callsign.c_str(), ac.hex.c_str());
     if (xSemaphoreTake(g_dataMutex, portMAX_DELAY) == pdTRUE) {
@@ -2599,7 +2609,8 @@ void tickFollow() {
                               g_follow.originCode.length() ? g_follow.originCode.c_str() : "?");
             }
         }
-    } else if (now - g_follow.seenMs > std::max(FOLLOW_LOST_MS, g_follow.sim.keepMs())) {
+    } else if (now - g_follow.seenMs > std::max(FOLLOW_LOST_MS, g_follow.sim.keepMs()) &&
+               !(g_screen == Screen::VIEW3D && (g_picker.guest().length() > 0 || view3d::parkingLost()))) {
         Serial.printf("[follow] lost %s\n", g_follow.callsign.c_str());
         followEnded();
         if (g_screen == Screen::RADAR) {
@@ -2784,6 +2795,7 @@ void open3d() {
     }
     g_view3dReturnTo = g_screen;
     g_screen = Screen::VIEW3D;
+    g_picker.reset();
     if (xSemaphoreTake(g_dataMutex, portMAX_DELAY) == pdTRUE) {
         g_view3dTraffic = g_zoomAircraft;
         xSemaphoreGive(g_dataMutex);
@@ -2795,26 +2807,126 @@ void open3d() {
 void leave3d() {
     view3d::close();
     g_screen = g_view3dReturnTo;
+    g_picker.reset();
     repaintCurrentScreen();
 }
 
-// The flight as the 3D view wants it, from what following knows.
+// --- what the 3D view shows ---------------------------------------------------------
+
+// Following moved on to `hex`, the 3D view kept open on it: its take-off or
+// landing, under way, carried on - startFollow() takes its track's runway
+// simulation.
+void followOnTo(const String &hex) {
+    auto it = g_tracks.find(hex);
+    if (it == g_tracks.end()) {
+        return;
+    }
+    Serial.printf("[3d] %s has landed - following %s, next\n", g_follow.callsign.c_str(),
+                  it->second.last.callsign.c_str());
+    Aircraft next = it->second.last;
+    stopFollow();
+    startFollow(next);
+    g_picker.clearGuest();
+}
+
+// Each pass, the 3D view open: what it shows - the one followed, or its
+// guest - see subject3d.h.
+void update3dSubject() {
+    if (!g_follow.active) {
+        g_picker.clearGuest();
+        return;
+    }
+    String was = g_picker.guest(), next;
+    subject3d::Show show = g_picker.pick(g_follow.hex, g_follow.sim, g_tracks, view3d::airport(),
+                                         [](double lat, double lon) { return view3d::atStand(lat, lon); }, millis(),
+                                         next);
+    if (show == subject3d::Show::NEXT) {
+        followOnTo(next);
+        return;
+    }
+    const String &guest = g_picker.guest();
+    if (guest != was) {
+        auto it = guest.length() ? g_tracks.find(guest) : g_tracks.end();
+        if (it != g_tracks.end()) {
+            Serial.printf("[3d] showing %s while %s is on the ground\n", it->second.last.callsign.c_str(),
+                          g_follow.callsign.c_str());
+        } else {
+            Serial.printf("[3d] back to %s\n", g_follow.callsign.c_str());
+        }
+    }
+}
+
+// The 3D view's flight, from a track: the guest's.
+view3d::Followed followedOf(const String &hex, const Track &t) {
+    view3d::Followed f;
+    f.hex = hex;
+    f.callsign = t.last.callsign;
+    f.type = t.last.type;
+    f.category = t.last.category;
+    f.military = t.last.military;
+    f.now = t.sim.at(millis());
+    f.reportMs = t.sim.haveFresh() ? t.sim.fresh().ms : 0;
+    if (t.sim.haveFresh()) {
+        f.report = t.sim.fresh();
+        f.landed = t.sim.airborneWithin(f.report.ms, subject3d::LANDED_WITHIN_MS);
+    }
+    f.simulating = t.sim.simulating(millis());
+    f.movement = t.sim.movement();
+    f.runway = t.sim.runway();
+    f.lost = millis() - t.freshMs > subject3d::FRESH_MS;
+    String call = g_follow.callsign;
+    call.trim();
+    f.note = "while " + (call.length() ? call : g_follow.hex) +
+             (g_follow.sim.airborneWithin(millis(), subject3d::LANDED_WITHIN_MS) ? " taxies in" : " is on the ground");
+    return f;
+}
+
+// The flight as the 3D view wants it, from what following knows - or its
+// guest, while the one followed is taxiing.
 view3d::Followed followed3d() {
     view3d::Followed f;
-    f.hex = g_follow.hex;
-    f.callsign = g_follow.callsign;
-    f.type = g_follow.last.type;
-    f.category = g_follow.last.category;
-    f.military = g_follow.last.military;
-    f.now = followEstimateNow();
-    f.reportMs = g_follow.sim.haveFresh() ? g_follow.sim.fresh().ms : 0;
-    if (g_follow.sim.haveFresh()) {
-        f.report = g_follow.sim.fresh();
-        f.landed = g_follow.sim.airborneWithin(f.report.ms, 15 * 60 * 1000);
+    const String &guestHex = g_picker.guest();
+    auto guest = guestHex.length() ? g_tracks.find(guestHex) : g_tracks.end();
+    if (guest != g_tracks.end()) {
+        f = followedOf(guestHex, guest->second);
+    } else {
+        f.hex = g_follow.hex;
+        f.callsign = g_follow.callsign;
+        f.type = g_follow.last.type;
+        f.category = g_follow.last.category;
+        f.military = g_follow.last.military;
+        f.now = followEstimateNow();
+        f.reportMs = g_follow.sim.haveFresh() ? g_follow.sim.fresh().ms : 0;
+        if (g_follow.sim.haveFresh()) {
+            f.report = g_follow.sim.fresh();
+            f.landed = g_follow.sim.airborneWithin(f.report.ms, subject3d::LANDED_WITHIN_MS);
+        }
+        f.simulating = g_follow.sim.simulating(millis());
+        f.movement = g_follow.sim.movement();
+        f.runway = g_follow.sim.runway();
+        f.lost = g_follow.lost;
     }
-    f.simulating = g_follow.sim.simulating(millis());
-    f.movement = g_follow.sim.movement();
-    f.runway = g_follow.sim.runway();
+    // The zoom's runways in use - read once a second, its list not built
+    // every frame.
+    static uint32_t inUseMs = 0;
+    static char inUseAirport[5] = "";
+    static char inUse[8][4] = {};
+    static int inUseCount = 0;
+    if (inUseMs == 0 || millis() - inUseMs >= 1000) {
+        inUseMs = millis();
+        recorder::RunwaysInUse now;
+        radarLiveRunwaysInUse(now);
+        snprintf(inUseAirport, sizeof inUseAirport, "%s", now.code.c_str());
+        inUseCount = 0;
+        for (const recorder::RunwaysInUse::End &e : now.ends) {
+            if (inUseCount < 8) {
+                snprintf(inUse[inUseCount++], sizeof inUse[0], "%s", e.ident);
+            }
+        }
+    }
+    memcpy(f.inUseAirport, inUseAirport, sizeof f.inUseAirport);
+    memcpy(f.inUse, inUse, sizeof f.inUse);
+    f.inUseCount = inUseCount;
     return f;
 }
 
@@ -4947,6 +5059,7 @@ void loop() {
     if (g_screen == Screen::VIEW3D) {
         if (g_follow.active) {
             g_loopAt = "the 3D view's frame";
+            update3dSubject();
             view3d::frame(followed3d(), g_view3dTraffic, g_view3dTrafficMs);
             g_loopAt = "after the 3D view's frame";
         } else {

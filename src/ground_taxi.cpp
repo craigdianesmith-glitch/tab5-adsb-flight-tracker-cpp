@@ -24,8 +24,9 @@ constexpr float TIGHTEST = 5, TIGHTEST_GOING = 15, MOST_PULL = 2.5f;
 // Slowing harder than it plans to, to a speed a new way allows at once.
 constexpr float HARD_BRAKE = 2.5f;
 // Coming to its stop - a stand's, a holding point's - gently, creeping the
-// last of it.
-constexpr float STOPPING = 0.3f;
+// last of it; and straight for this much before it, or half its last part,
+// to stop lined up with the way.
+constexpr float STOPPING = 0.3f, STRAIGHT_IN = 15;
 // A way's points this close to the line between those either side are kinks
 // in how it is drawn, not turns.
 constexpr float KINK = 2;
@@ -75,6 +76,7 @@ void Plan::clear() {
     at_.clear();
     fastest_.clear();
     kinds_.clear();
+    arc_.clear();
 }
 
 void Plan::build(const airfield::List<Vec2> &given, const airfield::List<uint8_t> &givenKinds, bool stop) {
@@ -100,6 +102,9 @@ void Plan::build(const airfield::List<Vec2> &given, const airfield::List<uint8_t
     if (p.size() > 2 && dist(p[0], p[1]) < 3) {
         p.erase(p.begin() + 1);
         k.erase(k.begin() + 1);
+    }
+    if (p.size() < 2) {
+        return;  // nowhere to go
     }
     // Kinks of a metre or two - where two ways' ends don't quite meet, as
     // drawn - not turned at: only the points more than 2m off the line
@@ -205,7 +210,7 @@ void Plan::build(const airfield::List<Vec2> &given, const airfield::List<uint8_t
     if (p.size() < 2) {
         return;
     }
-    auto add = [&](Vec2 q, uint8_t kind, float fastest) {
+    auto add = [&](Vec2 q, uint8_t kind, float fastest, bool arc) {
         if (!points_.empty() && dist(points_.back(), q) < 0.05f) {
             fastest_.back() = std::min(fastest_.back(), fastest);
             return;
@@ -213,15 +218,16 @@ void Plan::build(const airfield::List<Vec2> &given, const airfield::List<uint8_t
         points_.push_back(q);
         kinds_.push_back(kind);
         fastest_.push_back(fastest);
+        arc_.push_back(arc);
     };
-    add(p[0], k[0], FASTEST);
+    add(p[0], k[0], FASTEST, false);
     // Each corner as a curve - as round as its parts' lengths allow, and no
     // more than it cuts the corner by - the curve's points as fast as its
     // radius lets an aircraft turn.
     for (size_t i = 1; i + 1 < p.size(); i++) {
         float inLength = dist(p[i - 1], p[i]), outLength = dist(p[i], p[i + 1]);
         if (inLength < 0.01f || outLength < 0.01f) {
-            add(p[i], k[i], FASTEST);
+            add(p[i], k[i], FASTEST, false);
             continue;
         }
         float ix = (p[i].x - p[i - 1].x) / inLength, iy = (p[i].y - p[i - 1].y) / inLength;
@@ -229,13 +235,15 @@ void Plan::build(const airfield::List<Vec2> &given, const airfield::List<uint8_t
         float turn = acosf(std::max(-1.0f, std::min(1.0f, ix * ox + iy * oy)));
         uint8_t kind = k[i + 1];
         if (turn < 0.026f) {  // a degree and a half
-            add(p[i], k[i], FASTEST);
+            add(p[i], k[i], FASTEST, false);
             continue;
         }
         float half = tanf(std::min(turn, 3.0f) / 2);
         // The parts either side shared with the corners at their other ends -
-        // half each - but the first's and the last's its own.
-        float room = std::min(i == 1 ? inLength : inLength / 2, i + 2 == p.size() ? outLength : outLength / 2);
+        // half each - but the first's and the last's its own; the last's less
+        // its straight in to a stop.
+        float lastRoom = stop ? outLength - std::min(STRAIGHT_IN, outLength / 2) : outLength;
+        float room = std::min(i == 1 ? inLength : inLength / 2, i + 2 == p.size() ? lastRoom : outLength / 2);
         float radius;
         curveStart(turn, radius);
         radius = std::min(radius, room / half);
@@ -246,14 +254,13 @@ void Plan::build(const airfield::List<Vec2> &given, const airfield::List<uint8_t
         Vec2 centre = {a.x - iy * radius * left, a.y + ix * radius * left};
         float start = atan2f(a.y - centre.y, a.x - centre.x);
         int steps = std::max(1, (int)ceilf(turn / 0.17f));  // ten degrees each
-        add(a, k[i], fastest);
+        add(a, k[i], fastest, false);
         for (int s = 1; s <= steps; s++) {
             float angle = start + left * turn * s / steps;
-            add({centre.x + radius * cosf(angle), centre.y + radius * sinf(angle)}, kind,
-                fastest);
+            add({centre.x + radius * cosf(angle), centre.y + radius * sinf(angle)}, kind, fastest, true);
         }
     }
-    add(p.back(), k.back(), stop ? 0.0f : FASTEST);
+    add(p.back(), k.back(), stop ? 0.0f : FASTEST, false);
     if (points_.size() < 2) {
         clear();
         return;
@@ -330,6 +337,23 @@ uint8_t Plan::kindAt(float s) const {
     return kinds_[std::max((size_t)1, std::min(points_.size() - 1, i))];
 }
 
+float Plan::turnStart(float s, float within) const {
+    if (empty()) {
+        return s;
+    }
+    // The part it is on - from point i - 1 to point i - and back over the
+    // curve's parts before it.
+    size_t i = std::upper_bound(at_.begin(), at_.end(), s) - at_.begin();
+    i = std::max((size_t)1, std::min(points_.size() - 1, i));
+    if (!arc_[i]) {
+        return s;  // on a straight
+    }
+    while (i > 1 && arc_[i - 1] && s - at_[i - 2] <= within) {
+        i--;
+    }
+    return std::min(s, at_[i - 1]);
+}
+
 void Taxi::place(Vec2 p, float heading, float speed) {
     plan_.clear();
     s_ = 0;
@@ -383,15 +407,24 @@ void Taxi::step(float dt, float want) {
     }
     bool runway = plan_.kindAt(s_) == (uint8_t)airfield::WayKind::RUNWAY;
     float fastest = std::min(want, plan_.fastestAt(s_, runway ? RUNWAY_BRAKE : TAXI_BRAKE, hurry));
+    if (runway && !takingOff && !landing) {
+        fastest = std::min(fastest, TAXI_SPEED * hurry);  // taxiing along a runway: at a taxi's speed
+    }
     if (pushing) {
-        fastest = std::min(fastest, PUSH_SPEED);
+        fastest = std::min(fastest, pushSpeed);
     }
     if (landing && runway && speed_ > TAXI_SPEED) {
         fastest = std::min(fastest, speed_ - ROLLOUT_SLOWING * dt);
     }
     if (fastest > speed_) {
-        // On a runway, rolling for take-off, it gathers speed as one does.
-        speed_ = std::min(fastest, speed_ + ((runway && !landing) || takingOff ? ROLL_ACCEL : TAXI_ACCEL) * dt);
+        // On a runway, rolling for take-off, it gathers speed as one does -
+        // a little faster, behind where it should be, to catch up before
+        // it is handed back to the take-off's simulation.
+        float accel = takingOff ? ROLL_ACCEL : TAXI_ACCEL;
+        if (takingOff && hurry > 1) {
+            accel *= 1.6f;
+        }
+        speed_ = std::min(fastest, speed_ + accel * dt);
     } else {
         speed_ = std::max(fastest, speed_ - HARD_BRAKE * dt);
     }

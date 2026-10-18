@@ -58,7 +58,25 @@ struct StandWay {
     // At a terminal - its stop within 150m of one - rather than a remote one,
     // cargo's, or the flying club's.
     bool terminal = false;
+    // The stop where the nose wheel stops, as OpenStreetMap maps a stand -
+    // or, for one drawn only as its outline, the outline's middle, where the
+    // middle of the aircraft goes.
+    bool middle = false;
+    // How far on from the stop, the way it faces, before a building.
+    float room = 1e30f;
 };
+
+// Where an aircraft parks at `st`: how far back along its line from the stop
+// its main wheels are - where the 3D view places an aircraft - with its nose
+// wheel `noseWheel` metres ahead of them and its nose `nose`. Its nose wheel
+// on the stop, or its middle on an outline's; further back if that would put
+// its nose within a few metres of the building ahead.
+float parkBack(const StandWay &st, float noseWheel, float nose);
+// The point that far back along its line, and the way an aircraft there
+// faces: towards the stop.
+Vec2 parkedAt(const StandWay &st, float back, float &heading);
+// Its line in, cut that far short of the stop: the way in to where it parks.
+void lineIn(const StandWay &st, float back, airfield::List<Vec2> &out);
 
 // A holding point as the network has it: where, and which way an aircraft
 // waiting there faces - towards the runway, for a runway's.

@@ -28,6 +28,18 @@ struct Followed {
     // and its runway.
     RunwaySim::Movement movement = RunwaySim::Movement::NONE;
     RunwayLine runway;
+    // The runway ends the airport zoom has lately seen in use - "27L" - at
+    // the airport `inUseAirport`: for one departing to make for a holding
+    // point at one of them.
+    char inUseAirport[5] = "";
+    char inUse[8][4] = {};
+    int inUseCount = 0;
+    // Its signal lost: the last poll came back without it, or with its place
+    // stale.
+    bool lost = false;
+    // Said on the strip after where it is: "while EZY45 taxis out", for one
+    // shown while the one followed is taxiing - see main's 3D subject.
+    String note;
 };
 
 // Takes the screen and what drawing it takes - 90KB of the chip's own memory
@@ -37,6 +49,17 @@ bool open();
 // Gives them back, the frame being drawn finished first.
 void close();
 bool isOpen();
+// Showing the one followed parked at a stand, or making for one - landed,
+// its signal lost on the ground, taxied in by itself: following is kept on
+// while it is, lost or not, for it to be seen to park and stay parked.
+bool parkingLost();
+// Whether (lat, lon) is at one of the stands of the airfield the 3D view is
+// at - its stop within a few tens of metres. False if it is at none, or the
+// view knows no stands there.
+bool atStand(double lat, double lon);
+// The airport whose airfield the 3D view is at - "EDI" - or "" high up, or
+// closed.
+const char *airport();
 
 // Each pass of the loop: the frame prepared the pass before drawn - and sent
 // to the screen a band at a time - on the other core, while this one is

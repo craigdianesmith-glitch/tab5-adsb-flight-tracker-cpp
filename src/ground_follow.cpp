@@ -22,8 +22,10 @@ constexpr uint32_t LOST_MS = 15000;
 // A report this near a line is on it; one standing this near a stand's stop,
 // at the stand.
 constexpr float REACH = 45, AT_STAND = 35;
-// Slower than STILL, but this far from the report before: moving.
-constexpr float CREPT = 10;
+// Slower than STILL, but this far from the report before: moving - further
+// than a standing one's reports wander from one to the next, by 10m and
+// more.
+constexpr float CREPT = 25;
 // Off the lines - across to one, into a stand - it turns no tighter than this,
 // metres radius.
 constexpr float TURN_RADIUS = 20;
@@ -36,17 +38,55 @@ constexpr float ON_PLAN = 8;
 // At a fork no report has said which way it took at, it waits - no further
 // than this past it, where the ways have parted - for one that does.
 constexpr float FORK_ROOM = 8, FORK_NEAR = 22, FORK_BRAKE = 0.8f;
+// Parked within this many metres of where it parks, it settles there - at
+// up to these many radians and metres a second.
+constexpr float SETTLE = 3, SETTLE_TURN = 0.07f, SETTLE_SPEED = 0.3f;
+// It waits before the plan's turn there begins - its rounded corner, up to
+// this far before the fork - unless it has begun it already; until a report
+// has it this far past the fork, on one way or the other.
+constexpr float FORK_LEAD = 45, FORK_PAST = 15;
+// Making for a stand by itself, no report having put it there, it waits at
+// the stand's way in while its last report is no older than this: for one
+// to say it is that stand - or, its reports stopped, in to it.
+constexpr uint32_t STAND_WAIT_MS = 75000;
 // Between reports, carried on from the last at its speed - slowing for the
 // turns ahead as it would - for no more than this.
 constexpr float CARRY_S = 20;
 // In step: going faster or slower than the reports' speed by this much a
 // second for each metre behind or ahead.
 constexpr float KEEP_UP = 0.15f;
-// Pushed back along the taxilane, tail first, this far past its stand's line.
-constexpr float PUSH_ALONG = 35;
+// Pushed back along the taxilane, tail first, this far past its stand's line
+// - its tail swung round onto it from this far back along the line, or less
+// of a short one.
+constexpr float PUSH_ALONG = 35, PUSH_TURN = 18;
+// Seen to have left its stand only once taxiing, or this far out: pushed
+// back faster, metres a second, to catch up.
+constexpr float LATE_PUSH = 60, PUSH_LATE = 2.5f;
 // Parked, reported this far from where it was seen there - and nearer the
-// taxilane - it has left; this far, if its speed says it is going.
-constexpr float LEFT_STAND = 45, LEFT_STAND_GOING = 15;
+// taxilane - it has left; this far, if its speed says it is going, or two
+// reports one after the other do. Further, the more its reports wander
+// about where it stands: this far on average, until some have.
+constexpr float LEFT_STAND = 45, LEFT_STAND_GOING = 15, WANDER = 8, MOST_WANDER = 20;
+// Or in two reports one after the other this far from it, whichever way -
+// gone, seen late; and ahead of its stop by this much isn't out of it.
+constexpr float LEFT_FAR = 150, AHEAD_OF_STOP = 5;
+// A report this far from the one before, at more than twice either's speed
+// and this many metres a second besides, is wild; and one this much nearer
+// another stand's stop than the one it is making for is at that one.
+constexpr float WILD_JUMP = 60, WILD_SPEED = 8, STAND_SWITCH = 25;
+// A report off every taxiway - in an apron's open space - is gone to straight,
+// unless going faster than this, metres a second, or further than
+// OFF_NETWORK_MOST from where it is shown: wild.
+constexpr float OFF_NETWORK_FAST = 6, OFF_NETWORK_MOST = 150;
+// Departing, standing no nearer a stand's stop than this, it isn't at that
+// stand; and one shown further than SNAP_PARK from a stand's stop it is
+// reported standing at isn't put there, but taxied there.
+constexpr float AT_STAND_DEPARTING = 12, SNAP_PARK = 60;
+// Unless reported standing at it in this many reports one after the other.
+constexpr int STANDING_PARK = 3;
+// Just begun, shown no further than this from a stand's stop and from its
+// report, standing at it - the view opened on it there: parked there at once.
+constexpr float BEGUN_PARKED = 60;
 // A stand with another aircraft standing this near its stop is taken.
 constexpr float TAKEN = 25;
 // Holding points other than at a runway's end - crossings - count as this
@@ -54,18 +94,46 @@ constexpr float TAKEN = 25;
 constexpr float NOT_AN_END = 1500;
 // Where it is making for is kept to unless another is this much nearer.
 constexpr float STICK = 150;
+// And looked for along the taxiways this far: Schiphol's Polderbaan is 13km
+// by taxiway from its piers. Finding none, stopped, it looks again - free to
+// turn about - no more often than this.
+constexpr float WAY_ON_MOST = 25000;
+constexpr uint32_t OWN_WAY_AGAIN_MS = 10000;
 // A departure this near a runway's end hold, going on, is lining up: this
-// far down the runway.
-constexpr float AT_HOLD = 15, LINED_UP_IN = 60;
+// far down the runway. As is one going on from no further past one.
+constexpr float AT_HOLD = 15, LINED_UP_IN = 60, PASSED_HOLD = 150;
+// Past one - its runway this near ahead - is lining up too.
+constexpr float RUNWAY_AHEAD = 120;
+// Holding points not at a runway end departures are using - none this near
+// where one starts - count as this much further, where it is known which
+// those are.
+constexpr float NOT_IN_USE = 3000, IN_USE_NEAR = 700;
 // A stand away from the terminals - remote, cargo's, the flying club's -
 // counts as this much further, landed, where the airport has stands at them.
 constexpr float REMOTE = 800;
 // Gone a different way from the way its report has it going, but no further
 // from it than this: across to it, smoothly, rather than round by the
-// taxiways.
-constexpr float ACROSS = 25;
+// taxiways. No further than ACROSS_MOST from the way, nor round in a circle -
+// turning more than MOST_ACROSS radians all told - to a point on it up to
+// ACROSS_REACH metres on: otherwise on by itself, along the taxiways.
+constexpr float ACROSS = 25, ACROSS_MOST = 80, MOST_ACROSS = 3.5f, ACROSS_REACH = 150;
 
 float dist(Vec2 a, Vec2 b) { return hypotf(b.x - a.x, b.y - a.y); }
+
+// Whether `h` is at a runway end departures are using - or there's no
+// saying which those are.
+bool departingFrom(const Network &net, const HoldWay &h, const Follower::Input &in) {
+    if (in.departFrom == nullptr || in.departFromCount <= 0) {
+        return true;
+    }
+    Vec2 at = net.at(h.at);
+    for (int i = 0; i < in.departFromCount; i++) {
+        if (dist(at, in.departFrom[i]) < IN_USE_NEAR) {
+            return true;
+        }
+    }
+    return false;
+}
 
 // The point on `line` nearest `p` - in its first `within` metres - how far
 // along, how far off, and the way the line runs there.
@@ -108,18 +176,26 @@ void curve(Vec2 p0, float h0, Vec2 p1, float h1, airfield::List<Vec2> &out, airf
 // no tighter than `radius`: a turn, a straight and a turn - the shortest of
 // the four such ways - as points a few metres apart, neither end's. False,
 // and nothing, if they are on top of each other.
-bool turnAcross(Vec2 p0, float h0, Vec2 p1, float h1, float radius, airfield::List<Vec2> &out,
-                airfield::List<uint8_t> &kinds, uint8_t kind) {
-    if (dist(p0, p1) < 1) {
-        return false;
-    }
-    // Each side's turning circle's middle: left, s = 1; right, s = -1.
-    auto middle = [&](Vec2 p, float h, float s) { return Vec2{p.x - s * radius * sinf(h), p.y + s * radius * cosf(h)}; };
-    auto wrap = [](float a) {
-        a = fmodf(a, 2 * (float)M_PI);
-        return a < 0 ? a + 2 * (float)M_PI : a;
-    };
-    float best = 1e30f, bestS0 = 1, bestS1 = 1, bestPhi = 0;
+// Each side's turning circle's middle: left, s = 1; right, s = -1.
+Vec2 turnMiddle(Vec2 p, float h, float s, float radius) {
+    return Vec2{p.x - s * radius * sinf(h), p.y + s * radius * cosf(h)};
+}
+
+float turnWrap(float a) {
+    a = fmodf(a, 2 * (float)M_PI);
+    return a < 0 ? a + 2 * (float)M_PI : a;
+}
+
+// The shortest of turnAcross()'s four ways: which way each turn goes, the
+// straight's heading, and how far it turns all told, radians. False if there
+// is none.
+bool shortestAcross(Vec2 p0, float h0, Vec2 p1, float h1, float radius, float &bestS0, float &bestS1, float &bestPhi,
+                    float &turned) {
+    auto middle = [&](Vec2 p, float h, float s) { return turnMiddle(p, h, s, radius); };
+    auto wrap = turnWrap;
+    float best = 1e30f;
+    bestS0 = bestS1 = 1;
+    bestPhi = 0;
     for (float s0 : {1.0f, -1.0f}) {
         for (float s1 : {1.0f, -1.0f}) {
             Vec2 c0 = middle(p0, h0, s0), c1 = middle(p1, h1, s1);
@@ -141,12 +217,21 @@ bool turnAcross(Vec2 p0, float h0, Vec2 p1, float h1, float radius, airfield::Li
             if (length < best) {
                 best = length;
                 bestS0 = s0, bestS1 = s1, bestPhi = phi;
+                turned = turn0 + turn1;
             }
         }
     }
-    if (best >= 1e29f) {
+    return best < 1e29f;
+}
+
+bool turnAcross(Vec2 p0, float h0, Vec2 p1, float h1, float radius, airfield::List<Vec2> &out,
+                airfield::List<uint8_t> &kinds, uint8_t kind) {
+    float bestS0, bestS1, bestPhi, turned;
+    if (dist(p0, p1) < 1 || !shortestAcross(p0, h0, p1, h1, radius, bestS0, bestS1, bestPhi, turned)) {
         return false;
     }
+    auto middle = [&](Vec2 p, float h, float s) { return turnMiddle(p, h, s, radius); };
+    auto wrap = turnWrap;
     auto arc = [&](Vec2 p, float h, float s, float turn) {
         Vec2 c = middle(p, h, s);
         int steps = std::max(1, (int)ceilf(turn / 0.17f));
@@ -170,6 +255,43 @@ bool turnAcross(Vec2 p0, float h0, Vec2 p1, float h1, float radius, airfield::Li
         kinds.push_back(kind);
     }
     return true;
+}
+
+// Across onto `line` from `p0` facing `h0`, as turnAcross() has it: to the
+// point `from` metres along it; or - that too near to turn onto without
+// going round in a circle, more than `most` radians all told - the first one
+// further on, up to `reach` further, that isn't; failing any, the one
+// turning least. Its points onto `out`, that one on the line last; how far
+// along the line it is, and in `turned`, how far the way turns all told. -1,
+// and nothing, if there is no way at all.
+float turnOnto(Vec2 p0, float h0, const airfield::List<Vec2> &line, float from, float reach, float most, float &turned,
+               airfield::List<Vec2> &out, airfield::List<uint8_t> &kinds, uint8_t kind) {
+    float length = lengthOf(line), best = -1;
+    from = std::min(std::max(from, 0.0f), length);
+    turned = 1e30f;
+    for (float s = from;; s = std::min(s + 10, length)) {
+        float h = 0, s0, s1, phi, t;
+        Vec2 q = along(line, s, h);
+        if (dist(p0, q) >= 1 && shortestAcross(p0, h0, q, h, TURN_RADIUS, s0, s1, phi, t) && t < turned) {
+            best = s;
+            turned = t;
+            if (t <= most) {
+                break;
+            }
+        }
+        if (s >= length || s >= from + reach) {
+            break;
+        }
+    }
+    if (best < 0) {
+        return -1;
+    }
+    float h = 0;
+    Vec2 q = along(line, best, h);
+    turnAcross(p0, h0, q, h, TURN_RADIUS, out, kinds, kind);
+    out.push_back(q);
+    kinds.push_back(kind);
+    return best;
 }
 
 // `from`'s points after `s` along it, and their kinds, on the end of `out`.
@@ -271,18 +393,19 @@ void smoothStart(airfield::List<Vec2> &path, airfield::List<uint8_t> &kinds, flo
         easeOnto(path, kinds, heading, reach);
         return;
     }
-    float to = std::min(lengthOf(path), std::max(40.0f, reach * 2)), qh = 0;
-    Vec2 q = along(path, to, qh);
+    float to = std::min(lengthOf(path), std::max(40.0f, reach * 2)), turnedBy;
     static airfield::List<Vec2> turned;
     static airfield::List<uint8_t> turnedKinds;
     turned.clear();
     turnedKinds.clear();
     turned.push_back(path[0]);
     turnedKinds.push_back(kinds[0] | KEEP);
-    turnAcross(path[0], heading, q, qh, TURN_RADIUS, turned, turnedKinds, kinds[0] | KEEP);
-    turned.push_back(q);
-    turnedKinds.push_back(kinds[0] | KEEP);
-    appendAfter(path, kinds, to, turned, turnedKinds);
+    float at = turnOnto(path[0], heading, path, to, ACROSS_REACH, MOST_ACROSS, turnedBy, turned, turnedKinds,
+                        kinds[0] | KEEP);
+    if (at < 0) {
+        return;  // no way onto it: as it is
+    }
+    appendAfter(path, kinds, at, turned, turnedKinds);
     path = turned;
     kinds = turnedKinds;
 }
@@ -295,6 +418,42 @@ void Follower::keepUpFrom(float s, float speed, uint32_t ms) {
     syncMs_ = ms;
     ghostS_ = s;
     ghostSpeed_ = speed;
+}
+
+void Follower::stopSoon() {
+    const Plan &was = taxi_.plan();
+    float v = taxi_.speed();
+    static airfield::List<Vec2> pts;
+    static airfield::List<uint8_t> ks;
+    pts.clear();
+    ks.clear();
+    if (!was.empty() && v > 0.3f) {
+        float from = taxi_.along(), to = std::min(was.length(), from + v * v / (2 * TAXI_BRAKE) + 1), h;
+        pts.push_back(taxi_.at());
+        ks.push_back(was.kindAt(from));
+        for (float s = from + 4; s < to; s += 4) {
+            pts.push_back(was.pointAt(s, h));
+            ks.push_back(was.kindAt(s));
+        }
+        pts.push_back(was.pointAt(to, h));
+        ks.push_back(was.kindAt(to));
+    }
+    plan_.build(pts, ks, true);
+    taxi_.take(plan_);
+}
+
+float Follower::acrossOnto(const airfield::List<Vec2> &line, float from, airfield::List<Vec2> &pts,
+                           airfield::List<uint8_t> &ks) {
+    float turned;
+    float at = turnOnto(taxi_.at(), taxi_.heading(), line, from, ACROSS_REACH, MOST_ACROSS, turned, pts, ks,
+                        ON_STAND_LINE | KEEP);
+    if (at >= 0) {
+        return at;
+    }
+    float h;
+    pts.push_back(along(line, from, h));
+    ks.push_back(ON_STAND_LINE | KEEP);
+    return from;
 }
 
 void Follower::say(const char *what, const char *ref) {
@@ -318,21 +477,45 @@ int Follower::standNear(const Network &net, Vec2 p, float within) const {
     return best;
 }
 
+Vec2 Follower::parkPoint(const StandWay &st, float &heading) const {
+    return parkedAt(st, parkBack(st, noseWheel_, nose_), heading);
+}
+
+const airfield::List<Vec2> &Follower::lineInto(const StandWay &st) {
+    lineIn(st, parkBack(st, noseWheel_, nose_), standLine_);
+    return standLine_;
+}
+
+void Follower::notPast(const StandWay &st) {
+    float off, h;
+    float s = nearestOn(st.line, taxi_.at(), off, h);
+    if (off < 20 && s > lengthOf(st.line) - parkBack(st, noseWheel_, nose_) + 0.5f) {
+        float heading = st.heading;
+        Vec2 at = parkPoint(st, heading);
+        taxi_.place(at, heading, 0);
+    }
+}
+
 void Follower::begin(const Network &net, Vec2 at, float heading, float speed, bool landed, const Input &in) {
     active_ = true;
+    noseWheel_ = in.noseWheel;
+    nose_ = in.nose;
     taxi_.place(at, heading, speed);
     taxi_.landing = landed;
     plan_.clear();
     way_.clear();
     kinds_.clear();
     stand_ = hold_ = parkedAt_ = leftStand_ = -1;
+    standSeen_ = false;
     haveParkedSeen_ = false;
     prevMs_ = 0;
+    wildInRow_ = 0;
     rolling_ = false;
     arriving_ = landed || in.arrived;
     mode_ = Mode::FOLLOW;
     reportMs_ = 0;  // the report there is, taken afresh
     say("following its reports");
+    justBegun_ = !landed;
     if (!landed) {
         return;
     }
@@ -347,6 +530,9 @@ void Follower::begin(const Network &net, Vec2 at, float heading, float speed, bo
         rules.back = false;
         wayOn(net, from, heading, rules, in);
         startAt(way_, at);
+        // Shown a little past the network place it was snapped to - the
+        // junction of the exit it will take, say, behind it - not back to it.
+        smoothStart(way_, kinds_, heading, speed);
         plan_.build(way_, kinds_, true);
         taxi_.take(plan_);
         placeForks();
@@ -357,11 +543,12 @@ void Follower::begin(const Network &net, Vec2 at, float heading, float speed, bo
 
 void Follower::wayOn(const Network &net, const Place &from, float heading, const Rules &rules, const Input &in) {
     int wasStand = stand_, wasHold = hold_;
+    bool wasSeen = standSeen_;
     way_.clear();
     kinds_.clear();
     stand_ = hold_ = -1;
     lineUp_ = false;
-    net.search(from, heading, 8000, rules);
+    net.search(from, heading, WAY_ON_MOST, rules);
     float best = 1e30f, was = 1e30f;
     if (arriving_) {
         bool terminals = false;
@@ -399,7 +586,7 @@ void Follower::wayOn(const Network &net, const Place &from, float heading, const
             if (!h.ok || !h.runway) {
                 continue;
             }
-            float cost = net.costTo(h.at, h.arrive) + (h.end ? 0 : NOT_AN_END);
+            float cost = net.costTo(h.at, h.arrive) + (h.end ? 0 : NOT_AN_END) + (departingFrom(net, h, in) ? 0 : NOT_IN_USE);
             if ((int)i == wasHold) {
                 was = cost;
             }
@@ -408,10 +595,40 @@ void Follower::wayOn(const Network &net, const Place &from, float heading, const
                 hold_ = (int)i;
             }
         }
-        // At a runway's end hold already, going on: lining up - onto the
-        // runway, turning down its longer way.
-        if (hold_ >= 0 && net.holds()[hold_].end && best < AT_HOLD && !isnan(heading) && lineUp(net, hold_)) {
+        // At a runway's end hold already, going on - or past one, between it
+        // and the runway: lining up - onto the runway, turning down its
+        // longer way.
+        if (hold_ >= 0 && net.holds()[hold_].end && best < AT_HOLD && !isnan(heading) &&
+            lineUp(net, hold_, net.holds()[hold_].at, net.holds()[hold_].arrive)) {
             return;
+        }
+        // Past one: the runway just ahead, a runway end's hold just behind.
+        static airfield::List<Vec2> on;
+        static airfield::List<uint8_t> onKinds;
+        bool runwayAhead = false;
+        if (!isnan(heading)) {
+            net.ahead(from, heading, RUNWAY_AHEAD, on, onKinds);
+            for (uint8_t k : onKinds) {
+                runwayAhead = runwayAhead || k == (uint8_t)airfield::WayKind::RUNWAY;
+            }
+        }
+        if (runwayAhead && !net.onRunway(from)) {
+            int passed = -1;
+            float nearest = PASSED_HOLD;
+            Vec2 here = net.at(from);
+            for (size_t i = 0; i < net.holds().size(); i++) {
+                const HoldWay &h = net.holds()[i];
+                Vec2 at = h.ok && h.runway && h.end ? net.at(h.at) : Vec2{1e30f, 1e30f};
+                float d = dist(here, at);
+                if (d < nearest && (here.x - at.x) * cosf(heading) + (here.y - at.y) * sinf(heading) > 0) {
+                    nearest = d;
+                    passed = (int)i;
+                }
+            }
+            if (passed >= 0 && lineUp(net, passed, from, heading)) {
+                return;
+            }
+            net.search(from, heading, WAY_ON_MOST, rules);  // lining up's search done: the holds' again
         }
     }
     // Still making for where it was - unless that is now well out of its way:
@@ -422,6 +639,7 @@ void Follower::wayOn(const Network &net, const Place &from, float heading, const
     }
     static airfield::List<float> at;
     forks_.clear();
+    standSeen_ = wasSeen && stand_ == wasStand;
     if (stand_ >= 0) {
         const StandWay &st = net.stands()[stand_];
         if (net.pathTo(st.entry, st.arrive, way_, &kinds_, &at)) {
@@ -430,8 +648,9 @@ void Follower::wayOn(const Network &net, const Place &from, float heading, const
                 forks_.push_back(along(way_, f, h));
             }
             forks_.push_back(way_.back());  // in to the stand, or on past it
-            for (size_t i = 1; i < st.line.size(); i++) {
-                way_.push_back(st.line[i]);
+            const airfield::List<Vec2> &line = lineInto(st);
+            for (size_t i = 1; i < line.size(); i++) {
+                way_.push_back(line[i]);
                 kinds_.push_back(ON_STAND_LINE);
             }
             return;
@@ -453,6 +672,7 @@ void Follower::wayOn(const Network &net, const Place &from, float heading, const
 
 void Follower::placeForks() {
     forksOnPlan_.clear();
+    forksWait_.clear();
     for (const Vec2 &f : forks_) {
         float off;
         float s = plan_.nearest(f, plan_.length(), off);
@@ -461,14 +681,21 @@ void Follower::placeForks() {
         }
     }
     std::sort(forksOnPlan_.begin(), forksOnPlan_.end());
+    for (float s : forksOnPlan_) {
+        forksWait_.push_back(std::max(0.0f, plan_.turnStart(s, FORK_LEAD) - 2));
+    }
 }
 
-bool Follower::lineUp(const Network &net, int hold) {
-    // Where the way on from the hold - the way it faces - meets the runway.
-    const HoldWay &h = net.holds()[hold];
+float Follower::searchHeading(const Network &net, const Place &from) const {
+    float h = taxi_.heading();
+    return taxi_.speed() < 3 && fabsf(cosf(h - net.heading(from))) < 0.5f ? NAN : h;
+}
+
+bool Follower::lineUp(const Network &net, int hold, const Place &from, float heading) {
+    // Where the way on from there - the way it faces - meets the runway.
     static airfield::List<Vec2> on;
     static airfield::List<uint8_t> onKinds;
-    net.ahead(h.at, h.arrive, 300, on, onKinds);
+    net.ahead(from, heading, 300, on, onKinds);
     Place runway;
     bool met = false;
     for (size_t i = 0; i < on.size() && !met; i++) {
@@ -490,6 +717,9 @@ bool Follower::lineUp(const Network &net, int hold) {
     float takeoff = lengthOf(one) >= lengthOf(other) ? along : along + (float)M_PI;
     static airfield::List<Vec2> path;
     static airfield::List<uint8_t> kinds;
+    Rules rules;
+    rules.back = false;
+    net.search(from, heading, 1000, rules);
     if (net.costTo(runway, takeoff) > AT_HOLD + 400 || !net.pathTo(runway, takeoff, path, &kinds)) {
         return false;
     }
@@ -508,25 +738,38 @@ bool Follower::lineUp(const Network &net, int hold) {
 
 void Follower::planInto(const Network &net, int stand) {
     const StandWay &st = net.stands()[stand];
+    notPast(st);
+    const airfield::List<Vec2> &line = lineInto(st);
     static airfield::List<uint8_t> lineKinds;
-    lineKinds.assign(st.line.size(), ON_STAND_LINE);
+    lineKinds.assign(line.size(), ON_STAND_LINE);
     way_.clear();
     kinds_.clear();
     float off, h;
-    float sm = nearestOn(st.line, taxi_.at(), off, h);
+    float sm = nearestOn(line, taxi_.at(), off, h);
     Place from;
     bool routed = false;
     if (off >= 6 && net.snap(taxi_.at(), taxi_.heading(), 30, from)) {
         Rules rules;
         rules.runwayFactor = 3;
         rules.back = taxi_.speed() < 1;
-        net.search(from, taxi_.heading(), 6000, rules);
+        net.search(from, searchHeading(net, from), 6000, rules);
         routed = net.pathTo(st.entry, st.arrive, way_, &kinds_) && !turnsAbout(way_, taxi_.heading(), taxi_.speed());
         if (routed) {
             startAt(way_, taxi_.at());
             smoothStart(way_, kinds_, taxi_.heading(), taxi_.speed());
-            appendAfter(st.line, lineKinds, 0, way_, kinds_);
+            appendAfter(line, lineKinds, 0, way_, kinds_);
         }
+    }
+    if (!routed && off > ACROSS_MOST) {
+        // No way to it along the taxiways, and too far from its line to go
+        // across to it: stopped, for a report or its own way to bring it.
+        stopSoon();
+        stand_ = stand;
+        hold_ = -1;
+        forks_.clear();
+        forksOnPlan_.clear();
+        forksWait_.clear();
+        return;
     }
     if (!routed) {
         // On its line already, or beside it: onto it a little further in.
@@ -534,49 +777,80 @@ void Follower::planInto(const Network &net, int stand) {
         kinds_.clear();
         way_.push_back(taxi_.at());
         kinds_.push_back(ON_STAND_LINE | KEEP);
-        float sq = std::min(sm + (off < 6 ? 0 : 30), lengthOf(st.line)), qh = 0;
-        Vec2 q = along(st.line, sq, qh);
+        float sq = std::min(sm + (off < 6 ? 0 : 30), lengthOf(line)), turned;
         if (off >= 6) {
-            turnAcross(taxi_.at(), taxi_.heading(), q, qh, TURN_RADIUS, way_, kinds_, ON_STAND_LINE | KEEP);
-            way_.push_back(q);
-            kinds_.push_back(ON_STAND_LINE | KEEP);
+            float at = turnOnto(taxi_.at(), taxi_.heading(), line, sq, ACROSS_REACH, MOST_ACROSS, turned, way_, kinds_,
+                                ON_STAND_LINE | KEEP);
+            sq = at >= 0 ? at : sq;
         }
-        appendAfter(st.line, lineKinds, sq, way_, kinds_);
+        appendAfter(line, lineKinds, sq, way_, kinds_);
     }
     stand_ = stand;
+    standSeen_ = true;
     hold_ = -1;
     plan_.build(way_, kinds_, true);
     taxi_.take(plan_);
     forks_.clear();
     forksOnPlan_.clear();
+    forksWait_.clear();
 }
 
 void Follower::parkAt(const Network &net, int stand, Vec2 seen) {
     const StandWay &st = net.stands()[stand];
-    taxi_.place(st.line.back(), st.heading, 0);
+    float heading = st.heading;
+    Vec2 at = parkPoint(st, heading);
+    taxi_.place(at, heading, 0);
     plan_.clear();
     mode_ = Mode::PARKED;
     parkedAt_ = stand;
     parkedSeen_ = seen;
     haveParkedSeen_ = true;
+    outBefore_ = farBefore_ = false;
+    wander_ = 0;
+    wanderN_ = 0;
     arriving_ = false;
     say("parked at stand", st.ref);
 }
 
 void Follower::onReport(const Network &net, const Input &in) {
     reportMs_ = in.reportMs;
+    if (in.takeoff && rolling_) {
+        return;  // rolling for take-off: the runway simulation has it, not its reports
+    }
     Vec2 p = in.reportAt;
     float v = in.reportSpeed;
+    // Further from the report before than either's speed could have taken it
+    // since: a wild one, its place out by hundreds of metres - passed over,
+    // unless the next two are as far, when it has gone there after all.
+    if (prevMs_ != 0 && in.reportMs - prevMs_ >= 3000 && in.reportMs - prevMs_ < 120000) {
+        float seconds = (in.reportMs - prevMs_) / 1000.0f, jumped = dist(p, prevAt_);
+        if (jumped > WILD_JUMP && jumped / seconds > 2 * std::max(v, prevSpeed_) + WILD_SPEED && wildInRow_ < 2) {
+            wildInRow_++;
+            TRACE("    %.0fm from the report before in %.0fs: wild, passed over\n", jumped, seconds);
+            return;
+        }
+    }
+    wildInRow_ = 0;
     bool moving = v >= STILL && !isnan(in.reportHeading);
     float h = moving ? in.reportHeading : NAN;
     // Slower, but well away from where the report before had it: creeping
     // along - in along a stand's line, or pushed back - the way it went.
     float moved = prevMs_ != 0 && in.reportMs - prevMs_ < 30000 ? dist(p, prevAt_) : 0;
     if (!moving && v >= 0.8f && moved > CREPT) {
+        // The way it went - its track, slow as it is, only if that agrees.
         moving = true;
-        h = !isnan(in.reportHeading) ? in.reportHeading : atan2f(p.y - prevAt_.y, p.x - prevAt_.x);
+        h = atan2f(p.y - prevAt_.y, p.x - prevAt_.x);
+        if (!isnan(in.reportHeading) && cosf(in.reportHeading - h) > 0.7f) {
+            h = in.reportHeading;
+        }
     }
     speedingUp_ = prevMs_ != 0 && in.reportMs - prevMs_ < 30000 && v > prevSpeed_ + 0.5f && v < TAXI_SPEED;
+    if (moving) {
+        standingAt_ = -1;
+    }
+    Vec2 wasAt = prevAt_;
+    uint32_t wasMs = prevMs_;
+    float wasSpeed = prevSpeed_;
     prevAt_ = p;
     prevMs_ = in.reportMs;
     prevSpeed_ = v;
@@ -586,7 +860,7 @@ void Follower::onReport(const Network &net, const Input &in) {
     // a few metres nearer. A neighbour well nearer is where it is.
     if (stand_ >= 0 && near >= 0 && near != stand_) {
         float mine = dist(p, net.stands()[stand_].line.back()), theirs = dist(p, net.stands()[near].line.back());
-        if (mine < AT_STAND && mine < theirs + 12) {
+        if (mine < AT_STAND && mine < theirs + STAND_SWITCH) {
             near = stand_;
         }
     }
@@ -601,22 +875,52 @@ void Follower::onReport(const Network &net, const Input &in) {
         if (parkedAt_ < 0) {
             return;
         }
-        if (!haveParkedSeen_ && !moving && dist(p, net.stands()[parkedAt_].line.back()) < AT_STAND) {
+        bool taxiing = v >= STILL && !isnan(in.reportHeading);
+        if (!haveParkedSeen_ && !taxiing && dist(p, net.stands()[parkedAt_].line.back()) < AT_STAND) {
             parkedSeen_ = p;
             haveParkedSeen_ = true;
         } else {
-            // Gone from where it was seen parked - well beyond the few metres a
-            // report wanders by - out towards the taxilane.
-            // Its speed says it is going, and it has gone a little; or it
-            // has gone a long way, whatever its speed says - not a report
-            // wandering about where it stands, as a noisy one can by 30m.
+            // Gone from where it was seen parked - out towards the taxilane,
+            // along its line or onto the taxilane, as a pushback goes: taxiing
+            // off, its speed says; or out there in two reports one after the
+            // other, the second further out; or in one, a long way out - not
+            // a report wandering about where it stands, as a noisy one can by
+            // 30m with a knot or two on it, or one wild one.
+            // How far out is out, by how far its reports have wandered while
+            // it stood there.
+            // Out: further from the stop than where it was seen, and not
+            // ahead of the stop, towards the terminal - along its line to
+            // the taxilane, or past the line's start and away.
             const StandWay &st = net.stands()[parkedAt_];
             Vec2 seen = haveParkedSeen_ ? parkedSeen_ : st.line.back();
+            Vec2 stop = st.line.back();
             float gone = dist(p, seen);
-            bool outwards = dist(p, st.line.front()) < dist(seen, st.line.front());
-            if (moving || (outwards && ((v >= 0.8f && gone > LEFT_STAND_GOING) || gone > LEFT_STAND))) {
-                if (dist(taxi_.at(), st.line.back()) < 15) {
+            float beyond = (p.x - stop.x) * cosf(st.heading) + (p.y - stop.y) * sinf(st.heading);
+            bool outwards = beyond < AHEAD_OF_STOP && dist(p, stop) > dist(seen, stop);
+            float lineOff, lineHeading;
+            nearestOn(st.line, p, lineOff, lineHeading);
+            Place lane;
+            bool wayOut = outwards && (lineOff < ON_LINE || net.snap(p, NAN, ON_LINE, lane));
+            float wander = wanderN_ > 0 ? wander_ : WANDER;
+            bool out = wayOut && gone > std::max(LEFT_STAND_GOING, 2.5f * wander);
+            bool far = gone > LEFT_FAR;
+            bool left = (taxiing && outwards && gone > LEFT_STAND_GOING) ||
+                        (out && outBefore_ && gone > goneBefore_ + 3) ||
+                        (wayOut && gone > std::max(LEFT_STAND, 3.5f * wander)) || (far && farBefore_);
+            farBefore_ = far;
+            if (!wayOut) {
+                wanderN_ = std::min(wanderN_ + 1, 8);
+                wander_ += (std::min(gone, MOST_WANDER) - wander_) / wanderN_;
+            }
+            outBefore_ = out;
+            goneBefore_ = gone;
+            if (left) {
+                float parkedHeading;
+                if (dist(taxi_.at(), parkPoint(st, parkedHeading)) < 15) {
                     pushBack(net, in);
+                    if (taxiing || gone > LATE_PUSH) {
+                        taxi_.pushSpeed = PUSH_LATE;  // seen late: catching up
+                    }
                 } else {
                     mode_ = Mode::FOLLOW;  // not shown on the stand after all: as its reports have it
                     parkedAt_ = -1;
@@ -631,59 +935,83 @@ void Follower::onReport(const Network &net, const Input &in) {
     }
     Place onLine;
     bool onTaxilane = net.snap(p, NAN, ON_TAXILANE, onLine);
+    // Departing, not just begun: standing near a stand's stop - holding
+    // short on an apron's taxilane among them, as often as not - is at that
+    // stand only right by it.
+    if (near >= 0 && !arriving_ && stand_ < 0 && !justBegun_ &&
+        dist(p, net.stands()[near].line.back()) > AT_STAND_DEPARTING) {
+        near = -1;
+    }
     if (!moving && near >= 0 && near != leftStand_ && !onTaxilane) {
         // Standing at a stand: there - taxied in, if on its way to it.
         const StandWay &st = net.stands()[near];
-        if (dist(taxi_.at(), st.line.back()) < 3000) {
+        // Shown there already, and not on its way in: where its first report
+        // put it - by the stop, or between there and where it parks - parked
+        // where it does, rather than turned about to it.
+        float fromStop = dist(taxi_.at(), st.line.back());
+        if ((justBegun_ && fromStop < BEGUN_PARKED && dist(taxi_.at(), p) < BEGUN_PARKED) ||
+            (stand_ != near && fromStop < parkBack(st, noseWheel_, nose_) + 5)) {
+            parkAt(net, near, p);
+            return;
+        }
+        if (dist(taxi_.at(), st.line.back()) < 6000) {
             Place from;
             if (stand_ != near && net.snap(taxi_.at(), taxi_.heading(), 30, from)) {
                 Rules rules;
                 rules.runwayFactor = 3;
-                net.search(from, taxi_.heading(), 6000, rules);
+                net.search(from, searchHeading(net, from), 6000, rules);
                 if (net.pathTo(st.entry, st.arrive, way_, &kinds_) && !turnsAbout(way_, taxi_.heading(), taxi_.speed())) {
                     startAt(way_, taxi_.at());
-                    easeOnto(way_, kinds_, taxi_.heading(), std::max(10.0f, std::min(30.0f, taxi_.speed() * 2.5f)));
-                    for (size_t i = 1; i < st.line.size(); i++) {
-                        way_.push_back(st.line[i]);
+                    smoothStart(way_, kinds_, taxi_.heading(), taxi_.speed());
+                    const airfield::List<Vec2> &line = lineInto(st);
+                    for (size_t i = 1; i < line.size(); i++) {
+                        way_.push_back(line[i]);
                         kinds_.push_back(ON_STAND_LINE);
                     }
                     stand_ = near;
+                    standSeen_ = true;
                     hold_ = -1;
                     plan_.build(way_, kinds_, true);
                     taxi_.take(plan_);
                     forks_.clear();
                     forksOnPlan_.clear();
+                    forksWait_.clear();
                 }
             }
             if (stand_ != near && dist(taxi_.at(), st.line.back()) < 400) {
                 // No way along the taxiways that doesn't start back the way it
                 // came: a turn across onto its line, and in.
+                const airfield::List<Vec2> &line = lineInto(st);
                 static airfield::List<uint8_t> lineKinds;
-                lineKinds.assign(st.line.size(), ON_STAND_LINE);
+                lineKinds.assign(line.size(), ON_STAND_LINE);
                 float off, h;
-                float sm = nearestOn(st.line, taxi_.at(), off, h);
-                float sq = std::min(sm + 30, lengthOf(st.line)), qh = 0;
-                Vec2 q = along(st.line, sq, qh);
+                float sm = nearestOn(line, taxi_.at(), off, h);
+                float sq = std::min(sm + 30, lengthOf(line)), turned;
                 way_.clear();
                 kinds_.clear();
                 way_.push_back(taxi_.at());
                 kinds_.push_back(ON_STAND_LINE | KEEP);
-                turnAcross(taxi_.at(), taxi_.heading(), q, qh, TURN_RADIUS, way_, kinds_, ON_STAND_LINE | KEEP);
-                way_.push_back(q);
-                kinds_.push_back(ON_STAND_LINE | KEEP);
-                appendAfter(st.line, lineKinds, sq, way_, kinds_);
+                float at = turnOnto(taxi_.at(), taxi_.heading(), line, sq, ACROSS_REACH, MOST_ACROSS, turned, way_,
+                                    kinds_, ON_STAND_LINE | KEEP);
+                sq = at >= 0 ? at : sq;
+                appendAfter(line, lineKinds, sq, way_, kinds_);
                 stand_ = near;
+                standSeen_ = true;
                 hold_ = -1;
                 plan_.build(way_, kinds_, true);
                 taxi_.take(plan_);
                 forks_.clear();
                 forksOnPlan_.clear();
+                forksWait_.clear();
             }
             if (stand_ == near) {
-                // Its plan in to that stand's stop - not one that ends short
-                // of it, where its last report put it on the taxilane.
+                standSeen_ = true;
+                // Its plan in to where it parks at that stand - not one that
+                // ends short of it, where its last report put it on the
+                // taxilane.
                 const airfield::List<Vec2> &planned = plan_.points();
-                if (planned.empty() || dist(planned.back(), st.line.back()) > 5) {
+                float parkedHeading;
+                if (planned.empty() || dist(planned.back(), parkPoint(st, parkedHeading)) > 5) {
                     planInto(net, near);
                 }
                 mode_ = Mode::OWN_WAY;
@@ -691,7 +1019,18 @@ void Follower::onReport(const Network &net, const Input &in) {
                 return;
             }
         }
-        parkAt(net, near, p);
+        standingCount_ = standingAt_ == near ? standingCount_ + 1 : 1;
+        standingAt_ = near;
+        if (dist(taxi_.at(), st.line.back()) < SNAP_PARK || (standingCount_ >= STANDING_PARK && taxi_.speed() < 0.5f)) {
+            parkAt(net, near, p);  // there - or reported there again and again: there, however it got there
+        } else {
+            // No way there along the taxiways it can be seen to take - nor
+            // put there, so far away: stopped, for later reports to bring it.
+            stopSoon();
+            keepUpFrom(0, 0, in.reportMs);
+            mode_ = Mode::FOLLOW;
+            say("standing");
+        }
         return;
     }
     // On the way it is taking already - its plan reaching where the report
@@ -717,6 +1056,17 @@ void Follower::onReport(const Network &net, const Input &in) {
         return;
     }
     if (!net.snap(p, h, REACH, r)) {
+        if ((moving && v > OFF_NETWORK_FAST) || dist(taxi_.at(), p) > OFF_NETWORK_MOST) {
+            // Going a taxiway's speed off every taxiway, or far off one from
+            // where it is shown: a wild report - its place out by hundreds of
+            // metres, as one now and then is - not one to follow onto the
+            // grass.
+            TRACE("    off the taxiways, going %.1fm/s, %.0fm away: wild, passed over\n", v, dist(taxi_.at(), p));
+            prevAt_ = wasAt;
+            prevMs_ = wasMs;
+            prevSpeed_ = wasSpeed;
+            return;
+        }
         // Off the taxiways, in an apron's open space: straight to it.
         static airfield::List<Vec2> pts;
         static airfield::List<uint8_t> ks;
@@ -739,6 +1089,7 @@ void Follower::onReport(const Network &net, const Input &in) {
         taxi_.take(plan_);
         forks_.clear();
         forksOnPlan_.clear();
+        forksWait_.clear();
         keepUpFrom(s0, moving ? v : 0, in.reportMs);
         mode_ = Mode::FOLLOW;
         say("following its reports");
@@ -753,10 +1104,10 @@ void Follower::onReport(const Network &net, const Input &in) {
     } else {
         Rules rules;
         rules.runwayFactor = 3;
+        rules.back = false;  // going: on the way it is going, not back
         wayOn(net, r, h, rules, in);
     }
     join(net, r, h, in);
-    mode_ = Mode::FOLLOW;
 }
 
 bool Follower::onStandLine(const Network &net, Vec2 p, bool moving, float heading, const Input &in) {
@@ -785,31 +1136,33 @@ bool Follower::onStandLine(const Network &net, Vec2 p, bool moving, float headin
         return false;
     }
     const StandWay &st = net.stands()[best];
+    // In along its line as far as where it parks: a report beyond that - as
+    // its aerial, ahead of its main wheels, can be - there.
+    notPast(st);
+    const airfield::List<Vec2> &line = lineInto(st);
+    reportAlong = std::min(reportAlong, lengthOf(line));
     static airfield::List<Vec2> pts;
     static airfield::List<uint8_t> ks, lineKinds;
-    lineKinds.assign(st.line.size(), ON_STAND_LINE);
+    lineKinds.assign(line.size(), ON_STAND_LINE);
     pts.clear();
     ks.clear();
     float off, h, s0;
-    float sm = nearestOn(st.line, taxi_.at(), off, h);
+    float sm = nearestOn(line, taxi_.at(), off, h);
     if (off < 6) {
         // On the line already.
         pts.push_back(taxi_.at());
         ks.push_back(ON_STAND_LINE);
-        appendAfter(st.line, lineKinds, sm, pts, ks);
+        appendAfter(line, lineKinds, sm, pts, ks);
         easeOnto(pts, ks, taxi_.heading(), std::max(10.0f, std::min(30.0f, taxi_.speed() * 2.5f)));
         s0 = reportAlong - sm;
     } else if (off < 20 && sm < reportAlong) {
         // Beside it - by its start, turning in: onto it a little further on.
-        float sq = std::min(sm + std::max(10.0f, off * 2), lengthOf(st.line)), qh = 0;
-        Vec2 q = along(st.line, sq, qh);
+        float sq = std::min(sm + std::max(10.0f, off * 2), lengthOf(line));
         pts.push_back(taxi_.at());
         ks.push_back(ON_STAND_LINE | KEEP);
-        turnAcross(taxi_.at(), taxi_.heading(), q, qh, TURN_RADIUS, pts, ks, ON_STAND_LINE | KEEP);
-        float before = lengthOf(pts) + dist(pts.back(), q);
-        pts.push_back(q);
-        ks.push_back(ON_STAND_LINE | KEEP);
-        appendAfter(st.line, lineKinds, sq, pts, ks);
+        sq = acrossOnto(line, sq, pts, ks);
+        float before = lengthOf(pts);
+        appendAfter(line, lineKinds, sq, pts, ks);
         s0 = before + reportAlong - sq;
     } else {
         // Along the taxiways to the line's start - unless that is the long way
@@ -820,7 +1173,7 @@ bool Follower::onStandLine(const Network &net, Vec2 p, bool moving, float headin
             Rules rules;
             rules.runwayFactor = 3;
             rules.back = taxi_.speed() < 1;
-            net.search(from, taxi_.heading(), 3000, rules);
+            net.search(from, searchHeading(net, from), 3000, rules);
             routed = net.pathTo(st.entry, st.arrive, pts, &ks) &&
                      lengthOf(pts) < dist(taxi_.at(), st.line.front()) * 1.5f + 60 &&
                      !turnsAbout(pts, taxi_.heading(), taxi_.speed());
@@ -829,19 +1182,16 @@ bool Follower::onStandLine(const Network &net, Vec2 p, bool moving, float headin
             startAt(pts, taxi_.at());
             smoothStart(pts, ks, taxi_.heading(), taxi_.speed());
             s0 = lengthOf(pts) + reportAlong;
-            appendAfter(st.line, lineKinds, 0, pts, ks);
+            appendAfter(line, lineKinds, 0, pts, ks);
         } else {
             pts.clear();
             ks.clear();
-            float sq = std::min(std::max(sm, 0.0f) + 30, lengthOf(st.line)), qh = 0;
-            Vec2 q = along(st.line, sq, qh);
+            float sq = std::min(std::max(sm, 0.0f) + 30, lengthOf(line));
             pts.push_back(taxi_.at());
             ks.push_back(ON_STAND_LINE | KEEP);
-            turnAcross(taxi_.at(), taxi_.heading(), q, qh, TURN_RADIUS, pts, ks, ON_STAND_LINE | KEEP);
-            float before = lengthOf(pts) + dist(pts.back(), q);
-            pts.push_back(q);
-            ks.push_back(ON_STAND_LINE | KEEP);
-            appendAfter(st.line, lineKinds, sq, pts, ks);
+            sq = acrossOnto(line, sq, pts, ks);
+            float before = lengthOf(pts);
+            appendAfter(line, lineKinds, sq, pts, ks);
             s0 = before + reportAlong - sq;
         }
     }
@@ -849,12 +1199,14 @@ bool Follower::onStandLine(const Network &net, Vec2 p, bool moving, float headin
     taxi_.take(plan_);
     forks_.clear();
     forksOnPlan_.clear();
+    forksWait_.clear();
     keepUpFrom(s0, moving ? in.reportSpeed : 0, in.reportMs);
     stand_ = best;
+    standSeen_ = true;
     hold_ = -1;
     way_.clear();
     kinds_.clear();
-    appendAfter(st.line, lineKinds, reportAlong, way_, kinds_);
+    appendAfter(line, lineKinds, reportAlong, way_, kinds_);
     mode_ = Mode::FOLLOW;
     say("taxiing in to stand", st.ref);
     TRACE("    on stand %s's line, %.0fm along it; plan %.0fm, report's place at %.0f\n", st.ref, reportAlong,
@@ -892,7 +1244,7 @@ void Follower::join(const Network &net, const Place &reported, float heading, co
         Rules rules;
         rules.runwayFactor = 3;
         rules.back = taxi_.speed() < 1;
-        net.search(pm, mh, 3000, rules);
+        net.search(pm, searchHeading(net, pm), 3000, rules);
         // Behind it: along the taxiways to the report's place, and on.
         float cost = net.costTo(reported, heading);
         TRACE("    join: from (%.0f,%.0f) on edge %d at %.0f, to the report's place on edge %d at %.0f: %.0fm, %.0fm straight\n",
@@ -938,10 +1290,10 @@ void Follower::join(const Network &net, const Place &reported, float heading, co
     }
     if (!joined && !moving) {
         // Standing somewhere it can't be reached from where it is shown - behind
-        // it: it stops where it is.
-        plan_.clear();
-        taxi_.take(plan_);
+        // it: it stops, as soon as it can.
+        stopSoon();
         keepUpFrom(0, 0, in.reportMs);
+        mode_ = Mode::FOLLOW;
         say("standing");
         TRACE("    join: standing behind - stopped\n");
         return;
@@ -968,17 +1320,27 @@ void Follower::join(const Network &net, const Place &reported, float heading, co
         }
         pts.push_back(m);
         ks.push_back((uint8_t)airfield::WayKind::TAXILANE | KEEP);
-        turnAcross(m, mh, q, qh, TURN_RADIUS, pts, ks, (uint8_t)airfield::WayKind::TAXILANE | KEEP);
-        float before = lengthOf(pts) + dist(pts.back(), q);
-        pts.push_back(q);
-        ks.push_back((kinds_.empty() ? (uint8_t)airfield::WayKind::TAXIWAY : kinds_[0]) | KEEP);
-        s0 = before - ahead;
-        appendAfter(way_, kinds_, ahead, pts, ks);
+        float turned = 1e30f;
+        float at = dist(m, q) <= ACROSS_MOST ? turnOnto(m, mh, way_, ahead, ACROSS_REACH, MOST_ACROSS, turned, pts, ks,
+                                                        (uint8_t)airfield::WayKind::TAXILANE | KEEP)
+                                             : -1;
+        if (at < 0 || turned > MOST_ACROSS) {
+            // Too far across to it, or no way onto it but round a circle: on
+            // by itself along the taxiways to where it is making for, its
+            // reports to bring it back to them.
+            TRACE("    join: too far across, or round a circle: its own way\n");
+            ownWay(net, in);
+            return;
+        }
+        ks.back() = (kinds_.empty() ? (uint8_t)airfield::WayKind::TAXIWAY : kinds_[0]) | KEEP;
+        s0 = lengthOf(pts) - at;
+        appendAfter(way_, kinds_, at, pts, ks);
     }
     plan_.build(pts, ks, true);
     taxi_.take(plan_);
     placeForks();
     keepUpFrom(s0, moving ? in.reportSpeed : 0, in.reportMs);
+    mode_ = Mode::FOLLOW;
     TRACE("    plan %.0fm, at %.0f, report's place at %.0f, way %.0fm to %s %d\n", plan_.length(), taxi_.along(), s0,
           wayLength, stand_ >= 0 ? "stand" : hold_ >= 0 ? "hold" : "-", stand_ >= 0 ? stand_ : hold_);
     if (stand_ >= 0) {
@@ -990,17 +1352,55 @@ void Follower::join(const Network &net, const Place &reported, float heading, co
     }
 }
 
+void Follower::ownWay(const Network &net, const Input &in) {
+    Place from;
+    if (net.snap(taxi_.at(), taxi_.heading(), 30, from) || net.snap(taxi_.at(), NAN, OFF_NETWORK_MOST, from)) {
+        Rules rules;
+        rules.runwayFactor = 3;
+        rules.back = taxi_.speed() < 1;
+        wayOn(net, from, searchHeading(net, from), rules, in);
+        if (!way_.empty() && dist(way_[0], taxi_.at()) >= 30) {
+            // Shown off the taxiways - back onto them from where it is.
+            way_.insert(way_.begin(), taxi_.at());
+            kinds_.insert(kinds_.begin(), (uint8_t)airfield::WayKind::TAXILANE);
+        }
+        startAt(way_, taxi_.at());
+        smoothStart(way_, kinds_, taxi_.heading(), taxi_.speed());
+        plan_.build(way_, kinds_, true);
+        taxi_.take(plan_);
+        placeForks();
+    }
+    mode_ = Mode::OWN_WAY;
+    if (stand_ >= 0) {
+        say("taxiing to stand", net.stands()[stand_].ref);
+    } else if (hold_ >= 0) {
+        say("taxiing to hold", net.holds()[hold_].ref);
+    }
+}
+
 void Follower::pushBack(const Network &net, const Input &in) {
     const StandWay &st = net.stands()[parkedAt_];
     static airfield::List<Vec2> pts;
     static airfield::List<uint8_t> ks;
     pts.clear();
     ks.clear();
-    // Back along its stand's line to the taxilane first - which way along
-    // that, once there, as its reports by then say: see pushOn().
-    for (size_t i = st.line.size(); i-- > 0;) {
-        pts.push_back(st.line[i]);
+    // Back along its stand's line towards the taxilane first - which way
+    // along that, as its reports by then say: see pushOn(). Not quite to it:
+    // the room left for the turn onto it, its tail swung round.
+    const airfield::List<Vec2> &line = lineInto(st);
+    float total = lengthOf(line), stop = std::max(0.0f, total - std::min(PUSH_TURN, total * 0.4f)), gone = 0;
+    pts.push_back(line.back());
+    ks.push_back(ON_STAND_LINE);
+    for (size_t i = line.size() - 1; i-- > 0 && gone < stop;) {
+        float d = dist(line[i + 1], line[i]);
+        if (gone + d > stop && d > 1e-3f) {
+            float k = (stop - gone) / d;
+            pts.push_back({line[i + 1].x + (line[i].x - line[i + 1].x) * k, line[i + 1].y + (line[i].y - line[i + 1].y) * k});
+        } else {
+            pts.push_back(line[i]);
+        }
         ks.push_back(ON_STAND_LINE);
+        gone += d;
     }
     // From where it is shown - at the stop, or near it - not put back there.
     startAt(pts, taxi_.at());
@@ -1008,6 +1408,7 @@ void Follower::pushBack(const Network &net, const Input &in) {
     taxi_.take(plan_);
     taxi_.stop();
     taxi_.pushing = true;
+    taxi_.pushSpeed = PUSH_SPEED;
     taxi_.landing = false;
     pushFrom_ = parkedAt_;
     pushOnward_ = false;
@@ -1018,9 +1419,13 @@ void Follower::pushBack(const Network &net, const Input &in) {
     kinds_.clear();
     forks_.clear();
     forksOnPlan_.clear();
+    forksWait_.clear();
     stand_ = hold_ = -1;
     mode_ = Mode::PUSH;
     say("pushing back from stand", st.ref);
+    if (plan_.empty()) {
+        pushOn(net, in);
+    }
 }
 
 void Follower::pushOn(const Network &net, const Input &in) {
@@ -1053,7 +1458,21 @@ void Follower::pushOn(const Network &net, const Input &in) {
     static airfield::List<Vec2> on;
     static airfield::List<uint8_t> onKinds;
     net.ahead(st.entry, push, PUSH_ALONG, on, onKinds);
-    startAt(on, taxi_.at());
+    if (lengthOf(on) < PUSH_ALONG / 2) {
+        // The taxilane ends there that way: the other.
+        static airfield::List<Vec2> other;
+        static airfield::List<uint8_t> otherKinds;
+        net.ahead(st.entry, push + (float)M_PI, PUSH_ALONG, other, otherKinds);
+        if (lengthOf(other) > lengthOf(on)) {
+            on = other;
+            onKinds = otherKinds;
+        }
+    }
+    // From where it is, short of the taxilane: the turn onto it rounded.
+    if (on.empty() || dist(on[0], taxi_.at()) > 1) {
+        on.insert(on.begin(), taxi_.at());
+        onKinds.insert(onKinds.begin(), ON_STAND_LINE);
+    }
     plan_.build(on, onKinds, true);
     taxi_.take(plan_);
     pushOnward_ = true;
@@ -1063,9 +1482,12 @@ void Follower::update(const Network &net, const Input &in) {
     if (!active_ || net.empty()) {
         return;
     }
+    noseWheel_ = in.noseWheel;
+    nose_ = in.nose;
     if (in.reportMs != 0 && in.reportMs != reportMs_) {
         onReport(net, in);
     }
+    justBegun_ = false;
     if (!in.takeoff) {
         rolling_ = false;
         taxi_.takingOff = false;
@@ -1096,13 +1518,16 @@ void Follower::update(const Network &net, const Input &in) {
             taxi_.take(plan_);
             forks_.clear();
             forksOnPlan_.clear();
+            forksWait_.clear();
             rolling_ = true;
             onIt = true;
             s = plan_.nearest(in.simAt, plan_.length(), off);
         }
         Place r;
-        if (!onIt && net.snap(in.simAt, in.simHeading, REACH, r)) {
+        if (!onIt && (int32_t)(in.ms - takeoffJoinMs_) >= 1000 && net.snap(in.simAt, in.simHeading, REACH, r)) {
+            takeoffJoinMs_ = in.ms;
             net.ahead(r, in.simHeading, 3000, way_, kinds_);
+            forks_.clear();
             stand_ = hold_ = -1;
             Input given = in;
             given.reportMs = in.ms;
@@ -1116,26 +1541,23 @@ void Follower::update(const Network &net, const Input &in) {
         mode_ = Mode::FOLLOW;
         say("lining up");
     }
-    bool lost = in.reportMs == 0 || (int32_t)(in.ms - in.reportMs) > (int32_t)LOST_MS;
+    bool lost = in.reportMs == 0 || (int32_t)(in.ms - in.reportMs) > (int32_t)LOST_MS || in.lost;
     if (mode_ == Mode::FOLLOW && lost && !in.takeoff) {
-        // Its reports gone: on by itself to where it was making for.
-        Place from;
-        if (net.snap(taxi_.at(), taxi_.heading(), 30, from)) {
-            Rules rules;
-            rules.runwayFactor = 3;
-            rules.back = taxi_.speed() < 1;
-            wayOn(net, from, taxi_.heading(), rules, in);
-            startAt(way_, taxi_.at());
-            smoothStart(way_, kinds_, taxi_.heading(), taxi_.speed());
-            plan_.build(way_, kinds_, true);
-            taxi_.take(plan_);
-            placeForks();
-        }
-        mode_ = Mode::OWN_WAY;
-        if (stand_ >= 0) {
-            say("taxiing to stand", net.stands()[stand_].ref);
-        } else if (hold_ >= 0) {
-            say("taxiing to hold", net.holds()[hold_].ref);
+        ownWay(net, in);  // its reports gone
+    }
+    if (mode_ == Mode::PARKED && parkedAt_ >= 0) {
+        // Settled onto where it parks - as it creeps the last of the way in,
+        // its nose wheel straightening - a few degrees off, having come in
+        // along a line that curves to the stop.
+        float heading = net.stands()[parkedAt_].heading;
+        Vec2 park = parkPoint(net.stands()[parkedAt_], heading);
+        float turn = remainderf(heading - taxi_.heading(), 2 * (float)M_PI), off = dist(taxi_.at(), park);
+        if (off < SETTLE && (fabsf(turn) > 1e-3f || off > 0.01f)) {
+            float most = SETTLE_TURN * in.dt, step = std::min(off, SETTLE_SPEED * in.dt);
+            Vec2 at = off > 0.01f ? Vec2{taxi_.at().x + (park.x - taxi_.at().x) * step / off,
+                                         taxi_.at().y + (park.y - taxi_.at().y) * step / off}
+                                  : park;
+            taxi_.place(at, taxi_.heading() + std::max(-most, std::min(most, turn)), 0);
         }
     }
     float want = 0;
@@ -1165,9 +1587,12 @@ void Follower::update(const Network &net, const Input &in) {
         taxi_.hurry = behind > 15 ? std::min(behind > 60 ? 1.45f : 1.25f, 1 + (behind - 15) / 100) : 1;
         // Not past the first fork beyond the report's place, until a report
         // says which way it went there.
-        for (float f : forksOnPlan_) {
-            if (f > syncS_ + 1) {
-                float room = std::max(0.0f, f + FORK_ROOM - taxi_.along());
+        for (size_t i = 0; i < forksOnPlan_.size(); i++) {
+            float f = forksOnPlan_[i];
+            if (f + FORK_PAST > syncS_) {
+                float wait = i < forksWait_.size() ? forksWait_[i] : f;
+                float limit = taxi_.along() > wait + 1 ? f + FORK_ROOM : wait;
+                float room = std::max(0.0f, limit - taxi_.along());
                 want = std::min(want, sqrtf(2 * FORK_BRAKE * room));
                 break;
             }
@@ -1176,9 +1601,20 @@ void Follower::update(const Network &net, const Input &in) {
     }
     case Mode::OWN_WAY:
         want = 1e9f;
+        if (stand_ >= 0 && !standSeen_ && arriving_ && !in.lost && in.reportMs != 0 &&
+            (int32_t)(in.ms - in.reportMs) < (int32_t)STAND_WAIT_MS) {
+            float off;
+            float s = plan_.nearest(net.at(net.stands()[stand_].entry), plan_.length(), off);
+            float wait = std::max(0.0f, plan_.turnStart(s, FORK_LEAD) - 2);
+            if (off < FORK_NEAR && taxi_.along() < s + FORK_ROOM) {
+                // Past where it waits - its plan made too near to stop by
+                // then - as soon as it can.
+                want = taxi_.along() <= wait + 1 ? sqrtf(2 * FORK_BRAKE * std::max(0.0f, wait - taxi_.along())) : 0;
+            }
+        }
         break;
     case Mode::PUSH:
-        want = PUSH_SPEED;
+        want = taxi_.pushSpeed;
         break;
     case Mode::PARKED:
     case Mode::HELD:
@@ -1188,21 +1624,44 @@ void Follower::update(const Network &net, const Input &in) {
     if (mode_ != Mode::FOLLOW) {
         taxi_.hurry = 1;
     }
+#ifdef GROUND_TRACE
+    {
+        static uint32_t lastMs = 0;
+        if (in.ms - lastMs >= 1000) {
+            lastMs = in.ms;
+            printf("    [mode %d along %.0f/%.0f ghost %.0f@%.1f sync %.0f want %.1f forks", (int)mode_, taxi_.along(),
+                   plan_.length(), ghostS_, ghostSpeed_, syncS_, want);
+            for (size_t i = 0; i < forksOnPlan_.size(); i++) {
+                printf(" %.0f/%.0f", forksOnPlan_[i], i < forksWait_.size() ? forksWait_[i] : -1.0f);
+            }
+            printf("]\n");
+        }
+    }
+#endif
     taxi_.step(in.dt, want);
     if (mode_ == Mode::PUSH && !pushOnward_ && taxi_.atEnd()) {
         pushOn(net, in);  // out of its stand: on along the taxilane
     } else if (taxi_.arrived()) {
-        if (mode_ == Mode::OWN_WAY && stand_ >= 0 && dist(taxi_.at(), net.stands()[stand_].line.back()) > 10) {
+        float parkedHeading;
+        if (mode_ == Mode::OWN_WAY && stand_ >= 0 && dist(taxi_.at(), parkPoint(net.stands()[stand_], parkedHeading)) > 10) {
             planInto(net, stand_);  // stopped short of it: on in
         } else if (mode_ == Mode::OWN_WAY && stand_ >= 0) {
             mode_ = Mode::PARKED;
             parkedAt_ = stand_;
             haveParkedSeen_ = false;
+            outBefore_ = farBefore_ = false;
+            wander_ = 0;
+            wanderN_ = 0;
             arriving_ = false;
             say("parked at stand", net.stands()[stand_].ref);
         } else if (mode_ == Mode::OWN_WAY && hold_ >= 0) {
             mode_ = Mode::HELD;
             say(lineUp_ ? "lined up, from" : "holding at", net.holds()[hold_].ref);
+        } else if (mode_ == Mode::OWN_WAY && (int32_t)(in.ms - ownWayMs_) >= (int32_t)OWN_WAY_AGAIN_MS) {
+            // By itself, and nowhere to go from where it was: stopped now,
+            // free to turn about - again, for a stand or a hold that way.
+            ownWayMs_ = in.ms;
+            ownWay(net, in);
         } else if (mode_ == Mode::PUSH) {
             taxi_.pushing = false;
             mode_ = Mode::FOLLOW;

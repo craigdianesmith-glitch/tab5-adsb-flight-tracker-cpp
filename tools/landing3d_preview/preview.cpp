@@ -193,6 +193,10 @@ double g_lat = 55.8719, g_lon = -4.4331;  // the made-up airfield's: Glasgow's
 int g_landRunway = 0, g_landEnd = 0, g_departRunway = -1, g_departEnd = 0;
 std::vector<scene3d::Vec3> g_beaconsAt;
 std::vector<std::string> g_beaconNames;
+// With STAND naming one of the real layout's stands - "412" - the camera on
+// it, from ahead of the stop and to one side, up a little.
+bool g_standCam = false;
+scene3d::Camera g_standView;
 
 bool useAirport(const std::string &code, const std::string &land, const std::string &depart) {
     std::vector<const Runway *> found;
@@ -271,6 +275,20 @@ bool useAirport(const std::string &code, const std::string &land, const std::str
         if (real) {
             scene3d::Vec3 o = local(layout.lat0, layout.lon0);
             layout.moveBy(o.x, o.y);
+            for (const airfield::Stand &st : layout.stands) {
+                const char *want = getenv("STAND");
+                if (want == nullptr || strcmp(st.ref, want) != 0 || st.lead.size() < 2) {
+                    continue;
+                }
+                const airfield::Point &a = st.lead[st.lead.size() - 2], &b = st.lead.back();
+                float dx = b.x - a.x, dy = b.y - a.y, d = std::max(0.01f, hypotf(dx, dy));
+                dx /= d, dy /= d;
+                scene3d::Vec3 stop = {b.x, b.y, 0};
+                g_standView = {{stop.x - dx * 75 - dy * 45, stop.y - dy * 75 + dx * 45, 30},
+                               {stop.x - dx * 8, stop.y - dy * 8, 4}, 55};
+                g_standCam = true;
+                printf("  stand %s's stop at %.0f, %.0f\n", st.ref, stop.x, stop.y);
+            }
             printf("  its real layout: %zu ways, %zu holds, %zu stands, %zu surfaces, %zu buildings%s\n",
                    layout.ways.size(), layout.holds.size(), layout.stands.size(), layout.surfaces.size(),
                    layout.buildings.size(), layout.hasTower ? ", a tower" : "");
@@ -726,6 +744,9 @@ int main(int argc, char **argv) {
             cam = orbitCamera(pose, 20, 12, 80, 50);
         }
         auto start = std::chrono::steady_clock::now();
+        if (g_standCam) {
+            cam = g_standView;
+        }
         if (getenv("OVERHEAD")) {  // straight down on the airfield's middle from OVERHEAD metres
             cam = {{0, -1, (float)atof(getenv("OVERHEAD"))}, {0, 0, 0}, 70};
         }
