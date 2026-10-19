@@ -397,7 +397,7 @@ bool useAirport(const char *code, const char *land, const char *depart) {
             beacons[beaconCount++] = local(nav->lat, nav->lon);
         }
     }
-    setAirfield(specs, n, beacons, beaconCount);
+    setAirfield(specs, n, beacons, beaconCount, nullptr, true);
     setLanding(landRunway, landEnd);
     setDeparture(departRunway, departEnd);
     g_landRunway = landRunway, g_landEnd = landEnd, g_departRunway = departRunway, g_departEnd = departEnd;

@@ -289,29 +289,46 @@ bool parse(const uint8_t *block, size_t size, Layout &out) {
 }
 
 #ifdef ESP_PLATFORM
-bool load(const char *code, Layout &out) {
-    out.clear();
+namespace {
+
+// The card's airfields.bin opened, and its head read and checked: how many
+// airfields it has and where its index is - or why it can't be read.
+#ifdef BENCH3D
+bool g_benchHidden = false;
+#endif
+
+Missing openPack(File &f, uint16_t &count, uint32_t &indexAt) {
     if (!recorder::mount()) {
-        return false;
+        return Missing::NO_CARD;
     }
-    recorder::CardLock lock;
-    File f = SD.open("/overhead/airfields.bin", FILE_READ);
+#ifdef BENCH3D
+    if (g_benchHidden) {
+        return Missing::NO_PACK;
+    }
+#endif
+    f = SD.open("/overhead/airfields.bin", FILE_READ);
     if (!f) {
-        return false;
+        return Missing::NO_PACK;
     }
     uint8_t head[16];
     if (f.read(head, sizeof head) != sizeof head || memcmp(head, "OVAF", 4) != 0 || head[4] != 1) {
         Serial.println("[airfield] airfields.bin isn't one this firmware reads");
         f.close();
-        return false;
+        return Missing::OTHER_VERSION;
     }
-    uint16_t count = head[6] | head[7] << 8;
-    uint32_t indexAt = head[8] | head[9] << 8 | head[10] << 16 | (uint32_t)head[11] << 24;
+    count = head[6] | head[7] << 8;
+    indexAt = head[8] | head[9] << 8 | head[10] << 16 | (uint32_t)head[11] << 24;
+    return Missing::NOTHING;
+}
+
+// The block of the airport `code` in the open pack: where it starts and how
+// long it is - false where the pack has nothing for that airport.
+bool findBlock(File &f, uint16_t count, uint32_t indexAt, const char *code, uint32_t &at, uint32_t &size) {
     // The index sorted by code: halved until found.
     char want[4] = {};
     strncpy(want, code, 4);
     int lo = 0, hi = count - 1;
-    uint32_t at = 0, size = 0;
+    at = size = 0;
     while (lo <= hi) {
         int mid = (lo + hi) / 2;
         uint8_t row[12];
@@ -330,20 +347,116 @@ bool load(const char *code, Layout &out) {
             hi = mid - 1;
         }
     }
-    if (size == 0 || size > 1024 * 1024) {
-        f.close();
+    return size != 0 && size <= 1024 * 1024;
+}
+
+}  // namespace
+
+bool load(const char *code, Layout &out, Missing *why) {
+    out.clear();
+    Missing missing = Missing::NOTHING;
+    {
+        recorder::CardLock lock;
+        File f;
+        uint16_t count = 0;
+        uint32_t indexAt = 0, at = 0, size = 0;
+        missing = openPack(f, count, indexAt);
+        if (missing == Missing::NOTHING) {
+            if (!findBlock(f, count, indexAt, code, at, size)) {
+                missing = Missing::NOT_IN_PACK;
+            } else {
+                uint8_t *block = (uint8_t *)heap_caps_malloc(size, MALLOC_CAP_SPIRAM);
+                bool ok = block != nullptr && f.seek(at) && f.read(block, size) == size;
+                ok = ok && parse(block, size, out);
+                heap_caps_free(block);
+                if (!ok) {
+                    Serial.printf("[airfield] %s's layout is damaged in airfields.bin\n", code);
+                    out.clear();
+                    missing = Missing::DAMAGED;
+                }
+            }
+            f.close();
+        }
+    }
+    if (why != nullptr) {
+        *why = missing;
+    }
+    return missing == Missing::NOTHING;
+}
+
+#ifdef BENCH3D
+void benchHidePack(bool hide) { g_benchHidden = hide; }
+#endif
+
+bool packInfo(uint16_t &airfields, uint32_t &bytes, Missing &why) {
+    recorder::CardLock lock;
+    File f;
+    uint32_t indexAt = 0;
+    airfields = 0;
+    bytes = 0;
+    why = openPack(f, airfields, indexAt);
+    if (why != Missing::NOTHING) {
         return false;
     }
-    uint8_t *block = (uint8_t *)heap_caps_malloc(size, MALLOC_CAP_SPIRAM);
-    bool ok = block != nullptr && f.seek(at) && f.read(block, size) == size;
+    bytes = f.size();
     f.close();
-    ok = ok && parse(block, size, out);
-    heap_caps_free(block);
-    if (!ok) {
-        Serial.printf("[airfield] %s's layout is damaged in airfields.bin\n", code);
-        out.clear();
+    return true;
+}
+
+bool towerOf(const char *code, double &lat, double &lon) {
+    recorder::CardLock lock;
+    File f;
+    uint16_t count = 0;
+    uint32_t indexAt = 0, at = 0, size = 0;
+    if (openPack(f, count, indexAt) != Missing::NOTHING) {
+        return false;
     }
-    return ok;
+    bool found = false;
+    uint8_t origin[8];
+    if (findBlock(f, count, indexAt, code, at, size) && f.seek(at) && f.read(origin, 8) == 8) {
+        // Each section's kind and length read, and all but the tower's
+        // stepped over unread - a big airport's is hundreds of KB.
+        uint32_t pos = at + 8, end = at + size;
+        while (pos < end && !found) {
+            uint8_t head[6];
+            size_t got = f.read(head, std::min<uint32_t>(sizeof head, end - pos));
+            if (got < 2) {
+                break;
+            }
+            Reader r{head, head + got};
+            uint8_t kind = r.byte();
+            uint32_t length = r.varint();
+            if (!r.ok) {
+                break;
+            }
+            pos += (uint32_t)(r.at - head);
+            if (kind == 7 && length <= 16) {
+                uint8_t body[16];
+                if (!f.seek(pos) || f.read(body, length) != length) {
+                    break;
+                }
+                Reader s{body, body + length};
+                Points p;
+                Point t = p.next(s);
+                if (s.ok) {
+                    // gen_airfields.py's frame turned back: metres east and
+                    // north of the block's origin.
+                    Reader o{origin, origin + 8};
+                    double lat0 = o.i32() / 1e7, lon0 = o.i32() / 1e7;
+                    lat = lat0 + t.y / 110574.0;
+                    lon = lon0 + t.x / (111320.0 * cos(lat0 * M_PI / 180));
+                    found = true;
+                }
+                break;
+            }
+            pos += length;
+            if (!f.seek(pos)) {
+                break;
+            }
+        }
+    }
+    f.close();
+    return found;
 }
 #endif
 

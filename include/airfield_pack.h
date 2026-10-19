@@ -97,10 +97,37 @@ struct Layout {
 bool parse(const uint8_t *block, size_t size, Layout &out);
 
 #ifdef ESP_PLATFORM
+// Why there was no layout from the card - for the 3D view, drawing the
+// airport's runways alone, to say so.
+enum class Missing : uint8_t {
+    NOTHING,        // it loaded
+    NO_CARD,        // no SD card in, or none that mounts
+    NO_PACK,        // no airfields.bin in the card's overhead folder
+    OTHER_VERSION,  // one this firmware can't read: another version's, or not one at all
+    NOT_IN_PACK,    // nothing in it for that airport
+    DAMAGED,        // its block of it cut short or wrong
+};
+
 // The layout of the airport `code` - as the app's tables have it: "GLA",
-// "EGXE" - from the card: false, `out` empty, if there's no card, no file, or
-// nothing in it for that airport.
-bool load(const char *code, Layout &out);
+// "EGXE" - from the card: false, `out` empty and `why` saying why, if there's
+// no card, no file, or nothing in it for that airport.
+bool load(const char *code, Layout &out, Missing *why = nullptr);
+
+// What airfield pack the card has: how many airfields and how big - or
+// false, and why there is none to read.
+bool packInfo(uint16_t &airfields, uint32_t &bytes, Missing &why);
+
+#ifdef BENCH3D
+// The pack taken as not there, or there again - for the basic view to be
+// seen with the card as it is.
+void benchHidePack(bool hide);
+#endif
+
+// Where the airport `code`'s control tower is, from the card - its tower
+// alone, the rest of its layout passed over unread: for the airport zoom to
+// mark it. False if there's no card, no file, nothing in it for that airport,
+// or no tower in OpenStreetMap there.
+bool towerOf(const char *code, double &lat, double &lon);
 #endif
 
 }  // namespace airfield

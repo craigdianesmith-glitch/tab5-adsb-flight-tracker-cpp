@@ -3732,10 +3732,12 @@ void fillBetween(Vector<ModelTri> &grass, std::initializer_list<const Vector<Mod
 }
 
 void buildAirfield(Models &m, const RunwaySpec *runways, int count, const Vec3 *beacons, int beaconCount,
-                   const airfield::Layout *layout) {
+                   const airfield::Layout *layout, bool madeUp) {
     // Real taxiways and the rest, from the layout, where there is one with
-    // anything in it; made up from the runways where there isn't.
+    // anything in it; where there isn't, the runways alone - or, `madeUp`,
+    // with taxiways and a terminal made up about them.
     bool real = layout != nullptr && !layout->empty();
+    madeUp = madeUp && !real;
     m.towerEyeZ = 33;
     m.detail.clear();
     m.ground.clear();
@@ -3832,14 +3834,18 @@ void buildAirfield(Models &m, const RunwaySpec *runways, int count, const Vec3 *
             connectors.clear();
             exitsOf(*layout, r, connectors, side);
         } else {
+            // Ways off it every 500m, for where a landing turns off - drawn
+            // only on the made-up airfield, with the taxiway they join.
+            for (float c = CONNECTOR_EVERY / 2; c < len - 100; c += CONNECTOR_EVERY) {
+                connectors.push_back(c);
+            }
+        }
+        if (madeUp) {
             // From the runway out past its taxiway, all grass.
             strip(grass, r.end[0] - u * 90 + left * (side * (TAXIWAY_OFFSET + 42) / 2),
                   r.end[1] + u * 90 + left * (side * (TAXIWAY_OFFSET + 42) / 2), (TAXIWAY_OFFSET + 42) / 2, GRASS);
             strip(taxiways, r.end[0] - u * 60 + left * (side * TAXIWAY_OFFSET),
                   r.end[1] + u * 60 + left * (side * TAXIWAY_OFFSET), 12, TAXIWAY);
-            for (float c = CONNECTOR_EVERY / 2; c < len - 100; c += CONNECTOR_EVERY) {
-                connectors.push_back(c);
-            }
             for (float c : connectors) {
                 Vec3 base = r.end[0] + u * c;
                 strip(taxiways, base + left * (side * half), base + left * (side * (TAXIWAY_OFFSET - 12)), 12, TAXIWAY);
@@ -3949,7 +3955,7 @@ void buildAirfield(Models &m, const RunwaySpec *runways, int count, const Vec3 *
                 }
             }
         }
-    } else {
+    } else if (madeUp) {
     rect(grass, middle - axis * (halfLength + 60) - across * (halfDepth + 60),
          middle + axis * (halfLength + 60) - across * (halfDepth + 60),
          middle + axis * (halfLength + 60) + across * (halfDepth + 60),
@@ -3982,6 +3988,12 @@ void buildAirfield(Models &m, const RunwaySpec *runways, int count, const Vec3 *
     }
     m.tower = middle + axis * (halfLength - 40) + across * (halfDepth - 30);
     buildTower(m.wires, m.tower);
+    } else {
+        // The runways alone - the airfield pack not on the card, or this
+        // airport not in it: nothing made up where it isn't known. The TOWER
+        // camera has a place still, where the made-up one's tower would be:
+        // a vantage, with no tower drawn under it.
+        m.tower = middle + axis * (halfLength - 40) + across * (halfDepth - 30);
     }
 
     // The ground in layers, each painted over the one before: the grass, the
@@ -4139,7 +4151,7 @@ void buildAirfield(Models &m, const RunwaySpec *runways, int count, const Vec3 *
 void buildDefaultAirfield(Models &m) {
     RunwaySpec one = {{{0, 0, 0}, {3000, 0, 0}}, 45, {"09", "27"}};
     Vec3 vor = {420, -360, 0};
-    buildAirfield(m, &one, 1, &vor, 1, nullptr);
+    buildAirfield(m, &one, 1, &vor, 1, nullptr, true);
 }
 
 Models &models() {
@@ -7086,13 +7098,13 @@ Pose localTakeoff(float t) {
 void liftTower(Models &m);
 
 void setAirfield(const RunwaySpec *runways, int count, const Vec3 *beacons, int beaconCount,
-                 const airfield::Layout *layout) {
+                 const airfield::Layout *layout, bool madeUp) {
     Models &m = models();
     withRoom([&] {
         if (count <= 0) {
             buildDefaultAirfield(m);
         } else {
-            buildAirfield(m, runways, count, beacons, beaconCount, layout);
+            buildAirfield(m, runways, count, beacons, beaconCount, layout, madeUp);
         }
         liftTower(m);
     });

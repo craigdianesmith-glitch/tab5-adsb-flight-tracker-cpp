@@ -49,6 +49,7 @@
 #include "telemetry.h"
 #include "view3d.h"
 #include "watchlist_screen.h"
+#include "airfield_pack.h"
 #include "bench3d.h"
 #include "wifi_screen.h"
 
@@ -855,6 +856,8 @@ const char *const SOAK_NAMES[] = {
     "a 737-800 taking off from 24 at Edinburgh", "a C-17 landing at RAF Brize Norton, then taxiing in",
     "an air ambulance H145 setting down at Glasgow and off again, by its GNSS height",
     "a coastguard AW139 setting down at Edinburgh by its pressure altitude alone, saying so, then quiet",
+    "an Emirates A380 landing on 27L at Heathrow, then taxiing in",
+    "a British Airways 777 taking off from 27R at Heathrow",
 };
 
 MadeUp circling(const char *hex, const char *callsign, const char *type, const char *category, bool military,
@@ -4244,6 +4247,22 @@ void setup() {
     if (!recorder::mount()) {
         Serial.println("[sd] no card - recording unavailable until one is inserted");
     }
+    // And the airfield pack on it, for the 3D view's airports: what there is,
+    // or that they will be the basic view, their runways alone.
+    {
+        uint16_t airfields = 0;
+        uint32_t bytes = 0;
+        airfield::Missing why;
+        if (airfield::packInfo(airfields, bytes, why)) {
+            Serial.printf("[airfield] the card's airfields.bin: %u airfields, %.1fMB\n", (unsigned)airfields,
+                          bytes / 1048576.0f);
+        } else {
+            Serial.printf("[airfield] %s: the 3D view's airports will be the basic view, their runways alone\n",
+                          why == airfield::Missing::NO_CARD   ? "no SD card"
+                          : why == airfield::Missing::NO_PACK ? "no airfields.bin on the card"
+                                                               : "the card's airfields.bin is for another version");
+        }
+    }
 
     // What the device actually loaded, said once at boot. An empty table has
     // several innocent explanations - a filter down to the military over quiet
@@ -4425,6 +4444,19 @@ void startSoak(int n) {
         m.saysGround = true;
         m.quietAfterS = 2 * 2600 / 46.0f + 12 + 40;
         ok = spotAt(m, "EDI", "24", 1200, -300, 200);
+        break;
+    // Not soaked as the rest are, but for pictures: the biggest, in their
+    // airlines' colours.
+    case 12:
+        m = circling("aa001c", "UAE5", "A388", "A5", false, 0, 0, 0, 0, 0);
+        m.pattern = Pattern::LAND;
+        m.quietAfterS = LOST_ON_ROLLOUT_S;
+        ok = onRunwayAt(m, "LHR", "27L");
+        break;
+    case 13:
+        m = circling("aa001d", "BAW117", "B77W", "A5", false, 0, 0, 0, 0, 0);
+        m.pattern = Pattern::DEPART;
+        ok = onRunwayAt(m, "LHR", "27R");
         break;
     default: ok = false; break;
     }
@@ -4823,6 +4855,46 @@ void loop() {
             WiFi.mode(WIFI_STA);
             WiFi.begin(g_wifiSsid.c_str(), g_wifiPass.c_str());
             break;
+        case 'X': {
+            // "##X" and 1 or 0: the card's airfield pack taken as not there,
+            // or there again - the 3D view's basic airports, from its next
+            // airfield, without touching the card.
+            int arg = Serial.read();
+            if (arg < 0) {
+                delay(5);
+                arg = Serial.read();
+            }
+            if (arg == '0' || arg == '1') {
+                airfield::benchHidePack(arg == '1');
+                Serial.printf("[soak] airfield pack %s\n", arg == '1' ? "hidden" : "back");
+            }
+            break;
+        }
+        case 'z': {
+            // "##z" and an airport's code on a line - none for home's - its
+            // zoom, from the table, the radar or another zoom, nothing being
+            // followed: for a screenshot of it.
+            char code[8] = {};
+            size_t n = 0;
+            uint32_t until = millis() + 1000;
+            while (n + 1 < sizeof code && (int32_t)(millis() - until) < 0) {
+                int ch = Serial.read();
+                if (ch < 0) {
+                    delay(2);
+                    continue;
+                }
+                if (ch == '\n') {
+                    break;
+                }
+                code[n++] = (char)ch;
+            }
+            String which = n ? String(code) : g_airportCode;
+            if ((g_screen == Screen::MAIN || g_screen == Screen::RADAR || g_screen == Screen::ZOOM) &&
+                !g_follow.active && !openZoom(which)) {
+                Serial.printf("[soak] no zoom of %s\n", which.c_str());
+            }
+            break;
+        }
         case 'a':
             // "##a" the alerts page, as Settings opens it - from the radar or
             // the zoom - for a screenshot of it; and again, back to the radar,

@@ -32,6 +32,9 @@ has them:
        pressure altitude put right by the day's pressure as the aircraft
        about have it, 40ft out; saying when it is down - then its
        transponder off: it settling onto the ground, and kept there
+    c  an Emirates A380 landing on 27L at Heathrow - for pictures, not in
+       the soak's default round
+    d  a British Airways 777 taking off from 27R at Heathrow - likewise
 
 Everything the firmware says goes to soak-<when>/log.txt, with the time; at
 the end - or on Ctrl-C - each flight's frame rates, the most the preparing

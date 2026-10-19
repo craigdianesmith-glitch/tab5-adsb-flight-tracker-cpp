@@ -505,6 +505,42 @@ def ref_bytes(tags):
     return bytes([len(ref)]) + ref
 
 
+# "Control tower" in its name, in the languages most often met: Fukuoka's is
+# a point named 福岡空港管制塔 alone.
+CONTROL_TOWER_NAMES = ("control tower", "traffic control", "tour de contr", "torre de control", "torre di controllo",
+                       "kontrollturm", "flugsicherung", "管制塔", "塔台", "관제탑", "диспетчерск")
+
+
+def control_tower(tags, building=False):
+    """How surely OpenStreetMap's tags are the airport's control tower: 0 not
+    at all. 3 as an aeroway or a building's kind, or by its name - Las Vegas's
+    "FAA Airport Traffic Control Tower", tagged a communication tower; 2 a
+    tower whose kind says so - air_traffic_control, aircraft_control (as
+    Heathrow's and Edinburgh's are), airport_control and the rest; 1 an
+    observation tower, or a building that is a tower of no kind or of one of
+    its own (Newcastle's newcastle_tower). Never the radar's mast, a
+    communication, lighting or cooling tower - which a tower alone took in -
+    nor a disused or old one."""
+    kind = (tags.get("tower:type") or "").lower()
+    name = (tags.get("name") or "").lower()
+    words = set(re.split(r"[^a-z]+", kind + " " + name))
+    if words & {"disused", "old", "former", "abandoned", "historic", "demolished"}:
+        return 0
+    if tags.get("aeroway") in ("control_tower", "tower") or tags.get("building") in ("control_tower", "tower"):
+        return 3
+    if tags.get("man_made") != "tower":
+        return 0
+    if any(n in name for n in CONTROL_TOWER_NAMES) or "atc" in words:
+        return 3
+    if words & {"control", "atc", "aircraft", "airport"}:
+        return 2
+    if kind == "observation":
+        return 1
+    if building and (not kind or (kind.endswith("_tower") and kind not in ("bell_tower", "water_tower"))):
+        return 1
+    return 0
+
+
 def height_of(tags, kind):
     for key in ("height", "building:height"):
         m = re.match(r"\s*([\d.]+)", tags.get(key, ""))
@@ -707,19 +743,21 @@ def layout(code, data, frame):
     # terminals, hangars, the tower - all of them; the rest only if they are
     # big enough to see, and not houses, garages or sheds; and of those only
     # the largest, as many as the 3D view can draw.
-    tower = None
+    tower, sure = None, 0
     found = []
     for e in elements:
         tags = e.get("tags", {})
         aeroway = tags.get("aeroway", "")
-        if not ("building" in tags or aeroway in ("terminal", "hangar", "control_tower", "tower")):
-            continue
         if e["type"] not in ("way", "relation"):
+            continue
+        # A control tower mapped as a tower's outline and not a building -
+        # SeaTac's - is one too.
+        score = control_tower(tags, building=True)
+        if not ("building" in tags or aeroway in ("terminal", "hangar", "control_tower", "tower") or score >= 2):
             continue
         kind = (1 if aeroway == "terminal" or tags.get("building") == "terminal" else
                 2 if aeroway == "hangar" or tags.get("building") == "hangar" else
-                3 if aeroway in ("control_tower", "tower") or tags.get("building") in ("control_tower", "tower")
-                or tags.get("man_made") == "tower" else 4)
+                3 if score else 4)
         if kind == 4 and tags.get("building") in CLUTTER:
             continue
         height = height_of(tags, kind)
@@ -734,27 +772,28 @@ def layout(code, data, frame):
                 poly = poly.simplify(tolerance, preserve_topology=True)
                 if poly.is_empty or poly.geom_type != "Polygon":
                     continue
-            found.append((kind, height, poly))
+            found.append((kind, height, poly, score))
     found.sort(key=lambda b: (b[0] == 4, -b[2].area))
     pts, body, buildings = Points(), bytearray(), 0
-    for kind, height, poly in found[:max(MOST_BUILDINGS, sum(1 for b in found if b[0] != 4))]:
+    for kind, height, poly, score in found[:max(MOST_BUILDINGS, sum(1 for b in found if b[0] != 4))]:
         corners, triangles = triangulated(poly)
         if not triangles:
             continue
         body += bytes([kind, min(255, round(height * 2))]) + surface_bytes(corners, triangles, pts)
         buildings += 1
-        if kind == 3 and tower is None:
+        # The tower: the surest of them, the largest of those - the list
+        # being largest first.
+        if kind == 3 and score > sure:
             c = poly.centroid
-            tower = ((c.x, c.y), height)
+            tower, sure = ((c.x, c.y), height), score
     out += section(6, bytes(body), buildings)
 
-    if tower is None:
-        for e in elements:
-            tags = e.get("tags", {})
-            if e["type"] == "node" and (tags.get("aeroway") in ("control_tower", "tower") or (
-                    tags.get("man_made") == "tower" and tags.get("tower:type") in ("observation", "airport"))):
-                tower = (frame(e["lat"], e["lon"]), height_of(tags, 3))
-                break
+    # Or a point, where that is surer: Heathrow's is a point alone.
+    for e in elements:
+        tags = e.get("tags", {})
+        score = control_tower(tags) if e["type"] == "node" else 0
+        if score > sure:
+            tower, sure = (frame(e["lat"], e["lon"]), height_of(tags, 3)), score
     if tower is not None:
         (tx, ty), th = tower
         body = Points()((tx, ty)) + bytes([min(255, round(th * 2))])

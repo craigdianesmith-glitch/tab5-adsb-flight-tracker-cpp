@@ -72,6 +72,9 @@ const char *const HELP[] = {
     "- SOUND: its engines, as they sound from the camera - loud close by, muffled far off, the pitch dropping as it "
     "passes one standing still. The speaker's mute silences them too.",
     "- Tap another aircraft for its details. Back goes to the radar.",
+    "- An airport's taxiways, stands, buildings and tower come from the airfield pack, airfields.bin, in the SD "
+    "card's overhead folder - as does the tower on the zoom. Without it, or at an airport it hasn't got, the view "
+    "is a basic one, the runways alone, and says so under the picture.",
 
     "# Alerts",
     "Settings > Alerts picks what raises one: emergencies (squawk 7700, 7600 or 7500), military aircraft, rare "
@@ -125,7 +128,7 @@ const char *const ABOUT[] = {
     "- Time zones, for the clock while following: timezone-boundary-builder, from OpenStreetMap data, "
     "(c) OpenStreetMap contributors, under the Open Database License 1.0, as is the table made from it; and the "
     "IANA time zone database, public domain.",
-    "- Airfields in the 3D view - taxiways, aprons, stands and buildings, from the card's airfields.bin: "
+    "- Airfields in the 3D view - taxiways, aprons, stands, buildings and towers, from the card's airfields.bin: "
     "(c) OpenStreetMap contributors (openstreetmap.org/copyright), under the Open Database License 1.0, as is "
     "the file made from them by tools/gen_airfields.py.",
     "- Voices: Piper text-to-speech. Scottish, en_GB-alba-medium, from the Alba data of the CSTR, University of "

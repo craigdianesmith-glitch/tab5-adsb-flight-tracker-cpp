@@ -353,17 +353,15 @@ struct RunwaySpec {
     char name[2][4];
 };
 
-// The airfield to draw: its runways, painted and lit, each with a taxiway
-// alongside; a terminal of piers and stands between them, or beside the one;
-// and its beacons, VOR/DMEs, where they are. With no runways, a made-up
-// airfield of one, 09/27, 3000m east from the origin - the one there is to
-// begin with.
-//
-// With `layout`, the airfield's real taxiways, aprons, stands, buildings and
-// tower - in the runways' frame - in place of the made-up ones: see
-// airfield_pack.h.
+// The airfield to draw: its runways, painted and lit, and its beacons,
+// VOR/DMEs, where they are. With `layout`, its real taxiways, aprons, stands,
+// buildings and tower - in the runways' frame: see airfield_pack.h. Without
+// one, the runways alone - or, `madeUp`, each with a taxiway alongside and a
+// terminal of piers and stands between them, or beside the one: the bench's
+// scenes, as they were measured. With no runways, a made-up airfield of one,
+// 09/27, 3000m east from the origin - the one there is to begin with.
 void setAirfield(const RunwaySpec *runways, int count, const Vec3 *beacons, int beaconCount,
-                 const airfield::Layout *layout = nullptr);
+                 const airfield::Layout *layout = nullptr, bool madeUp = false);
 
 // No airfield of that kind at all: for a view high up, between them.
 void clearAirfield();

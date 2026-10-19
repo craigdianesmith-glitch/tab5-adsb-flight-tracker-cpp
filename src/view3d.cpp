@@ -60,7 +60,7 @@ const char *const BTN_NAME[BUTTONS] = {"Back",     "CINEMA",  "CHASE",    "ORBIT
 constexpr int STRIP_Y = VIEW_Y + VIEW_H + 16, STRIP_H = 720 - 8 - STRIP_Y;
 
 // The radar's colours.
-uint16_t colorBg, colorText, colorMuted, colorFaint, colorBtnBg, colorDisabled;
+uint16_t colorBg, colorText, colorMuted, colorFaint, colorBtnBg, colorDisabled, colorNote;
 
 void colors() {
     colorBg = M5.Display.color565(0x04, 0x12, 0x0A);
@@ -69,6 +69,7 @@ void colors() {
     colorFaint = M5.Display.color565(0x5A, 0x9E, 0x78);
     colorBtnBg = M5.Display.color565(0x14, 0x3A, 0x28);
     colorDisabled = M5.Display.color565(0x4A, 0x55, 0x50);
+    colorNote = M5.Display.color565(0xFF, 0xB3, 0x2E);  // the radar's alert amber: something to put right
 }
 
 // --- drawing it --------------------------------------------------------------
@@ -564,6 +565,26 @@ void sinkScenery(void *context, SceneryKind kind, const double *latLon, int poin
     }
 }
 
+// Why the airfield the view is at was drawn from its runways alone - the
+// card's airfield pack missing, or this airport not in it - or NOTHING, its
+// real layout drawn.
+airfield::Missing g_missing = airfield::Missing::NOTHING;
+
+// That said on the strip, under the picture.
+const char *basicWhy() {
+    static char text[80];
+    using M = airfield::Missing;
+    switch (g_missing) {
+    case M::NO_CARD: return "Basic view - no SD card in for the airfield pack, airfields.bin";
+    case M::NO_PACK: return "Basic view - no airfields.bin in the SD card's overhead folder";
+    case M::OTHER_VERSION: return "Basic view - the card's airfields.bin is for another version";
+    case M::NOT_IN_PACK: snprintf(text, sizeof text, "Basic view - %s isn't in the card's airfields.bin", g_airport); break;
+    case M::DAMAGED: snprintf(text, sizeof text, "Basic view - %s's layout in airfields.bin is damaged", g_airport); break;
+    default: return "";
+    }
+    return text;
+}
+
 bool buildAirfield(const char *code) {
     int count = 0;
     const Runway *runways = runwaysAt(code, count);
@@ -615,7 +636,7 @@ bool buildAirfield(const char *code) {
     // Its real taxiways, stands and buildings, if the card has them - in the
     // frame here, should the layout's (0, 0) be anywhere else.
     airfield::Layout &layout = g_layout;
-    bool real = airfield::load(code, layout);
+    bool real = airfield::load(code, layout, &g_missing);
     if (real) {
         Vec3 offset = local(layout.lat0, layout.lon0);
         if (fabsf(offset.x) > 0.01f || fabsf(offset.y) > 0.01f) {
@@ -688,7 +709,7 @@ bool buildAirfield(const char *code) {
                       code, n, beaconCount, (unsigned)layout.ways.size(), (unsigned)layout.stands.size(),
                       (unsigned)layout.buildings.size(), s3::towerRaised(), (unsigned long)(millis() - t0));
     } else {
-        Serial.printf("[3d] at %s: %d runways, %d beacons, in %lums\n", code, n, beaconCount,
+        Serial.printf("[3d] at %s: %d runways, %d beacons; %s; in %lums\n", code, n, beaconCount, basicWhy(),
                       (unsigned long)(millis() - t0));
     }
     return true;
@@ -2010,10 +2031,18 @@ void drawStrip(const Followed &f) {
                          : g_cam == Cam::ORBIT ? "ORBIT"
                          : g_cam == Cam::TOWER ? "TOWER"
                                                : "FLY PAST";
-    if (g_where == Where::AIRFIELD) {
-        snprintf(line, sizeof line, "%s - %s     at %s", camera, g_shot, g_airport);
+    // And its shot, where it has one of its own - CINEMA's: the others' are
+    // their names again, "TOWER - tower".
+    char shot[40];
+    if (strcasecmp(camera, g_shot) == 0) {
+        snprintf(shot, sizeof shot, "%s", camera);
     } else {
-        snprintf(line, sizeof line, "%s - %s     high up", camera, g_shot);
+        snprintf(shot, sizeof shot, "%s - %s", camera, g_shot);
+    }
+    if (g_where == Where::AIRFIELD) {
+        snprintf(line, sizeof line, "%s     at %s", shot, g_airport);
+    } else {
+        snprintf(line, sizeof line, "%s     high up", shot);
     }
     if (f.note.length()) {
         size_t used = strlen(line);
@@ -2021,6 +2050,11 @@ void drawStrip(const Followed &f) {
     }
     c.setTextColor(colorFaint);
     c.drawString(line, VIEW_X, STRIP_Y + 72);
+    // An airport drawn from its runways alone, and why.
+    if (g_where == Where::AIRFIELD && g_missing != airfield::Missing::NOTHING) {
+        c.setTextColor(colorNote);
+        c.drawString(basicWhy(), VIEW_X, STRIP_Y + 98);
+    }
     screen::markDirty(VIEW_X, STRIP_Y, VIEW_W, STRIP_H);
     // TOWER greys and lights with where it is.
     if (g_stripWhere != g_where) {

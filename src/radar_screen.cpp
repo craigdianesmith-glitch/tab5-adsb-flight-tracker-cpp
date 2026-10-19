@@ -1,6 +1,7 @@
 #include "radar_screen.h"
 
 #include "aircraft_db.h"
+#include "airfield_pack.h"
 
 #include <M5Unified.h>
 #include <esp_heap_caps.h>
@@ -3037,6 +3038,16 @@ struct ZoomFrame {
 };
 ZoomFrame g_zoom;
 
+// The control tower of the airport last zoomed on, from the card: looked up
+// as its zoom is first drawn, and again each time one is opened, for a card
+// put in since.
+struct ZoomTower {
+    char code[5] = "";
+    bool has = false;
+    double lat = 0, lon = 0;
+};
+ZoomTower g_zoomTower;
+
 // When each runway end of one airport was last in use, so a zoom in a lull
 // still shows which way the airport is working: airports seldom turn round
 // more than a few times a day. On the clock its zoom is drawn on - the live
@@ -3389,6 +3400,38 @@ void drawRunways(const ZoomFrame &f, const bool inUse[][2], const bool recent[][
     }
 }
 
+// The airport's control tower, where OpenStreetMap has one - from the card's
+// airfields.bin, which the 3D view's airfields come from too: a chart's
+// small picture of one whatever the range, its cab lit over its shaft, in the
+// navaids' shade - and marked for their labels to keep off.
+void drawTower(const ZoomFrame &f) {
+    if (strcmp(g_zoomTower.code, f.code.c_str()) != 0) {
+        strlcpy(g_zoomTower.code, f.code.c_str(), sizeof g_zoomTower.code);
+        g_zoomTower.has = airfield::towerOf(f.code.c_str(), g_zoomTower.lat, g_zoomTower.lon);
+    }
+    if (!g_zoomTower.has) {
+        return;
+    }
+    float pxPerNm = RADIUS / f.rangeNm;
+    Vec v = toLocal(f, g_zoomTower.lat, g_zoomTower.lon);
+    int x = CENTER_X + (int)lroundf(v.x * pxPerNm), y = CENTER_Y - (int)lroundf(v.y * pxPerNm);
+    constexpr int HALF_W = 7, TOP = 12, BOTTOM = 8;  // its reach from (x, y), the middle of its box
+    if (!insideScope(x - HALF_W, y - TOP, 2 * HALF_W + 1, TOP + BOTTOM + 1, 2)) {
+        return;
+    }
+    auto &canvas = screen::canvas();
+    canvas.drawFastVLine(x, y - 12, 3, colorRingText);      // its aerial
+    canvas.drawFastHLine(x - 7, y - 9, 15, colorRingText);  // the roof, over the glass
+    canvas.fillTriangle(x - 6, y - 8, x + 6, y - 8, x + 4, y - 4, colorMuted);  // the cab's glass, leaning
+    canvas.fillTriangle(x - 6, y - 8, x + 4, y - 4, x - 4, y - 4, colorMuted);  // out, and its frames
+    canvas.drawFastVLine(x - 2, y - 8, 5, colorBg);
+    canvas.drawFastVLine(x + 2, y - 8, 5, colorBg);
+    canvas.drawFastHLine(x - 4, y - 3, 9, colorRingText);   // its floor
+    canvas.fillRect(x - 1, y - 2, 3, 10, colorRingText);     // the shaft
+    canvas.drawFastHLine(x - 4, y + 8, 9, colorRingText);   // on the ground
+    noteMark(x - HALF_W, y - TOP, 2 * HALF_W + 1, TOP + BOTTOM + 1);
+}
+
 bool zoomCanIn() { return g_zoomViewNm > ZOOM_VIEW_STEPS_NM[0] + 0.01f; }
 
 // Where the radar has its ZOOM buttons, working the same way. ZOOM OUT always
@@ -3478,6 +3521,7 @@ bool radarZoomOpen(const String &code, double &lat, double &lon, float &rangeNm)
     if (!frameZoom(code, g_zoom)) {
         return false;
     }
+    g_zoomTower.code[0] = 0;  // looked up afresh
     g_zoomLook.active = false;
     g_zoomViewNm = g_zoom.rangeNm;
     lat = g_zoom.lat;
@@ -3620,6 +3664,7 @@ bool zoomPlot(const ZoomFrame &framed, const std::vector<Aircraft> &aircraft,
 
     canvas.setClipRect(PLOT_L, PLOT_T, PLOT_R - PLOT_L, PLOT_B - PLOT_T);
     drawRunways(f, inUse, recent);
+    drawTower(f);
     // Over the runways, which an airport's own often sits beside.
     g_navaidHitCount = 0;
     if (g_navaidsOn) {
