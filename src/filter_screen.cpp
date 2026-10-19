@@ -209,7 +209,7 @@ void drawType() {
 }
 
 void drawHide() {
-    drawBox(HIDE_X, HALF_W, TYPE_Y, g_f.hideTypes, "None", "Left out:  TWR", g_editing == Editing::HIDE);
+    drawBox(HIDE_X, HALF_W, TYPE_Y, g_f.hideTypes, "None", "Left out:  GLID", g_editing == Editing::HIDE);
 }
 
 void drawNote() {

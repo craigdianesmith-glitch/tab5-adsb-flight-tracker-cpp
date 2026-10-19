@@ -72,6 +72,7 @@ AppSettings loadSettings() {
         s.clockZone = CLOCK_ZONE_AUTO;
     }
     s.autoZoom = prefs.getBool("autozoom", false);
+    s.engineSound = prefs.getBool("engsound", true);
     s.replayTracks = prefs.getBool("rtracks", true);
     uint8_t sort = prefs.getUChar("tsort", 4);  // DIST, nearest first
     s.tableSortCol = sort & 7;
@@ -217,6 +218,13 @@ void saveAutoZoom(bool autoZoom) {
     Preferences prefs;
     prefs.begin(NAMESPACE, false);
     prefs.putBool("autozoom", autoZoom);
+    prefs.end();
+}
+
+void saveEngineSound(bool on) {
+    Preferences prefs;
+    prefs.begin(NAMESPACE, false);
+    prefs.putBool("engsound", on);
     prefs.end();
 }
 

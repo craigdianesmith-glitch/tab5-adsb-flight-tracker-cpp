@@ -133,6 +133,37 @@ class PoliteTls : public WiFiClientSecure {
 };
 static PoliteTls g_tls;
 static HTTPClient g_http;
+
+// The reply read a block at a time for the parser, which asks for it a
+// character at a time: straight off the TLS client, each character was a
+// decrypting read of its own, and a 300KB reply - a follow poll 120nm round
+// a jet at FL240 - took core 0 a second and more.
+class BlockReader {
+  public:
+    explicit BlockReader(Stream &stream) : stream_(stream) {}
+    int read() {
+        if (at_ == got_) {
+            got_ = stream_.readBytes(block_, sizeof block_);
+            at_ = 0;
+            if (got_ == 0) {
+                return -1;
+            }
+        }
+        return (uint8_t)block_[at_++];
+    }
+    size_t readBytes(char *out, size_t length) {
+        size_t done = 0;
+        for (int c; done < length && (c = read()) >= 0;) {
+            out[done++] = (char)c;
+        }
+        return done;
+    }
+
+  private:
+    Stream &stream_;
+    char block_[1024];
+    size_t got_ = 0, at_ = 0;
+};
 static bool g_tlsConfigured = false;
 // Which host that kept-alive socket is connected to. Reusing it for a request
 // to a different provider would send the request down a connection to the
@@ -140,12 +171,18 @@ static bool g_tlsConfigured = false;
 static String g_connectedHost;
 
 // Providers answer 429 when they have had enough, and going straight back at
-// the same cadence only collects more of them. After one, the next minute of
-// polls skip that provider without a request going out at all - the status
-// line already says the data is ageing, which is the honest thing to show
-// meanwhile. Per provider, so one throttling us doesn't sideline the other.
-constexpr uint32_t RATE_LIMIT_BACKOFF_MS = 60000;
+// the same cadence only collects more of them. After one, the polls skip that
+// provider for a minute without a request going out at all - the status line
+// already says the data is ageing, which is the honest thing to show
+// meanwhile - and after each more in a row twice as long, a quarter of an hour
+// at most, or for as long as its Retry-After asks, until it answers again:
+// many devices polling a volunteers' server at a minute's spacing had it
+// refusing them all day. Per provider, so one throttling us doesn't sideline
+// the other.
+constexpr uint32_t RATE_LIMIT_BACKOFF_MS = 60000, RATE_LIMIT_MOST_MS = 15 * 60000;
 static uint32_t g_rateLimitedUntil[ADSB_PROVIDER_COUNT] = {};
+static uint8_t g_rateLimitedRun[ADSB_PROVIDER_COUNT] = {};
+static uint32_t g_retryAfterS = 0;  // the last 429's Retry-After, seconds; 0 none
 
 // HTTPClient always sends its own internal _userAgent field regardless of
 // addHeader("User-Agent", ...) (see HTTPClient.cpp ~line 1226), so that call
@@ -184,6 +221,8 @@ static int requestInto(const String &url, const AdsbEndpoint &ep, JsonDocument &
     // takes several seconds is still worth having. Only the poll task waits.
     g_http.setTimeout(12000);
     g_tls.allowUntil(millis() + 30000);
+    static const char *KEEP[] = {"Retry-After"};
+    g_http.collectHeaders(KEEP, 1);
 
     int code = g_http.GET();
 #ifdef NET_PROFILE
@@ -195,6 +234,7 @@ static int requestInto(const String &url, const AdsbEndpoint &ep, JsonDocument &
             String payload = g_http.getString();
             Serial.printf("[adsb] status=%d body=%s\n", code, payload.c_str());
         }
+        g_retryAfterS = code == 429 ? (uint32_t)std::max(0L, g_http.header("Retry-After").toInt()) : 0;
         g_http.end();
         return code;
     }
@@ -213,7 +253,8 @@ static int requestInto(const String &url, const AdsbEndpoint &ep, JsonDocument &
     g_bytes = g_http.getSize();
 #endif
     if (g_http.getSize() >= 0) {
-        jerr = deserializeJson(doc, g_http.getStream(), DeserializationOption::Filter(filter));
+        BlockReader reader(g_http.getStream());
+        jerr = deserializeJson(doc, reader, DeserializationOption::Filter(filter));
     } else {
         String payload = g_http.getString();
 #ifdef NET_PROFILE
@@ -247,6 +288,14 @@ static void parseInto(JsonDocument &doc, const AdsbEndpoint &ep, bool military, 
     for (JsonObjectConst ac : doc[ep.arrayKey].as<JsonArrayConst>()) {
         const char *hex = ac["hex"] | "";
         if (!hex[0]) {
+            continue;
+        }
+        // A ground station - the database's TWR: a fixed transmitter at an
+        // airport with a transponder address of its own - is no aircraft,
+        // and is left out here, for good: not in the table, on the radar or
+        // in the 3D view, nor in a recording.
+        const char *type = ac["t"] | "";
+        if (strcmp(type, "TWR") == 0) {
             continue;
         }
 
@@ -422,14 +471,17 @@ static bool fetchFrom(int idx, double lat, double lon, int radiusNm, bool milita
         code = requestInto(url, ep, doc, jerr);
     }
     if (code == 429) {
-        g_rateLimitedUntil[idx] = millis() + RATE_LIMIT_BACKOFF_MS;
-        Serial.printf("[adsb] %s: rate limited, backing off %us\n", provider.name,
-                      (unsigned)(RATE_LIMIT_BACKOFF_MS / 1000));
+        uint32_t wait = RATE_LIMIT_BACKOFF_MS << std::min<int>(g_rateLimitedRun[idx], 4);
+        wait = std::max(std::min(wait, RATE_LIMIT_MOST_MS), std::min(g_retryAfterS, (uint32_t)3600) * 1000);
+        g_rateLimitedRun[idx] = (uint8_t)std::min(g_rateLimitedRun[idx] + 1, 8);
+        g_rateLimitedUntil[idx] = millis() + wait;
+        Serial.printf("[adsb] %s: rate limited, backing off %us\n", provider.name, (unsigned)(wait / 1000));
         return false;
     }
     if (code != 200) {
         return false;
     }
+    g_rateLimitedRun[idx] = 0;
     if (jerr) {
         Serial.printf("[adsb] %s: json parse error: %s\n", provider.name, jerr.c_str());
         return false;

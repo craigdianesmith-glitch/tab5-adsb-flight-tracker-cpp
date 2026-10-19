@@ -25,7 +25,7 @@ const char *const HELP[] = {
     "table up or down for the rest. Tap a heading to sort by it, again to reverse.",
     "- The icons at the top right: the filter, Replays, the radar, the sound off or on, and Settings.",
     "- The filter (the funnel, here and on the radar) shows only the aircraft in a band of height and of speed, civil, cargo or military, and of the airlines "
-    "and types typed in (EZY RYR, A32 B738), leaving out the types under Hide types (TWR, the ground stations) - "
+    "and types typed in (EZY RYR, A32 B738), leaving out the types under Hide types (GLID, the gliders) - "
     "on the table and the radar, and in a replay as it was recorded. The "
     "funnel is lit while it is on. The aircraft followed, the zoom and alerts are never filtered, and a recording "
     "keeps every aircraft.",
@@ -58,6 +58,20 @@ const char *const HELP[] = {
     "in Settings, it widens while the sky around it is quiet and closes in as it fills, and in the airport's zoom "
     "follows it in to the runway. Its height, "
     "climb and speed are charted on the left. FOLLOW again, or HOME, AIRPORT or ALL, stops it.",
+
+    "# The 3D view",
+    "Following, 3D beside FOLLOW shows the aircraft in 3D, in its airline's colours: at an airport, on its real "
+    "runways, taxiways and stands among its buildings; high up, over the coasts, towns and rivers - with the "
+    "traffic about it. Its take-offs and landings are simulated, as on the zoom, and each one at the airport is said "
+    "as a controller would clear it.",
+    "- CINEMA cuts between shots as a director would: the approach from beside the runway, the touchdown, the "
+    "roll-out; a helicopter from a camera on the ground where it sets down. CHASE is behind it, ORBIT goes round "
+    "it - drag the picture to turn it - and TOWER watches from the airfield's tower.",
+    "- FLY PAST sets a camera down ahead of it, beside its way, for it to go by - then ahead again for the next "
+    "pass, the other side. ZOOM IN and ZOOM OUT bring the camera nearer or further off.",
+    "- SOUND: its engines, as they sound from the camera - loud close by, muffled far off, the pitch dropping as it "
+    "passes one standing still. The speaker's mute silences them too.",
+    "- Tap another aircraft for its details. Back goes to the radar.",
 
     "# Alerts",
     "Settings > Alerts picks what raises one: emergencies (squawk 7700, 7600 or 7500), military aircraft, rare "

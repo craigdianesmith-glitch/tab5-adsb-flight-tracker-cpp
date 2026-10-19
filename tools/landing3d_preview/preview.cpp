@@ -354,6 +354,7 @@ bool useAirport(const std::string &code, const std::string &land, const std::str
                std::chrono::duration<double, std::milli>(lit0 - built0).count(),
                std::chrono::duration<double, std::milli>(end - lit0).count());
     }
+    printf("  the tower's camera %.0fm over its cab\n", towerRaised());
     setLanding(landRunway, landEnd);
     setDeparture(departRunway, departEnd);
     g_landRunway = landRunway, g_landEnd = landEnd, g_departRunway = departRunway, g_departEnd = departEnd;

@@ -573,8 +573,9 @@ void captions(float t, const char *shot) {
 // the words drawn by M5GFX over a box darkened a pixel at a time.
 void labelsBench() {
     constexpr int VW = 960, VH = 544, ROWS = 16, BANDS = VH / ROWS, REPEATS = 20;
-    uint16_t *band = (uint16_t *)heap_caps_aligned_alloc(16, VW * ROWS * 2, MALLOC_CAP_INTERNAL);
-    uint16_t *copy = (uint16_t *)heap_caps_malloc(VW * ROWS * 2, MALLOC_CAP_INTERNAL);
+    // Never the low-power core's memory, which the heap has too: see view3d.
+    uint16_t *band = (uint16_t *)heap_caps_aligned_alloc(16, VW * ROWS * 2, MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA);
+    uint16_t *copy = (uint16_t *)heap_caps_malloc(VW * ROWS * 2, MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA);
     if (band == nullptr || copy == nullptr) {
         Serial.println("[3d] no room for a band in internal RAM");
         heap_caps_free(band);

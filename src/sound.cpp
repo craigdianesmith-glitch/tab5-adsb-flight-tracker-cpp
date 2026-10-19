@@ -8,6 +8,8 @@
 #include <M5Unified.h>
 #include <math.h>
 
+#include <new>
+
 #include "aircraft_db.h"
 #include "alerts.h"
 #include "config.h"
@@ -17,6 +19,7 @@ namespace {
 
 bool g_ready = false;
 bool g_muted = false;
+TaskHandle_t g_soundTask = nullptr;
 
 // What is to be said is handed to the speaker a note or a word at a time by a
 // task of its own - see soundTask() - not by the UI loop between screens: the
@@ -50,6 +53,26 @@ constexpr uint8_t CLICK_CHANNEL = 1;
 // block the UI loop until there was room for each note in turn, so they are
 // fed to a channel of their own one at a time instead, from soundTick().
 constexpr uint8_t ALERT_CHANNEL = 2;
+// The 3D view's engine noise, made as it plays - see soundEngine() - three
+// blocks of it in turn, 40ms each: one playing, one queued behind it, one
+// being made.
+constexpr uint8_t ENGINE_CHANNEL = 3;
+constexpr int ENGINE_BLOCK = engine_noise::RATE / 25;
+// Nothing set for this long - the 3D view closed or covered without saying
+// so - and it fades out.
+constexpr uint32_t ENGINE_STALE_MS = 1000;
+// What the 3D view last asked it to sound like, and when - its own lock, a
+// moment's, not the sound's: the view sets it every frame, and was kept
+// waiting while a block was made.
+portMUX_TYPE g_engineMux = portMUX_INITIALIZER_UNLOCKED;
+engine_noise::Sound g_engineWant;
+uint32_t g_engineSetMs = 0;
+// The sound task's alone.
+engine_noise::Synth *g_engine = nullptr;
+int16_t *g_engineBlocks[3] = {};
+int g_engineNext = 0;
+bool g_enginePlaying = false;  // something to play: set as it is asked for, cleared once faded out
+bool g_engineFailed = false;   // no room for it
 
 struct Note {
     uint16_t hz;
@@ -504,7 +527,8 @@ void soundInit() {
     Serial.printf("[sound] speaker ready, volume %d\n", SOUND_VOLUME);
     g_lock = xSemaphoreCreateRecursiveMutex();
     // A step above the loop on its core: it takes a moment every 10ms, and a
-    // millisecond to ready each word.
+    // millisecond to ready each word. Its stack 6KB: making the 3D view's
+    // engine noise as well as the words, it had 1.1KB of 4 to spare.
     xTaskCreatePinnedToCore(
         [](void *) {
             for (;;) {
@@ -512,12 +536,21 @@ void soundInit() {
                 vTaskDelay(pdMS_TO_TICKS(10));
             }
         },
-        "sound", 4096, nullptr, 2, nullptr, 1);
+        "sound", 6144, nullptr, 2, &g_soundTask, 1);
 }
 
 void soundSetMuted(bool muted) { g_muted = muted; }
 
+void soundEngine(const engine_noise::Sound &sound) {
+    taskENTER_CRITICAL(&g_engineMux);
+    g_engineWant = sound;
+    g_engineSetMs = millis();
+    taskEXIT_CRITICAL(&g_engineMux);
+}
+
 bool soundMuted() { return g_muted; }
+
+unsigned soundStackSpare() { return g_soundTask ? (unsigned)uxTaskGetStackHighWaterMark(g_soundTask) : 0u; }
 
 void soundSetElsewhereAccent(Accent accent) {
     Held held;
@@ -710,7 +743,85 @@ void playClip(const Clip &clip, uint32_t rate) {
 
 }  // namespace
 
+namespace {
+
+// The engine noise's next blocks made and queued, as there is room for them
+// - under the words, if there are any. Its synthesiser and its blocks are
+// this task's alone, made the first time it is asked for.
+void engineTick() {
+    taskENTER_CRITICAL(&g_engineMux);
+    engine_noise::Sound want = g_engineWant;
+    uint32_t setMs = g_engineSetMs;
+    taskEXIT_CRITICAL(&g_engineMux);
+    if (g_muted || millis() - setMs > ENGINE_STALE_MS) {
+        want.kind = engine_noise::Kind::NONE;
+    }
+    if (g_engine == nullptr) {
+        if (want.kind == engine_noise::Kind::NONE || g_engineFailed || !g_ready) {
+            return;
+        }
+        for (int16_t *&b : g_engineBlocks) {
+            b = b != nullptr ? b : (int16_t *)heap_caps_malloc(ENGINE_BLOCK * sizeof(int16_t), MALLOC_CAP_SPIRAM);
+            if (b == nullptr) {
+                Serial.println("[sound] no room for the engine noise");
+                g_engineFailed = true;
+                return;
+            }
+        }
+        // In PSRAM, as its blocks are: made the first time the 3D view asks
+        // for it, in the chip's own memory it lay between the view's buffers
+        // and split the room they come back to.
+        void *room = heap_caps_malloc(sizeof(engine_noise::Synth), MALLOC_CAP_SPIRAM);
+        if (room == nullptr) {
+            Serial.println("[sound] no room for the engine noise");
+            g_engineFailed = true;
+            return;
+        }
+        g_engine = new (room) engine_noise::Synth();
+    }
+    g_engine->set(want);
+    if (want.kind != engine_noise::Kind::NONE) {
+        g_enginePlaying = true;
+    }
+    if (!g_enginePlaying) {
+        return;
+    }
+    g_engine->duck(g_notes != nullptr || M5.Speaker.isPlaying(ALERT_CHANNEL) || M5.Speaker.isPlaying(CHANNEL));
+    // For the log every half minute: what making it costs, and how often the
+    // speaker ran out of it - this task kept from it 80ms - and was silent
+    // a moment.
+    static uint32_t madeUs = 0, made = 0, gaps = 0, saidMs = 0;
+    static bool started = false;
+    if (started && M5.Speaker.isPlaying(ENGINE_CHANNEL) == 0) {
+        gaps++;
+    }
+    while (M5.Speaker.isPlaying(ENGINE_CHANNEL) < 2) {
+        int16_t *block = g_engineBlocks[g_engineNext];
+        g_engineNext = (g_engineNext + 1) % 3;
+        uint32_t t0 = micros();
+        bool more = g_engine->render(block, ENGINE_BLOCK);
+        madeUs += micros() - t0;
+        made++;
+        M5.Speaker.playRaw(block, ENGINE_BLOCK, engine_noise::RATE, false, 1, ENGINE_CHANNEL, false);
+        started = true;
+        if (!more) {
+            g_enginePlaying = false;
+            started = false;
+            break;
+        }
+    }
+    if (millis() - saidMs >= 30000 && made > 0) {
+        Serial.printf("[sound] engine noise: %.2fms a 40ms block, %.1f%% of a core; %u gaps\n",
+                      madeUs / 1000.0f / made, madeUs / (made * 400.0f), (unsigned)gaps);
+        saidMs = millis();
+        madeUs = made = gaps = 0;
+    }
+}
+
+}  // namespace
+
 void soundTick() {
+    engineTick();
     Held held;
     // Nothing being said: the next announcement - a clearance is only worth
     // hearing as it happens, and goes stale in seconds - or else a reading

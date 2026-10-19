@@ -2933,6 +2933,9 @@ struct Models {
     Vector<Block> blocks;
     Vec3 middle{}, tower{};
     float towerEyeZ = 33;  // the tower's cab, how high: where a camera in it looks out from
+    // And how far over that its camera is raised, for the buildings between
+    // not to hide the runways from it - see liftTower().
+    float towerLift = 0;
     bool built = false;
 };
 
@@ -4272,6 +4275,13 @@ struct Placed {
     // Its middle on the screen and how far round it it covers, for
     // labelAnchors() - reach 0 if the middle is behind the eye.
     float screenX, screenY, reach;
+    // Its middle and its top on the screen - off it, -1 - and how near its
+    // nearest could be, 1/z: as the frame is drawn, whether something nearer
+    // than that is drawn at each - a building, another aircraft - for the
+    // next frame's labelAnchors() to leave its label off.
+    int16_t probeX[2], probeY[2];
+    float probeIz;
+    bool covered[2];
 };
 
 // Where a point of an aircraft is, it being where `pose` says.
@@ -5759,9 +5769,20 @@ void prepareBegin(int w, int h, int bandRows, bool swapBytes, const Scene &scene
                      : px >= scene.tinyPx     ? DETAIL_SIMPLE
                                               : DETAIL_TINY;
         float iz = c.z > NEAR ? 1 / c.z : 0;
+        Vec3 top = toCamera(Placer(pose, size).place({dsn.middle.x, 0, dsn.hi.z}));
+        int16_t px0 = -1, py0 = -1, px1 = -1, py1 = -1;
+        if (c.z > NEAR) {
+            px0 = (int16_t)std::max(-1.0f, std::min(32000.0f, g.cx + g.f * c.x * iz));
+            py0 = (int16_t)std::max(-1.0f, std::min(32000.0f, g.cy + g.f * c.y * iz));
+        }
+        if (top.z > NEAR) {
+            px1 = (int16_t)std::max(-1.0f, std::min(32000.0f, g.cx + g.f * top.x / top.z));
+            py1 = (int16_t)std::max(-1.0f, std::min(32000.0f, g.cy + g.f * top.y / top.z));
+        }
         g.placed.push_back({pose, aircraft.look, aircraft.config, index, length(middle - g.eye), detail, followed,
                             in > radius, g.cx + g.f * c.x * iz, g.cy + g.f * c.y * iz,
-                            g.f * dsn.halfLength * 0.96f * size * iz});
+                            g.f * dsn.halfLength * 0.96f * size * iz, {px0, px1}, {py0, py1},
+                            1 / std::max(NEAR, c.z - radius), {false, false}});
     };
     consider(scene.followed, true, -1);
     heroOf(scene.followed.look.family);
@@ -6726,9 +6747,10 @@ void drawBandInto(int band, uint16_t *color, uint16_t *depth, uint32_t *stageUs)
     // What stands up from it, nearest wins; then the wireframe and the
     // lights, behind or in front of that as they are.
     const Bins &ob = d.solidBins, &wb = d.wireBins, &lb = d.spriteBins, &cb = d.clearBins, &db = d.dotBins;
-    if (ob.start[band] < ob.start[band + 1] || wb.start[band] < wb.start[band + 1] ||
-        lb.start[band] < lb.start[band + 1] || cb.start[band] < cb.start[band + 1] ||
-        db.start[band] < db.start[band + 1]) {
+    bool deep = ob.start[band] < ob.start[band + 1] || wb.start[band] < wb.start[band + 1] ||
+                lb.start[band] < lb.start[band + 1] || cb.start[band] < cb.start[band + 1] ||
+                db.start[band] < db.start[band + 1];
+    if (deep) {
         fill(depth, 0, w * rows, 0);  // infinitely far - eight to a PIE store, not memset's one word
     }
     stage(3);
@@ -6784,6 +6806,19 @@ void drawBandInto(int band, uint16_t *color, uint16_t *depth, uint32_t *stageUs)
     for (uint32_t k = lb.start[band]; k < lb.start[band + 1]; k++) {
         uint32_t at = lb.index[k];
         drawSprite((*d.spriteLists[at >> LIST_SHIFT])[at & PLACE_MASK], y0, y1, color, depth);
+    }
+    // Each aircraft's middle and top that are in this band: whether what is
+    // drawn there is nearer than any of it could be. Each the one band's,
+    // so the two cores drawing bands never write the same one.
+    if (deep) {
+        for (Placed &p : d.placed) {
+            for (int k = 0; k < 2; k++) {
+                int x = p.probeX[k], y = p.probeY[k];
+                if (y >= y0 && y < y1 && x >= 0 && x < w) {
+                    p.covered[k] = depth[(size_t)(y - y0) * w + x] > depthOf(p.probeIz);
+                }
+            }
+        }
     }
     stage(5);
 }
@@ -6868,10 +6903,20 @@ int labelAnchors(Label *out, int max) {
             x >= d.w || y < 0 || y >= d.h) {
             continue;
         }
+        // Behind a building, or anything else drawn, as the frame before
+        // found - its middle and its top both covered there - is hidden: it
+        // as it was then, by where it was and its kind.
+        bool hidden = false;
+        for (const Placed &q : g.placed) {
+            Vec3 moved = q.pose.at - p.pose.at;
+            if (!q.followed && q.look.family == p.look.family && dot(moved, moved) < 40 * 40) {
+                hidden = q.covered[0] && q.covered[1];
+                break;
+            }
+        }
         // Behind a nearer aircraft - one placed before it, the list being
         // nearest first - is hidden: inside the box a big one fills, or the
         // circle a small one covers.
-        bool hidden = false;
         for (size_t j = 0; j < i && !hidden; j++) {
             const Big *b = nullptr;
             for (int k = 0; k < bigCount && b == nullptr; k++) {
@@ -7038,6 +7083,8 @@ Pose localTakeoff(float t) {
 
 }  // namespace
 
+void liftTower(Models &m);
+
 void setAirfield(const RunwaySpec *runways, int count, const Vec3 *beacons, int beaconCount,
                  const airfield::Layout *layout) {
     Models &m = models();
@@ -7047,6 +7094,7 @@ void setAirfield(const RunwaySpec *runways, int count, const Vec3 *beacons, int 
         } else {
             buildAirfield(m, runways, count, beacons, beaconCount, layout);
         }
+        liftTower(m);
     });
     g_landingEnd = 0;
     g_departureEnd = -1;
@@ -7093,14 +7141,17 @@ bool towerEye(Vec3 &eye) {
     Vec3 towards = m.middle - m.tower;
     towards.z = 0;
     float away = length(towards);
-    eye = m.tower + (away > 1 ? towards * (8 / away) : Vec3{0, 0, 0}) + Vec3{0, 0, m.towerEyeZ};
+    eye = m.tower + (away > 1 ? towards * (8 / away) : Vec3{0, 0, 0}) + Vec3{0, 0, m.towerEyeZ + m.towerLift};
     return true;
 }
 
-bool seenPast(Vec3 eye, Vec3 at) {
+bool seenPast(Vec3 eye, Vec3 at, bool outside) {
     const Models &m = models();
     const float from[3] = {eye.x, eye.y, eye.z}, way[3] = {at.x - eye.x, at.y - eye.y, at.z - eye.z};
     for (const Block &b : m.blocks) {
+        if (outside && eye.x >= b.x0 && eye.x <= b.x1 && eye.y >= b.y0 && eye.y <= b.y1) {
+            continue;
+        }
         // The part of the line from the eye to it between each pair of the
         // box's sides - west and east, south and north, the ground and its
         // roof - and of that, what is between all three: none, it is clear.
@@ -7123,6 +7174,37 @@ bool seenPast(Vec3 eye, Vec3 at) {
     }
     return true;
 }
+
+// The tower's camera raised - five metres at a time, sixty at most - until
+// it sees nine in ten of the points along its runways, an aircraft's height
+// up, past the buildings: a landing watched from the cab had been behind a
+// terminal.
+void liftTower(Models &m) {
+    m.towerLift = 0;
+    if (m.ends.empty() || m.blocks.empty()) {
+        return;
+    }
+    Vec3 towards = m.middle - m.tower;
+    towards.z = 0;
+    float away = length(towards);
+    Vec3 eye = m.tower + (away > 1 ? towards * (8 / away) : Vec3{0, 0, 0}) + Vec3{0, 0, m.towerEyeZ};
+    for (float lift = 0; lift <= 60; lift += 5) {
+        int seen = 0, all = 0;
+        for (size_t e = 0; e + 1 < m.ends.size(); e += 2) {
+            const RunwayEnd &r = m.ends[e];
+            for (float a = 0; a <= r.length; a += 150) {
+                all++;
+                seen += seenPast(eye + Vec3{0, 0, lift}, r.at(a, 0) + Vec3{0, 0, 4}, true) ? 1 : 0;
+            }
+        }
+        m.towerLift = lift;
+        if (all == 0 || seen * 10 >= all * 9) {
+            break;
+        }
+    }
+}
+
+float towerRaised() { return models().towerLift; }
 
 void setGroundLines(const GroundLine *lines, int count) {
     Models &m = models();
@@ -7856,7 +7938,7 @@ Camera cinemaCamera(float t, const char **shot, float size) {
         named("tower");
         const Models &m = models();
         Vec3 towards = normalize(onRunway(end, Vec3{p.exitX, 0, 0}) - m.tower);
-        return fixedCamera(pose, m.tower + Vec3{towards.x * 8, towards.y * 8, m.towerEyeZ}, 0.32f, size);
+        return fixedCamera(pose, m.tower + Vec3{towards.x * 8, towards.y * 8, m.towerEyeZ + m.towerLift}, 0.32f, size);
     }
     // Low on the taxiway ahead of it as it turns in towards the stands.
     named("taxi in");
@@ -7895,6 +7977,9 @@ struct Director::State {
     // there, or - on the ground - carried along at `groundOffset` from it.
     Vec3 groundEye{}, groundOffset{};
     bool eyeSet = false;
+    // How far the shot's camera is raised over a building in its way - see
+    // raised() - and when the last frame was.
+    float raise = 0, lastSeconds = -1;
     bool wasOnGround = false, haveTouchdown = false;
     float touchdownAt = -1, liftoffAt = -1;
     // The last dozen seconds of where it was, for a replay.
@@ -7977,6 +8062,7 @@ Camera Director::next(const Flight &flight, float seconds, const char **shot, Po
         st.shot = want;
         st.shotFrom = seconds;
         st.eyeSet = false;
+        st.raise = 0;
     }
     if (shot) {
         *shot = SHOT_NAMES[(int)st.shot];
@@ -7988,6 +8074,20 @@ Camera Director::next(const Flight &flight, float seconds, const char **shot, Po
     auto at = [&](float a, float right, float z) {
         float r = end->exitRight ? -right : right;
         return end->origin + end->along * a + end->right * r + Vec3{0, 0, z};
+    };
+    // A camera on the ground raised - five metres at a time, forty at most,
+    // quickly, and down again slowly once clear - while a building stands
+    // between it and `target`: by a runway, or carried beside it as it taxied
+    // in among the terminals, it was watched through their walls.
+    float dt = st.lastSeconds >= 0 ? std::max(0.0f, seconds - st.lastSeconds) : 0;
+    st.lastSeconds = seconds;
+    auto raised = [&](Vec3 eye, Vec3 target) {
+        float need = 0;
+        while (need < 40 && !seenPast(eye + Vec3{0, 0, need}, target)) {
+            need += 5;
+        }
+        st.raise += (need - st.raise) * std::min(1.0f, dt / (need > st.raise ? 0.5f : 3.0f));
+        return eye + Vec3{0, 0, st.raise};
     };
     // On the ground, carried along with it and never turned: `distance` off
     // it, `azimuthDeg` round from behind it - to its right - and
@@ -8004,14 +8104,16 @@ Camera Director::next(const Flight &flight, float seconds, const char **shot, Po
         }
         Vec3 eye = middle + st.groundOffset;
         eye.z = std::max(eye.z, 1.5f);
-        float fov = 2 * atanf(40 * size / fill / 2 / distance) / DEG;
-        return Camera{eye, eye - st.groundOffset, std::max(1.5f, std::min(65.0f, fov))};
+        eye = raised(eye, middle);
+        float fov = 2 * atanf(40 * size / fill / 2 / length(eye - middle)) / DEG;
+        return Camera{eye, middle, std::max(1.5f, std::min(65.0f, fov))};
     };
     switch (st.shot) {
     case Shot::LONG_LENS:
-        return fixedCamera(pose, at(-30, 60, 1.7f), 0.26f + 0.14f * clamp01((along + 2000) / 2000), size);
+        return fixedCamera(pose, raised(at(-30, 60, 1.7f), middleOf(pose, size)),
+                           0.26f + 0.14f * clamp01((along + 2000) / 2000), size);
     case Shot::TOUCHDOWN:
-        return fixedCamera(pose, at(590, 62, 1.2f), 0.5f, size);
+        return fixedCamera(pose, raised(at(590, 62, 1.2f), middleOf(pose, size)), 0.5f, size);
     case Shot::REPLAY: {
         // The flare again, half speed, from low on the far side and behind.
         float then = st.touchdownAt - 2.5f + in * REPLAY_SLOW;
@@ -8031,7 +8133,7 @@ Camera Director::next(const Flight &flight, float seconds, const char **shot, Po
         if (replaying) {
             *replaying = true;
         }
-        return fixedCamera(was, at(420, -48, 0.9f), 0.62f, size);
+        return fixedCamera(was, raised(at(420, -48, 0.9f), middleOf(was, size)), 0.62f, size);
     }
     case Shot::ROLLOUT:
         // Alongside it, low, on the side away from the taxiways: slowing,
@@ -8043,7 +8145,11 @@ Camera Director::next(const Flight &flight, float seconds, const char **shot, Po
         // taxi there: the airfield still, and the aircraft moving across it.
         if (!st.eyeSet) {
             Vec3 towards = normalize(at(end->length / 2, 0, 0) - m.tower);
-            st.groundEye = m.tower + Vec3{towards.x * 8, towards.y * 8, m.towerEyeZ};
+            st.groundEye = m.tower + Vec3{towards.x * 8, towards.y * 8, m.towerEyeZ + m.towerLift};
+            // Higher yet if a building is in the way of it, as it is now.
+            for (int k = 0; k < 8 && !seenPast(st.groundEye, middleOf(pose, size), true); k++) {
+                st.groundEye.z += 5;
+            }
             Vec3 ahead = {cosf(pose.heading), sinf(pose.heading), 0};
             st.groundOffset = middleOf(pose, size) + ahead * (flight.speedKt * 0.514f * 6) - st.groundEye;
             st.eyeSet = true;
@@ -8062,11 +8168,11 @@ Camera Director::next(const Flight &flight, float seconds, const char **shot, Po
         return carried(end->exitRight ? 160.0f : -160.0f, 4, 120 * size, 0.4f);
     case Shot::ROLL:
         // Side-on where it will rotate, watching it come.
-        return fixedCamera(pose, at(1450, 70, 1.2f), 0.45f, size);
+        return fixedCamera(pose, raised(at(1450, 70, 1.2f), middleOf(pose, size)), 0.45f, size);
     case Shot::CLIMB:
         return orbitCamera(pose, 12, -6, 75 * size, 42);
     case Shot::CLIMB_AWAY:
-        return fixedCamera(pose, at(end->length + 150, 80, 1.7f), 0.3f, size);
+        return fixedCamera(pose, raised(at(end->length + 150, 80, 1.7f), middleOf(pose, size)), 0.3f, size);
     default:
         // Behind and a little above, off one quarter.
         return orbitCamera(pose, 20, 9, 85 * size, 44);

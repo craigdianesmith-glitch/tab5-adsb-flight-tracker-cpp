@@ -374,8 +374,13 @@ bool towerEye(Vec3 &eye);
 
 // Whether a camera at `eye` sees `at` past the airfield's buildings - each
 // taken as the box about it square to north, so one at an angle hides a
-// little more than it does.
-bool seenPast(Vec3 eye, Vec3 at);
+// little more than it does. With `outside`, any building round the eye
+// itself left out: the tower's own, for a camera at its cab.
+bool seenPast(Vec3 eye, Vec3 at, bool outside = false);
+
+// How far the tower's camera is raised over its cab, metres, for the
+// runways to be seen past the buildings between.
+float towerRaised();
 
 // Airfields far off, seen from high up: their runways as strips, their edges
 // lit after dark.

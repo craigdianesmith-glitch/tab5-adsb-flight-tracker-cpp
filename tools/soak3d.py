@@ -144,6 +144,8 @@ STEPS = [
     ("Kt", 10),  # TOWER - greyed high up
     ("K+", 2), ("K+", 6), ("K-", 2), ("K-", 2), ("K-", 6), ("K+", 1),
     ("Kc", 15),  # CINEMA
+    ("Ks", 4), ("Ks", 1),  # SOUND off, the engines fading out, and on again
+    ("Kf", 30), ("K+", 10), ("K-", 1),  # FLY PAST, passes nearer, and back
     ("d", 5), ("B", 10),  # an aircraft tapped for its details, and Back into 3D
     ("V", 4), ("2", 12),  # Back to the radar, and its 3D button
     ("Ko", 1), ("o", 46),

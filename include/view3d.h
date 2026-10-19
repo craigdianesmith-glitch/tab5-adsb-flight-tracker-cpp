@@ -48,6 +48,9 @@ struct Followed {
 bool open();
 // Gives them back, the frame being drawn finished first.
 void close();
+// Whether the one followed's engines are heard - the SOUND button's, which
+// saves it; this from the settings at boot.
+void setEngineSound(bool on);
 bool isOpen();
 // Showing the one followed parked at a stand, or making for one - landed,
 // its signal lost on the ground, taxied in by itself: following is kept on

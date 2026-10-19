@@ -216,6 +216,10 @@ bool isCargo(const String &callsign) {
     return lookupAirline(callsign, info) && info.cargo;
 }
 
+bool isGroundVehicle(const String &type, const String &category) {
+    return type == "GND" || type == "SERV" || type == "EMER" || category == "C1" || category == "C2";
+}
+
 bool isRotorcraft(const String &type, const String &category) {
     if (category == "A7") {
         return true;

@@ -19,6 +19,7 @@
 #include "ground_follow.h"
 #include "ground_route.h"
 #include "coast.h"
+#include "filter.h"
 #include "labels3d.h"
 #include "navaids.h"
 #include "psram_alloc.h"
@@ -26,6 +27,8 @@
 #include "scene3d.h"
 #include "scenery.h"
 #include "screen.h"
+#include "settings.h"
+#include "sound.h"
 #include "telemetry.h"
 
 namespace view3d {
@@ -49,10 +52,11 @@ float length(Vec3 a) { return sqrtf(a.x * a.x + a.y * a.y + a.z * a.z); }
 // where it always is; and the flight's details under the picture.
 constexpr int VIEW_X = 40, VIEW_Y = 16, VIEW_W = 1008, VIEW_H = 560;
 constexpr int BTN_W = 150, BTN_H = 50, BTN_X = 1280 - 16 - BTN_W;
-enum Button : uint8_t { B_BACK, B_CINEMA, B_CHASE, B_ORBIT, B_TOWER, B_ZOOM_IN, B_ZOOM_OUT, BUTTONS };
+enum Button : uint8_t { B_BACK, B_CINEMA, B_CHASE, B_ORBIT, B_TOWER, B_PAST, B_ZOOM_IN, B_ZOOM_OUT, B_SOUND, BUTTONS };
 // Back; the cameras; how close - grouped as the radar groups its own.
-constexpr int BTN_Y[BUTTONS] = {8, 84, 144, 204, 264, 340, 400};
-const char *const BTN_NAME[BUTTONS] = {"Back", "CINEMA", "CHASE", "ORBIT", "TOWER", "ZOOM IN", "ZOOM OUT"};
+constexpr int BTN_Y[BUTTONS] = {8, 84, 144, 204, 264, 324, 400, 460, 536};
+const char *const BTN_NAME[BUTTONS] = {"Back",     "CINEMA",  "CHASE",    "ORBIT", "TOWER",
+                                       "FLY PAST", "ZOOM IN", "ZOOM OUT", "SOUND"};
 constexpr int STRIP_Y = VIEW_Y + VIEW_H + 16, STRIP_H = 720 - 8 - STRIP_Y;
 
 // The radar's colours.
@@ -122,6 +126,32 @@ struct Shared {
 };
 Shared g_share[2];
 void *g_shareDepth = nullptr;
+// All six of them in the one piece of memory, where there was one to be
+// had - see open() - or nullptr, each its own.
+void *g_arena = nullptr;
+
+// The bands and the loop's buffers given back.
+void releaseBands() {
+    if (g_arena != nullptr) {
+        heap_caps_free(g_arena);
+        g_arena = nullptr;
+    } else {
+        for (void *&p : g_pipe) {
+            heap_caps_free(p);
+        }
+        heap_caps_free(g_shareDepth);
+        for (Shared &sh : g_share) {
+            heap_caps_free(sh.color);
+        }
+    }
+    for (void *&p : g_pipe) {
+        p = nullptr;
+    }
+    g_shareDepth = nullptr;
+    for (Shared &sh : g_share) {
+        sh.color = nullptr;
+    }
+}
 // The bands still to take, packed so the two cores never take the same one:
 // the next from the top in the low 16 bits, one past the next from the bottom
 // in the high.
@@ -653,9 +683,10 @@ bool buildAirfield(const char *code) {
     g_where = Where::AIRFIELD;
     g_frameGen++;
     if (real) {
-        Serial.printf("[3d] at %s: %d runways, %d beacons; its layout: %u ways, %u stands, %u buildings; in %lums\n",
+        Serial.printf("[3d] at %s: %d runways, %d beacons; its layout: %u ways, %u stands, %u buildings; the tower's "
+                      "camera %.0fm over its cab; in %lums\n",
                       code, n, beaconCount, (unsigned)layout.ways.size(), (unsigned)layout.stands.size(),
-                      (unsigned)layout.buildings.size(), (unsigned long)(millis() - t0));
+                      (unsigned)layout.buildings.size(), s3::towerRaised(), (unsigned long)(millis() - t0));
     } else {
         Serial.printf("[3d] at %s: %d runways, %d beacons, in %lums\n", code, n, beaconCount,
                       (unsigned long)(millis() - t0));
@@ -965,8 +996,15 @@ String g_polledFollowed;
 void pollTraffic(const std::vector<Aircraft> &list, const String &followed) {
     pruneKnown();
     g_polled.clear();
+    const TrafficFilterSet &filter = trafficFilter();
     for (const Aircraft &ac : list) {
         if (!ac.hasPos || ac.hex == followed || (int)g_polled.size() >= MOST_TRAFFIC) {
+            continue;
+        }
+        // Not an aircraft - a vehicle on the airfield, which has no model:
+        // drawn as an airliner's, one was parked at a stand - or one the
+        // traffic filter leaves out, as the table and the radar do.
+        if (isGroundVehicle(ac.type, ac.category) || (filter.active() && !filter.passes(ac))) {
             continue;
         }
         Polled p{};
@@ -1169,7 +1207,7 @@ void fillTraffic(const std::vector<Aircraft> &list, uint32_t polledMs, const Str
 
 // --- the camera -----------------------------------------------------------------
 
-enum class Cam : uint8_t { CINEMA, CHASE, ORBIT, TOWER };
+enum class Cam : uint8_t { CINEMA, CHASE, ORBIT, TOWER, PAST };
 Cam g_cam = Cam::CINEMA;
 float g_azimuth = 25, g_elevation = 12, g_zoom = 1;  // the orbit's, dragged; and how close, ZOOM IN and OUT
 s3::Director *g_director = nullptr;
@@ -1235,6 +1273,88 @@ Vec3 spotEye(const s3::Pose &pose, Vec3 spot) {
     return first;
 }
 
+// The one followed's turning, radians a second, to the left positive: the
+// shown heading's, smoothed - see prepareNext(); and the frame's step.
+float g_turn = 0, g_frameDt = 0;
+// The TOWER camera's raising, over the tower's own, for a building between.
+float g_towerRaise = 0;
+
+// FLY PAST: a camera set down ahead of it, beside the way it is going -
+// where it will be in PAST_AHEAD_S - held still as it comes, goes by and
+// away, its lens following it; set down ahead again once it is
+// PAST_AFTER_S past - the other side of its way. Low, it stands on the
+// ground; high up, it hangs in the air beside its way, a little below.
+constexpr float PAST_AHEAD_S = 15, PAST_AFTER_S = 10;
+constexpr float PAST_SPANS = 3;     // how far off its way: three wingspans - 100m for an A320 - ZOOM IN nearer
+constexpr float PAST_LOW_M = 150;   // lower than this where it passes, the camera is on the ground
+Vec3 g_passEye{};
+float g_passFar = 0;  // how far off it was, the camera set down
+bool g_passSet = false, g_passKeepSide = false;
+int g_passSide = 1;  // its left; -1 its right
+String g_passHex;
+Where g_passWhere = Where::NOWHERE;
+
+// Where it will be in `t` seconds, going on as it is: round its turn - a
+// quarter of one at most - at its speed, climbing or coming down as it is.
+Vec3 aheadOf(const s3::Pose &pose, float speedMs, float turn, float climbMs, float t, float &heading) {
+    if (fabsf(turn) * t > (float)M_PI / 2) {
+        t = (float)M_PI / 2 / fabsf(turn);
+    }
+    float h = pose.heading;
+    Vec3 p = pose.at;
+    if (fabsf(turn) < 1e-3f) {
+        p = p + Vec3{cosf(h), sinf(h), 0} * (speedMs * t);
+    } else {
+        float r = speedMs / turn;
+        p = p + Vec3{r * (sinf(h + turn * t) - sinf(h)), -r * (cosf(h + turn * t) - cosf(h)), 0};
+    }
+    p.z += climbMs * t;
+    heading = h + turn * t;
+    return p;
+}
+
+// The fly past's camera set down: beside where it will be, on the side it
+// is the turn of - the other, or further off, if a building is in the way.
+void placePass(const s3::Pose &pose, const Followed &f, float size) {
+    float speed = f.now.gsKt * 0.5144f, climb = f.now.ground ? 0 : f.now.vsFpm * 0.00508f, heading;
+    Vec3 p = aheadOf(pose, speed, g_turn, climb, PAST_AHEAD_S, heading);
+    if (g_where == Where::AIRFIELD) {
+        p.z = std::max(0.0f, p.z);
+    }
+    if (!g_passKeepSide && g_passSet) {
+        g_passSide = -g_passSide;
+    }
+    g_passKeepSide = false;
+    Vec3 left = {-sinf(heading), cosf(heading), 0};
+    float off = std::max(20.0f, PAST_SPANS * 36 * size / g_zoom);
+    // The ground under a point: the airfield's flat; high up, the earth's
+    // round, falling away from the frame's middle - 31m lower 20km off.
+    auto ground = [](Vec3 q) { return g_where == Where::AIRFIELD ? 0.0f : -(q.x * q.x + q.y * q.y) / (2 * 6371000.0f); };
+    bool low = p.z - ground(p) < PAST_LOW_M;
+    Vec3 first{};
+    bool found = false;
+    for (int side : {g_passSide, -g_passSide}) {
+        for (float further : {1.0f, 1.6f}) {
+            Vec3 eye = p + left * (side * off * further);
+            eye.z = low ? ground(eye) + 2 : p.z - 0.3f * off;
+            if (side == g_passSide && further == 1) {
+                first = eye;
+            }
+            if (!found && (g_where != Where::AIRFIELD || s3::seenPast(eye, p + Vec3{0, 0, 3}))) {
+                g_passEye = eye;
+                found = true;
+            }
+        }
+    }
+    if (!found) {
+        g_passEye = first;
+    }
+    g_passFar = hypotf(g_passEye.x - pose.at.x, g_passEye.y - pose.at.y);
+    g_passSet = true;
+    g_passHex = f.hex;
+    g_passWhere = g_where;
+}
+
 s3::Camera cameraFor(const s3::Aircraft &followed, const Followed &f, float seconds, s3::Pose &shown,
                      bool &replaying) {
     const s3::Pose &pose = followed.pose;
@@ -1272,10 +1392,34 @@ s3::Camera cameraFor(const s3::Aircraft &followed, const Followed &f, float seco
         return s3::orbitCamera(pose, g_azimuth, g_elevation, std::max(28 * size, 80 * size / g_zoom), 50);
     case Cam::TOWER:
         if (s3::towerEye(eye)) {
+            // Raised further while a building stands between the cab and it
+            // - quickly up, slowly down - for it not to be watched through
+            // a terminal's wall.
+            float need = 0;
+            Vec3 middle = pose.at + Vec3{0, 0, 3 * size};
+            while (need < 60 && !s3::seenPast(eye + Vec3{0, 0, need}, middle, true)) {
+                need += 5;
+            }
+            g_towerRaise += (need - g_towerRaise) * std::min(1.0f, g_frameDt / (need > g_towerRaise ? 0.6f : 3.0f));
+            eye.z += g_towerRaise;
             g_shot = "tower";
             return s3::fixedCamera(pose, eye, std::min(0.9f, 0.3f * g_zoom), size);
         }
         break;
+    case Cam::PAST: {
+        // Set down again once it is well past - or once it has turned away
+        // and will never come by - or it is another, or another frame.
+        float speed = f.now.gsKt * 0.5144f;
+        Vec3 to = g_passEye - pose.at;
+        float along = to.x * cosf(pose.heading) + to.y * sinf(pose.heading);
+        bool past = along < -std::max(60.0f, speed * PAST_AFTER_S);
+        bool away = hypotf(to.x, to.y) > g_passFar + 500;
+        if (!g_passSet || g_passHex != f.hex || g_passWhere != g_where || past || away) {
+            placePass(pose, f, size);
+        }
+        g_shot = "fly past";
+        return s3::fixedCamera(pose, g_passEye, 0.3f, size);
+    }
     case Cam::CINEMA:
         break;
     }
@@ -1351,6 +1495,144 @@ s3::Camera cameraFor(const s3::Aircraft &followed, const Followed &f, float seco
     return s3::orbitCamera(pose, 215, -18, 120 * size, 52);
 }
 
+// --- the engines' noise ---------------------------------------------------------------
+
+// The SOUND button's: whether the engines are heard - see engine_noise.h.
+bool g_engineSound = true;
+float g_engineDistance = -1;  // the camera's from the one followed, a frame ago
+
+// An aircraft's engines, by its family - and for a few, by its type: a new
+// narrowbody's fan half the blades of an old one's, wider and turning
+// slower; a light helicopter's rotor two, three or four-bladed, its tail
+// rotor in a shroud or not.
+engine_noise::Sound enginesOf(s3::Family family, const String &type) {
+    using engine_noise::Kind;
+    using F = s3::Family;
+    auto is = [&](std::initializer_list<const char *> types) {
+        for (const char *t : types) {
+            if (type == t) {
+                return true;
+            }
+        }
+        return false;
+    };
+    engine_noise::Sound s;
+    s.kind = Kind::TURBOFAN;
+    switch (family) {
+    // A fan's blades passing at full power: CFM56s' 36 at 86 turns a second;
+    // a LEAP's 18; a big fan's 22 at 45.
+    case F::NARROWBODY:
+        s.fanHz = is({"A19N", "A20N", "A21N", "B37M", "B38M", "B39M", "B3XM", "E290", "E295", "BCS1", "BCS3"}) ? 1250
+                  : is({"B752", "B753"})                                                           ? 1650
+                  : is({"E170", "E175", "E190", "E195"})                                             ? 1760
+                                                                                                     : 3100;
+        break;
+    case F::NARROWBODY_4: s.fanHz = 3300, s.engines = 4; break;
+    case F::AWACS: s.kind = Kind::LOW_BYPASS, s.fanHz = 3500, s.engines = 4; break;
+    case F::WIDEBODY: s.fanHz = 1100; break;
+    case F::WIDEBODY_4: s.fanHz = 2800, s.engines = 4; break;
+    case F::JUMBO: s.fanHz = is({"B748"}) ? 1100 : 2200, s.engines = 4; break;
+    case F::SUPERJUMBO: s.fanHz = 1200, s.engines = 4; break;
+    case F::REGIONAL_JET: s.fanHz = 3500; break;
+    case F::BUSINESS_JET: s.fanHz = 4200; break;
+    case F::AIRLIFTER: s.fanHz = 2600, s.engines = 4; break;
+    case F::QUAD_HIGH: s.fanHz = 4400, s.engines = 4; break;
+    // A propeller's blades passing: an ATR's six at 20 turns a second.
+    case F::TURBOPROP: s.kind = Kind::TURBOPROP, s.bladeHz = 115; break;
+    case F::TURBOPROP_LOW: s.kind = Kind::TURBOPROP, s.bladeHz = 100; break;
+    case F::HERCULES: s.kind = Kind::TURBOPROP, s.bladeHz = is({"C30J"}) ? 102 : 68, s.engines = 4; break;
+    case F::ATLAS: s.kind = Kind::TURBOPROP, s.bladeHz = 112, s.engines = 4; break;
+    case F::TACTICAL_TWIN: s.kind = Kind::TURBOPROP, s.bladeHz = 102; break;
+    case F::LIGHT_HIGH:
+    case F::LIGHT_LOW:
+        if (is({"C208", "PC12", "TBM7", "TBM8", "TBM9", "BN2T", "PC21", "TUCA", "PC9"})) {
+            s.kind = Kind::TURBOPROP, s.bladeHz = 95, s.engines = 1;
+        } else {
+            s.kind = Kind::PISTON, s.engines = 1;
+        }
+        break;
+    case F::FIGHTER_DELTA:
+    case F::FIGHTER:
+    case F::FIGHTER_SINGLE: s.kind = Kind::LOW_BYPASS, s.fanHz = 4500; break;
+    case F::JET_TRAINER: s.kind = Kind::LOW_BYPASS, s.fanHz = 4000; break;
+    // A main rotor's blades passing - an AW139's five at 5.4 turns a
+    // second - and its tail rotor's; a Fenestron's ten in its shroud, a
+    // whine at 600Hz.
+    case F::HELICOPTER:
+        s.kind = Kind::ROTOR;
+        s.bladeHz = is({"A139", "A169", "A189", "A149"}) ? 27 : 22;
+        s.tailHz = is({"A139", "A169", "A189", "A149"}) ? 120 : 90;
+        break;
+    case F::HELICOPTER_LIGHT:
+        s.kind = Kind::ROTOR;
+        if (is({"R22"})) {
+            s.bladeHz = 17.7f, s.tailHz = 113;
+        } else if (is({"R44", "R66", "B06", "B505"})) {
+            s.bladeHz = 13.3f, s.tailHz = 85;
+        } else if (is({"AS50", "AS55", "EC30"})) {
+            s.bladeHz = 19.7f, s.tailHz = type == "EC30" ? 580 : 70;
+        } else if (is({"EC35", "EC45", "EC55", "EC65", "EC75", "H160", "AS65", "EC25", "H145", "H135"})) {
+            s.bladeHz = 26.3f, s.tailHz = 600;
+        } else {
+            s.bladeHz = 26, s.tailHz = 85;
+        }
+        break;
+    case F::CHINOOK: s.kind = Kind::ROTOR, s.bladeHz = 11.25f, s.tailHz = 0, s.tandem = true; break;
+    default: break;
+    }
+    return s;
+}
+
+// The one followed's engines as the camera hears them: their kind, from its
+// type; how hard they are working, from what it is doing - idling as it
+// taxies, take-off power on its roll and in its climb, back on the approach,
+// reverse thrust just down; and where it is from the camera - how far off,
+// how fast it is closing, and which way it faces.
+engine_noise::Sound engineSound(const Followed &f, const FollowEstimate &e, int shownKt, const s3::Look &look,
+                                const s3::Pose &pose, const s3::Camera &camera, float dt) {
+    using engine_noise::Kind;
+    engine_noise::Sound s = enginesOf(look.family, f.type);
+    float aboveFt = g_where == Where::AIRFIELD ? pose.at.z / 0.3048f : 1e9f;
+    bool low = aboveFt < 3000;
+    if (s.kind == Kind::ROTOR) {
+        // Set down its rotor turning, idling; hovering the hardest it
+        // works; coming down at 30 to 90 knots - an approach - its blades
+        // slapping.
+        s.power = e.ground ? 0.25f : shownKt < 25 ? 0.95f : e.vsFpm > 300 ? 0.85f : e.vsFpm < -300 ? 0.45f : 0.65f;
+        if (!e.ground && e.vsFpm < -250) {
+            float speed = std::min(1.0f, std::max(0.0f, (shownKt - 30) / 20.0f)) *
+                          std::min(1.0f, std::max(0.0f, (90 - shownKt) / 20.0f));
+            s.slap = std::min(1.0f, (-e.vsFpm - 250) / 600.0f) * speed;
+        }
+    } else if (e.ground) {
+        if (f.movement == RunwaySim::Movement::TAKEOFF && (f.simulating || shownKt > 30)) {
+            s.power = 1;
+        } else if (f.movement == RunwaySim::Movement::LANDING && shownKt > 60) {
+            s.power = 0.7f;
+            s.reverse = true;
+        } else {
+            s.power = 0.05f + std::min(0.12f, shownKt / 150.0f);
+        }
+    } else {
+        s.power = e.vsFpm > 1200 ? 1.0f : e.vsFpm > 300 ? 0.88f : e.vsFpm < -400 ? (low ? 0.45f : 0.05f) : 0.65f;
+    }
+    s.afterburner = s.kind == Kind::LOW_BYPASS && look.family != s3::Family::JET_TRAINER &&
+                    look.family != s3::Family::AWACS && s.power >= 0.95f && (e.ground || low);
+    // Its engines about its middle, a little up.
+    Vec3 to = camera.eye - (pose.at + Vec3{0, 0, 2.5f * look.scale});
+    float d = length(to);
+    s.distanceM = d;
+    // How fast it is coming closer, from the distance a frame ago - a cut
+    // from one camera to another, a jump no aircraft makes, as none.
+    float closing = g_engineDistance >= 0 && dt > 0 ? (g_engineDistance - d) / dt : 0;
+    s.closingMs = fabsf(closing) < 300 ? closing : 0;
+    g_engineDistance = d;
+    Vec3 nose = {cosf(pose.heading) * cosf(pose.pitch), sinf(pose.heading) * cosf(pose.pitch), sinf(pose.pitch)};
+    float c = (nose.x * to.x + nose.y * to.y + nose.z * to.z) / std::max(1.0f, d);
+    s.aspect = acosf(std::max(-1.0f, std::min(1.0f, c))) / (float)M_PI;
+    return s;
+}
+
 // --- a frame -----------------------------------------------------------------------
 
 s3::Scene g_scene;
@@ -1362,7 +1644,7 @@ float g_shownHeading = 0;
 bool g_haveShown = false;
 Where g_shownWhere = Where::NOWHERE;
 uint32_t g_openMs = 0;
-float g_lastSeconds = -1, g_lastTrack = 0, g_turn = 0;
+float g_lastSeconds = -1, g_lastTrack = 0;
 bool g_wasGround = false;
 float g_touchdownAt = -100;
 s3::Pose g_touchdownPose{};
@@ -1391,6 +1673,7 @@ void prepareNext(const Followed &f, const std::vector<Aircraft> &traffic, uint32
     choose(f);
     float seconds = (millis() - g_openMs) / 1000.0f;
     float dt = g_lastSeconds < 0 ? 0 : std::min(0.5f, seconds - g_lastSeconds);
+    g_frameDt = dt;
     g_lastSeconds = seconds;
     FollowEstimate e = estimateOf(f);
     bool rotor = isRotorcraft(f.type, f.category);
@@ -1599,6 +1882,9 @@ void prepareNext(const Followed &f, const std::vector<Aircraft> &traffic, uint32
     if (replaying) {
         g_scene.followed.pose = shown;
     }
+    if (g_engineSound) {
+        soundEngine(engineSound(f, e, shownKt, look, g_scene.followed.pose, camera, dt));
+    }
     s3::prepareBegin(VIEW_W, VIEW_H, g_rows, true, g_scene, camera);
     s3::prepareAircraft(0, 1);
     s3::prepareEnd();
@@ -1654,12 +1940,14 @@ void placeLabels() {
 // --- around the picture ---------------------------------------------------------------
 
 bool buttonGreyed(int i) {
-    return (i == B_TOWER && g_where != Where::AIRFIELD) || ((i == B_ZOOM_IN || i == B_ZOOM_OUT) && g_cam == Cam::CINEMA);
+    return (i == B_TOWER && g_where != Where::AIRFIELD) || ((i == B_ZOOM_IN || i == B_ZOOM_OUT) && g_cam == Cam::CINEMA) ||
+           (i == B_SOUND && soundMuted());
 }
 
 bool buttonLit(int i) {
     return (i == B_CINEMA && g_cam == Cam::CINEMA) || (i == B_CHASE && g_cam == Cam::CHASE) ||
-           (i == B_ORBIT && g_cam == Cam::ORBIT) || (i == B_TOWER && g_cam == Cam::TOWER);
+           (i == B_ORBIT && g_cam == Cam::ORBIT) || (i == B_TOWER && g_cam == Cam::TOWER) ||
+           (i == B_PAST && g_cam == Cam::PAST) || (i == B_SOUND && g_engineSound);
 }
 
 // As the radar draws its own.
@@ -1717,8 +2005,11 @@ void drawStrip(const Followed &f) {
     c.setTextSize(2);
     c.setTextColor(colorMuted);
     c.drawString(line, VIEW_X, STRIP_Y + 44);
-    const char *camera = g_cam == Cam::CINEMA ? "CINEMA" : g_cam == Cam::CHASE ? "CHASE" : g_cam == Cam::ORBIT ? "ORBIT"
-                                                                                                               : "TOWER";
+    const char *camera = g_cam == Cam::CINEMA  ? "CINEMA"
+                         : g_cam == Cam::CHASE ? "CHASE"
+                         : g_cam == Cam::ORBIT ? "ORBIT"
+                         : g_cam == Cam::TOWER ? "TOWER"
+                                               : "FLY PAST";
     if (g_where == Where::AIRFIELD) {
         snprintf(line, sizeof line, "%s - %s     at %s", camera, g_shot, g_airport);
     } else {
@@ -1759,8 +2050,29 @@ Action press(int b) {
     case B_CHASE: g_cam = Cam::CHASE; break;
     case B_ORBIT: g_cam = Cam::ORBIT; break;
     case B_TOWER: g_cam = Cam::TOWER; break;
-    case B_ZOOM_IN: g_zoom = std::min(4.0f, g_zoom * 1.4f); break;
-    case B_ZOOM_OUT: g_zoom = std::max(0.3f, g_zoom / 1.4f); break;
+    case B_PAST:
+        // Set down ahead afresh, on its left.
+        g_cam = Cam::PAST;
+        g_passSet = false;
+        g_passSide = 1;
+        break;
+    case B_ZOOM_IN:
+    case B_ZOOM_OUT:
+        g_zoom = b == B_ZOOM_IN ? std::min(4.0f, g_zoom * 1.4f) : std::max(0.3f, g_zoom / 1.4f);
+        // Flying past, nearer or further off at once, the same side.
+        if (g_cam == Cam::PAST && g_passSet) {
+            g_passSet = false;
+            g_passKeepSide = true;
+        }
+        break;
+    case B_SOUND:
+        g_engineSound = !g_engineSound;
+        saveEngineSound(g_engineSound);
+        if (!g_engineSound) {
+            soundEngine(engine_noise::Sound());
+        }
+        Serial.printf("[3d] engine noise %s\n", g_engineSound ? "on" : "off");
+        break;
     default: break;
     }
     drawButtons();
@@ -1783,30 +2095,78 @@ bool open() {
     // Never bands of 4: the PPA has been seen never to finish a block that
     // shallow, and every band would be one. 15 and 14 between 16 and 12: at
     // 1008 wide a band of 16 is 31.5KB, and with the chip's memory broken up
-    // the view went to 12 at once, and the loop got no buffers of its own to
-    // help draw with - 50fps rather than 60.
-    for (int rows : {16, 15, 14, 12, 10, 8}) {
+    // the view went to 12 at once.
+    //
+    // The bands, and the loop's own buffers for its share of the drawing - a
+    // depth buffer and two colour buffers, or one: the tallest bands they all
+    // fit in at once, or failing that the tallest the bands alone do and the
+    // helper drawing it all. The loop's help is worth more than the bands'
+    // height - 60fps rather than 50 - and with the memory in pieces the
+    // tallest bands had left it none.
+    //
+    // All where DMA reaches, the depth buffers too, though no DMA touches
+    // them: of the chip's own memory that leaves out only the 32KB of the
+    // low-power core's, which the heap has too - and a band of 15 fits
+    // there. A depth buffer was put there with the rest of the memory in
+    // pieces, and the first store to it, eight pixels at once, faulted. Not
+    // in PSRAM: drawing there, through the same small cache as the helper's
+    // reading, made the frames slower than no help at all.
+    auto block = [](int rows) { return heap_caps_aligned_alloc(64, pipeBytes(rows), MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA); };
+    // As one piece, the six, where there is one - before anything else, a
+    // band shallower if need be: small blocks put in the gaps between six
+    // pieces - their alignment's - stayed when they went, and the chip's
+    // memory came back to the next open in pieces just short of a band.
+    // Otherwise each its own, the bands and the loop's; or the bands alone.
+    auto take = [&](int rows, int how) {
+        size_t each = (pipeBytes(rows) + 63) & ~(size_t)63;
+        if (how == 0) {
+            g_arena = heap_caps_aligned_alloc(64, each * 6, MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA);
+            if (g_arena == nullptr) {
+                return false;
+            }
+            uint8_t *at = (uint8_t *)g_arena;
+            for (void *&p : g_pipe) {
+                p = at;
+                at += each;
+            }
+            g_shareDepth = at;
+            g_share[0].color = at + each;
+            g_share[1].color = at + 2 * each;
+            return true;
+        }
+        bool help = how == 1, all = true;
+        for (void *&p : g_pipe) {
+            p = block(rows);
+            all = all && p != nullptr;
+        }
+        if (all && help) {
+            g_shareDepth = block(rows);
+            g_share[0].color = g_shareDepth != nullptr ? block(rows) : nullptr;
+            g_share[1].color = g_share[0].color != nullptr ? block(rows) : nullptr;
+            all = g_share[0].color != nullptr;
+        }
+        if (!all) {
+            releaseBands();
+        }
+        return all;
+    };
+    // In the order they are worth having: deep bands in one piece, then in
+    // pieces, then shallower - a band of 8 is twice the pushes to the panel
+    // of one of 16 - and the bands without the loop's help last of all.
+    static const struct {
+        uint8_t how, rows;
+    } TRIES[] = {{0, 16}, {0, 15}, {0, 14}, {1, 16}, {1, 15}, {1, 14}, {0, 12}, {1, 12}, {0, 10},
+                 {1, 10}, {0, 8},  {1, 8},  {2, 16}, {2, 15}, {2, 14}, {2, 12}, {2, 10}, {2, 8}};
+    g_rows = 0;
+    for (const auto &t : TRIES) {
 #ifdef BENCH3D
-        if (g_forceRows != 0 && rows != g_forceRows) {
+        if (g_forceRows != 0 && t.rows != g_forceRows) {
             continue;
         }
 #endif
-        bool all = true;
-        for (int i = 0; i < 3; i++) {
-            // The depth buffer only this core reads and writes: any of the
-            // chip's own memory, not just what DMA can reach, of which there
-            // is less in pieces this big.
-            g_pipe[i] = heap_caps_aligned_alloc(64, pipeBytes(rows),
-                                                i == 2 ? MALLOC_CAP_INTERNAL : MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA);
-            all = all && g_pipe[i] != nullptr;
-        }
-        if (all) {
-            g_rows = rows;
+        if (take(t.rows, t.how)) {
+            g_rows = t.rows;
             break;
-        }
-        for (void *&p : g_pipe) {
-            heap_caps_free(p);
-            p = nullptr;
         }
     }
     if (g_pipe[0] == nullptr) {
@@ -1815,23 +2175,8 @@ bool open() {
                       (unsigned)(heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL) / 1024));
         return false;
     }
-    // The loop's own, for its share of the drawing: a depth buffer and two
-    // colour buffers, or one - or none, and the helper draws it all. Only in
-    // the chip's own memory: tried in PSRAM, drawing there and through the
-    // same small cache as the helper's reading, it made the frames slower
-    // than no help at all.
-    g_shareDepth = heap_caps_aligned_alloc(64, pipeBytes(g_rows), MALLOC_CAP_INTERNAL);
     for (Shared &sh : g_share) {
-        sh.color = g_shareDepth != nullptr
-                       ? heap_caps_aligned_alloc(64, pipeBytes(g_rows), MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA)
-                       : nullptr;
         sh.state.store(BAND_FREE);
-    }
-    if (g_share[0].color == nullptr) {
-        heap_caps_free(g_share[1].color);
-        g_share[1].color = nullptr;
-        heap_caps_free(g_shareDepth);
-        g_shareDepth = nullptr;
     }
     if (g_helper == nullptr) {
         g_done = xSemaphoreCreateBinary();
@@ -1852,6 +2197,9 @@ bool open() {
     g_openMs = millis();
     g_lastSeconds = -1;
     g_spotSet = g_spotAway = false;
+    g_engineDistance = -1;
+    g_passSet = false;
+    g_towerRaise = 0;
     g_labelledAt = -1;
     g_stripMs = 0;
     g_frameMs = 0;
@@ -1873,23 +2221,17 @@ void close() {
     }
     finishDrawing();
     s3::setSolidsReady(nullptr);
+    soundEngine(engine_noise::Sound());
     g_open = false;
     g_prepared = false;
     screen::setLiveRect(0, 0, 0, 0);
-    for (void *&p : g_pipe) {
-        heap_caps_free(p);
-        p = nullptr;
-    }
-    for (Shared &sh : g_share) {
-        heap_caps_free(sh.color);
-        sh.color = nullptr;
-    }
-    heap_caps_free(g_shareDepth);
-    g_shareDepth = nullptr;
+    releaseBands();
     Serial.println("[3d] closed");
 }
 
 bool isOpen() { return g_open; }
+
+void setEngineSound(bool on) { g_engineSound = on; }
 
 bool parkingLost() { return g_open && g_follower.active() && g_follower.parking(); }
 
@@ -2134,7 +2476,8 @@ void benchPress(char what) {
         return;
     }
     int b = what == 'c' ? B_CINEMA : what == 'h' ? B_CHASE : what == 'o' ? B_ORBIT : what == 't' ? B_TOWER
-          : what == '+' ? B_ZOOM_IN : what == '-' ? B_ZOOM_OUT : -1;
+          : what == '+' ? B_ZOOM_IN : what == '-' ? B_ZOOM_OUT : what == 's' ? B_SOUND : what == 'f' ? B_PAST
+                                                                                                         : -1;
     if (b >= 0) {
         g_sweepUntilMs = 0;
         press(b);

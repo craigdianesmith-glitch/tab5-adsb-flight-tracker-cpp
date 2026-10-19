@@ -23,7 +23,7 @@ struct TrafficFilterSet {
     bool civil = true, cargo = true, military = true;
     String airlines;  // airline codes, as a callsign begins: "EZY RYR"
     String types;     // type designators, or how they begin: "A32 B738"
-    String hideTypes;  // and those left out, whatever else: "TWR", the ground stations
+    String hideTypes;  // and those left out, whatever else: "GLID", the gliders
 
     bool active() const;
     bool passes(const Aircraft &a) const;

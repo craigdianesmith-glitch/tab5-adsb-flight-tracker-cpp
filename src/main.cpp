@@ -52,6 +52,10 @@
 #include "bench3d.h"
 #include "wifi_screen.h"
 
+// The loop's stack, 10KB rather than the framework's 8: at its deepest it had
+// 1.6KB of the 8 to spare, little margin for a path a soak doesn't take.
+SET_LOOP_TASK_STACK_SIZE(10 * 1024);
+
 namespace {
 
 enum class Screen { MAIN, LOCATION, DETAIL, SETTINGS, WIFI, RADAR, ZOOM, ALERTS, WATCHLIST, RECORDINGS, PLAYBACK, SHARE,
@@ -781,6 +785,39 @@ void benchTrafficInto(std::vector<Aircraft> &list, double lat, double lon, float
                aLon = wayLon[i] + metres * sin(rad) / (111320.0 * cos(wayLat[i] * M_PI / 180));
         add(200 + i, aLat, aLon, wayTrack[i], 12, true);
     }
+    // A fire engine going along the first taxiway, as the feed has one: for
+    // the 3D view to be seen to leave it out.
+    auto notAircraft = [&](int n, double aLat, double aLon, const char *type, const char *category,
+                           const char *callsign, int kt, float track) {
+        float d = haversineNm(lat, lon, aLat, aLon);
+        if (d > radiusNm) {
+            return;
+        }
+        Aircraft a;
+        char hex[8];
+        snprintf(hex, sizeof hex, "bc%04x", n);
+        a.hex = hex;
+        a.callsign = callsign;
+        a.type = type;
+        a.reg = type;
+        a.category = category;
+        a.hasPos = a.hasTrack = true;
+        a.lat = (float)aLat;
+        a.lon = (float)aLon;
+        a.track = track;
+        a.altStr = "GND";
+        a.speedStr = String(kt);
+        a.status = kt > 0 ? "TAXI" : "GROUND";
+        a.hasDist = true;
+        a.distNm = d;
+        list.push_back(a);
+    };
+    if (ways > 0) {
+        double metres = 15 * 0.5144 * t, rad = wayTrack[0] * M_PI / 180;
+        notAircraft(3, wayLat[0] + metres * cos(rad) / 111320.0,
+                    wayLon[0] + metres * sin(rad) / (111320.0 * cos(wayLat[0] * M_PI / 180)), "EMER", "C2", "FIRE1",
+                    15, wayTrack[0]);
+    }
 }
 
 void madeUpInto(std::vector<Aircraft> &list, double lat, double lon, float radiusNm) {
@@ -1383,9 +1420,10 @@ subject3d::Picker g_picker;
 // for a poll and picks up again is one landing.
 constexpr uint32_t ANNOUNCE_AGAIN_MS = 5UL * 60 * 1000;
 
-// The zoom on screen says each take-off and landing at its airport as it
-// begins, as a controller would clear it - lining up, for a take-off, or
-// established on final for a landing, as the runway sim has them.
+// The zoom on screen - or the 3D view, at an airfield - says each take-off
+// and landing at its airport as it begins, as a controller would clear it -
+// lining up, for a take-off, or established on final for a landing, as the
+// runway sim has them.
 //
 // Only while it would still be said: a take-off on the ground, a landing in
 // the air. The sim can be into a take-off by the time the zoom's list next
@@ -1398,7 +1436,15 @@ void announceMovement(const Aircraft &a, Track &t, uint32_t now) {
         return;
     }
     const RunwayLine &rw = t.sim.runway();
-    if (g_screen != Screen::ZOOM || !g_zoomUp || !rw.ident || !rw.airport || g_zoomCode != rw.airport) {
+    if (!rw.ident || !rw.airport) {
+        return;
+    }
+    // Its airport on the screen: the zoom of it, or the 3D view at it - every
+    // take-off and landing there, as the zoom has them, not only the one the
+    // view shows.
+    bool inZoom = g_screen == Screen::ZOOM && g_zoomUp && g_zoomCode == rw.airport;
+    bool in3d = g_screen == Screen::VIEW3D && strcmp(view3d::airport(), rw.airport) == 0;
+    if (!inZoom && !in3d) {
         return;
     }
     t.announced = m;
@@ -4162,6 +4208,7 @@ void setup() {
     g_alertRules.watch = parseWatchlist(g_watchlist);
     soundSetMuted(g_muted);
     radarScreenSetMuted(g_muted, false);
+    view3d::setEngineSound(s.engineSound);
     soundSetReadAloud(g_readAloud);
     soundSetElsewhereAccent(g_elsewhereAccent);
     displaySetSort(s.tableSortCol, s.tableSortDesc);
@@ -4286,7 +4333,7 @@ void reportPerf() {
     // And the stacks' high-water marks - the least each has had spare - for
     // them to be sized by what they use.
     Serial.printf("[perf] radar %s, zoom %s (plots: %s), tracks %s (%u), loop max %ums; internal RAM %uKB free, "
-                  "%uKB lowest, %uKB largest block; PSRAM %uKB free; stacks spare: loop %u, poll %u\n",
+                  "%uKB lowest, %uKB largest block; PSRAM %uKB free; stacks spare: loop %u, poll %u, sound %u\n",
                   g_perfRadar.text().c_str(), g_perfZoom.text().c_str(), radarTakeTimings().c_str(),
                   g_perfTracks.text().c_str(),
                   (unsigned)g_tracks.size(), (unsigned)(g_perfLoop.maxUs / 1000),
@@ -4295,7 +4342,7 @@ void reportPerf() {
                   (unsigned)(heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL) / 1024),
                   (unsigned)(heap_caps_get_free_size(MALLOC_CAP_SPIRAM) / 1024),
                   (unsigned)uxTaskGetStackHighWaterMark(nullptr),
-                  g_pollTask ? (unsigned)uxTaskGetStackHighWaterMark(g_pollTask) : 0u);
+                  g_pollTask ? (unsigned)uxTaskGetStackHighWaterMark(g_pollTask) : 0u, soundStackSpare());
     g_perfRadar = g_perfZoom = g_perfTracks = g_perfLoop = PerfStat();
 }
 
@@ -4723,6 +4770,17 @@ void loop() {
             stopFollow();
             Serial.println("[soak] stopped");
             break;
+        case 'H': {
+            // The chip's own memory, region by region: how much each has free,
+            // its largest piece and in how many - for what breaks it up.
+            multi_heap_info_t all;
+            heap_caps_get_info(&all, MALLOC_CAP_INTERNAL);
+            Serial.printf("[heap] internal: %uKB free in %u pieces, the largest %uKB; %u blocks in use\n",
+                          (unsigned)(all.total_free_bytes / 1024), (unsigned)all.free_blocks,
+                          (unsigned)(all.largest_free_block / 1024), (unsigned)all.allocated_blocks);
+            heap_caps_print_heap_info(MALLOC_CAP_INTERNAL);
+            break;
+        }
         case 'd': {
             String hex;
             Aircraft ac;

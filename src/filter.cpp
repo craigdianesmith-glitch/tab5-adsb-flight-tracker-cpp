@@ -66,8 +66,8 @@ bool TrafficFilterSet::passes(const Aircraft &a) const {
     cs.toUpperCase();
     String type = a.type;
     type.toUpperCase();
-    // Left out by name before anything is let in by it: "TWR" hides the
-    // ground stations whatever the types asked for.
+    // Left out by name before anything is let in by it: "GLID" hides the
+    // gliders whatever the types asked for.
     if (type.length() && matchesAny(hideTypes, type, false)) {
         return false;
     }

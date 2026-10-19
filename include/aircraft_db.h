@@ -32,3 +32,7 @@ bool isCargo(const String &callsign);
 // tilt-rotor - by the feed's category ("A7"), or failing that its type. One
 // takes off and lands where it likes, not on a runway, and hovers.
 bool isRotorcraft(const String &type, const String &category);
+
+// A vehicle on an airfield - a fire engine, a follow-me car, an ops van: the
+// feed's types GND, SERV and EMER, or its categories C1 and C2.
+bool isGroundVehicle(const String &type, const String &category);
