@@ -4,7 +4,7 @@
 // aircraft and the beacon in the device's own font. Build (once the firmware
 // has been, for the font it fetches) and run, from the repo's root:
 //
-//   g++ -std=c++17 -O2 -Iinclude -I.pio/libdeps/tab5/M5GFX/src/lgfx/Fonts tools/landing3d_preview/preview.cpp src/scene3d.cpp src/airfield_pack.cpp src/labels3d.cpp src/coast.cpp -o /tmp/landing3d
+//   g++ -std=c++17 -O2 -Iinclude -I.pio/libdeps/tab5/M5GFX/src/lgfx/Fonts tools/landing3d_preview/preview.cpp src/scene3d.cpp src/airfield_pack.cpp src/labels3d.cpp src/coast.cpp src/scenery.cpp -o /tmp/landing3d
 //   /tmp/landing3d chase /tmp/frames 15
 //   ffmpeg -framerate 15 -i /tmp/frames/%04d.ppm -pix_fmt yuv420p /tmp/landing.mp4
 //
@@ -22,12 +22,14 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <functional>
 #include <string>
 #include <vector>
 
 #include "airfield_pack.h"
 #include "coast.h"
 #include "scene3d.h"
+#include "scenery.h"
 
 // The firmware's tables, as it compiles them.
 struct RunwayEnd {
@@ -186,6 +188,28 @@ void lowerThird(float t) {
     text(line, 58, y + 32, 2, 0xC618);
 }
 
+// The towns' outlines and the rivers, as view3d loads them, each point put
+// by `place`.
+struct ScenerySink {
+    std::function<Vec3(double, double)> place;
+    std::vector<GroundLine> *lines;
+    std::vector<RiverLine> rivers;
+};
+
+void sinkScenery(void *context, SceneryKind kind, const double *latLon, int n) {
+    ScenerySink &s = *(ScenerySink *)context;
+    Vec3 a = s.place(latLon[0], latLon[1]);
+    for (int i = 0; i + 1 < n; i++) {
+        Vec3 b = s.place(latLon[2 * i + 2], latLon[2 * i + 3]);
+        if (kind == SceneryKind::TOWN) {
+            if (!getenv("NO_TOWNS")) s.lines->push_back({a, b, GroundKind::TOWN});
+        } else {
+            s.rivers.push_back({a, b, riverWidth(kind)});
+        }
+        a = b;
+    }
+}
+
 // The airport's runways in metres round the middle of their ends, its open
 // ones only, and its VOR/DMEs within 3km of that; the runway ends named set
 // for the landing and the departures. False if it has no runways.
@@ -296,11 +320,39 @@ bool useAirport(const std::string &code, const std::string &land, const std::str
             printf("  no real layout for it in %s\n", pack);
         }
     }
+    // The coasts and lakes' shores within 60km, laid out flat as the airfield
+    // is, as view3d loads them: the sea beside it drawn as water.
+    struct Shores {
+        decltype(local) *to;
+        std::vector<GroundLine> lines;
+    } shores = {&local, {}};
+    coastLines(lat0, lon0, 60, 60, 0,
+               [](void *context, OutlineKind kind, const double *latLon, int n) {
+                   Shores &s = *(Shores *)context;
+                   if (kind != OutlineKind::COAST && kind != OutlineKind::LAKE) {
+                       return;
+                   }
+                   for (int i = 0; i + 1 < n; i++) {
+                       s.lines.push_back({(*s.to)(latLon[2 * i], latLon[2 * i + 1]),
+                                          (*s.to)(latLon[2 * i + 2], latLon[2 * i + 3]), (GroundKind)kind});
+                   }
+               },
+               &shores);
+    ScenerySink scenery = {local, &shores.lines, {}};
+    sceneryLines(lat0, lon0, 60, sinkScenery, &scenery);
+    setGroundLines(shores.lines.data(), (int)shores.lines.size());
+    setRivers(scenery.rivers.data(), (int)scenery.rivers.size());
+    printf("  %zu lines of coast, shore and towns within 60km, %zu of rivers\n", shores.lines.size(),
+           scenery.rivers.size());
     auto built0 = std::chrono::steady_clock::now();
     setAirfield(specs.data(), (int)specs.size(), g_beaconsAt.data(), (int)g_beaconsAt.size(), real ? &layout : nullptr);
+    auto lit0 = std::chrono::steady_clock::now();
+    lightTowns(4000, 120, 6000, false);
     if (getenv("PROFILE")) {
-        printf("  setAirfield: %.2f ms\n",
-               std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - built0).count());
+        auto end = std::chrono::steady_clock::now();
+        printf("  setAirfield: %.2f ms, then lightTowns %.2f ms\n",
+               std::chrono::duration<double, std::milli>(lit0 - built0).count(),
+               std::chrono::duration<double, std::milli>(end - lit0).count());
     }
     setLanding(landRunway, landEnd);
     setDeparture(departRunway, departEnd);
@@ -430,8 +482,11 @@ void enroute(const std::string &dir, float fps, float from, float to, const std:
     Enu enu(LAT0, LON0);
     std::vector<GroundLine> lines;
     LineSink sink = {&enu, &lines, LAT0, LON0};
-    coastLines(LAT0, LON0, 520, 90, 2, sinkLine, &sink);
+    coastLines(LAT0, LON0, 520, 520, 0, sinkLine, &sink);
+    ScenerySink scenery = {[&](double la, double lo) { return enu.at(la, lo, 0); }, &lines, {}};
+    sceneryLines(LAT0, LON0, 520, sinkScenery, &scenery);
     setGroundLines(lines.data(), (int)lines.size());
+    setRivers(scenery.rivers.data(), (int)scenery.rivers.size());
     std::vector<RunwaySpec> runways;
     for (const Runway &r : RUNWAYS) {
         double dn = (r.end[0].lat - LAT0) * 111.0, de = (r.end[0].lon - LON0) * 111.0 * cos(LAT0 * M_PI / 180);
@@ -446,6 +501,12 @@ void enroute(const std::string &dir, float fps, float from, float to, const std:
     }
     clearAirfield();
     setFarRunways(runways.data(), (int)runways.size());
+    auto lit0 = std::chrono::steady_clock::now();
+    lightTowns(6000, 500, 60000, true);
+    if (getenv("PROFILE")) {
+        printf("  lightTowns %.2f ms\n",
+               std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - lit0).count());
+    }
     printf("  %zu lines on the ground, %zu runways\n", lines.size(), runways.size());
 
     static const Other OTHERS[] = {
@@ -616,6 +677,11 @@ int main(int argc, char **argv) {
         return 1;
     }
     std::string view = argv[1], dir = argv[2];
+    setClock([]() {
+        return (uint32_t)std::chrono::duration_cast<std::chrono::microseconds>(
+                   std::chrono::steady_clock::now().time_since_epoch())
+            .count();
+    });
     if (view == "fleet") {
         fleet(dir, argc > 5 ? argv[5] : "day");
         return 0;
@@ -697,6 +763,7 @@ int main(int argc, char **argv) {
         scene.traffic = parked;
         scene.trafficCount = parkedCount;
         scene.seconds = t;
+        scene.landAndSea = getenv("NO_LANDSEA") == nullptr;  // where there are shores, as view3d
         // "now" is the real sun over the airport at this moment; a number, the
         // sun that many hours after midnight UTC today.
         if (time == "now" || isdigit((unsigned char)time[0])) {

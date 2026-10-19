@@ -23,6 +23,7 @@
 #include "psram_alloc.h"
 #include "runways.h"
 #include "scene3d.h"
+#include "scenery.h"
 #include "screen.h"
 #include "telemetry.h"
 
@@ -41,10 +42,11 @@ float length(Vec3 a) { return sqrtf(a.x * a.x + a.y * a.y + a.z * a.z); }
 
 // --- where things go on the screen ------------------------------------------
 
-// The picture, 960x544 in from the top left; the radar's buttons, the same
-// size and in the same column down the right as on the radar, so that Back
-// is where it always is; and the flight's details under the picture.
-constexpr int VIEW_X = 16, VIEW_Y = 16, VIEW_W = 960, VIEW_H = 544;
+// The picture, 1008x560, 40 in from the left and 16 down - its width a whole
+// number of 16 pixels, for the PIE's rows; the radar's buttons, the same size
+// and in the same column down the right as on the radar, so that Back is
+// where it always is; and the flight's details under the picture.
+constexpr int VIEW_X = 40, VIEW_Y = 16, VIEW_W = 1008, VIEW_H = 560;
 constexpr int BTN_W = 150, BTN_H = 50, BTN_X = 1280 - 16 - BTN_W;
 enum Button : uint8_t { B_BACK, B_CINEMA, B_CHASE, B_ORBIT, B_TOWER, B_ZOOM_IN, B_ZOOM_OUT, BUTTONS };
 // Back; the cameras; how close - grouped as the radar groups its own.
@@ -70,7 +72,7 @@ void colors() {
 // chip's own memory: the helper draws a band into one while the PPA sends
 // the last from the other to the panel. Taken while the view is up, and given
 // back when it goes - the WiFi and TLS live on the same memory. Bands of 16
-// rows, 30KB each; or, with the memory too broken up for three blocks that
+// rows, 31.5KB each; or, with the memory too broken up for three blocks that
 // big - as it can be, the view opened a second time - fewer rows: a frame
 // pushed in more pieces, a little slower, rather than no view at all.
 void *g_pipe[3] = {};
@@ -404,7 +406,8 @@ bool finishDrawing() {
 // Metres east, north and up of a point on the ground, through WGS84's
 // earth-centred frame - the earth's curve and all.
 struct Enu {
-    double x0, y0, z0, sp, cp, sl, cl;
+    double x0, y0, z0, sp, cp, sl, cl, lon0;
+    float north0, up0, fsp, fcp;  // the origin's, for ground(): see there
     static void ecef(double lat, double lon, double h, double &x, double &y, double &z) {
         constexpr double A = 6378137.0, E2 = 6.69437999014e-3;
         double p = lat * M_PI / 180, l = lon * M_PI / 180, n = A / sqrt(1 - E2 * sin(p) * sin(p));
@@ -416,6 +419,13 @@ struct Enu {
         ecef(lat, lon, 0, x0, y0, z0);
         sp = sin(lat * M_PI / 180), cp = cos(lat * M_PI / 180);
         sl = sin(lon * M_PI / 180), cl = cos(lon * M_PI / 180);
+        lon0 = lon;
+        constexpr double A = 6378137.0, E2 = 6.69437999014e-3;
+        double n0 = A / sqrt(1 - E2 * sp * sp);
+        north0 = (float)(n0 * cp);
+        up0 = (float)(n0 * (1 - E2) * sp);
+        fsp = (float)sp;
+        fcp = (float)cp;
     }
     Vec3 of(double lat, double lon, double h) const {
         double x, y, z;
@@ -423,6 +433,18 @@ struct Enu {
         double dx = x - x0, dy = y - y0, dz = z - z0;
         return {(float)(-sl * dx + cl * dy), (float)(-sp * cl * dx - sp * sl * dy + cp * dz),
                 (float)(cp * cl * dx + cp * sl * dy + sp * dz)};
+    }
+    // A point on the ground, as of() has it to within a metre or two out to
+    // 650km - in float, which the P4 does in its FPU: the country's tens of
+    // thousands of points through of()'s double, done in software, took a
+    // second. In the frame turned about the pole to the origin's longitude,
+    // where east is y, and north and up are x and z turned by its latitude.
+    Vec3 ground(double lat, double lon) const {
+        constexpr float A = 6378137.0f, E2 = 6.69437999014e-3f;
+        float p = (float)(lat * (M_PI / 180)), l = (float)((lon - lon0) * (M_PI / 180));
+        float s = sinf(p), c = cosf(p), n = A / sqrtf(1 - E2 * s * s);
+        float x = n * c * cosf(l) - north0, y = n * c * sinf(l), z = n * (1 - E2) * s - up0;
+        return {y, -fsp * x + fcp * z, fcp * x + fsp * z};
     }
 };
 
@@ -472,6 +494,44 @@ double g_benchWayLat[BENCH_WAYS], g_benchWayLon[BENCH_WAYS];
 float g_benchWayTrack[BENCH_WAYS];
 std::atomic<int> g_benchStands{0}, g_benchWays{0};
 #endif
+
+// The coasts and lakes' shores about an airfield, laid out flat as it is -
+// and not the borders, which aren't there to be seen from a few thousand
+// feet.
+void sinkShore(void *context, OutlineKind kind, const double *latLon, int points) {
+    if (kind != OutlineKind::COAST && kind != OutlineKind::LAKE) {
+        return;
+    }
+    auto *out = (std::vector<s3::GroundLine, PsramAllocator<s3::GroundLine>> *)context;
+    Vec3 a = local(latLon[0], latLon[1]);
+    for (int i = 0; i + 1 < points; i++) {
+        Vec3 b = local(latLon[2 * i + 2], latLon[2 * i + 3]);
+        out->push_back({a, b, (s3::GroundKind)kind});
+        a = b;
+    }
+}
+
+// The towns' outlines and the rivers, each point put by `place` - in the
+// earth's frame high up, the airfield's flat one low down.
+struct SceneryOut {
+    Vec3 (*place)(double lat, double lon);
+    std::vector<s3::GroundLine, PsramAllocator<s3::GroundLine>> *lines;
+    std::vector<s3::RiverLine, PsramAllocator<s3::RiverLine>> *rivers;
+};
+
+void sinkScenery(void *context, SceneryKind kind, const double *latLon, int points) {
+    SceneryOut &out = *(SceneryOut *)context;
+    Vec3 a = out.place(latLon[0], latLon[1]);
+    for (int i = 0; i + 1 < points; i++) {
+        Vec3 b = out.place(latLon[2 * i + 2], latLon[2 * i + 3]);
+        if (kind == SceneryKind::TOWN) {
+            out.lines->push_back({a, b, s3::GroundKind::TOWN});
+        } else {
+            out.rivers->push_back({a, b, riverWidth(kind)});
+        }
+        a = b;
+    }
+}
 
 bool buildAirfield(const char *code) {
     int count = 0;
@@ -572,9 +632,21 @@ bool buildAirfield(const char *code) {
 #endif
     g_follower.end();
     g_taxiKt = -1;
-    s3::setGroundLines(nullptr, 0);
+    // The sea and the lochs about it, as far off as is seen from a few
+    // thousand feet - not grass to the horizon: Prestwick, on the Firth of
+    // Clyde, was an airfield inland. Natural Earth's coasts, good to a few
+    // hundred metres - near enough at that distance.
+    std::vector<s3::GroundLine, PsramAllocator<s3::GroundLine>> shores;
+    coastLines(g_lat0, g_lon0, 60, 60, 0, sinkShore, &shores);
+    // And the towns about it, and the rivers.
+    std::vector<s3::RiverLine, PsramAllocator<s3::RiverLine>> rivers;
+    SceneryOut scenery = {local, &shores, &rivers};
+    sceneryLines(g_lat0, g_lon0, 60, sinkScenery, &scenery);
+    s3::setGroundLines(shores.data(), (int)shores.size());
+    s3::setRivers(rivers.data(), (int)rivers.size());
     s3::setFarRunways(nullptr, 0);
     s3::setAirfield(specs, n, beacons, beaconCount, real ? &layout : nullptr);
+    s3::lightTowns(4000, 120, 6000, false);
     g_runways = n;
     snprintf(g_airport, sizeof g_airport, "%s", code);
     g_where = Where::AIRFIELD;
@@ -590,11 +662,15 @@ bool buildAirfield(const char *code) {
     return true;
 }
 
+// Each point through the earth's frame once, and not again as the start of
+// the next line.
 void sinkLine(void *context, OutlineKind kind, const double *latLon, int points) {
     auto *out = (std::vector<s3::GroundLine, PsramAllocator<s3::GroundLine>> *)context;
+    Vec3 a = g_enu.ground(latLon[0], latLon[1]);
     for (int i = 0; i + 1 < points; i++) {
-        out->push_back({g_enu.of(latLon[2 * i], latLon[2 * i + 1], 0),
-                        g_enu.of(latLon[2 * i + 2], latLon[2 * i + 3], 0), (s3::GroundKind)kind});
+        Vec3 b = g_enu.ground(latLon[2 * i + 2], latLon[2 * i + 3]);
+        out->push_back({a, b, (s3::GroundKind)kind});
+        a = b;
     }
 }
 
@@ -604,8 +680,18 @@ void buildCountry(double lat, double lon) {
     g_enuLat = lat;
     g_enuLon = lon;
     std::vector<s3::GroundLine, PsramAllocator<s3::GroundLine>> lines;
-    coastLines(lat, lon, 520, 90, 2, sinkLine, &lines);
+    // In full, all of it: the land is told from the sea by which way each
+    // coast crosses a row of the screen, and the thinned copies - to 3.5km -
+    // cross a narrow loch's or fjord's shores over, which then crosses the
+    // wrong way and paints a band of the other across the view (Loch Maree,
+    // seen from over the Clyde). Twice the lines to keep; a frame reads only
+    // those on the screen.
+    coastLines(lat, lon, 520, 520, 0, sinkLine, &lines);
+    std::vector<s3::RiverLine, PsramAllocator<s3::RiverLine>> rivers;
+    SceneryOut scenery = {[](double la, double lo) { return g_enu.ground(la, lo); }, &lines, &rivers};
+    sceneryLines(lat, lon, 520, sinkScenery, &scenery);
     s3::setGroundLines(lines.data(), (int)lines.size());
+    s3::setRivers(rivers.data(), (int)rivers.size());
     int count = 0;
     const Runway *all = allRunways(count);
     std::vector<s3::RunwaySpec, PsramAllocator<s3::RunwaySpec>> far;
@@ -624,12 +710,13 @@ void buildCountry(double lat, double lon) {
     }
     s3::clearAirfield();
     s3::setFarRunways(far.data(), (int)far.size());
+    s3::lightTowns(6000, 500, 60000, true);
     g_where = Where::COUNTRY;
     g_frameGen++;
     g_airport[0] = 0;
     g_runways = 0;
-    Serial.printf("[3d] high up: %u lines, %u runways, in %lums\n", (unsigned)lines.size(), (unsigned)far.size(),
-                  (unsigned long)(millis() - t0));
+    Serial.printf("[3d] high up: %u lines, %u of rivers, %u runways, in %lums\n", (unsigned)lines.size(),
+                  (unsigned)rivers.size(), (unsigned)far.size(), (unsigned long)(millis() - t0));
 }
 
 float distanceKm(double lat0, double lon0, double lat1, double lon1) {
@@ -1352,7 +1439,7 @@ void prepareNext(const Followed &f, const std::vector<Aircraft> &traffic, uint32
     g_scene.visibility = high ? 140000 : 0;
     g_scene.stemsAbove = high ? 0 : -1;
     g_scene.trailsAbove = 8000;
-    g_scene.landAndSea = high;
+    g_scene.landAndSea = true;  // where there are coasts: high up, or an airfield's shores
     g_scene.landingLights = !high;
     g_scene.detailPx = g_detailPx;
     g_scene.tinyPx = g_tinyPx;
@@ -1545,8 +1632,11 @@ bool open() {
     }
     colors();
     // Never bands of 4: the PPA has been seen never to finish a block that
-    // shallow, and every band would be one.
-    for (int rows : {16, 12, 8}) {
+    // shallow, and every band would be one. 15 and 14 between 16 and 12: at
+    // 1008 wide a band of 16 is 31.5KB, and with the chip's memory broken up
+    // the view went to 12 at once, and the loop got no buffers of its own to
+    // help draw with - 50fps rather than 60.
+    for (int rows : {16, 15, 14, 12, 10, 8}) {
 #ifdef BENCH3D
         if (g_forceRows != 0 && rows != g_forceRows) {
             continue;

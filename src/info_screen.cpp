@@ -105,7 +105,8 @@ const char *const ABOUT[] = {
     "- Live aircraft: adsb.lol, whose data is made available under the Open Database License 1.0, and adsb.fi "
     "(adsb.fi) - both run by volunteers, and free to use. Please keep the refresh interval generous.",
     "- Airports, their runways and frequencies, and navaids: OurAirports (ourairports.com). The map's coasts, "
-    "lakes, borders and place names: Natural Earth (naturalearthdata.com). Both public domain.",
+    "lakes, borders and place names, and the 3D view's towns and rivers: Natural Earth (naturalearthdata.com). "
+    "Both public domain.",
     "- Place search: Open-Meteo's geocoding API (open-meteo.com), CC BY 4.0.",
     "- Time zones, for the clock while following: timezone-boundary-builder, from OpenStreetMap data, "
     "(c) OpenStreetMap contributors, under the Open Database License 1.0, as is the table made from it; and the "

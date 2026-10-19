@@ -194,22 +194,43 @@ struct Scene {
     float stemsAbove = -1;
     float trailsAbove = 8000;
     // And the land told from the sea by the coasts - which needs every
-    // coast's land on the side it says.
+    // coast's land on the side it says: high up, or low by an airfield on
+    // the sea, the land then its grass.
     bool landAndSea = false;
 };
 
 // What is drawn of the country under an aircraft high up: lines on the
 // ground - coasts and lakes' shores, borders and state lines - each from a to
-// b in the world's metres, the earth's curve and all. A coast or a shore has
-// the land on its left, going from a to b, as the firmware's coast table has
-// them all - unless `landRight`: which tells the land from the sea between.
-enum class GroundKind : uint8_t { COAST, LAKE, BORDER, STATE };
+// b in the world's metres, the earth's curve and all; or about an airfield,
+// its coasts and shores laid out flat as it is - and the towns' outlines,
+// the land built over. A coast or a shore has the land on its left, going
+// from a to b, as the firmware's coast table has them all, and a town's
+// outline the town - unless `landRight`: which tells which side is which.
+enum class GroundKind : uint8_t { COAST, LAKE, BORDER, STATE, TOWN };
 struct GroundLine {
     Vec3 a, b;
     GroundKind kind;
     bool landRight = false;
 };
 void setGroundLines(const GroundLine *lines, int count);
+
+// The rivers about, each a line from a to b `width` metres across: drawn as
+// a ribbon of water where that is a pixel or more on the screen, and where it
+// is less as a line faded for how much of one it covers, so it doesn't break
+// up into dashes as the view moves.
+struct RiverLine {
+    Vec3 a, b;
+    float width;
+};
+void setRivers(const RiverLine *rivers, int count);
+
+// Lights where the towns are, after dark: in the towns' outlines set by
+// setGroundLines(), `most` of them, no nearer together than `closest`
+// metres, thickest about the middle - half as thick `falloff` metres out -
+// and `round` for outlines on the round earth, high up. Where none of the
+// lines are a town's, the lights there are are left as they were. After
+// setAirfield() or clearAirfield(), which set their own.
+void lightTowns(int most, float closest, float falloff, bool round);
 
 
 // Every family's model - each at each level of detail it is drawn at - built
@@ -285,7 +306,7 @@ enum Step : uint8_t {
     STEP_ROWS, STEP_FAR_GROUND, STEP_GROUND, STEP_PAINT, STEP_PLACE, STEP_SORT,
     STEP_FOLLOWED, STEP_TRAFFIC, STEP_SHADOWS,
     STEP_SOLIDS, STEP_WIRES, STEP_COUNTRY, STEP_STEMS, STEP_LIGHTS, STEP_SOLIDS_WAIT, STEP_BINS, STEP_DEPTH,
-    STEPS
+    STEP_RIVERS, STEPS
 };
 const char *stepName(int step);
 

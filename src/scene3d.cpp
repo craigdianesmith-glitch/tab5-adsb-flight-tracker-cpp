@@ -10,6 +10,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <vector>
 
 #ifdef ESP_PLATFORM
@@ -137,12 +138,22 @@ constexpr int DETAIL_HERO = 0, DETAIL_MEDIUM = 1, DETAIL_SIMPLE = 2, DETAIL_TINY
 // What a face is besides its shape and colour, set on the pen before it is
 // made: how it is painted - as built, or in the body's, the belly's, the
 // airline's, the engines' or the wings' colour, or as a cabin window, which a
-// freighter hasn't; when it is
+// freighter hasn't - or, a piece of the ground, as the grass, in the light of
+// the time; when it is
 // shown - always, or only with the gear down, the flaps or the spoilers out,
 // or the propellers turning; which control it moves with, or which propeller
 // or rotor it turns with; and, for the blur of turning blades, how much it
 // tints what is behind it, in eighths.
-enum Paint : uint8_t { PAINT_AS_BUILT, PAINT_BODY, PAINT_BELLY, PAINT_LIVERY, PAINT_ENGINES, PAINT_CABIN, PAINT_WINGS };
+enum Paint : uint8_t {
+    PAINT_AS_BUILT,
+    PAINT_BODY,
+    PAINT_BELLY,
+    PAINT_LIVERY,
+    PAINT_ENGINES,
+    PAINT_CABIN,
+    PAINT_WINGS,
+    PAINT_GRASS
+};
 enum Show : uint8_t { SHOW_ALWAYS, SHOW_GEAR, SHOW_FLAPS, SHOW_SPOILERS, SHOW_TURNING };
 enum Move : uint8_t {
     MOVE_NONE,
@@ -206,8 +217,8 @@ struct ModelTri {
 struct GroundTri {
     int16_t x[3], y[3];
     uint8_t rgb[3];
-    uint8_t spare;
-    float fine;  // as ModelTri's
+    uint8_t grass;  // 1: the grass, coloured as the light has it
+    float fine;     // as ModelTri's
 };
 // A building's, its unit normal in 32767ths.
 struct SolidTri {
@@ -2422,7 +2433,8 @@ const Mesh &heroOf(Family f) {
 // generic airport, but with its runways where they really are.
 
 const Rgb ASPHALT = {66, 68, 72}, TAXIWAY = {84, 86, 88}, CONCRETE = {170, 170, 164}, PAINT = {236, 236, 236},
-          YELLOW = {226, 184, 40};
+          YELLOW = {226, 184, 40}, GRASS = {94, 124, 66},  // the grass's drawn as the light has it: see PAINT_GRASS
+          WATER = {44, 66, 90};                            // the sea's, a river's
 
 // How far a runway's taxiway runs from its centreline, and how often a way
 // off joins them.
@@ -2795,10 +2807,12 @@ struct Cell {
     float radius;
     uint32_t begin, end;
     // Drawn at any distance (LOD_ANY), only near (LOD_NEAR) or only far
-    // (LOD_FAR): two versions of the same ground, fine and coarse.
+    // (LOD_FAR): two versions of the same ground, fine and coarse; or only
+    // where there are coasts about (LOD_GRASS): the grass under an airfield,
+    // which otherwise is the ground's own colour.
     uint8_t lod = 0;
 };
-constexpr uint8_t LOD_ANY = 0, LOD_NEAR = 1, LOD_FAR = 2;
+constexpr uint8_t LOD_ANY = 0, LOD_NEAR = 1, LOD_FAR = 2, LOD_GRASS = 3;
 // Where the ground's coarse version takes over from the fine, metres from the
 // eye - both drawn for this much either side, so there is never a gap.
 constexpr float COARSE_FROM = 2000, COARSE_OVERLAP = 250;
@@ -2848,6 +2862,9 @@ inline void widen(Vec3 p, float reach, Vec3 &lo, Vec3 &hi) {
 }
 
 constexpr float AIRFIELD_CELL = 200, COUNTRY_CELL = 20000;  // metres
+// High up, how far off the country's lines and rivers are drawn - and the
+// land told from the sea and the towns by them: see groundAndCoasts().
+constexpr float LINES_REACH = 250000;
 
 // A stand: its stop - where the nose wheel stops, as OpenStreetMap maps them
 // - the way an aircraft there faces, and how far on from the stop it is to
@@ -2889,6 +2906,9 @@ struct Models {
     // their edge lights.
     Vector<GroundLine> groundLines;
     Vector<Cell> lineCells;
+    bool towns = false;  // whether any of groundLines are a town's
+    Vector<PaintLine> rivers;
+    Vector<Cell> riverCells;
     Vector<ModelTri> farGround;
     Vector<ModelLight> farLights;
     Vector<Star> stars;
@@ -3422,7 +3442,7 @@ void compact(Models &m) {
         o.rgb[0] = level(t.color.r);
         o.rgb[1] = level(t.color.g);
         o.rgb[2] = level(t.color.b);
-        o.spare = 0;
+        o.grass = t.paint == PAINT_GRASS;
         o.fine = t.fine;
     }
     auto solids = [&](const Vector<ModelTri> &tris, const Vector<Vec3> &normals, Vector<SolidTri> &out) {
@@ -3503,6 +3523,187 @@ void compact(Models &m) {
     m.detailTris.shrink_to_fit();
 }
 
+// Grass over all of an airfield where no water is near, under its paving:
+// the outline round everything of it - a convex hull - as a fan of a few
+// triangles. A town's colour isn't drawn across the airfield it is round, and
+// a strip under each taxiway, as by the sea, was thousands of triangles
+// (Heathrow's ground took 10ms a frame).
+void grassHull(Vector<ModelTri> &grass, std::initializer_list<const Vector<ModelTri> *> layers) {
+    using P = std::pair<float, float>;
+    static Vector<P> points, hull;
+    points.clear();
+    for (const Vector<ModelTri> *layer : layers) {
+        for (const ModelTri &t : *layer) {
+            for (const Vec3 &v : t.v) {
+                points.push_back({v.x, v.y});
+            }
+        }
+    }
+    std::sort(points.begin(), points.end());
+    points.erase(std::unique(points.begin(), points.end()), points.end());
+    if (points.size() < 3) {
+        return;
+    }
+    // Andrew's monotone chain: the lower side left to right, the upper back.
+    auto turn = [](P o, P a, P b) {
+        return (a.first - o.first) * (b.second - o.second) - (a.second - o.second) * (b.first - o.first);
+    };
+    hull.assign(2 * points.size(), P{});
+    size_t k = 0;
+    for (size_t i = 0; i < points.size(); i++) {
+        while (k >= 2 && turn(hull[k - 2], hull[k - 1], points[i]) <= 0) {
+            k--;
+        }
+        hull[k++] = points[i];
+    }
+    for (size_t i = points.size() - 1, low = k + 1; i-- > 0;) {
+        while (k >= low && turn(hull[k - 2], hull[k - 1], points[i]) <= 0) {
+            k--;
+        }
+        hull[k++] = points[i];
+    }
+    hull.resize(k - 1);
+    auto at = [](P p) { return Vec3{p.first, p.second, 0}; };
+    for (size_t i = 1; i + 1 < hull.size(); i++) {
+        grass.push_back({{at(hull[0]), at(hull[i]), at(hull[i + 1])}, GRASS});
+    }
+}
+
+// The gaps in an airfield's ground narrower than twice `reach`, between its
+// grass and its paving, made grass too: on a grid of the ground they cover,
+// grown by `reach` and shrunk back - a closing - and what that adds put into
+// `grass` as rectangles, a row of the grid at a time, each reaching a cell
+// under what it fills between, for no seam to show. Hong Kong's airport, an
+// island made of the sea, had the water show between its taxiways.
+void fillBetween(Vector<ModelTri> &grass, std::initializer_list<const Vector<ModelTri> *> layers, float reach) {
+    float x0 = 1e30f, y0 = 1e30f, x1 = -1e30f, y1 = -1e30f;
+    for (const Vector<ModelTri> *layer : layers) {
+        for (const ModelTri &t : *layer) {
+            for (const Vec3 &v : t.v) {
+                x0 = std::min(x0, v.x), x1 = std::max(x1, v.x), y0 = std::min(y0, v.y), y1 = std::max(y1, v.y);
+            }
+        }
+    }
+    if (x0 > x1) {
+        return;
+    }
+    x0 -= reach, y0 -= reach, x1 += reach, y1 += reach;
+    // Cells of 20m - under the strips' edges, which hide them - or as many as
+    // make 200,000 of them.
+    float cell = std::max(20.0f, sqrtf((x1 - x0) * (y1 - y0) / 200000));
+    int w = (int)ceilf((x1 - x0) / cell), h = (int)ceilf((y1 - y0) / cell), r = (int)ceilf(reach / cell);
+    Vector<uint8_t> had((size_t)w * h, 0);
+    for (const Vector<ModelTri> *layer : layers) {
+        for (const ModelTri &t : *layer) {
+            // Each row of cells whose middle the triangle spans, from where
+            // its edges cross the row.
+            float lo = std::min({t.v[0].y, t.v[1].y, t.v[2].y}), hi = std::max({t.v[0].y, t.v[1].y, t.v[2].y});
+            for (int j = std::max(0, (int)floorf((lo - y0) / cell)); j < std::min(h, (int)ceilf((hi - y0) / cell)); j++) {
+                float y = y0 + (j + 0.5f) * cell, a = 1e30f, b = -1e30f;
+                for (int e = 0; e < 3; e++) {
+                    Vec3 p = t.v[e], q = t.v[(e + 1) % 3];
+                    if ((p.y <= y) != (q.y <= y)) {
+                        float x = p.x + (y - p.y) * (q.x - p.x) / (q.y - p.y);
+                        a = std::min(a, x), b = std::max(b, x);
+                    }
+                }
+                for (int i = std::max(0, (int)floorf((a - x0) / cell)); i < std::min(w, (int)ceilf((b - x0) / cell)); i++) {
+                    had[(size_t)j * w + i] = 1;
+                }
+            }
+        }
+    }
+    // Grown, then shrunk: each a square 2r + 1 across, along the rows and
+    // then down the columns, by running counts.
+    Vector<uint8_t> a = had, b((size_t)w * h);
+    auto pass = [&](const Vector<uint8_t> &from, Vector<uint8_t> &to, bool grow) {
+        Vector<uint8_t> mid((size_t)w * h);
+        for (int along = 0; along < 2; along++) {
+            const Vector<uint8_t> &src = along == 0 ? from : mid;
+            Vector<uint8_t> &dst = along == 0 ? mid : to;
+            int lines = along == 0 ? h : w, n = along == 0 ? w : h;
+            for (int k = 0; k < lines; k++) {
+                auto at = [&](int i) -> size_t { return along == 0 ? (size_t)k * w + i : (size_t)i * w + k; };
+                int sum = 0;
+                for (int i = 0; i < std::min(n, r); i++) {
+                    sum += src[at(i)];
+                }
+                for (int i = 0; i < n; i++) {
+                    if (i + r < n) {
+                        sum += src[at(i + r)];
+                    }
+                    if (i - r - 1 >= 0) {
+                        sum -= src[at(i - r - 1)];
+                    }
+                    int span = std::min(n - 1, i + r) - std::max(0, i - r) + 1;
+                    dst[at(i)] = grow ? sum > 0 : sum == span && i - r >= 0 && i + r < n;
+                }
+            }
+        }
+    };
+    pass(a, b, true);
+    pass(b, a, false);
+    // What closing added, and a cell round it, within the closing.
+    for (size_t k = 0; k < a.size(); k++) {
+        b[k] = a[k] && !had[k];
+    }
+    for (int j = 0; j < h; j++) {
+        for (int i = 0; i < w; i++) {
+            size_t k = (size_t)j * w + i;
+            if (!a[k] || b[k]) {
+                continue;
+            }
+            bool next = (i > 0 && b[k - 1] == 1) || (i + 1 < w && b[k + 1] == 1) || (j > 0 && b[k - w] == 1) ||
+                        (j + 1 < h && b[k + w] == 1);
+            if (next) {
+                b[k] = 2;
+            }
+        }
+    }
+    // Each row's runs, a run the same as one in the row before carried on
+    // down from it rather than begun again.
+    struct Run {
+        int from, to, top;
+    };
+    static Vector<Run> open, next;
+    open.clear();
+    auto put = [&](const Run &run, int bottom) {
+        float ya = y0 + run.top * cell, yb = y0 + bottom * cell, xa = x0 + run.from * cell, xb = x0 + run.to * cell;
+        rect(grass, {xa, ya, 0}, {xb, ya, 0}, {xb, yb, 0}, {xa, yb, 0}, GRASS);
+    };
+    for (int j = 0; j <= h; j++) {
+        next.clear();
+        for (int i = 0; j < h && i < w;) {
+            if (!b[(size_t)j * w + i]) {
+                i++;
+                continue;
+            }
+            int from = i;
+            while (i < w && b[(size_t)j * w + i]) {
+                i++;
+            }
+            next.push_back({from, i, j});
+        }
+        // Runs the same as an open one carry it on; the open ones not
+        // carried on end here.
+        for (Run &run : next) {
+            for (Run &o : open) {
+                if (o.from == run.from && o.to == run.to && o.top >= 0) {
+                    run.top = o.top;
+                    o.top = -1;
+                    break;
+                }
+            }
+        }
+        for (const Run &o : open) {
+            if (o.top >= 0) {
+                put(o, j);
+            }
+        }
+        std::swap(open, next);
+    }
+}
+
 void buildAirfield(Models &m, const RunwaySpec *runways, int count, const Vec3 *beacons, int beaconCount,
                    const airfield::Layout *layout) {
     // Real taxiways and the rest, from the layout, where there is one with
@@ -3566,11 +3767,26 @@ void buildAirfield(Models &m, const RunwaySpec *runways, int count, const Vec3 *
         halfDepth *= 0.85f;
     }
     m.middle = middle;
+    // Whether the water comes near - a coast's or a lake's shore within 9km of
+    // the middle, set before the airfield is. Where it does, the grass is
+    // laid along each runway and taxiway and the gaps between filled in, for
+    // the airfield not to stand in the sea where Natural Earth's coast runs
+    // through it; inland, an outline round it all.
+    bool shore = std::any_of(m.groundLines.begin(), m.groundLines.end(), [&](const GroundLine &l) {
+        return (l.kind == GroundKind::COAST || l.kind == GroundKind::LAKE) &&
+               (length(l.a - middle) < 9000 || length(l.b - middle) < 9000);
+    });
 
     // The runways: their taxiways and ways on, then their asphalt, then their
     // paint - the ground is painted in that order, with no depth to it. The
-    // taxiways' lights apart from the rest: see their cells below.
-    Vector<ModelTri> taxiways, asphalt, rubberMarks, paint;
+    // taxiways' lights apart from the rest: see their cells below. And
+    // under all of it, where there is a coast about, grass: each runway's
+    // strip, 75m beyond its edges and 90m past its ends, each taxiway's
+    // shoulders, 30m - for an airfield the sea's coast runs through - its
+    // runways out on land made from the sea, as Hong Kong's are and Nice's,
+    // or Natural Earth's coast a few hundred metres off - to stand on land,
+    // not in the water.
+    Vector<ModelTri> grass, taxiways, asphalt, rubberMarks, paint;
     Vector<ModelLight> taxiwayLights;
     for (int i = 0; i < count; i++) {
         const RunwaySpec &r = runways[i];
@@ -3578,6 +3794,7 @@ void buildAirfield(Models &m, const RunwaySpec *runways, int count, const Vec3 *
         float len = length(d);
         Vec3 u = d * (1 / len), left = leftOf(u);
         float half = r.width / 2;
+        strip(grass, r.end[0] - u * 90, r.end[1] + u * 90, half + 75, GRASS);
         // Its taxiway on the side towards the middle.
         Vec3 mid = (r.end[0] + r.end[1]) * 0.5f;
         float side = dot(middle - mid, left) >= 0 ? 1.0f : -1.0f;
@@ -3587,6 +3804,9 @@ void buildAirfield(Models &m, const RunwaySpec *runways, int count, const Vec3 *
             connectors.clear();
             exitsOf(*layout, r, connectors, side);
         } else {
+            // From the runway out past its taxiway, all grass.
+            strip(grass, r.end[0] - u * 90 + left * (side * (TAXIWAY_OFFSET + 42) / 2),
+                  r.end[1] + u * 90 + left * (side * (TAXIWAY_OFFSET + 42) / 2), (TAXIWAY_OFFSET + 42) / 2, GRASS);
             strip(taxiways, r.end[0] - u * 60 + left * (side * TAXIWAY_OFFSET),
                   r.end[1] + u * 60 + left * (side * TAXIWAY_OFFSET), 12, TAXIWAY);
             for (float c = CONNECTOR_EVERY / 2; c < len - 100; c += CONNECTOR_EVERY) {
@@ -3685,7 +3905,27 @@ void buildAirfield(Models &m, const RunwaySpec *runways, int count, const Vec3 *
     Vector<ModelTri> apron, taxiwaysFar;
     if (real) {
         buildLayout(m, *layout, runways, count, apron, taxiways, taxiwaysFar, paint, taxiwayLights);
+        // Each taxiway's line to within 20m, its grass 40m either side, and
+        // none for the short stubs between others' - Hong Kong's were 7,000
+        // triangles a frame, 8m.
+        Vector<Vec3> line, coarse;
+        for (const airfield::Way &w : layout->ways) {
+            if (!shore || w.kind != airfield::WayKind::TAXIWAY) {
+                continue;
+            }
+            lineOf(*layout, w, line);
+            simplified(line, 20, coarse);
+            for (size_t k = 0; k + 1 < coarse.size(); k++) {
+                if (length(coarse[k + 1] - coarse[k]) > 40) {
+                    strip(grass, coarse[k], coarse[k + 1], w.width / 2 + 40, GRASS);
+                }
+            }
+        }
     } else {
+    rect(grass, middle - axis * (halfLength + 60) - across * (halfDepth + 60),
+         middle + axis * (halfLength + 60) - across * (halfDepth + 60),
+         middle + axis * (halfLength + 60) + across * (halfDepth + 60),
+         middle - axis * (halfLength + 60) + across * (halfDepth + 60), GRASS);
     rect(apron, middle - axis * halfLength - across * halfDepth, middle + axis * halfLength - across * halfDepth,
          middle + axis * halfLength + across * halfDepth, middle - axis * halfLength + across * halfDepth, CONCRETE);
     orientedBox(m.solids, middle, axis, halfLength - 40, 28, 16, TERMINAL, ROOF);
@@ -3714,22 +3954,43 @@ void buildAirfield(Models &m, const RunwaySpec *runways, int count, const Vec3 *
     buildTower(m.wires, m.tower);
     }
 
-    // The ground in layers, each painted over the one before: the aprons,
-    // the taxiways, the runways, the rubber on them, and then the broad
-    // paint below. Within a layer the order is nothing - it is all one
+    // The ground in layers, each painted over the one before: the grass, the
+    // aprons, the taxiways, the runways, the rubber on them, and then the
+    // broad paint below. Within a layer the order is nothing - it is all one
     // surface - so each is grouped by the square it is in, and a frame
     // visits only the squares in view, layer by layer.
-    m.ground = apron;
-    m.ground.insert(m.ground.end(), taxiways.begin(), taxiways.end());
-    m.ground.insert(m.ground.end(), taxiwaysFar.begin(), taxiwaysFar.end());
-    m.ground.insert(m.ground.end(), asphalt.begin(), asphalt.end());
-    m.ground.insert(m.ground.end(), rubberMarks.begin(), rubberMarks.end());
-    size_t layerEnds[6] = {apron.size(), apron.size() + taxiways.size(),
-                           apron.size() + taxiways.size() + taxiwaysFar.size(),
-                           apron.size() + taxiways.size() + taxiwaysFar.size() + asphalt.size(), m.ground.size(), 0};
-    // The fine taxiways only near, when there is a coarse version for far.
-    const uint8_t layerLod[6] = {LOD_ANY, (uint8_t)(taxiwaysFar.empty() ? LOD_ANY : LOD_NEAR), LOD_FAR, LOD_ANY, LOD_ANY,
-                                 LOD_ANY};
+    if (!shore) {
+        grassHull(grass, {&grass, &apron, &taxiways, &asphalt});
+    } else {
+#if !defined(ESP_PLATFORM)
+        auto filled0 = std::chrono::steady_clock::now();
+#endif
+        fillBetween(grass, {&grass, &apron, &taxiways, &asphalt}, 250);
+#if !defined(ESP_PLATFORM)
+        if (std::getenv("PROFILE")) {
+            std::printf("  the gaps filled in %.2f ms\n",
+                        std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - filled0).count());
+        }
+#endif
+    }
+    for (ModelTri &t : grass) {
+        t.paint = PAINT_GRASS;
+    }
+    m.ground = grass;
+    for (const Vector<ModelTri> *layer : {&apron, &taxiways, &taxiwaysFar, &asphalt, &rubberMarks}) {
+        m.ground.insert(m.ground.end(), layer->begin(), layer->end());
+    }
+    constexpr int LAYERS = 7;
+    size_t layerEnds[LAYERS] = {grass.size(), 0, 0, 0, 0, 0, 0};
+    layerEnds[1] = layerEnds[0] + apron.size();
+    layerEnds[2] = layerEnds[1] + taxiways.size();
+    layerEnds[3] = layerEnds[2] + taxiwaysFar.size();
+    layerEnds[4] = layerEnds[3] + asphalt.size();
+    layerEnds[5] = m.ground.size();
+    // The grass only where there are coasts about; the fine taxiways only
+    // near, when there is a coarse version for far.
+    const uint8_t layerLod[LAYERS] = {LOD_GRASS, LOD_ANY, (uint8_t)(taxiwaysFar.empty() ? LOD_ANY : LOD_NEAR), LOD_FAR,
+                                      LOD_ANY, LOD_ANY, LOD_ANY};
 
     // The paint, each piece made by rect() as a pair of triangles, {a, b, c}
     // and {a, c, d}: the broad as it is, the thin - taxiways' centrelines,
@@ -3761,11 +4022,11 @@ void buildAirfield(Models &m, const RunwaySpec *runways, int count, const Vec3 *
         }
     };
     auto light = [](const ModelLight &l, Vec3 &lo, Vec3 &hi) { widen(l.at, l.size, lo, hi); };
-    layerEnds[5] = m.ground.size();  // the broad paint, last
+    layerEnds[6] = m.ground.size();  // the broad paint, last
 #if !defined(ESP_PLATFORM)
     if (std::getenv("GROUND_STATS")) {
-        const char *names[6] = {"apron", "taxiways", "taxiways far", "asphalt", "rubber", "broad paint"};
-        for (int k = 0, from = 0; k < 6; from = (int)layerEnds[k], k++) {
+        const char *names[LAYERS] = {"grass", "apron", "taxiways", "taxiways far", "asphalt", "rubber", "broad paint"};
+        for (int k = 0, from = 0; k < LAYERS; from = (int)layerEnds[k], k++) {
             double area = 0;
             for (size_t i = from; i < layerEnds[k]; i++) {
                 const ModelTri &t = m.ground[i];
@@ -3778,7 +4039,7 @@ void buildAirfield(Models &m, const RunwaySpec *runways, int count, const Vec3 *
     }
 #endif
     m.groundCells.clear();
-    for (int k = 0, from = 0; k < 6; from = (int)layerEnds[k], k++) {
+    for (int k = 0, from = 0; k < LAYERS; from = (int)layerEnds[k], k++) {
         size_t first = m.groundCells.size();
         intoCells(m.ground, from, layerEnds[k], AIRFIELD_CELL, m.groundCells, tri);
         for (size_t c = first; c < m.groundCells.size(); c++) {
@@ -4048,16 +4309,18 @@ struct Frame {
     Bins groundBins, shadowBins, solidBins, clearBins, wireBins, spriteBins, dotBins;
     Vector<uint32_t> rowColor;  // the sky or the grass behind each row, a dithered pair
     Vector<uint16_t> rowHaze;   // how much haze the ground in each row is under, of 256
-    // High up, over coasts: each row's land as well as its sea - the land's
-    // colour, and where along the row it begins and ends, rowCross[rowStart[y]]
-    // up to rowCross[rowStart[y + 1]], left to right, with what the row is
-    // before the first of them.
+    // Over coasts and towns: each row's land and towns as well as its sea -
+    // their colours, and where along the row each begins and ends,
+    // rowCross[rowStart[y]] up to rowCross[rowStart[y + 1]], left to right,
+    // with what the row is before the first of them: in rowFirst, land the
+    // first bit, a town the second.
     struct Crossing {
         int16_t x;
-        bool land;  // after it
+        uint8_t layer;  // the land's (0) or the towns' (1)
+        bool on;        // after it
     };
     bool landSea = false;
-    Vector<uint32_t> rowLand;
+    Vector<uint32_t> rowLand, rowTown;
     Vector<uint8_t> rowGround, rowFirst;
     Vector<uint32_t> rowStart;
     Vector<Crossing> rowCross;
@@ -5113,7 +5376,7 @@ const auto inView = [](const Cell &c) { return !outOfView(c); };
 // the view moves. The line's paint is faded towards the ground's by how much
 // of the pixel the marking would really cover - steady at any distance, and
 // gone where it is too thin to see.
-void addPaint(const PaintLine &p, float groundLight) {
+void addPaint(const PaintLine &p, float groundLight, const Rgb *under = nullptr) {
     Vec3 across = normalize(Vec3{p.a.y - p.b.y, p.b.x - p.a.x, 0}) * p.width;
     Vec3 a = toCamera(p.a), b = toCamera(p.b), side = toCamera(p.a + across) - a;
     if (a.z < NEAR && b.z < NEAR) {
@@ -5152,9 +5415,12 @@ void addPaint(const PaintLine &p, float groundLight) {
     // from thickA at ua to thickB at ub, evenly on the screen - and so at
     // `s` of the way along on the screen, v of the way along in depth.
     auto line = [&](float ua, float ub, float thickA, float thickB) {
-        Rgb ground = scale(p.color.r == PAINT.r ? ASPHALT : TAXIWAY, groundLight);  // white on a runway, yellow on a taxiway
+        // White on a runway, yellow on a taxiway; a river on the land.
+        Rgb ground = under != nullptr ? *under : scale(p.color.r == PAINT.r ? ASPHALT : TAXIWAY, groundLight);
         Vec3 ca = lerp(a, b, ua), cb = lerp(a, b, ub), lift = toCamera(p.a + Vec3{0, 0, 0.05f}) - a;
-        int pieces = std::min(10, ceilInt(fabsf(thickA - thickB) * 8) + 1);
+        // A river - kilometres long, all of it under a pixel from high up -
+        // in fewer: a few hundred of them were a thousand lines a frame.
+        int pieces = std::min(under != nullptr ? 3 : 10, ceilInt(fabsf(thickA - thickB) * 8) + 1);
         Vec3 from = ca;
         for (int i = 1; i <= pieces; i++) {
             float s = (float)i / pieces, v = s / cb.z / ((1 - s) / ca.z + s / cb.z);
@@ -5272,12 +5538,25 @@ void prepareBegin(int w, int h, int bandRows, bool swapBytes, const Scene &scene
     g.rowHaze.resize(h);
     g.rowGround.assign(h, 0);
     g.rowLand.resize(h);
+    g.rowTown.resize(h);
     float groundLight = pal.ambient + pal.diffuse * std::max(0.0f, g.sun.z);
     Rgb grass = scale(pal.grass, groundLight);
     // High up, the sea a deep blue-grey, the land - where the coasts say it
-    // is - a muted green, autumn's brown in it.
+    // is - a muted green, autumn's brown in it. Low down at an airfield by
+    // the sea or a loch, the land its grass and the water the same blue-grey.
     Rgb sea = scale({44, 66, 90}, groundLight), land = scale({86, 98, 70}, groundLight);
-    if (scene.earthRadius > 0) {
+    // A town, the grey of its roofs and roads with the brown of the older
+    // ones - as near as one colour can say it from a few thousand feet; and
+    // after dark, far off, the glow of its lights, sodium's orange, where
+    // they run together - near, the lights themselves, strewn over it (see
+    // lightTowns()), on the dark.
+    Rgb town = scale({124, 118, 108}, groundLight), townGlow = {72, 46, 22};
+    float dark = clamp01((0.36f - groundLight) / 0.18f);
+    bool landRows = scene.landAndSea && !m.groundLines.empty(), townRows = landRows && m.towns;
+    if (scene.earthRadius <= 0) {
+        land = grass;
+    }
+    if (scene.earthRadius > 0 || landRows) {
         grass = sea;
     }
     // High up, where a row meets the round earth: a ray from p, the eye from
@@ -5290,7 +5569,6 @@ void prepareBegin(int w, int h, int bandRows, bool swapBytes, const Scene &scene
     // The land's colour too, a row at a time, only where the land is drawn
     // apart from the sea - see groundAndCoasts(): the dithering of each is
     // a good part of the rows' time.
-    bool landRows = scene.earthRadius > 0 && scene.landAndSea && !m.groundLines.empty();
     float er = scene.earthRadius, ex = g.eye.x, ey = g.eye.y, ez = g.eye.z;
     float above = ex * ex + ey * ey + ez * (ez + 2 * er);
     for (int y = 0; y < h; y++) {
@@ -5309,6 +5587,10 @@ void prepareBegin(int w, int h, int bandRows, bool swapBytes, const Scene &scene
             g.rowColor[y] = pair(mix(grass, pal.haze, haze), y);
             if (landRows) {
                 g.rowLand[y] = pair(mix(land, pal.haze, haze), y);
+            }
+            if (townRows) {
+                Rgb lit = mix(town, townGlow, dark * clamp01((distance - 3000) / 20000));
+                g.rowTown[y] = pair(mix(lit, pal.haze, haze), y);
             }
             g.rowHaze[y] = (uint16_t)(haze * 256);
             g.rowGround[y] = 1;
@@ -5340,14 +5622,33 @@ void prepareBegin(int w, int h, int bandRows, bool swapBytes, const Scene &scene
         });
     }
     lap(STEP_FAR_GROUND);
+    // The rivers, under the airfield's ground - a river by a runway runs
+    // under its grass, as through a culvert - and the colour of the sea.
+    float riverReach = scene.earthRadius > 0 ? LINES_REACH : 1e30f;
+    for (const Cell &c : m.riverCells) {
+        float dx = c.middle.x - g.eye.x, dy = c.middle.y - g.eye.y;
+        if (outOfView(c) || sqrtf(dx * dx + dy * dy) - c.radius > riverReach) {
+            continue;
+        }
+        for (uint32_t i = c.begin; i < c.end; i++) {
+            const PaintLine &river = m.rivers[i];
+            if (!overHorizon(river.a) || !overHorizon(river.b)) {
+                addPaint(river, groundLight, &land);
+            }
+        }
+    }
+    lap(STEP_RIVERS);
     // A cell wholly in view - most of a big airfield's, from the approach -
     // its triangles straight to the screen, unclipped.
     for (const Cell &c : m.groundCells) {
+        if (c.lod == LOD_GRASS && !landRows) {
+            continue;
+        }
         float in = ballInside(toCamera(c.middle));
         if (in < -c.radius) {
             continue;
         }
-        if (c.lod != LOD_ANY) {
+        if (c.lod == LOD_NEAR || c.lod == LOD_FAR) {
             float away = length(c.middle - g.eye);
             if (c.lod == LOD_NEAR ? away - c.radius > COARSE_FROM + COARSE_OVERLAP
                                   : away + c.radius < COARSE_FROM - COARSE_OVERLAP) {
@@ -5367,7 +5668,7 @@ void prepareBegin(int w, int h, int bandRows, bool swapBytes, const Scene &scene
                 }
             }
             addInCell(c0, c1, c2, whole, g.ground, [&](ScreenTri &s) {
-                Rgb lit = scale({(float)t.rgb[0], (float)t.rgb[1], (float)t.rgb[2]}, groundLight);
+                Rgb lit = t.grass ? land : scale({(float)t.rgb[0], (float)t.rgb[1], (float)t.rgb[2]}, groundLight);
                 s.lit[0] = (uint8_t)std::min(255.0f, lit.r);
                 s.lit[1] = (uint8_t)std::min(255.0f, lit.g);
                 s.lit[2] = (uint8_t)std::min(255.0f, lit.b);
@@ -5476,13 +5777,131 @@ void prepareAircraft(int part, int parts) {
 // The country below high up: its lines drawn - coasts pale, as surf and sand
 // show them from high up; lakes' shores the same; borders and state lines
 // fainter; none the earth's curve hides - and, from the coasts and shores,
-// where the land is along each ground row. A coast or a shore has the land
-// on its left, going along it, unless it says otherwise: so crossing a row to
-// the right, one going down the screen leads onto land and one going up off
-// it. Before a row's first crossing it is whatever that crossing leaves; a
-// row no coast crosses, what the row below it is in the middle - and the
-// lowest, what is under the nearest point of the nearest coast.
+// where the land is along each ground row, and from the towns' outlines,
+// where the towns are. Each is a layer of its own, worked out alike. A coast
+// or a shore has the land on its left, going along it, unless it says
+// otherwise, and a town's outline the town: so crossing a row to the right,
+// one going down the screen leads onto it and one going up off it. Before a
+// row's first crossing it is whatever that crossing leaves; a row none of a
+// layer's lines cross, what the row below it is in the middle, unless one
+// crosses the middle between the two - and the lowest, what is under the
+// nearest point of the nearest line.
 namespace {
+constexpr float TOUCHING = 0.25f;  // pixels: two crossings nearer than this are a touch
+
+// Which layer of the ground a line of it is a side of: the land's, the
+// towns', or neither.
+constexpr uint8_t SHORES = 0, TOWNS = 1, NO_LAYER = 255;
+uint8_t layerOf(GroundKind kind) {
+    return kind == GroundKind::COAST || kind == GroundKind::LAKE ? SHORES : kind == GroundKind::TOWN ? TOWNS : NO_LAYER;
+}
+
+// What is under a point of the ground in a layer, by the side of the nearest
+// of its lines the point is on - kept, and looked for again only once the
+// point could have crossed one: has moved as far as the nearest was from it,
+// whether the eye moved or the view turned. (It was once only when the eye
+// had moved a couple of kilometres: a view dragged round near a coast kept
+// the side it had been on, and showed land and sea swapped.) And afresh for
+// a new country's lines.
+struct Side {
+    Vec3 at{1e30f, 0, 0};
+    float safe = 0;
+    bool inside = false;
+    const GroundLine *linesWere = nullptr;
+    size_t countWas = 0;
+};
+
+bool sideOf(Side &side, uint8_t layer, Vec3 p, bool none) {
+    const Models &m = models();
+    if (m.groundLines.data() != side.linesWere || m.groundLines.size() != side.countWas) {
+        side.linesWere = m.groundLines.data();
+        side.countWas = m.groundLines.size();
+        side.at = {1e30f, 0, 0};
+    }
+    float mx = p.x - side.at.x, my = p.y - side.at.y;
+    if (mx * mx + my * my < side.safe * side.safe) {
+        return side.inside;
+    }
+    side.at = p;
+    float best = 1e30f;
+    // The nearest point of a line can be a corner of it, the end of one line
+    // and the start of the next - and which side of it p is can't be told
+    // from either line alone: off a narrow headland, p is on the land's side
+    // of one of them. So each line's inside is kept as a normal, and at a
+    // corner they are added, the lines' ends being the same points to the
+    // bit.
+    bool corner = false;
+    float nearX = 0, nearY = 0, inX = 0, inY = 0;
+    auto scan = [&](const Cell &c) {
+        for (uint32_t i = c.begin; i < c.end; i++) {
+            const GroundLine &l = m.groundLines[i];
+            if (layerOf(l.kind) != layer) {
+                continue;
+            }
+            float ex = l.b.x - l.a.x, ey = l.b.y - l.a.y, len2 = ex * ex + ey * ey;
+            if (len2 <= 0) {
+                continue;
+            }
+            // How far along from a the nearest point is, and how far off the
+            // line p is - and the nearest point taken as an end when it is
+            // within a hair of one: 20km off, a float's squared distance
+            // can't tell a point 10m short of a corner from the corner, and
+            // one line's corner said a town and the other line, nearer by
+            // nothing it could see, was passed over (off the Clyde).
+            float len = sqrtf(len2), rx = p.x - l.a.x, ry = p.y - l.a.y;
+            float along = (rx * ex + ry * ey) / len, off = fabsf(rx * ey - ry * ex) / len;
+            float hair = std::max(1.0f, off * 5e-4f);
+            bool atA = along <= hair && along <= len - along, atB = !atA && along >= len - hair;
+            bool end = atA || atB;
+            float u = along / len;
+            float qx = atA ? l.a.x : atB ? l.b.x : l.a.x + ex * u;
+            float qy = atA ? l.a.y : atB ? l.b.y : l.a.y + ey * u;
+            float d2 = (qx - p.x) * (qx - p.x) + (qy - p.y) * (qy - p.y);
+            float k = (l.landRight ? -1 : 1) / len, nx = -ey * k, ny = ex * k;
+            if (d2 < best) {
+                best = d2;
+                corner = end;
+                nearX = qx;
+                nearY = qy;
+                inX = nx;
+                inY = ny;
+            } else if (end && corner && qx == nearX && qy == nearY) {
+                inX += nx;
+                inY += ny;
+            }
+        }
+    };
+    // How near p a cell's lines can come.
+    auto gap = [&](const Cell &c) {
+        float dx = c.middle.x - p.x, dy = c.middle.y - p.y;
+        return std::max(0.0f, sqrtf(dx * dx + dy * dy) - c.radius);
+    };
+    // The nearest cell first, so the rest - all but a few - are passed over
+    // by the line found in it; then those as near, a metre over, for a
+    // corner shared with a cell at the same distance.
+    const Cell *first = nullptr;
+    float firstGap = 1e30f;
+    for (const Cell &c : m.lineCells) {
+        float gc = gap(c);
+        if (gc < firstGap) {
+            firstGap = gc;
+            first = &c;
+        }
+    }
+    if (first != nullptr) {
+        scan(*first);
+    }
+    for (const Cell &c : m.lineCells) {
+        if (&c != first && gap(c) <= sqrtf(best) + 1) {
+            scan(c);
+        }
+    }
+    // None of the layer's lines at all: all land, inland, or no town.
+    side.inside = best < 1e30f ? (p.x - nearX) * inX + (p.y - nearY) * inY > 0 : none;
+    side.safe = best < 1e30f ? sqrtf(best) : 1e30f;
+    return side.inside;
+}
+
 void groundAndCoasts() {
     const Models &m = models();
     int h = g.h;
@@ -5492,42 +5911,78 @@ void groundAndCoasts() {
     }
     float r = g.scene.earthRadius;
     g_groundReach2 = r > 0 ? 2 * r * std::max(1.0f, heightOf(g.eye)) : 0;
-    bool fill = r > 0 && g.scene.landAndSea;
-    // Each coast's line on the screen, once: where it is on the first row it
-    // crosses, how far along a row it moves a row, its rows, and which way it
-    // leads.
+    bool fill = g.scene.landAndSea;
+    // Each line's crossing of the rows on the screen, once: where it is on
+    // the first row it crosses, how far along a row it moves a row, its rows,
+    // which layer, and which way it leads.
     struct Crosser {
         float x, slope;
         int16_t top, bottom;
+        uint8_t layer;
         bool onto;
     };
     static Vector<Crosser> crossers;
     crossers.clear();
+    // And where each crosses the middle of the screen, top to bottom, and
+    // whether its layer's inside is above it there: what a row none of a
+    // layer's lines cross takes from the middle of the row below it can be
+    // the end of an island, the row above it past its tip - the island's
+    // coast crossing that row twice, either side of the middle, and the row
+    // above not at all - and the sea beyond painted land (the Isle of Lewis,
+    // from 220km).
+    struct Upward {
+        float y;
+        uint8_t layer;
+        bool on;
+    };
+    static Vector<Upward> middle;
+    middle.clear();
+    const float middleX = (float)(g.w / 2);
     static const Rgb KINDS[] = {{222, 216, 196}, {196, 206, 214}, {150, 150, 158}, {128, 130, 138}};
-    // Cells none of whose lines can be on the screen's rows passed over: all
-    // of one behind the eye, above the view or below it, or past the
-    // horizon. Not those off to the sides: where a coast crosses a row out of
-    // sight there says what the row starts as.
-    float sy = g.sy, reach = sqrtf(g_groundReach2);
-    auto onRows = [&](const Cell &c) {
-        Vec3 cam = toCamera(c.middle);
-        if (cam.z - NEAR < -c.radius || inside(3, cam) * sy < -c.radius || inside(4, cam) * sy < -c.radius) {
+    // Cells none of whose lines can be on the screen passed over: all of one
+    // behind the eye, off a side of the view, or past the horizon. (Those off
+    // to the sides were once read for where a coast crossed a row out of
+    // sight, which said what the row began as; now what is in the middle of
+    // each row comes up the middle of the screen, and a row is worked out
+    // from there by the crossings on the screen - and a coast hundreds of
+    // kilometres off to the side, thinned or crossed over, can't paint the
+    // view.)
+    // And none further off than LINES_REACH: past it the haze has taken
+    // four fifths of the colour, the land and sea and towns are near enough
+    // one, and from FL350 it was over half of the ground in view.
+    float reach = r > 0 ? std::min(sqrtf(g_groundReach2), LINES_REACH) : 0, reach2 = reach * reach;
+    auto onScreen = [&](const Cell &c) {
+        if (ballInside(toCamera(c.middle)) < -c.radius) {
             return false;
         }
         float dx = c.middle.x - g.eye.x, dy = c.middle.y - g.eye.y;
         return reach <= 0 || sqrtf(dx * dx + dy * dy) - c.radius <= reach;
     };
-    inCells(m.lineCells, m.groundLines, onRows, [&](const GroundLine &l) {
-        if (groundOverHorizon(l.a) && groundOverHorizon(l.b)) {
+    auto beyond = [&](Vec3 p) {
+        float dx = p.x - g.eye.x, dy = p.y - g.eye.y;
+        return reach > 0 && dx * dx + dy * dy > reach2;
+    };
+    // A line's start is mostly the end of the one before it, as they come:
+    // put in the camera's space once.
+    Vec3 lastEnd{1e30f, 0, 0}, lastEndSeen{};
+    inCells(m.lineCells, m.groundLines, onScreen, [&](const GroundLine &l) {
+        if (beyond(l.a) && beyond(l.b)) {
             return;
         }
-        Vec3 a = toCamera(l.a), b = toCamera(l.b);
-        if (a.z < NEAR && b.z < NEAR) {
+        Vec3 a = l.a.x == lastEnd.x && l.a.y == lastEnd.y && l.a.z == lastEnd.z ? lastEndSeen : toCamera(l.a),
+             b = toCamera(l.b);
+        lastEnd = l.b;
+        lastEndSeen = b;
+        if ((a.z < NEAR && b.z < NEAR) || (inside(1, a) < 0 && inside(1, b) < 0) ||
+            (inside(2, a) < 0 && inside(2, b) < 0)) {
             return;
         }
-        Vec3 mid = lerp(l.a, l.b, 0.5f) - g.eye;
-        addSeenLine(a, b, KINDS[(int)l.kind & 3], sqrtf(dot(mid, mid)));
-        if (!fill || (l.kind != GroundKind::COAST && l.kind != GroundKind::LAKE)) {
+        uint8_t layer = layerOf(l.kind);
+        if (layer != TOWNS) {  // a town's edge isn't drawn: it is where the town is drawn to
+            Vec3 mid = lerp(l.a, l.b, 0.5f) - g.eye;
+            addSeenLine(a, b, KINDS[(int)l.kind & 3], sqrtf(dot(mid, mid)));
+        }
+        if (!fill || layer == NO_LAYER) {
             return;
         }
         if (a.z < NEAR) {
@@ -5536,6 +5991,13 @@ void groundAndCoasts() {
             b = lerp(b, a, (NEAR - b.z) / (a.z - b.z));
         }
         Projected pa = project(a), pb = project(b);
+        // Crossing the middle going right, it has its inside above it.
+        if ((pa.x < middleX) != (pb.x < middleX)) {
+            float y = pa.y + (middleX - pa.x) * (pb.y - pa.y) / (pb.x - pa.x);
+            if (y > -1 && y < h + 1) {
+                middle.push_back({y, layer, (pb.x > pa.x) == !l.landRight});
+            }
+        }
         float dy = pb.y - pa.y;
         if (fabsf(dy) < 1e-4f) {
             return;
@@ -5546,7 +6008,7 @@ void groundAndCoasts() {
             return;
         }
         float slope = (pb.x - pa.x) / dy;
-        crossers.push_back({pa.x + (y0 + 0.5f - pa.y) * slope, slope, (int16_t)y0, (int16_t)y1,
+        crossers.push_back({pa.x + (y0 + 0.5f - pa.y) * slope, slope, (int16_t)y0, (int16_t)y1, layer,
                             (dy > 0) == !l.landRight});
     });
     if (!fill) {
@@ -5554,17 +6016,22 @@ void groundAndCoasts() {
     }
     g.landSea = true;
     // Bucketed by row - counted, then placed - rather than sorted all
-    // together; and each row's few put in order along it.
+    // together; and each row's few put in order along it. Only those on the
+    // screen: off it, past a side, the lines wholly out there weren't read,
+    // and a row's crossings there are only some of them - one left behind
+    // said sea, and the next, passed over, would have said land (Finland's
+    // lakes). Before the first on the screen is what it leaves.
     g.rowStart.assign(h + 1, 0);
+    const float w = (float)g.w;
     for (const Crosser &c : crossers) {
-        for (int y = c.top; y < c.bottom; y++) {
-            g.rowStart[y + 1] += g.rowGround[y];
+        float x = c.x;
+        for (int y = c.top; y < c.bottom; y++, x += c.slope) {
+            g.rowStart[y + 1] += g.rowGround[y] && x >= 0 && x < w;
         }
     }
     for (int y = 0; y < h; y++) {
         g.rowStart[y + 1] += g.rowStart[y];
     }
-    g.counts.crossings = (int)g.rowStart[h];
     static Vector<float> xs;
     xs.resize(g.rowStart[h]);
     g.rowCross.resize(g.rowStart[h]);
@@ -5573,115 +6040,126 @@ void groundAndCoasts() {
     for (const Crosser &c : crossers) {
         float x = c.x;
         for (int y = c.top; y < c.bottom; y++, x += c.slope) {
-            if (g.rowGround[y]) {
+            if (g.rowGround[y] && x >= 0 && x < w) {
                 uint32_t i = at[y]++;
                 xs[i] = x;
-                g.rowCross[i] = {(int16_t)std::max(-1.0f, std::min((float)g.w + 1, x)), c.onto};
+                g.rowCross[i] = {(int16_t)x, c.layer, c.onto};
             }
         }
     }
+    uint32_t kept = 0;
     for (int y = 0; y < h; y++) {
-        // Insertion sort by where along the row, sorted on the true place -
-        // off the screen to either side as far as that is - so the order of
-        // the crossings there is what it is.
-        for (uint32_t i = g.rowStart[y] + 1; i < g.rowStart[y + 1]; i++) {
+        uint32_t from = g.rowStart[y], to = g.rowStart[y + 1];
+        // Insertion sort by where along the row, on the true place rather
+        // than the whole pixel, so two in the one pixel keep their order.
+        for (uint32_t i = from + 1; i < to; i++) {
             float x = xs[i];
             Frame::Crossing c = g.rowCross[i];
             uint32_t j = i;
-            for (; j > g.rowStart[y] && xs[j - 1] > x; j--) {
+            for (; j > from && xs[j - 1] > x; j--) {
                 xs[j] = xs[j - 1];
                 g.rowCross[j] = g.rowCross[j - 1];
             }
             xs[j] = x;
             g.rowCross[j] = c;
         }
-    }
-    // What is under the bottom of the view's middle, land or sea, by the side
-    // of the nearest coast it is on. Looked for again only once that point
-    // could have crossed a coast - has moved as far as the nearest coast was
-    // from it - whether the eye moved or the view turned. (It was once only
-    // when the eye had moved a couple of kilometres: a view dragged round
-    // near a coast kept the side it had been on, and showed land and sea
-    // swapped.) And afresh for a new country's lines.
-    static Vec3 belowAt{1e30f, 0, 0};
-    static float belowSafe = 0;
-    static bool below = false;
-    static const GroundLine *linesWere = nullptr;
-    static size_t countWas = 0;
-    if (m.groundLines.data() != linesWere || m.groundLines.size() != countWas) {
-        linesWere = m.groundLines.data();
-        countWas = m.groundLines.size();
-        belowAt = {1e30f, 0, 0};
-    }
-    Vec3 dir = g.forward + g.down * ((h - 0.5f - g.cy) / g.f);
-    float t = -heightOf(g.eye) / std::min(-1e-3f, dir.z);
-    Vec3 p = g.eye + dir * t;
-    float mx = p.x - belowAt.x, my = p.y - belowAt.y;
-    if (mx * mx + my * my >= belowSafe * belowSafe) {
-        belowAt = p;
-        float best = 1e30f;
-        auto scan = [&](const Cell &c) {
-            for (uint32_t i = c.begin; i < c.end; i++) {
-                const GroundLine &l = m.groundLines[i];
-                if (l.kind != GroundKind::COAST && l.kind != GroundKind::LAKE) {
-                    continue;
-                }
-                float ex = l.b.x - l.a.x, ey = l.b.y - l.a.y, len2 = ex * ex + ey * ey;
-                float u = len2 > 0 ? clamp01(((p.x - l.a.x) * ex + (p.y - l.a.y) * ey) / len2) : 0;
-                float qx = l.a.x + ex * u - p.x, qy = l.a.y + ey * u - p.y, d2 = qx * qx + qy * qy;
-                if (d2 < best) {
-                    best = d2;
-                    bool left = ex * (p.y - l.a.y) - ey * (p.x - l.a.x) > 0;
-                    below = left != l.landRight;
-                }
+        // Two of a layer a hair apart, one onto it and one off, neither
+        // kept: the tip of an island the row just touches, or all but - put
+        // in either order by the rounding, and the wrong one said the rest of
+        // the row was land (an island off the Virgin Islands, end on). What
+        // is either side of the two is the same.
+        g.rowStart[y] = kept;
+        for (uint32_t i = from; i < to; i++) {
+            if (i + 1 < to && xs[i + 1] - xs[i] < TOUCHING && g.rowCross[i].layer == g.rowCross[i + 1].layer &&
+                g.rowCross[i].on != g.rowCross[i + 1].on) {
+                i++;
+                continue;
             }
-        };
-        // How near p a cell's lines can come.
-        auto gap = [&](const Cell &c) {
-            float dx = c.middle.x - p.x, dy = c.middle.y - p.y;
-            return std::max(0.0f, sqrtf(dx * dx + dy * dy) - c.radius);
-        };
-        // The nearest cell first, so the rest - all but a few - are passed
-        // over by the coast found in it.
-        const Cell *first = nullptr;
-        float firstGap = 1e30f;
-        for (const Cell &c : m.lineCells) {
-            float gc = gap(c);
-            if (gc < firstGap) {
-                firstGap = gc;
-                first = &c;
-            }
+            xs[kept] = xs[i];
+            g.rowCross[kept++] = g.rowCross[i];
         }
-        if (first != nullptr) {
-            scan(*first);
-        }
-        for (const Cell &c : m.lineCells) {
-            float gc = gap(c);
-            if (&c != first && gc * gc < best) {
-                scan(c);
-            }
-        }
-        belowSafe = sqrtf(best);
     }
+    g.rowStart[h] = kept;
+    g.counts.crossings = (int)kept;
     g.rowFirst.assign(h, 0);
-    bool carried = below;
-    for (int y = h - 1; y >= 0; y--) {
+    int lowest = h - 1;
+    while (lowest >= 0 && !g.rowGround[lowest]) {
+        lowest--;
+    }
+    if (lowest < 0) {
+        return;
+    }
+    // What is under the middle of the lowest row of ground, in each layer:
+    // where that row's middle meets the round earth, as the rows have it -
+    // not where it would meet a flat one: looking out near the horizon, that
+    // was hundreds of kilometres further on, past the horizon, often over
+    // some other coast, and the whole of the ground was painted the other
+    // way (the Bay of Biscay, from below an aircraft). At an airfield, the
+    // ground flat.
+    Vec3 dir = g.forward + g.down * ((lowest + 0.5f - g.cy) / g.f);
+    float dl = length(dir), reachOut = 0;
+    if (r > 0) {
+        float eyeX = g.eye.x, eyeY = g.eye.y, eyeZ = g.eye.z;
+        float above = eyeX * eyeX + eyeY * eyeY + eyeZ * (eyeZ + 2 * r);
+        float b = (eyeX * dir.x + eyeY * dir.y + (eyeZ + r) * dir.z) / dl, disc = b * b - above;
+        reachOut = disc >= 0 && b < 0 && above > 0 ? above / (-b + sqrtf(disc)) : 0;
+    } else if (dir.z < 0 && g.eye.z > 0) {
+        reachOut = g.eye.z / -dir.z * dl;
+    }
+    Vec3 p = g.eye + dir * (reachOut / dl);
+    static Side shoreSide, townSide;
+    bool carried[2] = {sideOf(shoreSide, SHORES, p, true), sideOf(townSide, TOWNS, p, false)};
+    // Up the rows from the lowest, what is in the middle of each - each
+    // crossing of the middle between one row's and the next's saying what is
+    // above it.
+    std::sort(middle.begin(), middle.end(), [](const Upward &a, const Upward &b) { return a.y > b.y; });
+    // The same for two of a layer a hair apart up the middle, between the
+    // same two rows: a row between them is inside what they bound, and the
+    // second says what is above it.
+    size_t keptUp = 0;
+    for (size_t i = 0; i < middle.size(); i++) {
+        if (i + 1 < middle.size() && middle[i].y - middle[i + 1].y < TOUCHING && middle[i].layer == middle[i + 1].layer &&
+            middle[i].on != middle[i + 1].on && floorf(middle[i].y - 0.5f) == floorf(middle[i + 1].y - 0.5f)) {
+            i++;
+            continue;
+        }
+        middle[keptUp++] = middle[i];
+    }
+    middle.resize(keptUp);
+    size_t up = 0;
+    while (up < middle.size() && middle[up].y > lowest + 0.5f) {
+        up++;
+    }
+    for (int y = lowest; y >= 0; y--) {
         if (!g.rowGround[y]) {
             continue;
         }
-        uint32_t from = g.rowStart[y], to = g.rowStart[y + 1];
-        if (from == to) {
-            g.rowFirst[y] = carried;
-            continue;
+        for (; up < middle.size() && middle[up].y > y + 0.5f; up++) {
+            carried[middle[up].layer] = middle[up].on;
         }
-        g.rowFirst[y] = !g.rowCross[from].land;
-        // And what the row is in its middle, for the rows above it no coast
-        // crosses.
-        bool middle = g.rowFirst[y];
-        for (uint32_t i = from; i < to && g.rowCross[i].x < g.w / 2; i++) {
-            middle = g.rowCross[i].land;
+        // Each layer: before the row's first crossing of it, what that
+        // leaves - or, none crossing it, what came up the middle - and in
+        // the row's middle, for the rows above.
+        uint8_t first = 0;
+        for (uint8_t layer = SHORES; layer <= TOWNS; layer++) {
+            bool crossed = false, state = carried[layer], inMiddle = carried[layer];
+            for (uint32_t i = g.rowStart[y]; i < g.rowStart[y + 1]; i++) {
+                const Frame::Crossing &c = g.rowCross[i];
+                if (c.layer != layer) {
+                    continue;
+                }
+                if (!crossed) {
+                    crossed = true;
+                    state = inMiddle = !c.on;
+                }
+                if (c.x < g.w / 2) {
+                    inMiddle = c.on;
+                }
+            }
+            first |= state << layer;
+            carried[layer] = inMiddle;
         }
-        carried = middle;
+        g.rowFirst[y] = first;
     }
 }
 }  // namespace
@@ -5931,7 +6409,8 @@ void prepareEnd() {
             }
         }
         for (const Cell &c : m.townCells) {
-            if (!inView(c)) {
+            if (!inView(c) || (scene.earthRadius > 0 && overHorizon(c.middle) &&
+                               length(c.middle - g.eye) - c.radius > sqrtf(2 * scene.earthRadius * heightOf(g.eye)))) {
                 continue;
             }
             float haze = lightHaze(length(c.middle - g.eye));
@@ -6125,7 +6604,8 @@ Counts counts() { return d.counts; }
 const char *stepName(int step) {
     static const char *const NAMES[STEPS] = {"rows",    "far ground", "ground",  "paint",   "placing", "sorting",
                                              "followed", "traffic",   "its shadow", "solids", "wires",  "country",
-                                             "stems",   "lights",     "waiting for the solids", "bins", "depth"};
+                                             "stems",   "lights",     "waiting for the solids", "bins", "depth",
+                                             "rivers"};
     return step >= 0 && step < STEPS ? NAMES[step] : "";
 }
 
@@ -6156,15 +6636,16 @@ void drawBandInto(int band, uint16_t *color, uint16_t *depth, uint32_t *stageUs)
             fill(row, 0, w, d.rowColor[y]);
             continue;
         }
-        bool land = d.rowFirst[y];
+        bool on[2] = {(d.rowFirst[y] & 1) != 0, (d.rowFirst[y] & 2) != 0};  // land; a town
+        auto color = [&]() { return !on[0] ? d.rowColor[y] : on[1] ? d.rowTown[y] : d.rowLand[y]; };
         int x = 0;
         for (uint32_t i = d.rowStart[y]; i < d.rowStart[y + 1]; i++) {
             int to = std::max(x, std::min(w, (int)d.rowCross[i].x));
-            fill(row, x, to, land ? d.rowLand[y] : d.rowColor[y]);
+            fill(row, x, to, color());
             x = to;
-            land = d.rowCross[i].land;
+            on[d.rowCross[i].layer] = d.rowCross[i].on;
         }
-        fill(row, x, w, land ? d.rowLand[y] : d.rowColor[y]);
+        fill(row, x, w, color());
     }
     stage(0);
 
@@ -6592,12 +7073,127 @@ void setGroundLines(const GroundLine *lines, int count) {
     Models &m = models();
     m.groundLines.assign(lines, lines + std::max(0, count));
     m.groundLines.shrink_to_fit();
+    m.towns = std::any_of(m.groundLines.begin(), m.groundLines.end(),
+                          [](const GroundLine &l) { return l.kind == GroundKind::TOWN; });
     m.lineCells.clear();
     intoCells(m.groundLines, 0, m.groundLines.size(), COUNTRY_CELL, m.lineCells,
               [](const GroundLine &l, Vec3 &lo, Vec3 &hi) {
                   widen(l.a, 0, lo, hi);
                   widen(l.b, 0, lo, hi);
               });
+}
+
+void lightTowns(int most, float closest, float falloff, bool round) {
+    Models &m = models();
+    // The towns' outlines, and the ground they span.
+    float x0 = 1e30f, y0 = 1e30f, x1 = -1e30f, y1 = -1e30f;
+    size_t outlines = 0;
+    for (const GroundLine &l : m.groundLines) {
+        if (l.kind == GroundKind::TOWN) {
+            x0 = std::min({x0, l.a.x, l.b.x}), x1 = std::max({x1, l.a.x, l.b.x});
+            y0 = std::min({y0, l.a.y, l.b.y}), y1 = std::max({y1, l.a.y, l.b.y});
+            outlines++;
+        }
+    }
+    if (outlines == 0) {
+        return;  // none here: the airfield's made-up ones, or none
+    }
+    // No further out than three times `falloff`, where a place is a tenth as
+    // likely a light: the work is the grid's, and a city's was most of a
+    // second on the device.
+    float reach = 3 * falloff;
+    x0 = std::max(x0, -reach), x1 = std::min(x1, reach), y0 = std::max(y0, -reach), y1 = std::min(y1, reach);
+    if (x0 >= x1 || y0 >= y1) {
+        return;
+    }
+    // Along rows of a grid `step` apart, where each row is inside a town -
+    // as a row of the screen is told it: each outline crossing it leads in
+    // going one way and out going the other - its crossings bucketed by row,
+    // counted then placed; `visit` given each row's and its runs inside.
+    static Vector<uint32_t> starts;
+    static Vector<std::pair<float, bool>> crossings;
+    auto rows = [&](float step, auto visit) {
+        int n = std::max(1, (int)ceilf((y1 - y0) / step));
+        starts.assign(n + 1, 0);
+        auto each = [&](auto put) {
+            for (const GroundLine &l : m.groundLines) {
+                if (l.kind != GroundKind::TOWN || l.a.y == l.b.y) {
+                    continue;
+                }
+                float lo = std::min(l.a.y, l.b.y), hi = std::max(l.a.y, l.b.y);
+                int j0 = std::max(0, ceilInt((lo - y0) / step - 0.5f)), j1 = std::min(n, ceilInt((hi - y0) / step - 0.5f));
+                for (int j = j0; j < j1; j++) {
+                    float y = y0 + (j + 0.5f) * step;
+                    put(j, l.a.x + (y - l.a.y) * (l.b.x - l.a.x) / (l.b.y - l.a.y), (l.b.y < l.a.y) != l.landRight);
+                }
+            }
+        };
+        each([&](int j, float, bool) { starts[j + 1]++; });
+        for (int j = 0; j < n; j++) {
+            starts[j + 1] += starts[j];
+        }
+        crossings.resize(starts[n]);
+        static Vector<uint32_t> at;
+        at.assign(starts.begin(), starts.end() - 1);
+        each([&](int j, float x, bool in) { crossings[at[j]++] = {x, in}; });
+        for (int j = 0; j < n; j++) {
+            std::sort(crossings.begin() + starts[j], crossings.begin() + starts[j + 1]);
+            for (uint32_t i = starts[j]; i + 1 < starts[j + 1]; i++) {
+                if (crossings[i].second && !crossings[i + 1].second) {
+                    visit(y0 + (j + 0.5f) * step, crossings[i].first, crossings[i + 1].first);
+                }
+            }
+        }
+    };
+    // On a grid `closest` apart, each place in a town a light by chance -
+    // the chance falling off with how far it is from the middle, the
+    // airfield's or the aircraft's, `falloff` out a half - and all of them
+    // scaled for `most` lights in all: first weighed, then strewn. Each a
+    // little out of line: street lights and windows, the sodium's orange
+    // and the newer white.
+    float step = std::max(closest, std::max(x1 - x0, y1 - y0) / 4000);  // a grid of 16 million at most
+    auto weight = [&](float x, float y) { return 1 / (1 + (x * x + y * y) / (falloff * falloff)); };
+    // Weighed on a grid four times as coarse, each place there for sixteen.
+    double weighed = 0;
+    rows(step * 4, [&](float y, float a, float b) {
+        for (float x = a + step * 2; x < b; x += step * 4) {
+            weighed += 16 * weight(x, y);
+        }
+    });
+    float chance = (float)std::min(1.0, most / std::max(1.0, weighed));
+    const Rgb WARM[] = {{255, 196, 120}, {255, 226, 180}, {255, 170, 90}, {210, 225, 255}};
+    float r = 6371000;  // high up, on the round earth, as the outlines are
+    m.townLights.clear();
+    g_seed = 54321;
+    rows(step, [&](float y, float a, float b) {
+        for (float x = a + step * 0.5f; x < b && (int)m.townLights.size() < most * 5 / 4; x += step) {
+            if (random01() >= chance * weight(x, y)) {
+                continue;
+            }
+            float px = x + (random01() - 0.5f) * step, py = y + (random01() - 0.5f) * step;
+            float z = round ? -(px * px + py * py) / (2 * r) + 2 : 2;
+            const Rgb &color = WARM[(int)(random01() * 4) & 3];
+            m.townLights.push_back({{px, py, z}, color, 2, {0, 0, 0}, color});
+        }
+    });
+    m.townLights.shrink_to_fit();
+    m.townCells.clear();
+    intoCells(m.townLights, 0, m.townLights.size(), round ? COUNTRY_CELL / 4 : AIRFIELD_CELL * 5, m.townCells,
+              [](const ModelLight &l, Vec3 &lo, Vec3 &hi) { widen(l.at, l.size, lo, hi); });
+}
+
+void setRivers(const RiverLine *rivers, int count) {
+    Models &m = models();
+    m.rivers.clear();
+    for (int i = 0; i < count; i++) {
+        m.rivers.push_back({rivers[i].a, rivers[i].b, rivers[i].width, WATER});
+    }
+    m.rivers.shrink_to_fit();
+    m.riverCells.clear();
+    intoCells(m.rivers, 0, m.rivers.size(), COUNTRY_CELL / 4, m.riverCells, [](const PaintLine &l, Vec3 &lo, Vec3 &hi) {
+        widen(l.a, l.width, lo, hi);
+        widen(l.b, l.width, lo, hi);
+    });
 }
 
 void setFarRunways(const RunwaySpec *runways, int count) {

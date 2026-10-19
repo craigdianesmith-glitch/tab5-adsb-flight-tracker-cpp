@@ -32,9 +32,11 @@ don't all: of its coastlines about one in seven has the land on its right,
 and nearly all of its minor islands' do. Each is turned round where it
 needs to be - a coastline by testing a point a few metres either side of it
 against Natural Earth's land polygons, a lake's shore by whether it is the
-lake's outline or an island's in it. The radar doesn't care which way a line
-runs; a 3D view high up does, telling land from sea by which way a coast
-crosses each row of it.
+lake's outline or an island's in it, all the lakes of all four lake layers
+first joined into one (they overlap, and two lakes can meet across open
+water; this needs shapely). The radar doesn't care which way a line runs; a
+3D view high up does, telling land from sea by which way a coast crosses each
+row of it.
 
 Left out: Natural Earth's own notes on a border - an overlay or a lease's
 limit - and every country's states but those of STATES_OF below.
@@ -195,6 +197,30 @@ def oriented(layer, geometry, land, tally):
     return lines_of(geometry)
 
 
+def lake_shores(geometries):
+    """Every lake layer's lakes as one: Natural Earth's overlap - the
+    regional layers have lakes the main one has too, a lake's bay can be a
+    lake of its own (Saginaw Bay, its mouth drawn straight across Lake
+    Huron), and two lakes meet across open water (Michigan and Huron, at
+    Mackinac) - so that a shore only ever runs between water and land: the
+    3D view tells one from the other by them. Each lake's outline clockwise,
+    water on the right, and an island's in it anticlockwise - the land on the
+    left of both. Needs shapely."""
+    from shapely.geometry import shape
+    from shapely.geometry.polygon import orient
+    from shapely.ops import unary_union
+    joined = unary_union([shape(g).buffer(0) for g in geometries])
+    rings = []
+    for polygon in getattr(joined, "geoms", [joined]):
+        if polygon.geom_type != "Polygon" or polygon.is_empty:
+            continue
+        polygon = orient(polygon, -1.0)
+        for ring in [polygon.exterior, *polygon.interiors]:
+            rings.append([(x, y) for x, y in ring.coords])
+    print(f"  the lakes: {len(geometries)} as Natural Earth has them, {len(rings)} shores joined")
+    return rings
+
+
 def lines_of(geometry):
     kind, coords = geometry["type"], geometry["coordinates"]
     if kind == "LineString":
@@ -284,17 +310,25 @@ def main():
     directory = sys.argv[1] if len(sys.argv) > 1 else None
     cells = defaultdict(list)
     lines = points = 0
+    lakes = []
     for layer, kind in LAYERS:
         land = Land(load(LAND_OF[layer], directory)) if layer in LAND_OF else None
         tally = defaultdict(int)
         for feature in load(layer, directory)["features"]:
             if feature["geometry"] and wanted(layer, feature["properties"]):
+                if kind == LAKE:
+                    lakes.append(feature["geometry"])
+                    continue
                 for line in oriented(layer, feature["geometry"], land, tally):
                     cut_into_cells([(p[0], p[1]) for p in line], UNIT, cells, kind)
                     lines += 1
                     points += len(line)
         if tally:
             print(f"  {layer}: {tally['kept']} the right way round, {tally['turned']} turned round")
+    for ring in lake_shores(lakes):
+        cut_into_cells(ring, UNIT, cells, LAKE)
+        lines += 1
+        points += len(ring)
 
     ids = sorted(cells)
     starts, data = [], bytearray()

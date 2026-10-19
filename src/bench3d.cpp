@@ -907,9 +907,11 @@ float g_pilotAt = 0;
 
 void sinkLine(void *context, OutlineKind kind, const double *latLon, int n) {
     auto *out = (std::vector<GroundLine, PsramAllocator<GroundLine>> *)context;
+    Vec3 a = g_enu.of(latLon[0], latLon[1], 0);
     for (int i = 0; i + 1 < n; i++) {
-        out->push_back({g_enu.of(latLon[2 * i], latLon[2 * i + 1], 0), g_enu.of(latLon[2 * i + 2], latLon[2 * i + 3], 0),
-                        (GroundKind)kind});
+        Vec3 b = g_enu.of(latLon[2 * i + 2], latLon[2 * i + 3], 0);
+        out->push_back({a, b, (GroundKind)kind});
+        a = b;
     }
 }
 
@@ -920,7 +922,7 @@ bool enrouteSetup() {
     uint32_t t0 = micros();
     g_enu.at(CRUISE_LAT, CRUISE_LON);
     std::vector<GroundLine, PsramAllocator<GroundLine>> lines;
-    coastLines(CRUISE_LAT, CRUISE_LON, 520, 90, 2, sinkLine, &lines);
+    coastLines(CRUISE_LAT, CRUISE_LON, 520, 520, 0, sinkLine, &lines);  // in full, as the live view
     setGroundLines(lines.data(), (int)lines.size());
     int count = 0;
     const Runway *all = allRunways(count);
