@@ -100,8 +100,8 @@ struct RunwayLine {
 // without the taxiways it can't be said where it would turn off before then.
 // Or with a go-around, the feed in charge again.
 //
-// Otherwise - and for anything higher - it is estimateFollowed() from the
-// last report, as before.
+// Otherwise - and for anything higher, and a rotorcraft always - it is
+// estimateFollowed() from the last report, as before.
 class RunwaySim {
 public:
     // Its next report, in time order: stale ones only say what it was doing.

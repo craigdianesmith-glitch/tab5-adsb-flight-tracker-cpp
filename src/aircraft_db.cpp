@@ -215,3 +215,25 @@ bool isCargo(const String &callsign) {
     AirlineInfo info;
     return lookupAirline(callsign, info) && info.cargo;
 }
+
+bool isRotorcraft(const String &type, const String &category) {
+    if (category == "A7") {
+        return true;
+    }
+    // The type, for a feed that gives no category: helicopters, civil and
+    // military, and the tilt-rotor.
+    static const char *const ROTORCRAFT[] = {
+        "R22",  "R44",  "R66",  "EC20", "EC30", "EC35", "EC45", "EC55", "EC75", "EC25", "H160", "AS50", "AS55",
+        "AS65", "AS3B", "AS32", "A109", "A119", "A139", "A149", "A169", "A189", "B06",  "B06T", "B407", "B412",
+        "B427", "B429", "B430", "B505", "B212", "B222", "B230", "B47G", "S76",  "S92",  "S61",  "BK17", "H500",
+        "MD52", "MD60", "EXPL", "EN28", "EN48", "G2CA", "H269", "S300", "KA32", "MI2",  "MI8",  "MI24", "MI26",
+        "H60",  "H47",  "H64",  "H53",  "H53S", "EH10", "LYNX", "NH90", "GAZL", "SUCO", "UH1",  "UH1Y", "A129",
+        "TIGR", "AH1",  "V22",  "KA27", "KA52", "MI28", "PUMA", "ALO3", "AS61", "H215", "H225", "H175", "H155",
+    };
+    for (const char *t : ROTORCRAFT) {
+        if (type == t) {
+            return true;
+        }
+    }
+    return false;
+}

@@ -2876,6 +2876,19 @@ struct StandStop {
     bool middle;
 };
 
+// A building's box: the extent of its footprint east to west and south to
+// north, and how high its roof is.
+struct Block {
+    float x0, y0, x1, y1, top;
+};
+
+// The box about a building orientedBox() made.
+Block blockOf(Vec3 centre, Vec3 axis, float halfLength, float halfWidth, float height) {
+    float dx = fabsf(axis.x) * halfLength + fabsf(axis.y) * halfWidth,
+          dy = fabsf(axis.y) * halfLength + fabsf(axis.x) * halfWidth;
+    return {centre.x - dx, centre.y - dy, centre.x + dx, centre.y + dy, height};
+}
+
 
 struct Models {
     Vector<ModelTri> ground, solids;
@@ -2915,6 +2928,9 @@ struct Models {
     Vector<Papi> papis;
     Vector<RunwayEnd> ends;  // two to a runway, in its order
     Vector<StandStop> stands;
+    // The buildings as boxes: for what a camera on the ground would see past
+    // them - see seenPast().
+    Vector<Block> blocks;
     Vec3 middle{}, tower{};
     float towerEyeZ = 33;  // the tower's cab, how high: where a camera in it looks out from
     bool built = false;
@@ -3341,6 +3357,14 @@ void buildLayout(Models &m, const airfield::Layout &l, const RunwaySpec *runways
     bool towerBuilt = false;
     float towerHeight = 0;
     for (const airfield::Area &b : l.buildings) {
+        if (!b.corners.empty()) {
+            Block box = {b.corners[0].x, b.corners[0].y, b.corners[0].x, b.corners[0].y, std::max(3.0f, b.height)};
+            for (const airfield::Point &c : b.corners) {
+                box = {std::min(box.x0, c.x), std::min(box.y0, c.y), std::max(box.x1, c.x), std::max(box.y1, c.y),
+                       box.top};
+            }
+            m.blocks.push_back(box);
+        }
         // A small one - not the airport's own - drawn only near.
         float area = 0;
         for (size_t t = 0; t + 2 < b.triangles.size(); t += 3) {
@@ -3719,6 +3743,7 @@ void buildAirfield(Models &m, const RunwaySpec *runways, int count, const Vec3 *
     m.papis.clear();
     m.ends.clear();
     m.stands.clear();
+    m.blocks.clear();
 
     // Its middle: among the runways' middles. The terminal goes there - when
     // that is clear of them; beside the longest when it isn't.
@@ -3929,6 +3954,7 @@ void buildAirfield(Models &m, const RunwaySpec *runways, int count, const Vec3 *
     rect(apron, middle - axis * halfLength - across * halfDepth, middle + axis * halfLength - across * halfDepth,
          middle + axis * halfLength + across * halfDepth, middle - axis * halfLength + across * halfDepth, CONCRETE);
     orientedBox(m.solids, middle, axis, halfLength - 40, 28, 16, TERMINAL, ROOF);
+    m.blocks.push_back(blockOf(middle, axis, halfLength - 40, 28, 16));
     // An A320's nose is this far ahead of its nose wheel.
     constexpr float PIER_EVERY = 170, STAND_EVERY = 50, NOSE_PAST = 4.4f;
     for (float a = -halfLength + 90; a <= halfLength - 90; a += PIER_EVERY) {
@@ -3939,6 +3965,7 @@ void buildAirfield(Models &m, const RunwaySpec *runways, int count, const Vec3 *
             }
             Vec3 pierMiddle = middle + axis * a + across * (s * (from + to) / 2);
             orientedBox(m.solids, pierMiddle, across, (to - from) / 2, 10, 9, PIER, ROOF);
+            m.blocks.push_back(blockOf(pierMiddle, across, (to - from) / 2, 10, 9));
             for (float c = from + 30; c <= to - 10; c += STAND_EVERY) {
                 for (float side : {1.0f, -1.0f}) {
                     // The stop far enough from the pier for an A320's nose to
@@ -7050,6 +7077,7 @@ void clearAirfield() {
     m.papis.clear();
     m.ends.clear();
     m.stands.clear();
+    m.blocks.clear();
     g_landingEnd = 0;
     g_departureEnd = -1;
     g_pathReady = false;
@@ -7066,6 +7094,33 @@ bool towerEye(Vec3 &eye) {
     towards.z = 0;
     float away = length(towards);
     eye = m.tower + (away > 1 ? towards * (8 / away) : Vec3{0, 0, 0}) + Vec3{0, 0, m.towerEyeZ};
+    return true;
+}
+
+bool seenPast(Vec3 eye, Vec3 at) {
+    const Models &m = models();
+    const float from[3] = {eye.x, eye.y, eye.z}, way[3] = {at.x - eye.x, at.y - eye.y, at.z - eye.z};
+    for (const Block &b : m.blocks) {
+        // The part of the line from the eye to it between each pair of the
+        // box's sides - west and east, south and north, the ground and its
+        // roof - and of that, what is between all three: none, it is clear.
+        const float lo[3] = {b.x0, b.y0, 0}, hi[3] = {b.x1, b.y1, b.top};
+        float t0 = 0, t1 = 1;
+        for (int k = 0; k < 3 && t0 <= t1; k++) {
+            if (fabsf(way[k]) < 1e-6f) {
+                if (from[k] < lo[k] || from[k] > hi[k]) {
+                    t1 = -1;
+                }
+                continue;
+            }
+            float a = (lo[k] - from[k]) / way[k], c = (hi[k] - from[k]) / way[k];
+            t0 = std::max(t0, std::min(a, c));
+            t1 = std::min(t1, std::max(a, c));
+        }
+        if (t0 <= t1) {
+            return false;
+        }
+    }
     return true;
 }
 
@@ -7612,11 +7667,19 @@ void Pilot::fly(float dt, Family family, float turnRate, float speedKt, float cl
     aileron = std::max(-1.0f, std::min(1.0f, rollRate_ / maxRate));
     rudder = 0.3f * aileron;
     // The nose along its climb and a few degrees above it, as a wing needs -
-    // more in a turn, to hold its height; a helicopter's down as it speeds
-    // up. The elevator moving it there, and held back in a turn.
-    float gamma = v > 5 ? atanf(climbFpm * 0.00508f / v) : 0;
+    // more in a turn, to hold its height. A helicopter's not along its path,
+    // which it can climb or come down any way it likes, but down as it goes
+    // faster and up as it slows - its flare, slowing to a hover or to set
+    // down. The elevator moving it there, and held back in a turn.
+    // Its speeding up as the estimate has it, a report's correction to its
+    // speed - a step - taken as no more than ten knots a second.
+    float speeding = std::max(-10.0f, std::min(10.0f, (speedKt - lastKt_) / dt));
+    accel_ += (speeding - accel_) * std::min(1.0f, dt / 1.5f);
+    lastKt_ = speedKt;
+    float gamma = v > 5 && !rotor ? atanf(climbFpm * 0.00508f / v) : 0;
     float load = 1 / std::max(0.5f, cosf(roll));
-    float alpha = onGround ? 0 : rotor ? -std::min(9.0f, speedKt / 15) * DEG : 2.5f * DEG * load;
+    float flare = std::max(-6.0f, std::min(10.0f, -accel_ * 3)) * DEG;
+    float alpha = onGround ? 0 : rotor ? -std::min(9.0f, speedKt / 15) * DEG + flare : 2.5f * DEG * load;
     pitchTarget_ = gamma + alpha;
     float was = pitch;
     pitch += (pitchTarget_ - pitch) * (1 - expf(-dt / 1.2f));

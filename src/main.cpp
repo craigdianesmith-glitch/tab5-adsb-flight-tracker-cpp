@@ -20,6 +20,7 @@
 #include "display_page.h"
 #include "route.h"
 #include "follow.h"
+#include "geoid.h"
 #include "info_screen.h"
 #include "location_screen.h"
 #include "playback_screen.h"
@@ -544,22 +545,34 @@ bool ensureWifi() {
 // it - where its pattern has it by the time of the poll, said the way the feed
 // says it - for the 3D view to be tried for an hour on what the real sky won't
 // lay on to order: a fighter circling a military field, a Chinook, a police
-// helicopter hovering, an airliner landing and parking, one taking off. See
+// helicopter hovering, an airliner landing and parking, one taking off, a
+// helicopter setting down at an airfield and lifting off again. See
 // tools/soak3d.py and the "##k" command.
-enum class Pattern : uint8_t { CIRCLE, HOVER, LAND, DEPART };
+enum class Pattern : uint8_t { CIRCLE, HOVER, LAND, DEPART, VISIT };
 struct MadeUp {
     bool active = false;
     Pattern pattern = Pattern::CIRCLE;
     const char *hex = "", *callsign = "", *type = "", *category = "";
     bool military = false;
-    double lat = 0, lon = 0;  // the middle of a circle or a hover; a runway's threshold
-    float track = 0;          // down the runway from its threshold, degrees
+    double lat = 0, lon = 0;  // the middle of a circle or a hover; a runway's threshold; a visit's spot
+    float track = 0;          // down the runway from its threshold, or in to the spot, degrees
     float radiusM = 0, speedKt = 0;
     int altFt = 0, fieldFt = 0;
     uint32_t startMs = 0;
     float quietAfterS = 0;  // no more reports after this long - its transponder off on its stand; 0 never
+    // A visit's: its pressure altitude this far over its height, by the
+    // day's pressure - or by the day's pressure as the aircraft about have
+    // it, `dayPressure`, and this far more; its GNSS height given too, as
+    // the feed's alt_geom - above the ellipsoid - or not; and whether its
+    // transponder says when it is on the ground, as many helicopters' never
+    // do.
+    int baroOverFt = 0;
+    bool dayPressure = false, geom = false, saysGround = false;
 };
 MadeUp g_madeUp;  // under g_dataMutex
+
+// A visit's minute on the ground, its rotors turning.
+constexpr float VISIT_DOWN_S = 60;
 
 // Where `m` is at `ms`, as the feed would have it.
 Aircraft madeUpAt(const MadeUp &m, uint32_t ms) {
@@ -655,12 +668,58 @@ Aircraft madeUpAt(const MadeUp &m, uint32_t ms) {
         }
         break;
     }
+    case Pattern::VISIT: {
+        // A helicopter in from 2.6km out at 90kt and 1,000ft, slowing evenly
+        // all the way to a hover 40ft over its spot, and down onto it over
+        // twelve seconds; there a minute; then up into a hover at 10ft and
+        // away, off to the right of the way it came, climbing at 900ft a
+        // minute and speeding up to 110kt.
+        const float V = 46, D = 2600, A = V * V / (2 * D), HOVER = 12, TOP = 305, VA = 57, ACC = 1.2f;
+        const float tIn = V / A, tDown = tIn + 12, tUp = tDown + VISIT_DOWN_S, tOff = tUp + 15;
+        float h = 0;
+        track = m.track;
+        gs = 0;
+        if (t < tIn) {
+            float left = D - (V * t - A * t * t / 2), v = V - A * t;
+            onRunway(-left, 0);
+            h = HOVER + (TOP - HOVER) * left / D;
+            gs = v / 0.5144f;
+            vs = -(TOP - HOVER) / D * v * 196.85f;
+        } else if (t < tDown) {
+            h = HOVER * (1 - (t - tIn) / 12);
+            vs = -HOVER / 12 * 196.85f;
+        } else if (t < tUp) {
+            ground = m.saysGround;
+        } else if (t < tOff) {
+            h = std::min(3.0f, (t - tUp) * 0.6f);
+            vs = t - tUp < 5 ? 0.6f * 196.85f : 0;
+        } else {
+            float dt = t - tOff, v = std::min(VA, ACC * dt);
+            float s = v < VA ? ACC * dt * dt / 2 : VA * VA / (2 * ACC) + VA * (dt - VA / ACC);
+            track = fmodf(m.track + 60, 360);
+            east = sinf(track * (float)M_PI / 180) * s;
+            north = cosf(track * (float)M_PI / 180) * s;
+            h = std::min(460.0f, 3 + 4.57f * dt);
+            vs = h < 460 ? 900 : 0;
+            gs = v / 0.5144f;
+        }
+        alt = m.fieldFt + h * 3.281f;
+        break;
+    }
     }
     a.lat = (float)(m.lat + north / perLat);
     a.lon = (float)(m.lon + east / perLon);
     a.track = track;
     a.vertRate = vs;
-    a.altStr = ground ? String("GND") : String((int)lroundf(alt));
+    int32_t over = m.baroOverFt, pressure;
+    if (m.dayPressure && dayPressureFt(pressure)) {
+        over -= pressure;
+    }
+    a.altStr = ground ? String("GND") : String((int)lroundf(alt + over));
+    if (m.geom && !ground) {
+        a.hasAltGeom = true;
+        a.altGeom = (int)lroundf(alt + geoidM(a.lat, a.lon) * 3.2808f);
+    }
     a.speedStr = String((int)lroundf(gs));
     a.status = ground ? (gs > 2 ? "TAXI" : "GROUND") : vs > 300 ? "CLIMB" : vs < -300 ? "DESCEND" : "LEVEL";
     return a;
@@ -757,6 +816,8 @@ const char *const SOAK_NAMES[] = {
     "a police EC135 hovering over Glasgow",      "an air ambulance H145 circling Edinburgh",
     "an A400M orbiting high over Perthshire",    "an A320 landing on 27L at Heathrow, then taxiing in",
     "a 737-800 taking off from 24 at Edinburgh", "a C-17 landing at RAF Brize Norton, then taxiing in",
+    "an air ambulance H145 setting down at Glasgow and off again, by its GNSS height",
+    "a coastguard AW139 setting down at Edinburgh by its pressure altitude alone, saying so, then quiet",
 };
 
 MadeUp circling(const char *hex, const char *callsign, const char *type, const char *category, bool military,
@@ -796,6 +857,20 @@ bool onRunwayAt(MadeUp &m, const char *code, const char *end) {
         }
     }
     return false;
+}
+
+// A helicopter's visit to a spot `along` metres down the runway `end` at
+// `code` from its threshold and `right` of it, coming in on `track`.
+bool spotAt(MadeUp &m, const char *code, const char *end, float along, float right, float track) {
+    if (!onRunwayAt(m, code, end)) {
+        return false;
+    }
+    float ux = sinf(m.track * (float)M_PI / 180), uy = cosf(m.track * (float)M_PI / 180);
+    m.lat += (uy * along - ux * right) / 111320.0;
+    m.lon += (ux * along + uy * right) / (111320.0 * cos(m.lat * M_PI / 180));
+    m.track = track;
+    m.pattern = Pattern::VISIT;
+    return true;
 }
 
 #endif
@@ -1343,6 +1418,7 @@ bool lowSample(const FollowSample &s) { return s.ground || (s.hasAlt && s.altFt 
 // and who answered it.
 void noteTracks(const std::vector<Aircraft> &list, bool zoomList, const String &provider) {
     uint32_t now = millis();
+    notePressure(list);
     for (const Aircraft &a : list) {
         if (!a.hasPos) {
             continue;
@@ -4284,6 +4360,25 @@ void startSoak(int n) {
         m.quietAfterS = LOST_ON_ROLLOUT_S;
         ok = onRunwayAt(m, "BZZ", "25");
         break;
+    case 10:
+        // A high day's pressure: its pressure altitude 270ft under its
+        // height, and under the ground once down.
+        m = circling("aa001a", "HELIMED1", "EC45", "A7", false, 0, 0, 0, 0, 0);
+        m.baroOverFt = -270;
+        m.geom = true;
+        ok = spotAt(m, "GLA", "23", 1300, -250, 110);
+        break;
+    case 11:
+        // Its pressure altitude as the day's pressure has it - the aircraft
+        // about having it a little wrong, by 40ft; its transponder off 40
+        // seconds after it is down.
+        m = circling("aa001b", "RESCUE9", "A139", "A7", false, 0, 0, 0, 0, 0);
+        m.dayPressure = true;
+        m.baroOverFt = 40;
+        m.saysGround = true;
+        m.quietAfterS = 2 * 2600 / 46.0f + 12 + 40;
+        ok = spotAt(m, "EDI", "24", 1200, -300, 200);
+        break;
     default: ok = false; break;
     }
     if (!ok) {
@@ -4601,11 +4696,11 @@ void loop() {
             }
             break;
         // The soak test's, for tools/soak3d.py - what a finger and the sky
-        // would do, by serial: "##k" and a digit follows made-up flight n in
-        // 3D; "##x" stops it; "##K" and c/h/o/t/+/- presses that camera
-        // button; "##d" taps an aircraft in the 3D view, for its details;
-        // "##B" and "##F" press Back and FOLLOW there; "##2" is the radar's
-        // 3D button.
+        // would do, by serial: "##k" and a digit - or a letter, from 10 -
+        // follows made-up flight n in 3D; "##x" stops it; "##K" and
+        // c/h/o/t/+/- presses that camera button; "##d" taps an aircraft in
+        // the 3D view, for its details; "##B" and "##F" press Back and
+        // FOLLOW there; "##2" is the radar's 3D button.
         case 'k':
         case 'K': {
             int arg = Serial.read();
@@ -4614,7 +4709,7 @@ void loop() {
                 arg = Serial.read();
             }
             if (c == 'k') {
-                startSoak(arg - '0');
+                startSoak(arg >= 'a' ? 10 + arg - 'a' : arg - '0');
             } else {
                 view3d::benchPress((char)arg);
             }

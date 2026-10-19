@@ -4,7 +4,8 @@
 // picks and when: following moving on once the one followed has landed and
 // slowed - to a take-off lined up, a landing coming in, or the nearest in
 // the air - and, while the one followed is taxiing out, the others shown
-// meanwhile, until it lines up. Build and run, from the repo's root:
+// meanwhile, until it lines up; a helicopter shown throughout, set down and
+// lifting off again. Build and run, from the repo's root:
 //
 //   g++ -std=c++17 -O1 -Itools/runway_sim_test/stub -Iinclude tools/subject3d_test/test.cpp src/follow.cpp
 //       src/runways.cpp -o /tmp/subject3d_test
@@ -58,6 +59,7 @@ void place(float along, float cross, float &lat, float &lon) {
 struct State {
     float along, cross, alt, gs, track;
     bool ground;
+    bool rotor;
 };
 using Path = std::function<State(float)>;
 
@@ -73,6 +75,7 @@ FollowSample sampleOf(const State &s, uint32_t ms) {
     place(s.along, s.cross, f.lat, f.lon);
     f.hasTrack = true;
     f.track = s.track;
+    f.rotorcraft = s.rotor;
     return f;
 }
 
@@ -139,6 +142,38 @@ Path taxiing(float stopAt = -1) {
         float moving = stopAt >= 0 ? std::min(t, stopAt) : t;
         r.along = 1.2f - 15 * moving / 3600;
         r.gs = stopAt >= 0 && t >= stopAt ? 0 : 15;
+        return r;
+    };
+}
+
+// A helicopter in to the apron, 0.3nm off 23's side a mile in: from a mile
+// further off at 60kt and 600ft, slowing to a hover over it and set down at
+// t=`at` - its transponder saying so if `saysGround`, as many never do - and
+// off again `down` seconds later, climbing away at 90kt.
+Path helicopter(float at, float down, bool saysGround) {
+    return [=](float t) {
+        State r = {};
+        r.rotor = true;
+        r.along = 1;
+        r.track = HEADING23 + 90;
+        t -= at;
+        if (t < 0) {
+            float out = std::min(1.0f, -t / 60);
+            r.cross = -0.3f - out;
+            r.gs = 60 * std::min(1.0f, -t / 30);
+            r.alt = FIELD + 30 + 570 * out;
+            return r;
+        }
+        if (t < down) {
+            r.cross = -0.3f;
+            r.ground = saysGround;
+            r.alt = FIELD + 5;
+            return r;
+        }
+        t -= down;
+        r.cross = -0.3f + 90 * t / 3600;
+        r.gs = 90;
+        r.alt = FIELD + 5 + 800 * t / 60;
         return r;
     };
 }
@@ -397,6 +432,18 @@ int main() {
         float shownAt = firstAt(shown, S::FOLLOWED, "IN1");
         check(shownAt >= 89 && shownAt <= 100, "high up: shown, its stand unknown");
         check(showing(shown, 150, S::GUEST, "HIGH1"), "at its airport, not on a stand: another again");
+    }
+    for (bool saysGround : {false, true}) {
+        // A helicopter set down by the terminal for five minutes, a landing
+        // due meanwhile: shown all the while, never moved on from.
+        auto shown = run(saysGround ? "a helicopter set down, saying so" : "a helicopter set down, saying nothing",
+                         "HELI1",
+                         {{"HELI1", helicopter(0, 300, saysGround), -120, 500},
+                          {"LAND2", landing(100), -100, 300},
+                          {"HIGH1", flying(20, 9000), -120, 500}},
+                         -120, 500, atGLA, noStands, -60);
+        check(shown.size() == 1 && shown[0].show == S::FOLLOWED && shown[0].hex == "HELI1",
+              "the helicopter throughout: coming in, set down, and away again");
     }
     printf("\n%d checks failed\n", failures);
     return failures != 0;

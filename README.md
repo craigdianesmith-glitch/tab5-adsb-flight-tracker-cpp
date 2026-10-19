@@ -380,7 +380,7 @@ That endpoint is free, volunteer-run infrastructure, and the default refresh int
 
 Place search is [Open-Meteo's geocoding API](https://open-meteo.com/), free for non-commercial use, its data licensed [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).
 
-The airport, runway, navaid and airport-frequency tables are generated from [OurAirports](https://ourairports.com/data/), which is released into the public domain. The radar's map - coasts, lakes, borders and state lines - and the 3D view's towns and rivers are generated from [Natural Earth](https://www.naturalearthdata.com/), which is in the public domain too.
+The airport, runway, navaid and airport-frequency tables are generated from [OurAirports](https://ourairports.com/data/), which is released into the public domain. The radar's map - coasts, lakes, borders and state lines - and the 3D view's towns and rivers are generated from [Natural Earth](https://www.naturalearthdata.com/), which is in the public domain too; and the height of the sea above the GPS ellipsoid - for a helicopter's GNSS height, in the 3D view - from the NGA's EGM96 geoid model, public domain as well.
 
 Aircraft type designators are checked against ICAO Doc 8643. Airline names and colours identify the operator and imply no endorsement by it.
 

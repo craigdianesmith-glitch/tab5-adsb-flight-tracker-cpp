@@ -4,7 +4,7 @@ long as asked, with every camera, zoom, sweeps of the orbit camera, taps for
 an aircraft's details and Back, and the view closed and opened again - and
 the firmware's log read all the while, for how it fared.
 
-    python tools/soak3d.py [--minutes 60] [--scenarios 0123456789] [--sun real|day|dusk|night] [--traffic]
+    python tools/soak3d.py [--minutes 60] [--scenarios 0123456789ab] [--sun real|day|dusk|night] [--traffic]
                            [--speech] [--port /dev/ttyACM0]
 
 Needs firmware built with the 3D bench in it, which makes up the flights and
@@ -12,7 +12,8 @@ takes the commands (see main.cpp's "##k" and the rest):
 
     PLATFORMIO_BUILD_FLAGS=-DBENCH3D pio run -e tab5 -t upload
 
-The flights, by number, as main.cpp's startSoak() has them:
+The flights, by number - and from 10 by letter - as main.cpp's startSoak()
+has them:
 
     0  a Typhoon circling RAF Lossiemouth, 1,800ft - a military airfield
     1  an F-35 high over the North Sea - the country view, high
@@ -24,6 +25,13 @@ The flights, by number, as main.cpp's startSoak() has them:
     7  an A320 landing on 27L at Heathrow, then parking
     8  a 737-800 taking off from 24 at Edinburgh
     9  a C-17 landing at RAF Brize Norton, then parking
+    a  an air ambulance H145 setting down at Glasgow and off again - its
+       pressure altitude 270ft low, its GNSS height right, never saying it
+       is on the ground: the spot camera, it set down, lifting off
+    b  a coastguard AW139 setting down at Edinburgh - no GNSS height, its
+       pressure altitude put right by the day's pressure as the aircraft
+       about have it, 40ft out; saying when it is down - then its
+       transponder off: it settling onto the ground, and kept there
 
 Everything the firmware says goes to soak-<when>/log.txt, with the time; at
 the end - or on Ctrl-C - each flight's frame rates, the most the preparing
@@ -45,7 +53,7 @@ import serial
 
 ap = argparse.ArgumentParser()
 ap.add_argument("--minutes", type=float, default=60)
-ap.add_argument("--scenarios", default="0123456789")
+ap.add_argument("--scenarios", default="0123456789ab")
 ap.add_argument("--port", default="/dev/ttyACM0")
 ap.add_argument("--out", default=time.strftime("soak-%Y%m%d-%H%M"))
 ap.add_argument("--sun", choices=["real", "day", "dusk", "night"], default="real",

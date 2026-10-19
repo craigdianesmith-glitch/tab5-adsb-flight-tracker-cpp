@@ -31,8 +31,11 @@ void toRunway(float lat, float lon, float &along, float &cross) {
 }
 float rwHeading() { float h = atan2f(UX, UY) * 180 / M_PI; return h < 0 ? h + 360 : h; }
 
+bool g_rotor = false;  // the reports a rotorcraft's
+
 FollowSample sampleOf(const Truth &t, uint32_t ms, int baroBias) {
     FollowSample s = {};
+    s.rotorcraft = g_rotor;
     s.ms = ms; s.ground = t.ground; s.hasAlt = true; s.altFt = t.ground ? FIELD : (int)t.alt + baroBias;
     s.hasGs = true; s.gsKt = (int16_t)lroundf(t.gs); s.hasPos = true; place(t.along, t.cross, s.lat, s.lon);
     s.hasTrack = true; s.track = t.track; s.hasVs = !t.ground; s.vsFpm = 0;
@@ -47,6 +50,11 @@ void run(const char *name, std::function<Truth(float)> truth, std::function<bool
     float nextReport = t0;
     float pa = NAN, pc = NAN;
     float worst = 0, worstT = 0;
+    // And how far it went backwards - against the way the estimate before
+    // had it going - in a half second at worst, and how long it was shown
+    // at the ground's height but not on it, moving: skimming along it.
+    float plat = NAN, plon = NAN, ptrack = 0;
+    float back = 0, backT = 0, skimS = 0;
     const char *lastHow = "";
     bool wasSim = false;
     for (float t = t0; t <= t1 + 1e-3f; t += 0.5f) {
@@ -71,7 +79,12 @@ void run(const char *name, std::function<Truth(float)> truth, std::function<bool
             float step = hypotf(a - pa, c - pc) / 0.5f * 3600;  // kt shown
             float excess = step - std::max(tr.gs, 30.0f) * 1.6f;
             if (excess > worst) { worst = excess; worstT = t; }
+            float dx = (e.lon - plon) * K, dy = (e.lat - plat) * 60;
+            float forward = (dx * sinf(ptrack * M_PI / 180) + dy * cosf(ptrack * M_PI / 180)) * 1852;
+            if (-forward > back) { back = -forward; backT = t; }
         }
+        if (!e.ground && e.gsKt > 5 && e.altFt <= FIELD + 5) skimS += 0.5f;
+        plat = e.lat; plon = e.lon; ptrack = e.track;
         bool simNow = sim.simulating(ms);
         if (strcmp(lastHow, e.how) != 0 || simNow != wasSim || fmodf(t - t0, 10) < 0.25f) {
             printf("  t=%6.1f %-22s sim=%d shown along=%.3f cross=%+.3f alt=%5d gs=%3d trk=%3.0f | truth along=%.3f cross=%+.3f alt=%5.0f  err=%.3fnm\n",
@@ -82,6 +95,7 @@ void run(const char *name, std::function<Truth(float)> truth, std::function<bool
         pa = a; pc = c;
     }
     printf("  worst speed excess over 1.6x truth: %.0f kt at t=%.1f\n", worst, worstT);
+    printf("  worst backwards: %.0f m in half a second at t=%.1f; skimming the ground %.1f s\n", back, backT, skimS);
 }
 
 // Landing on 23: touchdown at t=0 at 0.17nm, 140kt; braking 2.5kt/s to 20kt;
@@ -129,6 +143,26 @@ Truth rollingTakeoff(float t) {
     return r;
 }
 
+// A helicopter: in along 23's line from 0.1nm short at 500ft and 60kt, slowing
+// evenly to a hover over a spot 0.4nm in and 0.1nm right of it at t=0, down
+// there at t=0 and on the ground (or saying so: `ground`) for two minutes; then
+// off across the runway, climbing at 500fpm, speeding up 1.5kt/s.
+bool g_heliSaysGround = true;
+Truth helicopter(float t) {
+    Truth r = {};
+    if (t < 0) {
+        float u = (t + 60) / 60, done = 2 * u - u * u;  // the way covered, slowing evenly to a stop
+        r.along = -0.1f + 0.5f * done; r.cross = 0.1f * done; r.alt = FIELD + 500 * (1 - u);
+        r.gs = 60 * (1 - u); r.track = rwHeading() + 6;
+        return r;
+    }
+    r.along = 0.4f; r.cross = 0.1f; r.alt = FIELD; r.track = rwHeading() + 90;
+    if (t < 120) { r.ground = g_heliSaysGround; return r; }
+    float a = t - 120;
+    r.cross += 0.75f * a * a / 3600; r.gs = 1.5f * a; r.alt = FIELD + std::min(50.0f, a * 10) + 500 * a / 60;
+    return r;
+}
+
 // Go-around: on final until t=-10 at 150ft, then climbs at 1500fpm, straight ahead.
 Truth goAround(float t) {
     Truth r = landing(std::min(t, -10.0f));
@@ -162,4 +196,20 @@ int main() {
     run("crossing the runway", crossing, [](float t) { return true; }, -60, 40, 0, 1);
     run("take-off, every report", takeoff, [](float t) { return true; }, -40, 110, 100, 1);
     run("rolling take-off, in the air by the feed from 40kt", rollingTakeoff, [](float t) { return true; }, -30, 90, 0, 1);
+    // A helicopter lined up with the runway coming in: none of it simulated.
+    g_rotor = true;
+    run("helicopter, in along the runway to a spot beside it, down, off again", helicopter, [](float t) { return true; },
+        -60, 200, 0, -1);
+    g_heliSaysGround = false;
+    run("helicopter, never saying it is on the ground", helicopter, [](float t) { return true; }, -60, 200, 0, -1);
+    // The feed busy - rate-limited - and its reports 50 seconds apart: the
+    // first a minute out, then 10 seconds short of the hover; and again
+    // from 40 seconds out.
+    run("helicopter, a report every 50 seconds", helicopter, [](float t) { return fmodf(t + 60, 50) < 1; }, -60, 200,
+        0, -1);
+    run("helicopter, a report every 50 seconds from 40s out", helicopter,
+        [](float t) { return t >= -40 && fmodf(t + 40, 50) < 1; }, -60, 200, 0, -1);
+    g_rotor = false;
+    g_heliSaysGround = true;
+    run("the same, not known for a helicopter (as before)", helicopter, [](float t) { return true; }, -60, 200, 0, -1);
 }

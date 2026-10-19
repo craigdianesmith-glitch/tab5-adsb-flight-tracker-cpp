@@ -1,6 +1,10 @@
 #include "telemetry.h"
 
+#include <algorithm>
+
+#include "aircraft_db.h"
 #include "airports.h"
+#include "geoid.h"
 #include "runways.h"
 
 namespace {
@@ -47,7 +51,50 @@ int32_t fieldElevationNear(float lat, float lon) {
     return oldest->ft;
 }
 
+// The day's pressure: see notePressure(). Taken from aircraft below this,
+// this many of them at least, and kept for as long as this.
+constexpr int PRESSURE_BELOW_FT = 6000, PRESSURE_FROM = 5;
+constexpr uint32_t PRESSURE_KEEP_MS = 30UL * 60 * 1000;
+int32_t g_pressureFt = 0;
+uint32_t g_pressureMs = 0;
+bool g_havePressure = false;
+
 }  // namespace
+
+bool dayPressureFt(int32_t &ft) {
+    ft = g_pressureFt;
+    return g_havePressure && millis() - g_pressureMs < PRESSURE_KEEP_MS;
+}
+
+void notePressure(const std::vector<Aircraft> &list) {
+    int32_t differences[64];
+    int n = 0;
+    for (const Aircraft &a : list) {
+        if (n == 64) {
+            break;
+        }
+        if (!a.hasAltGeom || !a.hasPos || a.posStale || a.altStr == "GND" || a.altStr == "?") {
+            continue;
+        }
+        int32_t pressure = a.altStr.toInt();
+        if (pressure < PRESSURE_BELOW_FT) {
+            differences[n++] = a.altGeom - (int32_t)lroundf(geoidM(a.lat, a.lon) * 3.2808f) - pressure;
+        }
+    }
+    if (n < PRESSURE_FROM) {
+        return;
+    }
+    std::nth_element(differences, differences + n / 2, differences + n);
+    int32_t was = g_pressureFt;
+    bool had = g_havePressure;
+    g_pressureFt = differences[n / 2];
+    g_pressureMs = millis();
+    g_havePressure = true;
+    if (!had || abs(g_pressureFt - was) >= 30) {
+        Serial.printf("[telemetry] the day's pressure: %+d ft on a pressure altitude, from %d aircraft\n",
+                      (int)g_pressureFt, n);
+    }
+}
 
 FollowSample followSampleOf(const Aircraft &ac, uint32_t ms) {
     FollowSample s = {};
@@ -59,6 +106,24 @@ FollowSample followSampleOf(const Aircraft &ac, uint32_t ms) {
     } else if (ac.altStr != "?") {
         s.hasAlt = true;
         s.altFt = ac.altStr.toInt();
+    }
+    // A rotorcraft by its GNSS height, less the geoid, where the feed has it:
+    // its pressure altitude is out by the day's pressure - by hundreds of
+    // feet - and near the ground that is the difference between on it and
+    // hovering, or under it; and its transponder often never says it is on
+    // the ground (an R44 at Leicester, its field 469ft: 200ft by its
+    // pressure, 491ft by its GNSS). One that gives only its pressure
+    // altitude, put right by the day's pressure, as the aircraft about have
+    // it.
+    s.rotorcraft = isRotorcraft(ac.type, ac.category);
+    int32_t pressure;
+    if (s.rotorcraft && !s.ground && ac.hasPos) {
+        if (ac.hasAltGeom) {
+            s.hasAlt = true;
+            s.altFt = ac.altGeom - (int32_t)lroundf(geoidM(ac.lat, ac.lon) * 3.2808f);
+        } else if (s.hasAlt && dayPressureFt(pressure)) {
+            s.altFt += pressure;
+        }
     }
     s.hasVs = ac.hasVertRate && !s.ground;
     s.vsFpm = s.hasVs ? (int16_t)constrain((int)lroundf(ac.vertRate), -32000, 32000) : 0;

@@ -136,6 +136,7 @@ class Pilot {
 
   private:
     float rollRate_ = 0, pitchTarget_ = 0;
+    float lastKt_ = 0, accel_ = 0;  // how fast it is speeding up, knots a second, smoothed
 };
 
 // The set-up of one doing this: at this height above the field, this fast,
@@ -370,6 +371,11 @@ void clearAirfield();
 // Where a camera in the airfield's tower looks out from, the cab's glass:
 // false, with no airfield.
 bool towerEye(Vec3 &eye);
+
+// Whether a camera at `eye` sees `at` past the airfield's buildings - each
+// taken as the box about it square to north, so one at an angle hides a
+// little more than it does.
+bool seenPast(Vec3 eye, Vec3 at);
 
 // Airfields far off, seen from high up: their runways as strips, their edges
 // lit after dark.

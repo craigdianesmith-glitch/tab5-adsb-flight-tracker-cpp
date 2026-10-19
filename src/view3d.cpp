@@ -12,6 +12,7 @@
 #include <algorithm>
 #include <atomic>
 
+#include "aircraft_db.h"
 #include "airfield_pack.h"
 #include "airports.h"
 #include "clock_zone.h"
@@ -893,6 +894,30 @@ bool standingStill(bool ground, float gsKt) { return ground && gsKt < STILL_KT; 
 // the drift being real.
 constexpr float HOVER_KT = 12;
 bool hovering(bool ground, float gsKt) { return !ground && gsKt < HOVER_KT; }
+// A rotorcraft set down: its transponder saying so, or within ROTOR_DOWN_FT
+// of the ground under the view - the airfield's, or the sea's high up - and
+// all but still. Many never say they are on the ground (see
+// followSampleOf(), which puts one by its GNSS height).
+constexpr int ROTOR_DOWN_FT = 60, ROTOR_DOWN_KT = 3;
+// And one not set down is off the ground, by a hover taxi's few feet at
+// least: an estimate, or a pressure altitude, putting it lower - at the
+// ground's height, or under it - had its skids sliding along the grass.
+constexpr float ROTOR_LOWEST_M = 1.5f;
+int groundFt() { return g_where == Where::AIRFIELD ? (int)lroundf(g_fieldFt) : 0; }
+bool rotorDown(bool rotorcraft, bool ground, int altFt, int gsKt) {
+    return ground || (rotorcraft && altFt - groundFt() < ROTOR_DOWN_FT && gsKt < ROTOR_DOWN_KT);
+}
+
+// The one followed's estimate - a helicopter set down, its transponder
+// saying so or not, on the ground.
+FollowEstimate estimateOf(const Followed &f) {
+    FollowEstimate e = f.now;
+    if (!e.ground && rotorDown(isRotorcraft(f.type, f.category), false, e.altFt, e.gsKt)) {
+        e.ground = true;
+        e.altFt = groundFt();
+    }
+    return e;
+}
 
 // What a label says of one, and who it is, for each of the traffic in a
 // frame - in two, the frame being prepared's and the one being drawn's.
@@ -946,11 +971,18 @@ void pollTraffic(const std::vector<Aircraft> &list, const String &followed) {
         }
         Polled p{};
         p.s = followSampleOf(ac, 0);
+        if (!p.s.ground && rotorDown(p.s.rotorcraft, false, p.s.altFt, p.s.gsKt)) {
+            p.s.ground = true;
+            p.s.altFt = groundFt();
+        }
         const FollowSample &s = p.s;
         if (!s.hasAlt) {
             continue;
         }
         p.at = place(s.lat, s.lon, s.altFt, s.ground);
+        if (s.rotorcraft && !s.ground && g_where == Where::AIRFIELD) {
+            p.at.z = std::max(p.at.z, ROTOR_LOWEST_M);
+        }
         p.heading = (90 - (s.hasTrack ? s.track : 0)) * DEG;
         p.speed = s.gsKt * 0.5144f;
         p.heightM = s.ground ? 0 : g_where == Where::AIRFIELD ? p.at.z : s.altFt * 0.3048f;
@@ -1012,7 +1044,7 @@ void fillTraffic(const std::vector<Aircraft> &list, uint32_t polledMs, const Str
     uint32_t now = millis();
     for (const Polled &p : g_polled) {
         const FollowSample &s = p.s;
-        bool taxiways = s.ground && g_where == Where::AIRFIELD && !g_network.empty();
+        bool taxiways = s.ground && !s.rotorcraft && g_where == Where::AIRFIELD && !g_network.empty();
         // Taxiing among real taxiways: carried on along them below, from
         // where it was reported, rather than straight across the grass.
         bool along = taxiways && p.moves;
@@ -1101,7 +1133,7 @@ void fillTraffic(const std::vector<Aircraft> &list, uint32_t polledMs, const Str
         if (k.where == g_where && standingStill(s.ground, s.gsKt)) {
             heading = k.heading;
             if (length(at - k.at) < STILL_M) {
-                at = k.at;
+                at = {k.at.x, k.at.y, at.z};
             }
             if (g_where == Where::AIRFIELD && g_standing.size() < 200) {
                 g_standing.push_back(atStand ? stop : ground::Vec2{at.x, at.y});
@@ -1116,15 +1148,20 @@ void fillTraffic(const std::vector<Aircraft> &list, uint32_t polledMs, const Str
         // No taxiing shown - its reports too few and far between to show
         // it truly: on the ground, only stopped on a stand, or on a runway
         // at a runway's speed, landing or taking off - not the runway the
-        // view's own is on.
+        // view's own is on. A helicopter, set down wherever it is, a helipad
+        // or an apron.
         if (s.ground && g_where == Where::AIRFIELD && !(atStand && standingStill(s.ground, s.gsKt))) {
             int r = runwayAt(at);
-            if (r < 0 || r == busy || s.gsKt < RUNWAY_ROLL_KT) {
+            if (s.rotorcraft ? !standingStill(s.ground, s.gsKt) : r < 0 || r == busy || s.gsKt < RUNWAY_ROLL_KT) {
                 continue;
             }
         }
         float speed = std::max(1.0f, p.speed);
-        s3::Pose pose = {at, heading, s.ground ? 0.0f : atanf(s.vsFpm * 0.00508f / speed) + 0.04f, 0};
+        // Its nose along its climb, or a helicopter's down as it goes faster.
+        float pitch = s.ground         ? 0.0f
+                      : s.rotorcraft ? -std::min(9.0f, s.gsKt / 15.0f) * DEG
+                                     : atanf(s.vsFpm * 0.00508f / speed) + 0.04f;
+        s3::Pose pose = {at, heading, pitch, 0};
         g_traffic.push_back({pose, k.look, s3::configFor(p.heightM, s.gsKt, s.ground, false)});
         info.push_back(p.info);
     }
@@ -1153,6 +1190,50 @@ bool runwayOf(const char *ident, int &runway, int &end) {
 #ifdef BENCH3D
 uint32_t g_sweepUntilMs = 0, g_sweepSaidMs = 0;
 #endif
+
+// A helicopter's spot camera: see cameraFor(). Taken below the first height
+// over the field and kept up to the second - one hovering about the first
+// not flicking between it and a chase - and placed again once its helicopter
+// is going away from it this far off, or come to a hover further off than
+// the nearer.
+constexpr float SPOT_BELOW_M = 300 * 0.3048f, SPOT_UNTIL_M = 450 * 0.3048f, SPOT_REACH_M = 400, SPOT_NEAR_M = 250;
+Vec3 g_spotEye{};
+bool g_spotSet = false;
+bool g_spotAway = false;  // climbing away from it: chased until it comes down again
+String g_spotHex;
+
+// Where a helicopter low at an airfield is making for: where its way down
+// meets the ground, short of it - it slows to a hover as it comes - or,
+// level or climbing, where it will be in ten seconds.
+Vec3 spotAhead(const s3::Pose &pose, const FollowEstimate &e) {
+    Vec3 along = {cosf(pose.heading), sinf(pose.heading), 0};
+    float speed = e.gsKt * 0.5144f, sink = -e.vsFpm * 0.00508f;
+    float ahead = sink > 0.5f && speed > 2 ? std::min(700.0f, 0.8f * pose.at.z * speed / sink)
+                                           : std::min(250.0f, speed * 10);
+    return Vec3{pose.at.x, pose.at.y, 0} + along * ahead;
+}
+
+// The spot camera, on the ground off to one side of the way to `spot`: the
+// first place, near or a little further, either side, square to it or
+// angled, that sees both the spot and the helicopter past the buildings.
+Vec3 spotEye(const s3::Pose &pose, Vec3 spot) {
+    static const float BEARINGS[] = {90, -90, 50, -50, 130, -130};
+    Vec3 first{};
+    for (float away : {110.0f, 180.0f}) {
+        for (float bearing : BEARINGS) {
+            float a = pose.heading + bearing * DEG;
+            Vec3 eye = spot + Vec3{cosf(a), sinf(a), 0} * away;
+            eye.z = 4;  // a fence, a van's roof
+            if (away == 110 && bearing == BEARINGS[0]) {
+                first = eye;
+            }
+            if (s3::seenPast(eye, spot + Vec3{0, 0, 2}) && s3::seenPast(eye, pose.at + Vec3{0, 0, 2})) {
+                return eye;
+            }
+        }
+    }
+    return first;
+}
 
 s3::Camera cameraFor(const s3::Aircraft &followed, const Followed &f, float seconds, s3::Pose &shown,
                      bool &replaying) {
@@ -1197,6 +1278,42 @@ s3::Camera cameraFor(const s3::Aircraft &followed, const Followed &f, float seco
         break;
     case Cam::CINEMA:
         break;
+    }
+    // A helicopter low at an airfield, coming in or going: a camera on the
+    // ground near where it sets down or lifts off - ahead of it, where it is
+    // making for, and off to one side - its lens following it as it hovers
+    // in and touches down, or lifts and goes; placed again once it is far
+    // off; a chase once it is well up.
+    if (g_where == Where::AIRFIELD && isRotorcraft(f.type, f.category)) {
+        if (g_spotHex != f.hex) {
+            g_spotSet = g_spotAway = false;
+            g_spotHex = f.hex;
+        }
+        if (f.now.vsFpm < -200) {
+            g_spotAway = false;  // coming down again
+        }
+        Vec3 off = {pose.at.x - g_spotEye.x, pose.at.y - g_spotEye.y, 0};
+        float far = length(off);
+        bool leaving = f.now.gsKt > 5 && off.x * cosf(pose.heading) + off.y * sinf(pose.heading) > 0;
+        if (g_spotSet && leaving && far > SPOT_REACH_M && f.now.vsFpm > 300) {
+            g_spotAway = true;
+        }
+        if (!g_spotAway && pose.at.z < (g_spotSet ? SPOT_UNTIL_M : SPOT_BELOW_M)) {
+            // Placed again for one going off low - across the field, say -
+            // or one a long way from it, the view opened again on it; and
+            // nearer for one come to a hover well off from where it was
+            // looked for, to set down there, or to lift off and go.
+            bool settling = f.now.gsKt < 10 && far > SPOT_NEAR_M;
+            if (!g_spotSet || (leaving && far > SPOT_REACH_M) || far > 1500 || settling) {
+                g_spotEye = spotEye(pose, spotAhead(pose, f.now));
+                g_spotSet = true;
+            }
+            g_shot = "spot";
+            return s3::fixedCamera(pose, g_spotEye, std::min(0.9f, 0.3f * g_zoom), size);
+        }
+        g_spotSet = false;
+        g_shot = "chase";
+        return s3::orbitCamera(pose, 25, 9, 70 * size, 48);
     }
     if (g_where == Where::AIRFIELD) {
         // The director's cuts, from what it is doing: on its runway, the
@@ -1275,7 +1392,8 @@ void prepareNext(const Followed &f, const std::vector<Aircraft> &traffic, uint32
     float seconds = (millis() - g_openMs) / 1000.0f;
     float dt = g_lastSeconds < 0 ? 0 : std::min(0.5f, seconds - g_lastSeconds);
     g_lastSeconds = seconds;
-    const FollowEstimate &e = f.now;
+    FollowEstimate e = estimateOf(f);
+    bool rotor = isRotorcraft(f.type, f.category);
 
     // Where it is shown. Taxiing between reports, which the estimate holds
     // it still for, moved on along its track at its speed. And each jump
@@ -1290,11 +1408,14 @@ void prepareNext(const Followed &f, const std::vector<Aircraft> &traffic, uint32
         lon += d * sin(e.track * M_PI / 180) / (111320.0 * cos(lat * M_PI / 180));
     }
     Vec3 target = place(lat, lon, e.altFt, e.ground);
+    if (rotor && !e.ground && g_where == Where::AIRFIELD) {
+        target.z = std::max(target.z, ROTOR_LOWEST_M);
+    }
     float targetHeading = (90 - e.track) * DEG;
     if (g_haveShown && g_shownWhere == g_where && standingStill(e.ground, e.gsKt)) {
         targetHeading = g_shownHeading;
         if (length(target - g_shownAt) < STILL_M) {
-            target = g_shownAt;
+            target = {g_shownAt.x, g_shownAt.y, target.z};  // a helicopter's height still coming down
         }
     } else if (g_haveShown && g_shownWhere == g_where && hovering(e.ground, e.gsKt)) {
         targetHeading = g_shownHeading;
@@ -1306,13 +1427,39 @@ void prepareNext(const Followed &f, const std::vector<Aircraft> &traffic, uint32
         g_shownWhere = g_where;
     } else {
         float speed = e.gsKt * 0.5144f;
-        g_shownAt = g_shownAt + Vec3{sinf(e.track * DEG) * speed, cosf(e.track * DEG) * speed,
-                                     e.ground ? 0.0f : e.vsFpm * 0.00508f} * dt;
-        g_shownAt = g_shownAt + (target - g_shownAt) * std::min(1.0f, dt / 0.8f);
+        Vec3 velocity = {sinf(e.track * DEG) * speed, cosf(e.track * DEG) * speed,
+                         e.ground ? 0.0f : e.vsFpm * 0.00508f};
+        // A helicopter a report puts back - its estimate, slowing to a
+        // hover, having taken it on too far - eased back the more gently,
+        // and not carried on meanwhile: a drift back, not a lurch.
+        Vec3 off = target - g_shownAt;
+        bool back = rotor && off.x * velocity.x + off.y * velocity.y < 0;
+        if (!back) {
+            g_shownAt = g_shownAt + velocity * dt;
+        }
+        Vec3 step = (target - g_shownAt) * std::min(1.0f, dt / (back ? 2.5f : 0.8f));
+        if (rotor && !back) {
+            // And one a report puts well on - up and away since the last,
+            // the feed slow - caught up with at no more than its speed again
+            // and 6m/s up or down: seen to lift and go, not to jump there.
+            float most = std::max(15.0f, speed) * dt, across = hypotf(step.x, step.y);
+            if (across > most) {
+                step.x *= most / across;
+                step.y *= most / across;
+            }
+            step.z = std::max(-6 * dt, std::min(6 * dt, step.z));
+        }
+        g_shownAt = g_shownAt + step;
         g_shownHeading += remainderf(targetHeading - g_shownHeading, 2 * (float)M_PI) * std::min(1.0f, dt / 1.0f);
     }
-    if (e.ground) {
+    if (e.ground && !rotor) {
         g_shownAt.z = target.z;  // on the ground, on it
+    } else if (g_where == Where::AIRFIELD) {
+        // Never under it. A helicopter set down - shown higher by its
+        // pressure until its transponder said so, or a few feet up - settles
+        // onto it over a second or two rather than dropping; one not set
+        // down is off it.
+        g_shownAt.z = std::max(rotor && !e.ground ? ROTOR_LOWEST_M : 0.0f, g_shownAt.z);
     }
 
     // On the ground at an airfield whose real taxiways are known - and not
@@ -1322,7 +1469,9 @@ void prepareNext(const Followed &f, const std::vector<Aircraft> &traffic, uint32
     // or a holding point, departing, when the reports stop - see
     // ground_follow.h. Handed over from a landing's roll at 40 knots, it
     // keeps it until it is airborne or rolling for take-off.
-    bool taxiways = g_where == Where::AIRFIELD && e.ground && !g_network.empty();
+    // Not a helicopter: it sets down where it means to, and lifts off from
+    // there, along no taxiway.
+    bool taxiways = g_where == Where::AIRFIELD && e.ground && !g_network.empty() && !rotor;
     s3::Look look = lookOf(f.hex, f.type, f.callsign, f.military, f.category);
     // Rolling for take-off it is handed back to the runway simulation once
     // it is shown where that has it - or at 80 knots, whatever - so there is
@@ -1550,7 +1699,7 @@ void drawStrip(const Followed &f) {
     c.setTextSize(3);
     c.setTextColor(colorText);
     c.drawString(who, VIEW_X, STRIP_Y + 4);
-    const FollowEstimate &e = f.now;
+    FollowEstimate e = estimateOf(f);
     char height[16], clock[16] = "", line[96];
     if (e.ground) {
         snprintf(height, sizeof height, "on the ground");
@@ -1702,6 +1851,7 @@ bool open() {
     g_prepared = false;
     g_openMs = millis();
     g_lastSeconds = -1;
+    g_spotSet = g_spotAway = false;
     g_labelledAt = -1;
     g_stripMs = 0;
     g_frameMs = 0;

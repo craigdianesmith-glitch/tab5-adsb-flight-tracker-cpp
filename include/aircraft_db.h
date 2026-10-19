@@ -27,3 +27,8 @@ bool lookupAirline(const String &callsign, AirlineInfo &out);
 // for the table and the radar to mark, and the filter's Cargo chip. A cargo
 // flight under a passenger airline's callsign - Qatar's, Emirates' - isn't one.
 bool isCargo(const String &callsign);
+
+// Whether an aircraft is a rotorcraft - a helicopter, a gyroplane, a
+// tilt-rotor - by the feed's category ("A7"), or failing that its type. One
+// takes off and lands where it likes, not on a runway, and hovers.
+bool isRotorcraft(const String &type, const String &category);

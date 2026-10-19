@@ -486,6 +486,30 @@ FollowEstimate landingFrom(const RunwayLine &r, float along, float gs, bool airb
 
 }  // namespace
 
+// How fast `last` was speeding up, knots a second - slowing, less than
+// nought - from its report before it, two seconds before it at least: no
+// more than four either way, a helicopter's flare to a hover, and nought if
+// it was nearly steady. False, with no report before it to tell.
+bool speedingOf(const SampleList &history, const FollowSample &last, float &rate) {
+    for (auto it = history.rbegin(); it != history.rend(); ++it) {
+        if (it->ms + 2000 > last.ms || !it->hasGs || !last.hasGs) {
+            continue;
+        }
+        rate = (last.gsKt - it->gsKt) / ((last.ms - it->ms) / 1000.0f);
+        rate = fabsf(rate) < 0.3f ? 0.0f : std::max(-4.0f, std::min(4.0f, rate));
+        return true;
+    }
+    rate = 0;
+    return false;
+}
+
+// A rotorcraft coming down this fast, this low - above the sea, there being
+// no telling the ground's height - and going between these speeds, with no
+// report before to say how its speed is going: taken to be slowing this
+// much, knots a second, for its landing.
+constexpr int ROTOR_APPROACH_FPM = -200, ROTOR_APPROACH_BELOW_FT = 4000;
+constexpr float ROTOR_APPROACH_MIN_KT = 10, ROTOR_APPROACH_MAX_KT = 120, ROTOR_APPROACH_SLOWING = 0.8f;
+
 FollowEstimate estimateFollowed(const FollowSample &given, float ageS, const SampleList &history) {
     FollowSample last = given;
     if (!last.hasTrack) {
@@ -502,18 +526,23 @@ FollowEstimate estimateFollowed(const FollowSample &given, float ageS, const Sam
     };
 
     // Only low, or rolling, is a runway worth looking for - and the look is a
-    // scan of the airports around it, so it is not made for the rest.
+    // scan of the airports around it, so it is not made for the rest. Nor
+    // for a rotorcraft, which needs none: one coming in to a spot beside a
+    // runway, lined up with it, was put on its centreline and landed on it
+    // from 250ft.
     Lineup l;
+    bool runways = !last.rotorcraft;
     bool rolling = !last.ground || gs >= (departing ? TAKEOFF_ROLLING_KT : ROLLING_KT);
     bool lowEnough = last.ground || !last.hasAlt || last.altFt < ESTIMATE_MAX_FT;
     bool climbing = !last.ground && last.hasVs && last.vsFpm >= CLIMBING_FPM;
-    bool lined = rolling && lowEnough && !climbing && findLineup(last, l);
-    if (!lined && rolling && last.ground && departing) {
+    bool lined = runways && rolling && lowEnough && !climbing && findLineup(last, l);
+    if (!lined && runways && rolling && last.ground && departing) {
         lined = runwayUnder(last, history, l);
     }
     // Stopped on the runway, lined up: its roll is taken to begin once it has
     // been lost for LINED_UP_WAIT_S, from a standstill.
-    if (!lined && !rolling && last.ground && departing && last.hasTrack && runwayUnder(last, history, l, true)) {
+    if (!lined && runways && !rolling && last.ground && departing && last.hasTrack &&
+        runwayUnder(last, history, l, true)) {
         if (ageS <= LINED_UP_WAIT_S) {
             e.how = "held: lined up";
             return e;
@@ -533,6 +562,7 @@ FollowEstimate estimateFollowed(const FollowSample &given, float ageS, const Sam
             return e;
         }
         float rate = 0;
+        float travelled = -1;  // straight on, slowing: how far, nm, for its height along its way down
         if (turnRateFromHistory(history, last, rate)) {
             // Round the arc for as long as it is likely to keep turning
             // unseen, then straight on the way it was heading by then.
@@ -544,10 +574,48 @@ FollowEstimate estimateFollowed(const FollowSample &given, float ageS, const Sam
         } else {
             e.how = "straight on";
             float d = gs * ageS / 3600.0f;
+            // A rotorcraft slowing - to a hover, to set down - keeps slowing
+            // as it was between its last two reports, to a stop: carried on
+            // at its last speed, it sailed past where it stopped and came
+            // back at the next report. Speeding up, off from a hover, it
+            // keeps on doing so for as long again as it was seen to, and no
+            // more than 40 knots on.
+            float rate = 0;
+            bool known = last.rotorcraft && speedingOf(history, last, rate);
+            // One coming down low with nothing yet to say how its speed is
+            // going - its first report - taken to be slowing for its
+            // landing, as one coming down low most often is: carried on at
+            // its speed for the 40 seconds to the next report a busy feed
+            // managed, one slowing to a hover by a runway overshot it by
+            // 330m and went back.
+            if (last.rotorcraft && !known && last.hasVs && last.vsFpm <= ROTOR_APPROACH_FPM && last.hasAlt &&
+                last.altFt < ROTOR_APPROACH_BELOW_FT && gs >= ROTOR_APPROACH_MIN_KT && gs <= ROTOR_APPROACH_MAX_KT) {
+                rate = -ROTOR_APPROACH_SLOWING;
+            }
+            if (rate < 0) {
+                e.how = "slowing";
+                float t = std::min(ageS, gs / -rate);
+                d = (gs * t + rate * t * t / 2) / 3600.0f;
+                e.gsKt = (int)lroundf(gs + rate * t);
+                travelled = d;
+            } else if (rate > 0) {
+                e.how = "speeding up";
+                float t = std::min(ageS, 40 / rate);
+                d = (gs * t + rate * t * t / 2 + (gs + rate * t) * (ageS - t)) / 3600.0f;
+                e.gsKt = (int)lroundf(gs + rate * t);
+            }
             float a = last.track * (float)M_PI / 180.0f;
             place(sinf(a) * d, cosf(a) * d);
         }
-        if (last.hasAlt && last.hasVs) {
+        if (last.hasAlt && last.hasVs && travelled >= 0 && gs > 0) {
+            // Slowing, it comes down along the line it was coming down -
+            // the less steeply in feet a minute as it slows, to its hover at
+            // the end of it. Its rate held, one slowing to a hover came down
+            // through the ground short of it, and was shown skimming along
+            // the grass at 30 knots.
+            e.altFt = std::max((int32_t)0, last.altFt + (int32_t)lroundf(60.0f * last.vsFpm / gs * travelled));
+            e.vsFpm = (int)lroundf((float)last.vsFpm * e.gsKt / gs);
+        } else if (last.hasAlt && last.hasVs) {
             e.altFt = std::max((int32_t)0, last.altFt + (int32_t)(last.vsFpm * ageS / 60.0f));
         }
         return e;
@@ -798,7 +866,11 @@ bool RunwaySim::advance(const FollowSample &prev, bool hadPrev) {
 // Whether fresh_, nothing under way, begins a take-off or a landing.
 void RunwaySim::start(const FollowSample &prev, bool hadPrev) {
     FollowSample s = fresh_;
-    if (!lowReport(s)) {
+    // A rotorcraft takes off and lands where it likes, not down a runway:
+    // one coming in lined up with one, slowing to a hover over a helipad by
+    // it, was shown touching down and rolling out like an airliner. Its
+    // reports, as they are.
+    if (!lowReport(s) || s.rotorcraft) {
         return;
     }
     if (!s.hasTrack) {

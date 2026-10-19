@@ -17,7 +17,9 @@
 // the aircraft in the air nearest. Departing - or found on the ground - the
 // view shows those meanwhile, its guest, the one followed left followed,
 // until that is lined up on its runway; one just landed, though, it shows
-// parked once it is on its stand.
+// parked once it is on its stand. A helicopter it shows whatever it is
+// doing: it sets down where it means to and lifts off from there, with no
+// taxiing to leave out.
 //
 // Header only, over any table of tracks - each with its RunwaySim `sim`,
 // its last report `last` and when that came `freshMs` - for main's and a PC
@@ -152,6 +154,10 @@ class Picker {
         FollowEstimate e = sim.at(now);
         RunwaySim::Movement m = sim.movement();
         const FollowSample &s = sim.fresh();
+        if (s.rotorcraft) {
+            clearGuest();
+            return Show::FOLLOWED;
+        }
         // In the air, or landing and still rolling out: itself - seen landing.
         if (!e.ground || (m == RunwaySim::Movement::LANDING && e.gsKt >= ROLLED_OUT_KT)) {
             sawLanding_ = hex;
