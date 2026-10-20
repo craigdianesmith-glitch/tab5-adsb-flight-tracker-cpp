@@ -84,6 +84,27 @@ bool estimateAt(const String &hex, uint32_t t, FollowEstimate &out, uint32_t &lo
 // as it did live. False where nothing is followed or that poll lacks it.
 bool followedAt(uint32_t t, Aircraft &out);
 
+// For the 3D view of a replay, which works as it does live - see view3d.h.
+//
+// The time `t` ms into the recording on the clock its reports are timed on,
+// as FollowSample::ms has them.
+uint32_t clockAt(uint32_t t);
+// The aircraft with ICAO `hex`'s simulation - see RunwaySim - fed its reports
+// up to `t`, as estimateAt() has it: null where it has none by then. Good
+// only until the next call into the replay.
+const RunwaySim *simAt(const String &hex, uint32_t t);
+// What the aircraft with ICAO `hex` is, as its reports said: its type, its
+// emitter category, whether it is military. False for one never reported.
+bool kindOf(const String &hex, String &type, String &category, bool &military);
+// The poll latest at `t`, its aircraft as they were recorded, and when it was
+// on the clock of clockAt(). False before the first.
+bool pollAt(uint32_t t, std::vector<Aircraft> &out, uint32_t &polledMs);
+// Which poll that is, to know when it changes.
+size_t pollIndexAt(uint32_t t);
+// The day's pressure as the recording's polls gave it by `t` - its own day's,
+// not today's - see dayPressureFt(). False where too few gave it.
+bool dayPressureAt(uint32_t t, int32_t &ft);
+
 // Following, the range the live radar had around the aircraft at `t` - as it
 // was at the poll latest at `t`, or as it was changed since - or 0 where the
 // recording doesn't say, being older than that.

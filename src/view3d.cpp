@@ -971,6 +971,21 @@ FollowEstimate estimateOf(const Followed &f) {
     return e;
 }
 
+// The time now on the clock the flight's reports and the traffic's poll are
+// timed on - millis() live, the recording's in a replay - see frame(); and,
+// run on by it, the view's own seconds: standing still while a replay is.
+uint32_t g_nowMs = 0;
+bool g_haveNow = false;
+float g_seconds = 0;
+// Moved on further than this in a frame - or back - it has jumped: a
+// replay's minute, or its bar.
+constexpr uint32_t JUMP_MS = 5000;
+// Showing a replay, and its place and pace: see setReplay().
+bool g_inReplay = false;
+ReplayBar g_replay;
+// Where the traffic's pressure altitudes are put right from.
+DayPressureFn g_dayPressure = dayPressureFt;
+
 // What a label says of one, and who it is, for each of the traffic in a
 // frame - in two, the frame being prepared's and the one being drawn's.
 struct Info {
@@ -1029,7 +1044,7 @@ void pollTraffic(const std::vector<Aircraft> &list, const String &followed) {
             continue;
         }
         Polled p{};
-        p.s = followSampleOf(ac, 0);
+        p.s = followSampleOf(ac, 0, g_dayPressure);
         if (!p.s.ground && rotorDown(p.s.rotorcraft, false, p.s.altFt, p.s.gsKt)) {
             p.s.ground = true;
             p.s.altFt = groundFt();
@@ -1096,13 +1111,13 @@ void fillTraffic(const std::vector<Aircraft> &list, uint32_t polledMs, const Str
         g_polledGen = g_frameGen;
         g_polledFollowed = followed;
     }
-    float age = std::min(30.0f, (millis() - polledMs) / 1000.0f);
+    float age = std::min(30.0f, std::max<int32_t>(0, (int32_t)(g_nowMs - polledMs)) / 1000.0f);
     float reach = g_where == Where::AIRFIELD ? 25000 : 250000;
     std::vector<Info, PsramAllocator<Info>> &info = g_info[g_preparing];
     g_traffic.clear();
     info.clear();
     g_standing.clear();
-    uint32_t now = millis();
+    uint32_t now = g_nowMs;
     for (const Polled &p : g_polled) {
         const FollowSample &s = p.s;
         bool taxiways = s.ground && !s.rotorcraft && g_where == Where::AIRFIELD && !g_network.empty();
@@ -1681,7 +1696,6 @@ Vec3 g_shownAt{};
 float g_shownHeading = 0;
 bool g_haveShown = false;
 Where g_shownWhere = Where::NOWHERE;
-uint32_t g_openMs = 0;
 float g_lastSeconds = -1, g_lastTrack = 0;
 bool g_wasGround = false;
 float g_touchdownAt = -100;
@@ -1709,7 +1723,7 @@ uint32_t g_statTrafficUs = 0, g_statLabelsUs = 0;
 
 void prepareNext(const Followed &f, const std::vector<Aircraft> &traffic, uint32_t polledMs) {
     choose(f);
-    float seconds = (millis() - g_openMs) / 1000.0f;
+    float seconds = g_seconds;
     float dt = g_lastSeconds < 0 ? 0 : std::min(0.5f, seconds - g_lastSeconds);
     g_frameDt = dt;
     g_lastSeconds = seconds;
@@ -1724,7 +1738,7 @@ void prepareNext(const Followed &f, const std::vector<Aircraft> &traffic, uint32
     // likewise; on a straight steady path that is the estimate exactly.
     double lat = e.lat, lon = e.lon;
     if (e.ground && !f.simulating && e.gsKt >= STILL_KT && f.reportMs != 0) {
-        double d = e.gsKt * 0.5144 * std::min(8.0f, (millis() - f.reportMs) / 1000.0f);
+        double d = e.gsKt * 0.5144 * std::min(8.0f, std::max<int32_t>(0, (int32_t)(g_nowMs - f.reportMs)) / 1000.0f);
         lat += d * cos(e.track * M_PI / 180) / 111320.0;
         lon += d * sin(e.track * M_PI / 180) / (111320.0 * cos(lat * M_PI / 180));
     }
@@ -1804,7 +1818,7 @@ void prepareNext(const Followed &f, const std::vector<Aircraft> &traffic, uint32
     g_taxiKt = -1;
     if (taxiways && !rolling) {
         ground::Follower::Input in{};
-        in.ms = millis();
+        in.ms = g_nowMs;
         in.dt = dt;
         if (f.reportMs != 0 && f.report.hasPos) {
             Vec3 r = place(f.report.lat, f.report.lon, 0, true);
@@ -1896,7 +1910,9 @@ void prepareNext(const Followed &f, const std::vector<Aircraft> &traffic, uint32
     g_scene.traffic = g_traffic.data();
     g_scene.trafficCount = (int)g_traffic.size();
     g_scene.seconds = seconds;
-    time_t now = time(nullptr);
+    // The sun as it was then, in a replay - morning's flight not drawn by
+    // the night it is replayed in.
+    time_t now = g_inReplay && g_replay.epoch != 0 ? (time_t)g_replay.epoch : time(nullptr);
     g_scene.sun = now > 1600000000 ? s3::sunAt((int64_t)now, e.lat, e.lon) : s3::sunFor(s3::TimeOfDay::DAY);
 #ifdef BENCH3D
     if (g_benchSun != 0) {
@@ -1922,7 +1938,8 @@ void prepareNext(const Followed &f, const std::vector<Aircraft> &traffic, uint32
         g_scene.followed.pose = shown;
     }
     if (g_engineSound) {
-        soundEngine(engineSound(f, e, shownKt, look, g_scene.followed.pose, camera, dt));
+        soundEngine(g_inReplay && !g_replay.playing ? engine_noise::Sound()
+                                                    : engineSound(f, e, shownKt, look, g_scene.followed.pose, camera, dt));
     }
     s3::prepareBegin(VIEW_W, VIEW_H, g_rows, true, g_scene, camera);
     s3::prepareAircraft(0, 1);
@@ -2015,7 +2032,20 @@ void drawButtons() {
 uint32_t g_stripMs = 0;
 Where g_stripWhere = Where::NOWHERE;
 
-void drawStrip(const Followed &f) {
+// Its height as the radar's label has it: a pressure altitude, a flight level
+// from 18,000ft.
+void heightOf(const FollowEstimate &e, char *out, size_t size) {
+    int32_t feedFt = feedAltFt(e);
+    if (e.ground) {
+        snprintf(out, size, "on the ground");
+    } else if (feedFt >= 18000) {
+        snprintf(out, size, "FL%03d", (int)((feedFt + 50) / 100));
+    } else {
+        snprintf(out, size, "%d ft", (int)((feedFt + 50) / 100) * 100);
+    }
+}
+
+void drawFlightStrip(const Followed &f) {
     auto &c = screen::canvas();
     c.fillRect(VIEW_X, STRIP_Y, VIEW_W, STRIP_H, colorBg);
     c.setFont(&fonts::Font0);
@@ -2028,14 +2058,7 @@ void drawStrip(const Followed &f) {
     c.drawString(who, VIEW_X, STRIP_Y + 4);
     FollowEstimate e = estimateOf(f);
     char height[16], clock[16] = "", line[96];
-    int32_t feedFt = feedAltFt(e);  // as the radar's label has it
-    if (e.ground) {
-        snprintf(height, sizeof height, "on the ground");
-    } else if (feedFt >= 18000) {
-        snprintf(height, sizeof height, "FL%03d", (int)((feedFt + 50) / 100));
-    } else {
-        snprintf(height, sizeof height, "%d ft", (int)((feedFt + 50) / 100) * 100);
-    }
+    heightOf(e, height, sizeof height);
     time_t now = time(nullptr);
     if (now > 1600000000) {
         timeZoneFormat(now, timeZoneAt(e.lat, e.lon), clock, sizeof clock);
@@ -2075,6 +2098,91 @@ void drawStrip(const Followed &f) {
         c.drawString(basicWhy(), VIEW_X, STRIP_Y + 98);
     }
     screen::markDirty(VIEW_X, STRIP_Y, VIEW_W, STRIP_H);
+}
+
+// A replay's: the flight on a line - who, how high and fast, and when, as
+// the recording's clock has it - and under it the controls as the replay
+// screen has them: Play or Pause, back a minute, the speed, on a minute, and
+// the bar of how far through it is, with the time into it under that.
+constexpr int RB_Y = STRIP_Y + 30, RB_H = 54;
+constexpr int RB_PLAY_X = VIEW_X, RB_PLAY_W = 150, RB_STEP_W = 96, RB_GAP = 10;
+constexpr int RB_BACK_X = RB_PLAY_X + RB_PLAY_W + RB_GAP;
+constexpr int RB_SPEED_X = RB_BACK_X + RB_STEP_W + RB_GAP;
+constexpr int RB_ON_X = RB_SPEED_X + RB_STEP_W + RB_GAP;
+constexpr int RB_BAR_X = RB_ON_X + RB_STEP_W + 24, RB_BAR_W = VIEW_X + VIEW_W - RB_BAR_X;
+constexpr int RB_BAR_Y = RB_Y + 4, RB_BAR_H = 30;
+float g_seekTo = 0;  // see seekTo()
+
+void controlButton(int x, int w, const char *label, bool lit) {
+    auto &c = screen::canvas();
+    c.fillRoundRect(x, RB_Y, w, RB_H, 6, lit ? colorMuted : colorBtnBg);
+    c.setTextColor(lit ? colorBg : colorText);
+    c.drawString(label, x + w / 2, RB_Y + RB_H / 2);
+}
+
+String timeText(uint32_t ms) {
+    uint32_t s = ms / 1000;
+    char out[16];
+    if (s >= 3600) {
+        snprintf(out, sizeof out, "%lu:%02lu:%02lu", (unsigned long)(s / 3600), (unsigned long)(s / 60 % 60),
+                 (unsigned long)(s % 60));
+    } else {
+        snprintf(out, sizeof out, "%02lu:%02lu", (unsigned long)(s / 60), (unsigned long)(s % 60));
+    }
+    return out;
+}
+
+void drawReplayStrip(const Followed &f) {
+    auto &c = screen::canvas();
+    c.fillRect(VIEW_X, STRIP_Y, VIEW_W, STRIP_H, colorBg);
+    c.setFont(&fonts::Font0);
+    FollowEstimate e = estimateOf(f);
+    String call = f.callsign;
+    call.trim();
+    char height[16], when[16] = "", line[128];
+    heightOf(e, height, sizeof height);
+    if (g_replay.epoch != 0) {
+        time_t t = g_replay.epoch;
+        struct tm tm;
+        gmtime_r(&t, &tm);
+        strftime(when, sizeof when, "%H:%M:%S UTC", &tm);
+    }
+    snprintf(line, sizeof line, "%s  %s   %s   %d kt   %s   %s%s", call.length() ? call.c_str() : f.hex.c_str(),
+             f.type.c_str(), height, g_taxiKt >= 0 ? g_taxiKt : e.gsKt, when,
+             g_where == Where::AIRFIELD ? "at " : "high up", g_where == Where::AIRFIELD ? g_airport : "");
+    c.setTextDatum(TL_DATUM);
+    c.setTextSize(2);
+    c.setTextColor(colorText);
+    c.drawString(line, VIEW_X, STRIP_Y + 6);
+
+    c.setTextDatum(MC_DATUM);
+    bool atEnd = g_replay.t >= g_replay.durationMs;
+    controlButton(RB_PLAY_X, RB_PLAY_W, g_replay.playing ? "Pause" : atEnd ? "Replay" : "Play", !g_replay.playing);
+    controlButton(RB_BACK_X, RB_STEP_W, "-1m", false);
+    char speed[8];
+    snprintf(speed, sizeof speed, "%dx", g_replay.speed);
+    controlButton(RB_SPEED_X, RB_STEP_W, speed, false);
+    controlButton(RB_ON_X, RB_STEP_W, "+1m", false);
+
+    uint32_t dur = g_replay.durationMs;
+    c.fillRoundRect(RB_BAR_X, RB_BAR_Y, RB_BAR_W, RB_BAR_H, 6, colorBtnBg);
+    int filled = dur ? (int)((uint64_t)RB_BAR_W * std::min(g_replay.t, dur) / dur) : 0;
+    if (filled > 0) {
+        c.fillRoundRect(RB_BAR_X, RB_BAR_Y, std::max(filled, 12), RB_BAR_H, 6, colorMuted);
+    }
+    c.fillRect(RB_BAR_X + std::min(filled, RB_BAR_W - 4), RB_BAR_Y - 4, 4, RB_BAR_H + 8, colorText);
+    c.setTextDatum(TL_DATUM);
+    c.setTextColor(colorFaint);
+    c.drawString(timeText(g_replay.t) + " / " + timeText(dur), RB_BAR_X, RB_BAR_Y + RB_BAR_H + 10);
+    screen::markDirty(VIEW_X, STRIP_Y, VIEW_W, STRIP_H);
+}
+
+void drawStrip(const Followed &f) {
+    if (g_inReplay) {
+        drawReplayStrip(f);
+    } else {
+        drawFlightStrip(f);
+    }
     // TOWER greys and lights with where it is.
     if (g_stripWhere != g_where) {
         g_stripWhere = g_where;
@@ -2247,7 +2355,8 @@ bool open() {
     g_open = true;
     g_drawing = false;
     g_prepared = false;
-    g_openMs = millis();
+    g_haveNow = false;
+    g_seconds = 0;
     g_lastSeconds = -1;
     g_spotSet = g_spotAway = false;
     g_engineDistance = -1;
@@ -2311,15 +2420,24 @@ void redraw() {
     screen::flush();
 }
 
-void frame(const Followed &flight, const std::vector<Aircraft> &traffic, uint32_t polledMs) {
+void frame(const Followed &flight, const std::vector<Aircraft> &traffic, uint32_t polledMs, uint32_t nowMs) {
     uint32_t w0 = micros();
     if (!g_open || !finishDrawing()) {
         return;
     }
     g_statWaitUs += micros() - w0;
     g_statDrawUs += g_drawUs;
+    // The view's seconds run on with the world's clock, and a jump starts
+    // everything afresh, as a new flight.
+    int32_t step = g_haveNow ? (int32_t)(nowMs - g_nowMs) : 0;
+    bool jumped = g_haveNow && (step < 0 || step > (int32_t)JUMP_MS);
+    g_nowMs = nowMs;
+    g_haveNow = true;
+    if (!jumped) {
+        g_seconds += step / 1000.0f;
+    }
     // A new flight: its director, its pilot and its labels from the start.
-    if (flight.hex != g_followedHex) {
+    if (flight.hex != g_followedHex || jumped) {
         g_followedHex = flight.hex;
         delete g_director;
         g_director = new s3::Director();
@@ -2443,6 +2561,28 @@ void frame(const Followed &flight, const std::vector<Aircraft> &traffic, uint32_
 }
 
 Action touch(int x, int y, bool landed) {
+    if (landed && g_inReplay && y >= RB_Y - 8 && y < RB_Y + RB_H + 24 && x >= VIEW_X - 16 &&
+        x < VIEW_X + VIEW_W + 16) {
+        g_onView = false;
+        g_stripMs = 0;  // shown as it is now at the next frame
+        if (x < RB_PLAY_X + RB_PLAY_W + RB_GAP / 2) {
+            return Action::PLAY;
+        }
+        if (x < RB_BACK_X + RB_STEP_W + RB_GAP / 2) {
+            return Action::BACK_MINUTE;
+        }
+        if (x < RB_SPEED_X + RB_STEP_W + RB_GAP / 2) {
+            return Action::SPEED;
+        }
+        if (x < RB_ON_X + RB_STEP_W + RB_GAP / 2) {
+            return Action::ON_MINUTE;
+        }
+        if (x < RB_BAR_X - RB_GAP / 2) {
+            return Action::NONE;  // between them: not the start of the bar
+        }
+        g_seekTo = std::max(0.0f, std::min(1.0f, (x - RB_BAR_X) / (float)RB_BAR_W));
+        return Action::SEEK;
+    }
     if (landed) {
         g_onView = false;
         for (int i = 0; i < BUTTONS; i++) {
@@ -2501,6 +2641,24 @@ Action lift(String &hex) {
     hex = found->hex;
     return Action::DETAIL;
 }
+
+void setReplay(const ReplayBar *bar) {
+    if ((bar != nullptr) != g_inReplay ||
+        (bar != nullptr && (bar->playing != g_replay.playing || bar->speed != g_replay.speed))) {
+        g_stripMs = 0;  // shown as it is now at the next frame
+    }
+    g_inReplay = bar != nullptr;
+    if (bar != nullptr) {
+        g_replay = *bar;
+    }
+}
+
+void setDayPressure(DayPressureFn dayPressure) {
+    g_dayPressure = dayPressure != nullptr ? dayPressure : dayPressureFt;
+    g_polledMs = 0;  // the traffic's samples taken again
+}
+
+float seekTo() { return g_seekTo; }
 
 String busy() {
     if (g_step == Step::IDLE) {

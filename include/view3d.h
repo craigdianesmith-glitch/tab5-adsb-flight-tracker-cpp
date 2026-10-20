@@ -67,8 +67,27 @@ const char *airport();
 // Each pass of the loop: the frame prepared the pass before drawn - and sent
 // to the screen a band at a time - on the other core, while this one is
 // prepared, for `flight` where it is now and the traffic about it as last
-// polled, at `polledMs`.
-void frame(const Followed &flight, const std::vector<Aircraft> &traffic, uint32_t polledMs);
+// polled, at `polledMs`. `nowMs` is the time now on the clock its reports and
+// the poll are timed on - millis() live, the recording's in a replay: the
+// view runs on with it, stands still while it does, and starts afresh where
+// it jumps, a replay taken a minute on or back.
+void frame(const Followed &flight, const std::vector<Aircraft> &traffic, uint32_t polledMs, uint32_t nowMs);
+
+// A replay's place and pace, for the strip under the picture to show and
+// work - see setReplay().
+struct ReplayBar {
+    bool playing = false;
+    int speed = 1;                   // 1x or 4x
+    uint32_t t = 0, durationMs = 0;  // ms into the recording, and how long it is
+    uint32_t epoch = 0;              // UTC seconds at t; 0 where the recording's clock wasn't set
+};
+// Showing a replay, `bar` as it is - each frame - or live, null. In a replay
+// the strip under the picture has the replay's controls, the flight on a line
+// above them, and the engines fall quiet while it is paused.
+void setReplay(const ReplayBar *bar);
+// Where the traffic's pressure altitudes are put right from - see
+// FollowSample::pressureFt: the live day's pressure, or a replay's own.
+void setDayPressure(DayPressureFn dayPressure);
 
 // The buttons, details and all drawn again, for the screen coming back.
 void redraw();
@@ -77,7 +96,10 @@ void redraw();
 // report.
 String busy();
 
-enum class Action : uint8_t { NONE, BACK, DETAIL };
+// And in a replay, its controls: PLAY - or pause - BACK_MINUTE, SPEED,
+// ON_MINUTE, and SEEK to seekTo() of the way through, 0 to 1.
+enum class Action : uint8_t { NONE, BACK, DETAIL, PLAY, BACK_MINUTE, SPEED, ON_MINUTE, SEEK };
+float seekTo();
 // A finger at (x, y) - `landed` as it lands, after that as it moves: a button
 // acts as it lands, and a finger moved across the picture turns the camera
 // round the aircraft.

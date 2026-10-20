@@ -51,10 +51,8 @@ int32_t fieldElevationNear(float lat, float lon) {
     return oldest->ft;
 }
 
-// The day's pressure: see notePressure(). Taken from aircraft below this,
-// this many of them at least, and kept for as long as this.
-constexpr int PRESSURE_BELOW_FT = 6000, PRESSURE_FROM = 5;
-constexpr uint32_t PRESSURE_KEEP_MS = 30UL * 60 * 1000;
+// The day's pressure: see notePressure(). Taken from aircraft below this.
+constexpr int PRESSURE_BELOW_FT = 6000;
 int32_t g_pressureFt = 0;
 uint32_t g_pressureMs = 0;
 bool g_havePressure = false;
@@ -63,7 +61,19 @@ bool g_havePressure = false;
 
 bool dayPressureFt(int32_t &ft) {
     ft = g_pressureFt;
-    return g_havePressure && millis() - g_pressureMs < PRESSURE_KEEP_MS;
+    return g_havePressure && millis() - g_pressureMs < DAY_PRESSURE_KEEP_MS;
+}
+
+bool pressureDifferenceOf(const Aircraft &a, int32_t &ft) {
+    if (!a.hasAltGeom || !a.hasPos || a.posStale || a.altStr == "GND" || a.altStr == "?") {
+        return false;
+    }
+    int32_t pressure = a.altStr.toInt();
+    if (pressure >= PRESSURE_BELOW_FT) {
+        return false;
+    }
+    ft = a.altGeom - (int32_t)lroundf(geoidM(a.lat, a.lon) * 3.2808f) - pressure;
+    return true;
 }
 
 void notePressure(const std::vector<Aircraft> &list) {
@@ -73,15 +83,11 @@ void notePressure(const std::vector<Aircraft> &list) {
         if (n == 64) {
             break;
         }
-        if (!a.hasAltGeom || !a.hasPos || a.posStale || a.altStr == "GND" || a.altStr == "?") {
-            continue;
-        }
-        int32_t pressure = a.altStr.toInt();
-        if (pressure < PRESSURE_BELOW_FT) {
-            differences[n++] = a.altGeom - (int32_t)lroundf(geoidM(a.lat, a.lon) * 3.2808f) - pressure;
+        if (pressureDifferenceOf(a, differences[n])) {
+            n++;
         }
     }
-    if (n < PRESSURE_FROM) {
+    if (n < DAY_PRESSURE_FROM) {
         return;
     }
     std::nth_element(differences, differences + n / 2, differences + n);
@@ -96,7 +102,7 @@ void notePressure(const std::vector<Aircraft> &list) {
     }
 }
 
-FollowSample followSampleOf(const Aircraft &ac, uint32_t ms) {
+FollowSample followSampleOf(const Aircraft &ac, uint32_t ms, DayPressureFn dayPressure) {
     FollowSample s = {};
     s.ms = ms;
     s.ground = (ac.status == "GROUND" || ac.status == "TAXI" || ac.altStr == "GND");
@@ -121,7 +127,7 @@ FollowSample followSampleOf(const Aircraft &ac, uint32_t ms) {
         if (ac.hasAltGeom) {
             s.hasAlt = true;
             s.altFt = ac.altGeom - (int32_t)lroundf(geoidM(ac.lat, ac.lon) * 3.2808f);
-        } else if (s.hasAlt && dayPressureFt(pressure)) {
+        } else if (s.hasAlt && dayPressure(pressure)) {
             s.altFt += pressure;
         }
     }
@@ -137,7 +143,7 @@ FollowSample followSampleOf(const Aircraft &ac, uint32_t ms) {
         if (ac.hasAltGeom) {
             pressure = ac.altGeom - (int32_t)lroundf(geoidM(ac.lat, ac.lon) * 3.2808f) - s.altFt;
             s.pressureFt = (int16_t)constrain((int)pressure, -3000, 3000);
-        } else if (dayPressureFt(pressure)) {
+        } else if (dayPressure(pressure)) {
             s.pressureFt = (int16_t)constrain((int)pressure, -3000, 3000);
         }
     }

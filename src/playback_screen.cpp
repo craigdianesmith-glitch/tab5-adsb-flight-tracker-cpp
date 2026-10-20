@@ -39,7 +39,9 @@ constexpr int STEP_W = (PANEL_W - 2 * STEP_GAP) / 3;
 constexpr int BAR_Y = 378, BAR_H = 40;
 constexpr int BAR_TOUCH_PAD = 14;  // a finger is wider than the bar is tall
 constexpr int FRAME_Y = 436;
-constexpr int TEL_X = 1264 - TELEMETRY_W, TEL_Y = EXPORT_Y + BACK_H + 12;
+// And 3D under Export: the aircraft followed, in the 3D view.
+constexpr int VIEW3D_X = BACK_X, VIEW3D_Y = EXPORT_Y + BACK_H + 8, VIEW3D_W = 124;
+constexpr int TEL_X = 1264 - TELEMETRY_W, TEL_Y = VIEW3D_Y + BACK_H + 12;
 // What a tick repaints: the clock and elapsed lines, and the bar with its
 // caption. The buttons only change when they are pressed.
 constexpr int DYN1_Y = CLOCK_Y - 4, DYN1_H = NOTE_Y - DYN1_Y - 6;
@@ -48,6 +50,9 @@ constexpr int DYN2_Y = BAR_Y - 4, DYN2_H = FRAME_Y + 22 - DYN2_Y;
 constexpr uint32_t SKIP_MS = 60000;
 constexpr int SPEEDS[] = {1, 4, 16, 64};
 constexpr int SPEED_COUNT = sizeof(SPEEDS) / sizeof(SPEEDS[0]);
+// The 3D view's fastest: faster, an aircraft crosses the airfield in a few
+// frames.
+constexpr int SPEED_3D_MOST = 4;
 // How often a playing recording is redrawn. At 1x the blips creep, and
 // redrawing the plot four times as often would show nothing new; faster,
 // they move enough between frames to want the smoothness.
@@ -222,6 +227,26 @@ void drawExportButton() {
     screen::markDirty(EXPORT_X, EXPORT_Y, EXPORT_W, BACK_H);
 }
 
+// 3D, for the aircraft followed at the moment shown - greyed where there is
+// none: one picked from the plot has it on its details instead.
+void drawView3dButton() {
+    auto &canvas = screen::canvas();
+    const RadarPalette &p = radarPalette();
+    canvas.fillRect(VIEW3D_X, VIEW3D_Y, VIEW3D_W, BACK_H, p.bg);
+    canvas.setFont(&fonts::Font0);
+    canvas.setTextSize(2);
+    canvas.setTextDatum(MC_DATUM);
+    if (g_view.hex[0]) {
+        canvas.fillRoundRect(VIEW3D_X, VIEW3D_Y, VIEW3D_W, BACK_H, 6, p.btnBg);
+        canvas.setTextColor(p.text);
+    } else {
+        canvas.drawRoundRect(VIEW3D_X, VIEW3D_Y, VIEW3D_W, BACK_H, 6, p.disabled);
+        canvas.setTextColor(p.disabled);
+    }
+    canvas.drawString("3D", VIEW3D_X + VIEW3D_W / 2, VIEW3D_Y + BACK_H / 2);
+    screen::markDirty(VIEW3D_X, VIEW3D_Y, VIEW3D_W, BACK_H);
+}
+
 // For a video frame, the buttons give way to the speed it plays at: nobody
 // can press them, and a 16x video should say it is one.
 void drawHeader(bool forVideo) {
@@ -290,6 +315,7 @@ void drawHeader(bool forVideo) {
                           BACK_Y + BACK_H / 2);
     }
     drawExportButton();
+    drawView3dButton();
 }
 
 void drawStaticPanel(bool forVideo) {
@@ -604,18 +630,47 @@ void drawWhole() {
 
 }  // namespace
 
-void playbackScreenTick() {
+namespace {
+
+// The time moved on, playing, since the last; true where that came to the end.
+bool advance() {
     uint32_t now = millis();
+    bool ended = false;
     if (g_playing) {
         g_t += (now - g_lastTickMs) * SPEEDS[g_speedIdx];
         if (g_t >= replay::durationMs()) {
             g_t = replay::durationMs();
             g_playing = false;
-            drawPlayButton();
+            ended = true;
         }
         g_dirty = true;
     }
     g_lastTickMs = now;
+    return ended;
+}
+
+void playPause() {
+    if (!g_playing && g_t >= replay::durationMs()) {
+        seek(0);  // at the end, Play starts it over
+    }
+    g_playing = !g_playing;
+    g_lastTickMs = millis();
+}
+
+void nextSpeed(int most) {
+    do {
+        g_speedIdx = (g_speedIdx + 1) % SPEED_COUNT;
+    } while (SPEEDS[g_speedIdx] > most);
+    checkVideo();  // a video at one speed says nothing about another
+}
+
+}  // namespace
+
+void playbackScreenTick() {
+    uint32_t now = millis();
+    if (advance()) {
+        drawPlayButton();
+    }
 
     uint32_t frameMs = (SPEEDS[g_speedIdx] == 1) ? FRAME_MS_SLOW : FRAME_MS_FAST;
     if (g_dirty && (!g_playing || now - g_lastDrawMs >= frameMs)) {
@@ -637,14 +692,13 @@ PlaybackAction playbackScreenHandleTouch(int x, int y, Aircraft &outAircraft) {
     if (y >= EXPORT_Y && y < EXPORT_Y + BACK_H && x >= EXPORT_X && x < EXPORT_X + EXPORT_W && !g_videoExists) {
         return PlaybackAction::EXPORT;
     }
+    if (y >= VIEW3D_Y && y < VIEW3D_Y + BACK_H && x >= VIEW3D_X && x < VIEW3D_X + VIEW3D_W && g_view.hex[0]) {
+        return PlaybackAction::VIEW_3D;
+    }
 
     if (x >= PANEL_X && x < PANEL_X + PANEL_W) {
         if (y >= PLAY_Y && y < PLAY_Y + PLAY_H) {
-            if (!g_playing && g_t >= replay::durationMs()) {
-                seek(0);  // at the end, Play starts it over
-            }
-            g_playing = !g_playing;
-            g_lastTickMs = millis();
+            playPause();
             drawPlayButton();
             screen::flush();
             return PlaybackAction::NONE;
@@ -654,9 +708,8 @@ PlaybackAction playbackScreenHandleTouch(int x, int y, Aircraft &outAircraft) {
             if (col == 0) {
                 seek(g_t > SKIP_MS ? g_t - SKIP_MS : 0);
             } else if (col == 1) {
-                g_speedIdx = (g_speedIdx + 1) % SPEED_COUNT;
+                nextSpeed(SPEEDS[SPEED_COUNT - 1]);
                 drawStepButtons();
-                checkVideo();  // a video at one speed says nothing about another
                 drawExportButton();
                 screen::flush();
             } else {
@@ -798,4 +851,27 @@ void playbackScreenExport() {
     g_t = savedT;
     checkVideo();  // made now, or - cancelled or failed - still not
     playbackScreenDraw();
+}
+
+uint32_t playbackScreenTime() { return g_t; }
+bool playbackScreenPlaying() { return g_playing; }
+int playbackScreenSpeed() { return SPEEDS[g_speedIdx]; }
+String playbackScreenFollowed() { return String(replay::viewAt(g_t).hex); }
+
+void playbackScreenEnter3d() {
+    if (SPEEDS[g_speedIdx] > SPEED_3D_MOST) {
+        while (g_speedIdx > 0 && SPEEDS[g_speedIdx] > SPEED_3D_MOST) {
+            g_speedIdx--;
+        }
+        checkVideo();
+    }
+    g_lastTickMs = millis();
+}
+
+void playbackScreenAdvance() { advance(); }
+void playbackScreenPlayPause() { playPause(); }
+void playbackScreenStep(bool on) { seek(on ? g_t + SKIP_MS : g_t > SKIP_MS ? g_t - SKIP_MS : 0); }
+void playbackScreenNextSpeed() { nextSpeed(SPEED_3D_MOST); }
+void playbackScreenSeekTo(float fraction) {
+    seek((uint32_t)(replay::durationMs() * std::max(0.0f, std::min(1.0f, fraction))));
 }

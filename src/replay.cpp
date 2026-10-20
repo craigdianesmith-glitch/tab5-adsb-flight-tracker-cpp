@@ -24,6 +24,9 @@ struct Frame {
     uint32_t epoch;
     View view;
     uint8_t provider;  // which answered it, as an index into g_providers; 0 for not known
+    // The day's pressure as the polls up to it had it - see dayPressureAt().
+    bool havePressure = false;
+    int16_t pressureFt = 0;
 };
 
 struct Fix {
@@ -134,6 +137,26 @@ std::map<String, std::vector<FollowSample>, std::less<String>,
          PsramAllocator<std::pair<const String, std::vector<FollowSample>>>>
     g_heights;  // in the PSRAM
 std::vector<String> g_providers;  // the names the polls give, in the order first met
+
+// What each aircraft is, by its key - see kindOf() - from the reports that
+// said: a poll's report of one can leave its type out.
+struct Kind {
+    char type[6];
+    char category[4];
+    bool military;
+};
+std::map<uint32_t, Kind, std::less<uint32_t>, PsramAllocator<std::pair<const uint32_t, Kind>>> g_kinds;  // in the PSRAM
+
+// The day's pressure as the load has read it so far, for the polls' reports
+// to be put right by - the recording's own, its day not today's: see
+// FollowSample::pressureFt.
+bool g_loadHavePressure = false;
+int32_t g_loadPressureFt = 0;
+uint32_t g_loadPressureMs = 0;
+bool loadPressure(int32_t &ft) {
+    ft = g_loadPressureFt;
+    return g_loadHavePressure;
+}
 
 // Each low contact's RunwaySim, fed its fixes up to the moment last shown
 // as the live screens feed theirs at each poll, so that a take-off or
@@ -376,6 +399,9 @@ bool load(const String &path, LoadProgress progress) {
     uint32_t offset;
     bool inHeader = true;
     uint32_t frameMs = 0;
+    std::vector<int32_t> differences;  // the poll's, for its day's pressure
+    g_loadHavePressure = false;
+    g_loadPressureFt = 0;
     uint32_t total = g_file.size();
     uint32_t step = total / 100 + 1;
     uint32_t nextReport = step;
@@ -393,8 +419,20 @@ bool load(const String &path, LoadProgress progress) {
             continue;
         }
         if (g_line[0] == 'F') {
+            // The poll before's pressure, as notePressure() takes it live.
+            if (differences.size() >= (size_t)DAY_PRESSURE_FROM) {
+                std::nth_element(differences.begin(), differences.begin() + differences.size() / 2,
+                                 differences.end());
+                g_loadPressureFt = differences[differences.size() / 2];
+                g_loadHavePressure = true;
+                g_loadPressureMs = frameMs;
+            }
+            differences.clear();
             char *end = nullptr;
             frameMs = strtoul(g_line + 2, &end, 10);
+            if (g_loadHavePressure && frameMs - g_loadPressureMs >= DAY_PRESSURE_KEEP_MS) {
+                g_loadHavePressure = false;
+            }
             uint32_t epoch = strtoul(end, &end, 10);
             Frame f = {offset, frameMs, epoch, View(), 0};
             char viewTok[24] = "", providerTok[24] = "", rangeTok[16] = "";
@@ -409,6 +447,8 @@ bool load(const String &path, LoadProgress progress) {
                 }
                 f.provider = (uint8_t)(it - g_providers.begin() + 1);
             }
+            f.havePressure = g_loadHavePressure;
+            f.pressureFt = (int16_t)constrain((int)g_loadPressureFt, -3000, 3000);
             g_frames.push_back(f);
         } else if (g_line[0] == 'Q' && g_line[1] == ' ') {
             char *end = nullptr;
@@ -430,19 +470,26 @@ bool load(const String &path, LoadProgress progress) {
             if (recorder::parseAircraftLine(g_line, a)) {
                 if (a.hasPos) {
                     Fix fix = {keyOf(a.hex), frameMs, a.lat, a.lon, (uint32_t)(g_frames.size() - 1),
-                               followSampleOf(a, frameMs), ""};
-                    // Its height put right by its own GNSS height alone: the
-                    // day's pressure is today's, not the recording's.
-                    if (!a.hasAltGeom) {
-                        fix.s.pressureFt = 0;
-                    }
+                               followSampleOf(a, frameMs, loadPressure), ""};
                     strlcpy(fix.callsign, a.callsign.c_str(), sizeof(fix.callsign));
                     g_fixes.push_back(fix);
                 }
                 const char *followed = g_frames.back().view.hex;
                 if (followed[0] && a.hex == followed) {
-                    g_heights[a.hex].push_back(followSampleOf(a, frameMs - g_frames.front().ms));
+                    g_heights[a.hex].push_back(followSampleOf(a, frameMs - g_frames.front().ms, loadPressure));
                 }
+                int32_t difference;
+                if (pressureDifferenceOf(a, difference) && differences.size() < 64) {
+                    differences.push_back(difference);
+                }
+                Kind &k = g_kinds[keyOf(a.hex)];
+                if (a.type.length() && a.type != "----") {
+                    strlcpy(k.type, a.type.c_str(), sizeof k.type);
+                }
+                if (a.category.length()) {
+                    strlcpy(k.category, a.category.c_str(), sizeof k.category);
+                }
+                k.military = k.military || a.military;
             }
         }
     }
@@ -480,6 +527,7 @@ void unload() {
     g_gaps.clear();
     g_gaps.shrink_to_fit();
     g_heights.clear();
+    g_kinds.clear();
     g_sims.clear();
     g_simsAt = 0;
     g_providers.clear();
@@ -537,6 +585,49 @@ bool estimateAt(const String &hex, uint32_t t, FollowEstimate &out, uint32_t &lo
     out = sim.at(abs);
     lostMs = abs - sim.fresh().ms;
     return true;
+}
+
+uint32_t clockAt(uint32_t t) { return g_frames.empty() ? 0 : g_frames.front().ms + t; }
+
+const RunwaySim *simAt(const String &hex, uint32_t t) {
+    if (g_frames.empty()) {
+        return nullptr;
+    }
+    const RunwaySim &sim = simFor(keyOf(hex), clockAt(t));
+    return sim.haveFresh() ? &sim : nullptr;
+}
+
+bool kindOf(const String &hex, String &type, String &category, bool &military) {
+    auto it = g_kinds.find(keyOf(hex));
+    if (it == g_kinds.end()) {
+        return false;
+    }
+    type = it->second.type[0] ? it->second.type : "----";
+    category = it->second.category;
+    military = it->second.military;
+    return true;
+}
+
+size_t pollIndexAt(uint32_t t) { return frameIndexAt(t); }
+
+bool pollAt(uint32_t t, std::vector<Aircraft> &out, uint32_t &polledMs) {
+    if (g_frames.empty()) {
+        return false;
+    }
+    size_t i = frameIndexAt(t);
+    ensureCached(i, g_curIdx, g_cur);
+    out = g_cur;
+    polledMs = g_frames[i].ms;
+    return true;
+}
+
+bool dayPressureAt(uint32_t t, int32_t &ft) {
+    if (g_frames.empty()) {
+        return false;
+    }
+    const Frame &f = g_frames[frameIndexAt(t)];
+    ft = f.pressureFt;
+    return f.havePressure;
 }
 
 float followRangeAt(uint32_t t) {

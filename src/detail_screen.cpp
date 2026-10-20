@@ -153,8 +153,10 @@ void detailScreenDraw() {
     // among the rest.
     if (g_follow != DetailFollow::NONE) {
         canvas.fillRoundRect(FOLLOW_X, BACK_Y, FOLLOW_W, BACK_H, 6, colorBtnBg);
-        canvas.drawString(g_follow == DetailFollow::FOLLOW ? "FOLLOW" : "UNFOLLOW", FOLLOW_X + FOLLOW_W / 2,
-                          BACK_Y + BACK_H / 2);
+        canvas.drawString(g_follow == DetailFollow::FOLLOW    ? "FOLLOW"
+                          : g_follow == DetailFollow::VIEW_3D ? "3D"
+                                                              : "UNFOLLOW",
+                          FOLLOW_X + FOLLOW_W / 2, BACK_Y + BACK_H / 2);
     }
     if (g_watch != DetailWatch::NONE) {
         canvas.fillRoundRect(WATCH_X, BACK_Y, WATCH_W, BACK_H, 6, colorBtnBg);
@@ -280,7 +282,9 @@ DetailAction detailScreenHandleTouch(int x, int y) {
         return DetailAction::BACK;
     }
     if (x >= FOLLOW_X && x < FOLLOW_X + FOLLOW_W && g_follow != DetailFollow::NONE) {
-        return g_follow == DetailFollow::FOLLOW ? DetailAction::FOLLOW : DetailAction::UNFOLLOW;
+        return g_follow == DetailFollow::FOLLOW    ? DetailAction::FOLLOW
+               : g_follow == DetailFollow::VIEW_3D ? DetailAction::VIEW_3D
+                                                   : DetailAction::UNFOLLOW;
     }
     if (x >= WATCH_X && x < WATCH_X + WATCH_W && g_watch != DetailWatch::NONE) {
         return DetailAction::WATCH;

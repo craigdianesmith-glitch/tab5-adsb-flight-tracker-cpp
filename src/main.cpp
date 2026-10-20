@@ -75,6 +75,15 @@ Screen g_wifiReturnTo = Screen::SETTINGS;
 Screen g_view3dReturnTo = Screen::RADAR;
 std::vector<Aircraft> g_view3dTraffic;
 uint32_t g_view3dTrafficMs = 0;
+// Or the 3D view of a replay - see view3d::setReplay() - opened from the
+// replay screen, or an aircraft's details there, and Back to the replay: of
+// the aircraft g_replayHex, or of whichever the recording follows as it
+// plays, `tracking`, where opened by the replay's own 3D. And which of its
+// polls the traffic is from, for the next to be taken when it is reached.
+bool g_view3dReplay = false;
+bool g_replayTracking = false;
+String g_replayHex;
+size_t g_replayPollIdx = SIZE_MAX;
 
 SemaphoreHandle_t g_dataMutex;
 std::vector<Aircraft> g_latestAircraft;
@@ -1446,7 +1455,7 @@ void announceMovement(const Aircraft &a, Track &t, uint32_t now) {
     // take-off and landing there, as the zoom has them, not only the one the
     // view shows.
     bool inZoom = g_screen == Screen::ZOOM && g_zoomUp && g_zoomCode == rw.airport;
-    bool in3d = g_screen == Screen::VIEW3D && strcmp(view3d::airport(), rw.airport) == 0;
+    bool in3d = g_screen == Screen::VIEW3D && !g_view3dReplay && strcmp(view3d::airport(), rw.airport) == 0;
     if (!inZoom && !in3d) {
         return;
     }
@@ -2268,13 +2277,18 @@ bool onWatchlist(const String &callsign);
 uint32_t g_detailRouteGen = 0;
 
 void openDetail(const Aircraft &ac, Screen returnTo, bool read = true) {
-    DetailFollow follow = returnTo == Screen::PLAYBACK || !ac.hasPos ? DetailFollow::NONE
+    // Out of a replay - its screen, or its 3D view - 3D in FOLLOW's place,
+    // but for the one that view shows.
+    bool replayed = returnTo == Screen::PLAYBACK || (returnTo == Screen::VIEW3D && g_view3dReplay);
+    DetailFollow follow = !ac.hasPos ? DetailFollow::NONE
+                          : replayed ? (returnTo == Screen::VIEW3D && ac.hex == g_replayHex ? DetailFollow::NONE
+                                                                                           : DetailFollow::VIEW_3D)
                           : g_follow.active && g_follow.hex == ac.hex ? DetailFollow::UNFOLLOW
                                                                       : DetailFollow::FOLLOW;
     String callsign = watchableCallsign(ac.callsign);
-    DetailWatch watch = returnTo == Screen::PLAYBACK || !callsign.length() ? DetailWatch::NONE
-                        : onWatchlist(callsign)                            ? DetailWatch::UNWATCH
-                                                                           : DetailWatch::WATCH;
+    DetailWatch watch = replayed || !callsign.length() ? DetailWatch::NONE
+                        : onWatchlist(callsign)        ? DetailWatch::UNWATCH
+                                                       : DetailWatch::WATCH;
     detailScreenSet(ac, follow, watch);
     g_detailAc = ac;
     g_detailReturnTo = returnTo;
@@ -2741,7 +2755,8 @@ void tickFollow() {
             }
         }
     } else if (now - g_follow.seenMs > std::max(FOLLOW_LOST_MS, g_follow.sim.keepMs()) &&
-               !(g_screen == Screen::VIEW3D && (g_picker.guest().length() > 0 || view3d::parkingLost()))) {
+               !(g_screen == Screen::VIEW3D && !g_view3dReplay &&
+                 (g_picker.guest().length() > 0 || view3d::parkingLost()))) {
         Serial.printf("[follow] lost %s\n", g_follow.callsign.c_str());
         followEnded();
         if (g_screen == Screen::RADAR) {
@@ -2921,7 +2936,17 @@ void openFilter(Screen returnTo);
 // the chip's own memory hasn't room for its bands just now, when nothing
 // happens but a line in the log.
 void open3d() {
-    if (!g_follow.active || !view3d::open()) {
+    if (!g_follow.active) {
+        return;
+    }
+    // A replay's left behind - its details' route jumped to a zoom, and the
+    // zoom's 3D pressed there: the live view now.
+    if (g_view3dReplay) {
+        g_view3dReplay = false;
+        view3d::setReplay(nullptr);
+        view3d::setDayPressure(dayPressureFt);
+    }
+    if (!view3d::open()) {
         return;
     }
     g_view3dReturnTo = g_screen;
@@ -2934,12 +2959,161 @@ void open3d() {
     g_view3dTrafficMs = g_zoomDataMs;
 }
 
+void leave3dReplay();
+
 // Back - or the following ended - to where it was opened from.
 void leave3d() {
+    if (g_view3dReplay) {
+        leave3dReplay();
+        return;
+    }
     view3d::close();
     g_screen = g_view3dReturnTo;
     g_picker.reset();
     repaintCurrentScreen();
+}
+
+// --- the 3D view of a replay ----------------------------------------------------------
+
+// The 3D view's flight out of the replay at `t` - as followedOf() makes it
+// of a live track: the aircraft with `hex`, as its simulation has it then.
+// False where the recording has nothing of it by then, or nothing for as
+// long as following would wait.
+bool replayFollowed(const String &hex, uint32_t t, view3d::Followed &f) {
+    const RunwaySim *sim = replay::simAt(hex, t);
+    uint32_t now = replay::clockAt(t);
+    if (sim == nullptr || now - sim->fresh().ms > std::max(FOLLOW_LOST_MS, sim->keepMs())) {
+        return false;
+    }
+    f = view3d::Followed();
+    f.hex = hex;
+    f.callsign = replay::callsignOf(hex);
+    replay::kindOf(hex, f.type, f.category, f.military);
+    f.now = sim->at(now);
+    f.report = sim->fresh();
+    f.reportMs = f.report.ms;
+    f.landed = sim->airborneWithin(f.report.ms, subject3d::LANDED_WITHIN_MS);
+    f.simulating = sim->simulating(now);
+    f.movement = sim->movement();
+    f.runway = sim->runway();
+    f.lost = now - f.report.ms > subject3d::FRESH_MS;
+    return true;
+}
+
+// The aircraft with ICAO `hex` as the replay's poll at the moment shown has
+// it - or, missing from it, as the recording knows it, where it is reckoned
+// to be - for its details.
+bool replayAircraft(const String &hex, Aircraft &out) {
+    for (const Aircraft &a : g_view3dTraffic) {
+        if (a.hex == hex) {
+            out = a;
+            return true;
+        }
+    }
+    view3d::Followed f;
+    if (!replayFollowed(hex, playbackScreenTime(), f)) {
+        return false;
+    }
+    out = Aircraft();
+    out.hex = hex;
+    out.callsign = f.callsign;
+    out.type = f.type;
+    out.category = f.category;
+    out.military = f.military;
+    out.hasPos = out.posStale = out.hasTrack = true;
+    out.lat = f.now.lat;
+    out.lon = f.now.lon;
+    out.track = f.now.track;
+    out.altStr = f.now.ground ? String("GND") : String(feedAltFt(f.now));
+    out.speedStr = String(f.now.gsKt);
+    out.status = estimateStatus(f.now);
+    return true;
+}
+
+// The replay's place and pace, for the 3D view's strip.
+view3d::ReplayBar replayBar() {
+    view3d::ReplayBar bar;
+    bar.playing = playbackScreenPlaying();
+    bar.speed = playbackScreenSpeed();
+    bar.t = playbackScreenTime();
+    bar.durationMs = replay::durationMs();
+    bar.epoch = replay::epochAt(bar.t);
+    return bar;
+}
+
+// The day's pressure as the recording had it at the moment shown, for the
+// 3D view's traffic.
+bool replayDayPressure(int32_t &ft) { return replay::dayPressureAt(playbackScreenTime(), ft); }
+
+// Into the 3D view of the replay, at the moment it shows: of `hex`, or -
+// `tracking` - of whichever aircraft the recording follows as it plays.
+// False, and nothing changed, where the recording has nothing of it then, or
+// the chip's own memory hasn't room for the view's bands.
+bool open3dReplay(const String &hex, bool tracking) {
+    view3d::Followed f;
+    if (!replayFollowed(hex, playbackScreenTime(), f)) {
+        Serial.printf("[3d] %s isn't in the recording at %lus\n", hex.c_str(),
+                      (unsigned long)(playbackScreenTime() / 1000));
+        return false;
+    }
+    playbackScreenEnter3d();
+    view3d::ReplayBar bar = replayBar();
+    view3d::setReplay(&bar);
+    view3d::setDayPressure(replayDayPressure);
+    Screen was = g_screen;
+    g_screen = Screen::VIEW3D;
+    if (!view3d::open()) {
+        view3d::setReplay(nullptr);
+        view3d::setDayPressure(dayPressureFt);
+        g_screen = was;
+        return false;
+    }
+    g_view3dReplay = true;
+    g_replayTracking = tracking;
+    g_replayHex = hex;
+    g_replayPollIdx = SIZE_MAX;
+    g_picker.reset();
+    Serial.printf("[3d] replaying %s in 3D%s\n", hex.c_str(), tracking ? ", as the recording follows" : "");
+    return true;
+}
+
+// Back from it, to the replay screen at the moment it shows.
+void leave3dReplay() {
+    view3d::close();
+    view3d::setReplay(nullptr);
+    view3d::setDayPressure(dayPressureFt);
+    g_view3dReplay = false;
+    g_screen = Screen::PLAYBACK;
+    playbackScreenDraw();
+}
+
+// Each pass with it up: the replay played on, and its frame - or, its
+// aircraft gone from the recording by then, back to the replay screen.
+void frame3dReplay() {
+    playbackScreenAdvance();
+    uint32_t t = playbackScreenTime();
+    if (g_replayTracking) {
+        String followed = playbackScreenFollowed();
+        if (followed.length() && followed != g_replayHex) {
+            Serial.printf("[3d] the recording follows %s now\n", followed.c_str());
+            g_replayHex = followed;
+        }
+    }
+    view3d::Followed f;
+    if (!replayFollowed(g_replayHex, t, f)) {
+        Serial.printf("[3d] %s isn't in the recording at %lus - back to the replay\n", g_replayHex.c_str(),
+                      (unsigned long)(t / 1000));
+        leave3dReplay();
+        return;
+    }
+    size_t poll = replay::pollIndexAt(t);
+    if (poll != g_replayPollIdx) {
+        g_replayPollIdx = poll;
+        replay::pollAt(t, g_view3dTraffic, g_view3dTrafficMs);
+    }
+    view3d::ReplayBar bar = replayBar();
+    view3d::setReplay(&bar);
+    view3d::frame(f, g_view3dTraffic, g_view3dTrafficMs, replay::clockAt(t));
 }
 
 // --- what the 3D view shows ---------------------------------------------------------
@@ -3091,9 +3265,23 @@ void handleView3dTouch(bool touching) {
         leave3d();
     } else if (action == view3d::Action::DETAIL) {
         Aircraft ac;
-        if (lastReported(hex, ac)) {
+        if (g_view3dReplay ? replayAircraft(hex, ac) : lastReported(hex, ac)) {
             view3d::close();
+            // A replay paused, the moment still there to come back to - as a
+            // tap on its plot pauses it.
+            if (g_view3dReplay && playbackScreenPlaying()) {
+                playbackScreenPlayPause();
+            }
             openDetail(ac, Screen::VIEW3D);
+        }
+    } else if (g_view3dReplay) {
+        switch (action) {
+        case view3d::Action::PLAY: playbackScreenPlayPause(); break;
+        case view3d::Action::BACK_MINUTE: playbackScreenStep(false); break;
+        case view3d::Action::SPEED: playbackScreenNextSpeed(); break;
+        case view3d::Action::ON_MINUTE: playbackScreenStep(true); break;
+        case view3d::Action::SEEK: playbackScreenSeekTo(view3d::seekTo()); break;
+        default: break;
         }
     }
 }
@@ -3497,6 +3685,9 @@ void handlePlaybackTouch(int x, int y) {
     case PlaybackAction::SELECT:
         openDetail(tapped, Screen::PLAYBACK);
         break;
+    case PlaybackAction::VIEW_3D:
+        open3dReplay(playbackScreenFollowed(), true);
+        break;
     case PlaybackAction::EXPORT:
         // Blocks until the video is made or cancelled - minutes, for a long
         // recording at a slow speed, which hangWatch() would otherwise take
@@ -3828,6 +4019,12 @@ void handleDetailTouch(int x, int y) {
         followFromDetail();
         return;
     }
+    // Into the replay's 3D view, of this one - from the replay screen, or
+    // from that view showing another. Not to be had - no room for its bands,
+    // or nothing of it at this moment - back as Back would go.
+    if (action == DetailAction::VIEW_3D && open3dReplay(g_detailAc.hex, false)) {
+        return;
+    }
     if (action == DetailAction::WATCH) {
         // Said on the table's status line, for when it is back there; here
         // the button turning to UNWATCH says it.
@@ -3837,6 +4034,16 @@ void handleDetailTouch(int x, int y) {
     }
     if (action == DetailAction::UNFOLLOW) {
         stopFollow();  // and then back, as Back would go
+    }
+    if (g_detailReturnTo == Screen::VIEW3D && g_view3dReplay) {
+        // Back into the replay's 3D view - or, not to be had, its screen.
+        if (open3dReplay(g_replayHex, g_replayTracking)) {
+            return;
+        }
+        g_view3dReplay = false;
+        view3d::setReplay(nullptr);
+        view3d::setDayPressure(dayPressureFt);
+        g_detailReturnTo = Screen::PLAYBACK;
     }
     if (g_detailReturnTo == Screen::VIEW3D) {
         // Back into it, still following - or, not, to where it was opened.
@@ -5280,7 +5487,7 @@ void loop() {
         }
         if (zoomArrived) {
             noteTracks(arrivedZoom, true, zoomProvider);
-            if (g_screen == Screen::VIEW3D) {
+            if (g_screen == Screen::VIEW3D && !g_view3dReplay) {
                 g_view3dTraffic = arrivedZoom;
                 g_view3dTrafficMs = g_zoomDataMs;
             }
@@ -5293,10 +5500,14 @@ void loop() {
     tickLook();
 
     if (g_screen == Screen::VIEW3D) {
-        if (g_follow.active) {
+        if (g_view3dReplay) {
+            g_loopAt = "the 3D replay's frame";
+            frame3dReplay();
+            g_loopAt = "after the 3D replay's frame";
+        } else if (g_follow.active) {
             g_loopAt = "the 3D view's frame";
             update3dSubject();
-            view3d::frame(followed3d(), g_view3dTraffic, g_view3dTrafficMs);
+            view3d::frame(followed3d(), g_view3dTraffic, g_view3dTrafficMs, millis());
             g_loopAt = "after the 3D view's frame";
         } else {
             leave3d();

@@ -39,15 +39,24 @@ struct FollowSample {
 // put right where that can be - see FollowSample::pressureFt.
 inline int32_t aboveSeaFt(const FollowSample &s) { return s.altFt + s.pressureFt; }
 
-// The sample an aircraft's report makes at `ms`.
-FollowSample followSampleOf(const Aircraft &ac, uint32_t ms);
-
 // The day's pressure, from a list of aircraft just polled: the feet to add to
 // a pressure altitude for a height above the sea - which a GNSS height less
 // the geoid is, near enough - as the middle of the differences between the
 // two, of those in it that give both, below 6,000ft (higher, the air's
-// temperature makes more of it), five of them at least. For a rotorcraft
-// that gives only its pressure altitude: see followSampleOf().
+// temperature makes more of it), five of them at least. For one that gives
+// only its pressure altitude: see followSampleOf().
 void notePressure(const std::vector<Aircraft> &list);
 // It, if a list has given it in the last half hour.
 bool dayPressureFt(int32_t &ft);
+constexpr int DAY_PRESSURE_FROM = 5;
+constexpr uint32_t DAY_PRESSURE_KEEP_MS = 30UL * 60 * 1000;
+// One aircraft's difference, as notePressure() takes them: false for one
+// that doesn't give both, or is too high to count.
+bool pressureDifferenceOf(const Aircraft &a, int32_t &ft);
+// Where the day's pressure comes from, for a sample: the live polls', as
+// above, or a recording's own - a replay's day isn't today.
+using DayPressureFn = bool (*)(int32_t &ft);
+
+// The sample an aircraft's report makes at `ms`, a pressure altitude with
+// no GNSS height beside it put right by `dayPressure`.
+FollowSample followSampleOf(const Aircraft &ac, uint32_t ms, DayPressureFn dayPressure = dayPressureFt);
