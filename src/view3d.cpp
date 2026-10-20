@@ -1216,10 +1216,13 @@ void fillTraffic(const std::vector<Aircraft> &list, uint32_t polledMs, const Str
             }
         }
         float speed = std::max(1.0f, p.speed);
-        // Its nose along its climb, or a helicopter's down as it goes faster.
+        // Its nose along its climb - raised coming in to land, as it flares -
+        // or a helicopter's down as it goes faster.
         float pitch = s.ground         ? 0.0f
                       : s.rotorcraft ? -std::min(9.0f, s.gsKt / 15.0f) * DEG
-                                     : atanf(s.vsFpm * 0.00508f / speed) + 0.04f;
+                                     : s3::landingPitch(k.look.family, s.gsKt, s.vsFpm,
+                                                        g_where == Where::AIRFIELD ? p.heightM : NAN,
+                                                        atanf(s.vsFpm * 0.00508f / speed) + 0.04f);
         s3::Pose pose = {at, heading, pitch, 0};
         g_traffic.push_back({pose, k.look, s3::configFor(p.heightM, s.gsKt, s.ground, false)});
         info.push_back(p.info);
@@ -1302,14 +1305,20 @@ float g_towerRaise = 0;
 
 // FLY PAST: a camera set down ahead of it, beside the way it is going -
 // where it will be in PAST_AHEAD_S - held still as it comes, goes by and
-// away, its lens following it; set down ahead again once it is
-// PAST_AFTER_S past - the other side of its way. Low, it stands on the
-// ground; high up, it hangs in the air beside its way, a little below.
-constexpr float PAST_AHEAD_S = 15, PAST_AFTER_S = 10;
-constexpr float PAST_SPANS = 3;     // how far off its way: three wingspans - 100m for an A320 - ZOOM IN nearer
+// away, its lens following it but not zooming: small far off, growing as it
+// comes, sweeping across side-on, shrinking as it goes; set down ahead again
+// once it is PAST_AFTER_S past - the other side of its way. Low, it stands
+// on the ground; high up, it hangs in the air beside its way, a little
+// below. (Held the same size, with the lens's every turn, it seemed to hang
+// still.)
+constexpr float PAST_AHEAD_S = 7, PAST_AFTER_S = 5;
+constexpr float PAST_SPANS = 4;     // how far off its way: four wingspans - 140m for an A320 - ZOOM IN nearer
+constexpr float PAST_SIDE_S = 1.2f;  // and further for one fast, to be side-on a while: 280m at 450kt
+constexpr float PAST_FILL = 0.45f;  // how much of the view it fills going by
 constexpr float PAST_LOW_M = 150;   // lower than this where it passes, the camera is on the ground
 Vec3 g_passEye{};
 float g_passFar = 0;  // how far off it was, the camera set down
+float g_passFov = 30;  // the lens, for the pass
 bool g_passSet = false, g_passKeepSide = false;
 int g_passSide = 1;  // its left; -1 its right
 String g_passHex;
@@ -1347,7 +1356,7 @@ void placePass(const s3::Pose &pose, const Followed &f, float size) {
     }
     g_passKeepSide = false;
     Vec3 left = {-sinf(heading), cosf(heading), 0};
-    float off = std::max(20.0f, PAST_SPANS * 36 * size / g_zoom);
+    float off = std::max(20.0f, std::max(PAST_SPANS * 36 * size, speed * PAST_SIDE_S) / g_zoom);
     // The ground under a point: the airfield's flat; high up, the earth's
     // round, falling away from the frame's middle - 31m lower 20km off.
     auto ground = [](Vec3 q) { return g_where == Where::AIRFIELD ? 0.0f : -(q.x * q.x + q.y * q.y) / (2 * 6371000.0f); };
@@ -1371,6 +1380,9 @@ void placePass(const s3::Pose &pose, const Followed &f, float size) {
         g_passEye = first;
     }
     g_passFar = hypotf(g_passEye.x - pose.at.x, g_passEye.y - pose.at.y);
+    // Zoomed for when it is nearest, going by.
+    float nearest = std::max(1.0f, length(p + Vec3{0, 0, 3.5f * size} - g_passEye));
+    g_passFov = std::max(1.5f, std::min(65.0f, 2 * atanf(40 * size / PAST_FILL / 2 / nearest) / DEG));
     g_passSet = true;
     g_passHex = f.hex;
     g_passWhere = g_where;
@@ -1439,7 +1451,9 @@ s3::Camera cameraFor(const s3::Aircraft &followed, const Followed &f, float seco
             placePass(pose, f, size);
         }
         g_shot = "fly past";
-        return s3::fixedCamera(pose, g_passEye, 0.3f, size);
+        s3::Camera camera = s3::fixedCamera(pose, g_passEye, PAST_FILL, size);
+        camera.fovDeg = g_passFov;
+        return camera;
     }
     case Cam::CINEMA:
         break;
@@ -1509,8 +1523,9 @@ s3::Camera cameraFor(const s3::Aircraft &followed, const Followed &f, float seco
         return s3::orbitCamera(pose, 25, 9, 70 * size, 48);
     }
     if (phase < 20) {
+        // Wide, but by its size: 900m off, a light aircraft was a dot.
         g_shot = "wide";
-        return s3::orbitCamera(pose, 140, 22, 900, 62);
+        return s3::orbitCamera(pose, 140, 22, 230 * size, 50);
     }
     g_shot = "from below";
     return s3::orbitCamera(pose, 215, -18, 120 * size, 52);
@@ -1844,9 +1859,10 @@ void prepareNext(const Followed &f, const std::vector<Aircraft> &traffic, uint32
     if (dt > 0) {
         g_turn += (turn / dt - g_turn) * std::min(1.0f, dt / 2);
     }
-    g_pilot.fly(dt, look.family, g_turn, shownKt, e.vsFpm, e.ground);
     Vec3 at = g_shownAt;
     float heightM = g_where == Where::AIRFIELD ? at.z : e.altFt * 0.3048f;
+    // Over the airfield its height over the ground is known, for its flare.
+    g_pilot.fly(dt, look.family, g_turn, shownKt, e.vsFpm, e.ground, g_where == Where::AIRFIELD ? at.z : NAN);
     s3::Pose pose = {at, g_shownHeading, g_pilot.pitch, g_pilot.roll};
     s3::Config config = s3::configFor(heightM, shownKt, e.ground, f.movement == RunwaySim::Movement::TAKEOFF);
     config.aileron = g_pilot.aileron;

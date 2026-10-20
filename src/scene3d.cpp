@@ -7707,7 +7707,30 @@ float noseAhead(const Look &look) {
     return designs()[std::min((int)look.family, (int)Family::COUNT - 1)].hi.x * look.scale;
 }
 
-void Pilot::fly(float dt, Family family, float turnRate, float speedKt, float climbFpm, bool onGround) {
+// Below this over the ground, coming in, it flares; and the nose as its
+// wheels touch: an airliner's, a light aircraft's, a fast jet's.
+constexpr float FLARE_M = 15, TOUCH_PITCH = 5.5f * DEG, LIGHT_TOUCH_PITCH = 6.5f * DEG, FAST_TOUCH_PITCH = 10 * DEG;
+// Its main wheels down, the nose held up this long, then lowered onto its
+// wheel over this.
+constexpr float NOSE_HELD_S = 1.5f, NOSE_LOWERED_S = 3;
+
+float landingPitch(Family family, float speedKt, float climbFpm, float heightM, float pitch) {
+    if (climbFpm > -250 || speedKt > 220 || !(heightM < 900)) {
+        return pitch;
+    }
+    bool light = family == F::LIGHT_HIGH || family == F::LIGHT_LOW;
+    bool fast = family == F::FIGHTER_DELTA || family == F::FIGHTER || family == F::FIGHTER_SINGLE ||
+                family == F::JET_TRAINER;
+    // Slowed for the approach, its flaps out: an airliner's nose two or
+    // three degrees up on a three-degree glide.
+    pitch += light ? 1 * DEG : clamp01((220 - speedKt) / 60) * (fast ? 6 : 3) * DEG;
+    float u = clamp01(1 - heightM / FLARE_M);
+    float touch = light ? LIGHT_TOUCH_PITCH : fast ? FAST_TOUCH_PITCH : TOUCH_PITCH;
+    return pitch + (std::max(pitch, touch) - pitch) * u * u * (3 - 2 * u);
+}
+
+void Pilot::fly(float dt, Family family, float turnRate, float speedKt, float climbFpm, bool onGround,
+                float heightM) {
     if (dt <= 0) {
         return;
     }
@@ -7775,8 +7798,32 @@ void Pilot::fly(float dt, Family family, float turnRate, float speedKt, float cl
     float flare = std::max(-6.0f, std::min(10.0f, -accel_ * 3)) * DEG;
     float alpha = onGround ? 0 : rotor ? -std::min(9.0f, speedKt / 15) * DEG + flare : 2.5f * DEG * load;
     pitchTarget_ = gamma + alpha;
+    if (!onGround && !rotor) {
+        pitchTarget_ = landingPitch(family, speedKt, climbFpm, heightM, pitchTarget_);
+    }
     float was = pitch;
-    pitch += (pitchTarget_ - pitch) * (1 - expf(-dt / 1.2f));
+    // Landed: its main wheels on, the nose held up, then lowered onto its
+    // wheel - not dropped with the rest of its pitch.
+    if (onGround && !wasGround_ && !rotor && speedKt > 40) {
+        touchPitch_ = std::max(0.0f, pitch);
+        sinceTouch_ = 0;
+    }
+    wasGround_ = onGround;
+    if (!onGround) {
+        sinceTouch_ = -1;
+    }
+    if (sinceTouch_ >= 0) {
+        sinceTouch_ += dt;
+        float u = clamp01((sinceTouch_ - NOSE_HELD_S) / NOSE_LOWERED_S);
+        pitch = touchPitch_ * (1 - u * u * (3 - 2 * u));
+        if (u >= 1) {
+            sinceTouch_ = -1;
+        }
+    } else {
+        // Quicker in the flare: it has only a few seconds.
+        bool flaring = !onGround && heightM < FLARE_M && climbFpm < -100;
+        pitch += (pitchTarget_ - pitch) * (1 - expf(-dt / (flaring ? 0.6f : 1.2f)));
+    }
     float pitchRate = (pitch - was) / dt;
     elevator = std::max(-1.0f, std::min(1.0f, pitchRate / (4 * DEG) + (load - 1) * 1.5f));
 }

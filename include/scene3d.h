@@ -1,5 +1,6 @@
 #pragma once
 
+#include <math.h>
 #include <stddef.h>
 #include <stdint.h>
 
@@ -126,18 +127,30 @@ struct Config {
 // pitches its nose with its climb; and moves its controls as a pilot would to
 // do that - ailerons to roll, then back to the middle, the elevator to pitch
 // and to hold the nose up in a turn, a touch of rudder with the ailerons.
+// Landing, it flares: see landingPitch(); its main wheels touch first, the
+// nose held up, then lowered onto its wheel over a few seconds.
 class Pilot {
   public:
     // `turnRate` in radians a second, positive to the left - as a heading
-    // goes - over `dt` seconds since the last.
-    void fly(float dt, Family family, float turnRate, float speedKt, float climbFpm, bool onGround);
+    // goes - over `dt` seconds since the last; `heightM` above the ground
+    // under it, NAN when that isn't known.
+    void fly(float dt, Family family, float turnRate, float speedKt, float climbFpm, bool onGround,
+             float heightM = NAN);
     float roll = 0, pitch = 0;  // radians, as a Pose has them
     float aileron = 0, elevator = 0, rudder = 0;
 
   private:
     float rollRate_ = 0, pitchTarget_ = 0;
     float lastKt_ = 0, accel_ = 0;  // how fast it is speeding up, knots a second, smoothed
+    bool wasGround_ = true;
+    float touchPitch_ = 0, sinceTouch_ = -1;  // the nose as the wheels touched, and how long since
 };
+
+// The nose of one coming in to land, given `pitch` along its way down and a
+// few degrees above it: higher on the approach - slow, its flaps out, its
+// wing needs more - and raised in the last fifty feet to the attitude it
+// touches down at, its flare. `heightM` above the ground, NAN unknown.
+float landingPitch(Family family, float speedKt, float climbFpm, float heightM, float pitch);
 
 // The set-up of one doing this: at this height above the field, this fast,
 // on the ground or not, landing or leaving.

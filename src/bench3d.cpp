@@ -1020,7 +1020,7 @@ void enrouteAt(float t, TimeOfDay time, Scene &scene, Camera &cam, const char **
         cam = orbitCamera(pose, 18 + phase * 2, 9, 70 * size, 48);
     } else if (phase < 20) {
         *shot = "wide";
-        cam = orbitCamera(pose, 160 - (phase - 10) * 4, 22, 900, 62);
+        cam = orbitCamera(pose, 160 - (phase - 10) * 4, 22, 230 * size, 50);
     } else {
         *shot = "from below";
         cam = orbitCamera(pose, 200 + (phase - 20) * 3, -18, 120 * size, 52);
