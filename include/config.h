@@ -189,6 +189,11 @@ constexpr uint32_t RUNWAY_SIM_LOST_MS = 180000;
 constexpr int CLIMB_THRESHOLD_FPM = 150;
 constexpr int DESCEND_THRESHOLD_FPM = -150;
 
+// The lowest pressure altitude believed: below that a report's height is
+// taken to be bogus, and the report left out. A field by the sea on the
+// deepest high reads about a thousand feet below nought.
+constexpr int LOWEST_PRESSURE_ALT_FT = -1500;
+
 // --- data sources ---------------------------------------------------------
 //
 // One source used to be enough, until adsb.lol spent an evening answering 200

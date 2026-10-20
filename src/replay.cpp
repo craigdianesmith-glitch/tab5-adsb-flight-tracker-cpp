@@ -235,7 +235,7 @@ void showEstimate(Aircraft &a, const FollowEstimate &e) {
     a.lon = e.lon;
     a.hasTrack = true;
     a.track = e.track;
-    a.altStr = e.ground ? String("GND") : String(e.altFt);
+    a.altStr = e.ground ? String("GND") : String(feedAltFt(e));
     a.speedStr = String(e.gsKt);
     a.status = e.ground                           ? (e.gsKt > 2 ? "TAXI" : "GROUND")
                : e.vsFpm >= CLIMB_THRESHOLD_FPM   ? "CLIMB"

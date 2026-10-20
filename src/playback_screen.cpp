@@ -469,7 +469,7 @@ void keepFollowedInScene() {
     ghost.lon = e.lon;
     ghost.hasTrack = true;
     ghost.track = e.track;
-    ghost.altStr = e.ground ? String("GND") : String(e.altFt);
+    ghost.altStr = e.ground ? String("GND") : String(feedAltFt(e));
     ghost.speedStr = String(e.gsKt);
     ghost.status = e.ground                           ? (e.gsKt > 2 ? "TAXI" : "GROUND")
                    : e.vsFpm >= CLIMB_THRESHOLD_FPM   ? "CLIMB"

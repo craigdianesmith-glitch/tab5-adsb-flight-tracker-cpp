@@ -1038,20 +1038,22 @@ void pollTraffic(const std::vector<Aircraft> &list, const String &followed) {
         if (!s.hasAlt) {
             continue;
         }
-        p.at = place(s.lat, s.lon, s.altFt, s.ground);
+        // At its height above the sea, as the one followed is shown - not
+        // its pressure altitude, a few hundred feet out on most days.
+        p.at = place(s.lat, s.lon, aboveSeaFt(s), s.ground);
         if (s.rotorcraft && !s.ground && g_where == Where::AIRFIELD) {
             p.at.z = std::max(p.at.z, ROTOR_LOWEST_M);
         }
         p.heading = (90 - (s.hasTrack ? s.track : 0)) * DEG;
         p.speed = s.gsKt * 0.5144f;
-        p.heightM = s.ground ? 0 : g_where == Where::AIRFIELD ? p.at.z : s.altFt * 0.3048f;
+        p.heightM = s.ground ? 0 : g_where == Where::AIRFIELD ? p.at.z : aboveSeaFt(s) * 0.3048f;
         p.moves = (!s.ground || s.gsKt >= STILL_KT) && s.hasGs && s.hasTrack && !s.posStale;
         if (p.moves) {
             // The way it goes, in this frame: to a point a kilometre along its
             // track, placed the same way.
             double lat = s.lat + 1000 * cos(s.track * M_PI / 180) / 111320.0;
             double lon = s.lon + 1000 * sin(s.track * M_PI / 180) / (111320.0 * cos(s.lat * M_PI / 180));
-            p.way = (place(lat, lon, s.altFt, s.ground) - p.at) * (1.0f / 1000);
+            p.way = (place(lat, lon, aboveSeaFt(s), s.ground) - p.at) * (1.0f / 1000);
         }
         p.known = (int16_t)knownIndexOf(ac.hex, ac.type, ac.callsign, ac.military, ac.category);
         snprintf(p.info.hex, sizeof p.info.hex, "%s", ac.hex.c_str());
@@ -2026,12 +2028,13 @@ void drawStrip(const Followed &f) {
     c.drawString(who, VIEW_X, STRIP_Y + 4);
     FollowEstimate e = estimateOf(f);
     char height[16], clock[16] = "", line[96];
+    int32_t feedFt = feedAltFt(e);  // as the radar's label has it
     if (e.ground) {
         snprintf(height, sizeof height, "on the ground");
-    } else if (e.altFt >= 18000) {
-        snprintf(height, sizeof height, "FL%03d", (int)((e.altFt + 50) / 100));
+    } else if (feedFt >= 18000) {
+        snprintf(height, sizeof height, "FL%03d", (int)((feedFt + 50) / 100));
     } else {
-        snprintf(height, sizeof height, "%d ft", (int)((e.altFt + 50) / 100) * 100);
+        snprintf(height, sizeof height, "%d ft", (int)((feedFt + 50) / 100) * 100);
     }
     time_t now = time(nullptr);
     if (now > 1600000000) {

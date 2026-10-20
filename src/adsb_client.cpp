@@ -304,8 +304,13 @@ static void parseInto(JsonDocument &doc, const AdsbEndpoint &ep, bool military, 
         float altNum = 0;
         if (!onGround && !altV.isNull()) {
             altNum = altV.as<float>();
-            if (altNum < 0) {
-                continue;  // bogus negative-altitude reports occasionally show up
+            // Below sea level is real on a day of high pressure: a pressure
+            // altitude reads a few hundred feet low, and one on short final
+            // to a field by the sea gives less than nought - left out, it
+            // went missing from the plot for its last few hundred feet. Far
+            // below - lower than any field on the deepest high - is bogus.
+            if (altNum < LOWEST_PRESSURE_ALT_FT) {
+                continue;
             }
         }
 

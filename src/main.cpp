@@ -1358,7 +1358,7 @@ void putEstimate(std::vector<Aircraft> &aircraft, const Aircraft &base, const Fo
     ghost.lon = e.lon;
     ghost.hasTrack = true;
     ghost.track = e.track;
-    ghost.altStr = e.ground ? String("GND") : String(e.altFt);
+    ghost.altStr = e.ground ? String("GND") : String(feedAltFt(e));
     ghost.speedStr = String(e.gsKt);
     ghost.status = estimateStatus(e);
     // In its place where the list has it, so the radar's new-contact marks,
@@ -1549,7 +1549,7 @@ void showAt(Aircraft &a, const RunwaySim &sim, const FollowEstimate &e) {
     if (sim.simulating(millis())) {
         a.hasTrack = true;
         a.track = e.track;
-        a.altStr = e.ground ? String("GND") : String(e.altFt);
+        a.altStr = e.ground ? String("GND") : String(feedAltFt(e));
         a.speedStr = String(e.gsKt);
         a.status = estimateStatus(e);
     }

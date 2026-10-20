@@ -19,8 +19,8 @@ struct FollowSample {
     // Where altFt is a pressure altitude, the feet to add to it for a height
     // above the sea - from its GNSS height, where the feed has that, or the
     // day's pressure, see dayPressureFt() - if either is known; 0 otherwise.
-    // For a take-off or landing, simulated from and down to the field's
-    // height: see RunwaySim.
+    // Where it is estimated to be is worked out in those heights - a landing
+    // brought down to the field's - and the 3D view shows it at them.
     int16_t pressureFt;
     bool ground;
     bool hasVs;
@@ -34,6 +34,10 @@ struct FollowSample {
     float track;
     bool rotorcraft;  // a helicopter: see isRotorcraft()
 };
+
+// Its height above the sea, as near as the feed says: its pressure altitude
+// put right where that can be - see FollowSample::pressureFt.
+inline int32_t aboveSeaFt(const FollowSample &s) { return s.altFt + s.pressureFt; }
 
 // The sample an aircraft's report makes at `ms`.
 FollowSample followSampleOf(const Aircraft &ac, uint32_t ms);

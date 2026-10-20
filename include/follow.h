@@ -54,12 +54,18 @@ int followRangeFor(const Aircraft &ac, bool fine = false);
 struct FollowEstimate {
     float lat, lon;
     float track;
+    // Above the sea, where the feed's pressure altitude can be put right -
+    // see FollowSample::pressureFt - and otherwise as the feed gives it.
     int32_t altFt;
     bool ground;
     int gsKt;
     int vsFpm;
     const char *how;  // which of the above it was taken to be doing, for the log
+    int16_t pressureFt = 0;  // what putting it right added to altFt: see feedAltFt()
 };
+// An estimate's height as the feed would have given it - its pressure
+// altitude, as every label shows a height.
+inline int32_t feedAltFt(const FollowEstimate &e) { return e.altFt - e.pressureFt; }
 FollowEstimate estimateFollowed(const FollowSample &last, float ageS, const SampleList &history);
 
 // Whether `last`, a report on the ground, is of an aircraft departing rather
@@ -99,9 +105,6 @@ struct RunwayLine {
 // first report off the runway: it is shown turning off it and taxiing to where
 // that report puts it, since without the taxiways it can't be said where it
 // would turn off before then. Or with a go-around, the feed in charge again.
-//
-// Both in heights above the sea, where the feed's pressure altitudes can be
-// put right - see FollowSample::pressureFt - and eased into from the feed's.
 //
 // Otherwise - and for anything higher, and a rotorcraft always - it is
 // estimateFollowed() from the last report, as before.

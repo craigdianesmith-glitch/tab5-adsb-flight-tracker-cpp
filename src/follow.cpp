@@ -105,6 +105,15 @@ constexpr int CLIMBING_FPM = 300;
 // 1,000ft and 400kt, to break into the circuit as they do at Lossiemouth,
 // would be shown diving onto it and rolling down it at 400kt.
 constexpr float LANDING_MAX_KT = 250.0f;
+// Nor - see couldLand() - higher over the field than this many feet a mile
+// from the touchdown point, seven and a half degrees, and this much more:
+// more where its height is the feed's pressure altitude, out by the day's
+// pressure. Nor level, or not coming down faster than this, more than this
+// high over the field and this close to the touchdown point.
+constexpr float STEEPEST_FT_PER_NM = 800.0f;
+constexpr float HEIGHT_SPARE_FT = 300.0f, HEIGHT_SPARE_PRESSURE_FT = 800.0f;
+constexpr int LEVEL_FPM = 300;
+constexpr float LEVEL_ABOVE_FT = 600.0f, LEVEL_WITHIN_NM = 3.0f;
 // Below this on the ground it is taxiing, and could turn any way. A departure
 // is taken to be on its roll a little sooner: lined up and moving, it has
 // only one way to go.
@@ -132,6 +141,20 @@ constexpr uint32_t LANDED_WITHIN_MS = 180000;
 constexpr uint32_t SLOWING_WITHIN_MS = 30000;
 constexpr int SLOWING_KT = 5;
 constexpr float FT_PER_NM = 6076.0f;
+
+// Whether `s`, in the air lined up on a runway `along` from its threshold and
+// `aglFt` over the field, could be landing on it: not too high to get down
+// to the touchdown point by any approach flown, nor flying level well above
+// the field close in - as one running in along the runway to break into the
+// circuit, joining overhead or passing low over the field is, slower than a
+// fast jet's run in and lined up as a landing is.
+bool couldLand(const FollowSample &s, float along, float aglFt) {
+    float d = std::max(TOUCHDOWN_NM - along, 0.0f);
+    if (aglFt > d * STEEPEST_FT_PER_NM + (s.pressureFt != 0 ? HEIGHT_SPARE_FT : HEIGHT_SPARE_PRESSURE_FT)) {
+        return false;
+    }
+    return !(s.hasVs && s.vsFpm > -LEVEL_FPM && aglFt > LEVEL_ABOVE_FT && d < LEVEL_WITHIN_NM);
+}
 
 struct Lineup {
     float thrX, thrY;  // the threshold it is landing over, in nm from its last position
@@ -398,10 +421,6 @@ RunwayLine lineOf(const FollowSample &s, const Lineup &l) {
             l.fieldFt, l.ident, l.airport};
 }
 
-// Its height above the sea, as near as the feed says: its pressure altitude
-// put right where that can be - see FollowSample::pressureFt.
-int32_t aboveSeaFt(const FollowSample &s) { return s.altFt + s.pressureFt; }
-
 // On runway `r`'s centreline, or its extension, `along` from its threshold,
 // pointing down it.
 FollowEstimate onLine(const RunwayLine &r, float along, int32_t altFt, bool ground, float gs, int vsFpm,
@@ -524,8 +543,8 @@ FollowEstimate estimateFollowed(const FollowSample &given, float ageS, const Sam
         last.hasTrack = trackFromHistory(history, last, last.track);
     }
     bool departing = followDeparting(history, last);
-    FollowEstimate e = {last.lat, last.lon, last.track, last.hasAlt ? last.altFt : 0, last.ground,
-                        last.hasGs ? last.gsKt : 0, last.hasVs ? last.vsFpm : 0, "held"};
+    FollowEstimate e = {last.lat, last.lon, last.track, last.hasAlt ? aboveSeaFt(last) : 0, last.ground,
+                        last.hasGs ? last.gsKt : 0, last.hasVs ? last.vsFpm : 0, "held", last.pressureFt};
     float gs = last.hasGs ? (float)last.gsKt : 0.0f;
     float nmPerDegLon = 60.0f * cosf(last.lat * (float)M_PI / 180.0f);
     auto place = [&](float x, float y) {
@@ -545,6 +564,9 @@ FollowEstimate estimateFollowed(const FollowSample &given, float ageS, const Sam
     bool climbing = !last.ground && last.hasVs && last.vsFpm >= CLIMBING_FPM;
     bool fast = !last.ground && gs > LANDING_MAX_KT;
     bool lined = runways && rolling && lowEnough && !climbing && !fast && findLineup(last, l);
+    if (lined && !last.ground && last.hasAlt && !couldLand(last, l.along, (float)(aboveSeaFt(last) - l.fieldFt))) {
+        lined = false;
+    }
     if (!lined && runways && rolling && last.ground && departing) {
         lined = runwayUnder(last, history, l);
     }
@@ -622,21 +644,19 @@ FollowEstimate estimateFollowed(const FollowSample &given, float ageS, const Sam
             // the end of it. Its rate held, one slowing to a hover came down
             // through the ground short of it, and was shown skimming along
             // the grass at 30 knots.
-            e.altFt = std::max((int32_t)0, last.altFt + (int32_t)lroundf(60.0f * last.vsFpm / gs * travelled));
+            e.altFt = std::max((int32_t)0, aboveSeaFt(last) + (int32_t)lroundf(60.0f * last.vsFpm / gs * travelled));
             e.vsFpm = (int)lroundf((float)last.vsFpm * e.gsKt / gs);
         } else if (last.hasAlt && last.hasVs) {
-            e.altFt = std::max((int32_t)0, last.altFt + (int32_t)(last.vsFpm * ageS / 60.0f));
+            e.altFt = std::max((int32_t)0, aboveSeaFt(last) + (int32_t)(last.vsFpm * ageS / 60.0f));
         }
         return e;
     }
 
     RunwayLine r = lineOf(last, l);
-    if (last.ground && departing) {
-        return takeoffFrom(r, l.along, gs, false, 0, 0, ageS);
-    }
-    // From the height it gave, as the feed gave it: the runway simulation's
-    // landing takes the day's pressure off it, eased into - see RunwaySim.
-    return landingFrom(r, l.along, gs, !last.ground, last.hasAlt, last.altFt, ageS);
+    e = last.ground && departing ? takeoffFrom(r, l.along, gs, false, 0, 0, ageS)
+                                 : landingFrom(r, l.along, gs, !last.ground, last.hasAlt, aboveSeaFt(last), ageS);
+    e.pressureFt = last.pressureFt;
+    return e;
 }
 
 namespace {
@@ -804,9 +824,9 @@ void RunwaySim::report(const FollowSample &s) {
         dAlt_ = (float)(shown.altFt - now.altFt);
         float halfKt = std::max((float)now.gsKt, EASE_MIN_KT) / 2.0f;
         easeS = std::min(std::max(d / halfKt * 3600.0f, EASE_MIN_S), EASE_MAX_S);
-        // Its height put right - the day's pressure taken off it, a landing
-        // begun - to be seen to settle rather than drop; but by the
-        // touchdown.
+        // Its height put right - gone around, or a report higher or lower
+        // than it was shown - to be seen to settle rather than jump; but by
+        // the touchdown.
         easeS = std::max(easeS, std::min(fabsf(dAlt_) / EASE_FPM * 60.0f, EASE_MAX_S));
         if (phase_ == LANDING && !s.ground) {
             float along, offset;
@@ -866,8 +886,8 @@ bool RunwaySim::advance(const FollowSample &prev, bool hadPrev) {
     case LANDING:
         if (!s.ground) {
             bool goingAround = s.hasVs && s.vsFpm >= GO_AROUND_FPM;
-            if (!goingAround && gs <= LANDING_MAX_KT && along <= rw_.len && offset <= OFF_LINE_NM &&
-                off <= OFF_LINE_DEG) {
+            if (!goingAround && gs <= LANDING_MAX_KT && (!s.hasAlt || couldLand(s, along, aglFt)) &&
+                along <= rw_.len && offset <= OFF_LINE_NM && off <= OFF_LINE_DEG) {
                 return false;
             }
             phase_ = NONE;
@@ -919,7 +939,8 @@ void RunwaySim::start(const FollowSample &prev, bool hadPrev) {
             return;
         }
         if (findLineup(s, l) && l.along >= -FINAL_START_NM &&
-            !(s.hasAlt && aboveSeaFt(s) - l.fieldFt > FINAL_START_AGL_FT)) {
+            !(s.hasAlt && aboveSeaFt(s) - l.fieldFt > FINAL_START_AGL_FT) &&
+            (!s.hasAlt || couldLand(s, l.along, (float)(aboveSeaFt(s) - l.fieldFt)))) {
             phase_ = LANDING;
             rw_ = lineOf(s, l);
         }
@@ -975,24 +996,27 @@ FollowEstimate RunwaySim::model(uint32_t ms, float maxAgeS) const {
     float along, offset;
     relate(rw_, s.lat, s.lon, along, offset);
     float gs = s.hasGs ? (float)s.gsKt : 0.0f;
+    FollowEstimate e;
     switch (phase_) {
     case LINED_UP: {
         uint32_t when = s.ms + (uint32_t)(t * 1000.0f);
-        if ((int32_t)(when - rollMs_) < 0) {
-            return onLine(rw_, along, rw_.fieldFt, true, 0, 0, "held: lined up");
-        }
-        return takeoffFrom(rw_, along, 0, false, 0, 0, (when - rollMs_) / 1000.0f);
+        e = (int32_t)(when - rollMs_) < 0 ? onLine(rw_, along, rw_.fieldFt, true, 0, 0, "held: lined up")
+                                          : takeoffFrom(rw_, along, 0, false, 0, 0, (when - rollMs_) / 1000.0f);
+        break;
     }
     case TAKEOFF: {
         // In the air by the feed's say, but slower than it lifts off at, not
         // climbing, and over the runway still: on its roll - see start().
         bool airborne = !s.ground && (gs >= ROTATE_KT || (s.hasVs && s.vsFpm >= CLIMBING_FPM) || along > rw_.len);
-        return takeoffFrom(rw_, along, gs, airborne, s.hasAlt ? aboveSeaFt(s) : rw_.fieldFt, s.hasVs ? s.vsFpm : 0,
-                           t);
+        e = takeoffFrom(rw_, along, gs, airborne, s.hasAlt ? aboveSeaFt(s) : rw_.fieldFt, s.hasVs ? s.vsFpm : 0, t);
+        break;
     }
     default:
-        return landingFrom(rw_, along, gs, !s.ground, s.hasAlt, aboveSeaFt(s), t);
+        e = landingFrom(rw_, along, gs, !s.ground, s.hasAlt, aboveSeaFt(s), t);
+        break;
     }
+    e.pressureFt = s.pressureFt;
+    return e;
 }
 
 FollowEstimate RunwaySim::at(uint32_t ms, float maxAgeS) const {

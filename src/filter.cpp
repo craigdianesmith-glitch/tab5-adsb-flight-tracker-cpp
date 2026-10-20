@@ -1,5 +1,7 @@
 #include "filter.h"
 
+#include <algorithm>
+
 #include "aircraft_db.h"
 #include "alerts.h"
 
@@ -48,7 +50,9 @@ bool TrafficFilterSet::passes(const Aircraft &a) const {
         if (a.altStr == "?") {
             return false;
         }
-        int ft = a.altStr == "GND" ? 0 : a.altStr.toInt();
+        // Less than nought - a pressure altitude on a day of high pressure -
+        // as low as can be.
+        int ft = a.altStr == "GND" ? 0 : std::max(0, (int)a.altStr.toInt());
         if (ft < minFt || (maxFt < FILTER_TOP_FT && ft > maxFt)) {
             return false;
         }

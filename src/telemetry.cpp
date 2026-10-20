@@ -125,13 +125,14 @@ FollowSample followSampleOf(const Aircraft &ac, uint32_t ms) {
             s.altFt += pressure;
         }
     }
-    // Anything else keeps its pressure altitude, as the feed gives it - with
-    // the feet that put it right beside it: the difference from its GNSS
-    // height, less the geoid, where the feed has that, or else the day's
-    // pressure. A landing is brought down from its height to the field's, and
-    // from the pressure altitude alone - a few hundred feet high on a day of
-    // low pressure - the last of that would come down as a dive onto the
-    // runway.
+    // Anything else keeps its pressure altitude, as the feed gives it and the
+    // labels show it - with the feet that put it right beside it: the
+    // difference from its GNSS height, less the geoid, where the feed has
+    // that, or else the day's pressure. A landing is brought down from its
+    // height to the field's, and from the pressure altitude alone - a few
+    // hundred feet high on a day of low pressure - the last of that would
+    // come down as a dive onto the runway; and the 3D view had the traffic
+    // round an airfield that much above it.
     if (!s.rotorcraft && !s.ground && s.hasAlt && ac.hasPos) {
         if (ac.hasAltGeom) {
             pressure = ac.altGeom - (int32_t)lroundf(geoidM(ac.lat, ac.lon) * 3.2808f) - s.altFt;
