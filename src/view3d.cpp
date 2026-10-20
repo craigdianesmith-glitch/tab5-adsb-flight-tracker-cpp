@@ -1889,6 +1889,10 @@ void prepareNext(const Followed &f, const std::vector<Aircraft> &traffic, uint32
     if (g_where == Where::AIRFIELD && e.ground && !g_wasGround && f.movement == RunwaySim::Movement::LANDING) {
         g_touchdownAt = seconds;
         g_touchdownPose = pose;
+        String call = f.callsign;
+        call.trim();
+        Serial.printf("[3d] %s down on %s at %s, its nose %.1f degrees up\n", call.length() ? call.c_str() : f.hex.c_str(),
+                      f.runway.ident != nullptr ? f.runway.ident : "?", g_airport, g_pilot.pitch / DEG);
     }
     g_wasGround = e.ground;
     g_scene.smokeAge = seconds - g_touchdownAt < 3 ? seconds - g_touchdownAt : -1;

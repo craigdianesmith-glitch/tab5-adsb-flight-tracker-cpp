@@ -35,6 +35,25 @@ has them:
     c  an Emirates A380 landing on 27L at Heathrow - for pictures, not in
        the soak's default round
     d  a British Airways 777 taking off from 27R at Heathrow - likewise
+    e  a Typhoon running in at 400kt and 1,000ft to break into the circuit at
+       Lossiemouth, then landing on 23 - one landing begun, not two: the run
+       in is no landing
+    f  a Cessna joining overhead at Glasgow at 2,000ft, then landing on 23 -
+       likewise, the overhead no landing
+    g  an A320 landing on 23 at Glasgow on a day of low pressure - its
+       pressure altitude out by the day's pressure, put right by it: its nose
+       up as it touches down
+    h  an A320 landing on 23 at Lossiemouth on a day of high pressure - its
+       pressure altitude 500ft under its height, under nought on short final;
+       its GNSS height right
+    i  an alert for an A320 landing at Glasgow, auto-followed into 3D: no
+       alert banner left round the view (##I looks)
+    R  not a flight: the newest recording that follows an aircraft, replayed
+       in 3D - played, 4x, a minute back and on, its bar, another aircraft
+       picked, Back and 3D again
+
+Each touchdown in 3D is said with its nose's angle, and each landing begun
+by its runway simulation; the summary counts them, and the banner's pixels.
 
 Everything the firmware says goes to soak-<when>/log.txt, with the time; at
 the end - or on Ctrl-C - each flight's frame rates, the most the preparing
@@ -56,7 +75,7 @@ import serial
 
 ap = argparse.ArgumentParser()
 ap.add_argument("--minutes", type=float, default=60)
-ap.add_argument("--scenarios", default="0123456789ab")
+ap.add_argument("--scenarios", default="0123456789abefghiR")
 ap.add_argument("--port", default="/dev/ttyACM0")
 ap.add_argument("--out", default=time.strftime("soak-%Y%m%d-%H%M"))
 ap.add_argument("--sun", choices=["real", "day", "dusk", "night"], default="real",
@@ -157,6 +176,19 @@ STEPS = [
 # Every other round, at the end: FOLLOW on another aircraft's details, into
 # 3D following it.
 FOLLOW_STEPS = [("d", 5), ("F", 20)]
+# A circuit takes longer than the steps to land: each kept up at least this
+# long, for its landing to be seen.
+MIN_SECONDS = {"e": 270, "f": 420}
+# The replay in 3D, R: the newest recording that follows an aircraft opened,
+# its 3D, and every control - then another aircraft picked, Back, and in again.
+REPLAY_STEPS = [
+    ("y", 6), ("j3", 15),
+    ("jp", 30), ("js", 30), ("jb", 10), ("jf", 10), ("jm", 20),
+    ("Kh", 10), ("Ko", 1), ("o", 30), ("Kc", 15), ("Kf", 20),
+    ("d", 5), ("F", 15),
+    ("d", 5), ("B", 10),
+    ("jp", 8), ("jB", 5), ("j3", 15), ("jB", 5), ("jx", 4),
+]
 
 runs = []  # (scenario, start, end)
 started = time.time()
@@ -174,12 +206,26 @@ try:
                 break
             t0 = time.time()
             print(f"{time.strftime('%H:%M:%S')} scenario {n}", flush=True)
+            if n == "R":
+                send("x")
+                wait(2)
+                for command, seconds in REPLAY_STEPS:
+                    send(command)
+                    wait(seconds)
+                runs.append((n, t0, time.time()))
+                continue
             send("k" + n)
-            wait(25)  # CINEMA, as it opens
+            if n == "i":
+                wait(8)  # the alert, auto-follow, and the 3D view opened
+                send("I")
+                wait(17)
+            else:
+                wait(25)  # CINEMA, as it opens
             steps = STEPS + (FOLLOW_STEPS if round_no % 2 == 1 else [])
             for command, seconds in steps:
                 send(command)
                 wait(seconds)
+            wait(MIN_SECONDS.get(n, 0) - (time.time() - t0))
             send("x")
             wait(4)
             runs.append((n, t0, time.time()))
@@ -200,7 +246,11 @@ FPS = re.compile(r"\[3d\] ([\d.]+) fps; preparing ([\d.]+)ms, (?:drawing [\d.]+m
                  r".*internal RAM "
                  r"(\d+)KB free(?:; core 0 idle at most (\d+)ms apart)?")
 OPEN = re.compile(r"\[3d\] open, (\d+)-row bands: internal RAM (\d+)KB free, the largest block (\d+)KB")
-TROUBLE = ("[hang]", "[screen]", "no room for the bands", "Guru", "panic", "abort", "Backtrace", "assert")
+TROUBLE = ("[hang]", "[screen]", "no room for the bands", "Guru", "panic", "abort", "Backtrace", "assert",
+           "banner left behind", "no recording that follows", "isn't in the recording")
+TOUCHDOWN = re.compile(r"\[3d\] (\S+) down on (\S+) at (\S*), its nose ([\d.-]+) degrees up")
+LANDING = re.compile(r"\[follow\] (\S+): [\w ]+ -> landing")
+BANNER = re.compile(r"\[soak\] banner check on (.*?): (\d+) of its pixels")
 LATE = re.compile(r"\[sound\] word \d+ of \d+ (\d+)ms late")
 
 
@@ -209,7 +259,16 @@ def summarise(n, t0, t1):
         said = [text for when, text in lines if t0 <= when < t1]
     fps, prep, gaps, ram, opens, slow, trouble, resets, taps = [], [], [], [], [], [], [], 0, []
     said_count, late, dropped = 0, [], []
+    noses, landings, banner = [], 0, None
     for text in said:
+        m = TOUCHDOWN.search(text)
+        if m:
+            noses.append(float(m.group(4)))
+        if LANDING.search(text):
+            landings += 1
+        m = BANNER.search(text)
+        if m:
+            banner = int(m.group(2))
         m = FPS.search(text)
         if m:
             fps.append(float(m.group(1)))
@@ -250,6 +309,9 @@ def summarise(n, t0, t1):
         "said": said_count,
         "late": late,
         "dropped": dropped,
+        "noses": noses,
+        "landings": landings,
+        "banner": banner,
     }
 
 
@@ -259,8 +321,9 @@ lines_out = [
     f"{(time.time() - started) / 60:.0f} minutes",
     "",
     "| # | min | fps lowest / average | preparing, most | core 0 idle gap, most | internal RAM, least | "
-    "3D opens (bands, KB free, largest) | slow frames | resets | trouble | said | words late, most |",
-    "|---|---|---|---|---|---|---|---|---|---|---|---|",
+    "3D opens (bands, KB free, largest) | slow frames | resets | trouble | said | words late, most | "
+    "landings begun | touchdowns, nose | banner pixels |",
+    "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|",
 ]
 for r in rows:
     fps = f"{r['fps'][0]:.1f} / {r['fps'][1]:.1f}" if r["fps"] else "-"
@@ -269,8 +332,11 @@ for r in rows:
     ram = f"{r['ram']}KB" if r["ram"] is not None else "-"
     opens = ", ".join(f"{b}r {f}/{l}" for b, f, l in r["opens"]) or "-"
     late = f"{len(r['late'])}, {max(r['late'])}ms" if r["late"] else "0"
+    noses = ", ".join(f"{x:.1f}" for x in r["noses"]) or "-"
+    banner = "-" if r["banner"] is None else str(r["banner"])
     lines_out.append(f"| {r['n']} | {r['minutes']:.1f} | {fps} | {prep} | {gap} | {ram} | {opens} | "
-                     f"{len(r['slow'])} | {r['resets']} | {len(r['trouble'])} | {r['said']} | {late} |")
+                     f"{len(r['slow'])} | {r['resets']} | {len(r['trouble'])} | {r['said']} | {late} | "
+                     f"{r['landings']} | {noses} | {banner} |")
 details = [r for r in rows if r["slow"] or r["trouble"] or r["resets"] or r["dropped"]]
 if details:
     lines_out += ["", "## What went wrong", ""]

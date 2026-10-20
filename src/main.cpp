@@ -560,9 +560,10 @@ bool ensureWifi() {
 // says it - for the 3D view to be tried for an hour on what the real sky won't
 // lay on to order: a fighter circling a military field, a Chinook, a police
 // helicopter hovering, an airliner landing and parking, one taking off, a
-// helicopter setting down at an airfield and lifting off again. See
-// tools/soak3d.py and the "##k" command.
-enum class Pattern : uint8_t { CIRCLE, HOVER, LAND, DEPART, VISIT };
+// helicopter setting down at an airfield and lifting off again, a fast jet
+// running in to break into the circuit, a light aircraft joining overhead.
+// See tools/soak3d.py and the "##k" command.
+enum class Pattern : uint8_t { CIRCLE, HOVER, LAND, DEPART, VISIT, CIRCUIT };
 struct MadeUp {
     bool active = false;
     Pattern pattern = Pattern::CIRCLE;
@@ -582,6 +583,12 @@ struct MadeUp {
     // do.
     int baroOverFt = 0;
     bool dayPressure = false, geom = false, saysGround = false;
+    // A circuit's - see madeUpAt(): in along the runway at speedKt and altFt
+    // over the field from `runInM` before it; round onto the downwind leg at
+    // `circuitKt` and `circuitFt`; round again onto final `finalM` out, at
+    // `finalKt`; the turns `radiusM` across. The runway `runwayM` long.
+    float runInM = 0, runwayM = 0, circuitKt = 0, finalKt = 0, finalM = 0;
+    int circuitFt = 0;
 };
 MadeUp g_madeUp;  // under g_dataMutex
 
@@ -680,6 +687,64 @@ Aircraft madeUpAt(const MadeUp &m, uint32_t ms) {
             alt = m.fieldFt + 2000 * dt / 60;
             vs = 2000;
         }
+        break;
+    }
+    case Pattern::CIRCUIT: {
+        // In along the runway and over it; round to the left onto the
+        // downwind leg, coming down to circuit height; back past the
+        // threshold and round again onto final, coming down to a
+        // three-degree glide; down it to land 300m in, and slowing at 2.5m/s2
+        // to a stop - as a fast jet runs in and breaks into the circuit, or a
+        // light aircraft joins overhead.
+        const float TOUCH = 300, DECEL = 2.5f, PI_F = (float)M_PI;
+        float vIn = m.speedKt * 0.5144f, vCircuit = m.circuitKt * 0.5144f, vFinal = m.finalKt * 0.5144f;
+        float r = m.radiusM, len = m.runwayM;
+        float hIn = m.altFt / 3.281f, hCircuit = m.circuitFt / 3.281f, hFinal = (m.finalM + TOUCH) * 0.0524f;
+        float t1 = (m.runInM + len) / vIn;
+        float t2 = t1 + PI_F * r / ((vIn + vCircuit) / 2);
+        float t3 = t2 + (len + m.finalM) / vCircuit;
+        float t4 = t3 + PI_F * r / ((vCircuit + vFinal) / 2);
+        float t5 = t4 + (m.finalM + TOUCH) / vFinal;
+        float h = 0;
+        if (t < t1) {
+            onRunway(-m.runInM + vIn * t, 0);
+            track = m.track;
+            gs = vIn / 0.5144f;
+            h = hIn;
+        } else if (t < t2) {
+            float u = (t - t1) / (t2 - t1), phi = PI_F * u;
+            onRunway(len + r * sinf(phi), -r + r * cosf(phi));
+            track = fmodf(m.track - phi * 180 / PI_F + 360, 360);
+            gs = (vIn + (vCircuit - vIn) * u) / 0.5144f;
+            h = hIn + (hCircuit - hIn) * u;
+            vs = (hCircuit - hIn) / (t2 - t1) * 196.85f;
+        } else if (t < t3) {
+            onRunway(len - vCircuit * (t - t2), -2 * r);
+            track = fmodf(m.track + 180, 360);
+            gs = vCircuit / 0.5144f;
+            h = hCircuit;
+        } else if (t < t4) {
+            float u = (t - t3) / (t4 - t3), phi = PI_F * u;
+            onRunway(-m.finalM - r * sinf(phi), -r - r * cosf(phi));
+            track = fmodf(m.track + 180 - phi * 180 / PI_F + 360, 360);
+            gs = (vCircuit + (vFinal - vCircuit) * u) / 0.5144f;
+            h = hCircuit + (hFinal - hCircuit) * u;
+            vs = (hFinal - hCircuit) / (t4 - t3) * 196.85f;
+        } else if (t < t5) {
+            float s = -m.finalM + vFinal * (t - t4);
+            onRunway(s, 0);
+            track = m.track;
+            gs = vFinal / 0.5144f;
+            h = (TOUCH - s) * 0.0524f;
+            vs = -vFinal * 0.0524f * 196.85f;
+        } else {
+            float dt = std::min(t - t5, (vFinal - 8) / DECEL);
+            onRunway(TOUCH + vFinal * dt - DECEL * dt * dt / 2, 0);
+            track = m.track;
+            gs = t - t5 < (vFinal - 8) / DECEL ? (vFinal - DECEL * dt) / 0.5144f : 0;
+            ground = true;
+        }
+        alt = m.fieldFt + h * 3.281f;
         break;
     }
     case Pattern::VISIT: {
@@ -867,6 +932,11 @@ const char *const SOAK_NAMES[] = {
     "a coastguard AW139 setting down at Edinburgh by its pressure altitude alone, saying so, then quiet",
     "an Emirates A380 landing on 27L at Heathrow, then taxiing in",
     "a British Airways 777 taking off from 27R at Heathrow",
+    "a Typhoon running in at 400kt to break into the circuit at Lossiemouth, then landing on 23",
+    "a Cessna joining overhead at Glasgow at 2,000ft, then landing on 23",
+    "an A320 landing on 23 at Glasgow on a day of low pressure, by its pressure altitude and the day's pressure",
+    "an A320 landing on 23 at Lossiemouth on a day of high pressure, its pressure altitude under nought on short final",
+    "an alert for an A320 landing at Glasgow, auto-followed into 3D: no banner left round the view",
 };
 
 MadeUp circling(const char *hex, const char *callsign, const char *type, const char *category, bool military,
@@ -902,6 +972,7 @@ bool onRunwayAt(MadeUp &m, const char *code, const char *end) {
             m.lon = a.lon;
             m.track = (float)fmod(atan2(de, dn) * 180 / M_PI + 360, 360);
             m.fieldFt = r[i].elevationFt;
+            m.runwayM = (float)(sqrt(dn * dn + de * de) * 1852);
             return true;
         }
     }
@@ -3237,6 +3308,10 @@ view3d::Followed followed3d() {
 
 // On the 3D view: a button acts as the finger lands; a finger moved across
 // the picture turns the camera; a tap on an aircraft opens its details.
+// What an action on the 3D view does - a button, a tap on an aircraft, a
+// replay's controls - `hex` the aircraft tapped.
+void act3d(view3d::Action action, const String &hex);
+
 void handleView3dTouch(bool touching) {
     static bool down = false;
     // The finger that opened it - acting as it landed on the radar or the
@@ -3262,6 +3337,12 @@ void handleView3dTouch(bool touching) {
     if (action == view3d::Action::BACK) {
         down = false;
         g_touchSpent = true;  // the radar or the zoom, back under the finger, not to act on it
+    }
+    act3d(action, hex);
+}
+
+void act3d(view3d::Action action, const String &hex) {
+    if (action == view3d::Action::BACK) {
         leave3d();
     } else if (action == view3d::Action::DETAIL) {
         Aircraft ac;
@@ -4612,6 +4693,9 @@ void sayEverything(const char *code, const char *callsign, const char *runway) {
 }
 
 #ifdef BENCH3D
+// Scenario 18's: the settings auto-follow had, while it forces them on.
+bool g_benchForcedFollow = false, g_benchAutoFollowWas = false, g_benchIn3dWas = false;
+
 // Scenario `n` made up and followed, its 3D view opened.
 void startSoak(int n) {
     MadeUp m;
@@ -4676,6 +4760,44 @@ void startSoak(int n) {
         m.pattern = Pattern::DEPART;
         ok = onRunwayAt(m, "LHR", "27R");
         break;
+    // Tonight's fixes, 20 October: no landing begun by a run in, nor by an
+    // overhead join; a landing's nose up whatever the day's pressure; a
+    // pressure altitude under nought kept; and no banner left round the 3D
+    // view an alert's auto-follow opened.
+    case 14:
+        m = circling("aa001e", "TARTN11", "EUFI", "A6", true, 0, 0, 0, 0, 0);
+        m.pattern = Pattern::CIRCUIT;
+        ok = onRunwayAt(m, "LMO", "23");
+        m.speedKt = 400, m.altFt = 1000, m.runInM = 9000, m.radiusM = 1100;
+        m.circuitKt = 230, m.circuitFt = 1000, m.finalM = 1800, m.finalKt = 150;
+        m.dayPressure = true;
+        break;
+    case 15:
+        m = circling("aa001f", "GOVHD", "C172", "A1", false, 0, 0, 0, 0, 0);
+        m.pattern = Pattern::CIRCUIT;
+        ok = onRunwayAt(m, "GLA", "23");
+        m.speedKt = 90, m.altFt = 2000, m.runInM = 1500, m.radiusM = 500;
+        m.circuitKt = 85, m.circuitFt = 1000, m.finalM = 1200, m.finalKt = 65;
+        m.dayPressure = true;
+        break;
+    case 16:
+    case 18:
+        m = circling(n == 16 ? "aa0020" : "aa0022", n == 16 ? "EZY77LP" : "EZY99AL", "A320", "A3", false, 0, 0, 0, 0,
+                     0);
+        m.pattern = Pattern::LAND;
+        m.quietAfterS = LOST_ON_ROLLOUT_S;
+        m.dayPressure = true;
+        m.baroOverFt = 40;  // and the day's pressure a little out for it
+        ok = onRunwayAt(m, "GLA", "23");
+        break;
+    case 17:
+        m = circling("aa0021", "EZY88HP", "A320", "A3", false, 0, 0, 0, 0, 0);
+        m.pattern = Pattern::LAND;
+        m.quietAfterS = LOST_ON_ROLLOUT_S;
+        m.baroOverFt = -500;
+        m.geom = true;
+        ok = onRunwayAt(m, "LMO", "23");
+        break;
     default: ok = false; break;
     }
     if (!ok) {
@@ -4696,6 +4818,28 @@ void startSoak(int n) {
         leave3d();
     }
     stopFollow();
+    if (n == 18) {
+        // Raised as an alert, from the radar - for auto-follow to take into
+        // the 3D view, as set to whatever the settings say, until "##x".
+        if (!g_benchForcedFollow) {
+            g_benchAutoFollowWas = g_autoFollow;
+            g_benchIn3dWas = g_followIn3d;
+            g_benchForcedFollow = true;
+        }
+        g_autoFollow = g_followIn3d = true;
+        g_screen = Screen::RADAR;
+        drawRadar(true);
+        a.alert = ALERT_EMERGENCY;
+        a.squawk = "7700";
+        if (xSemaphoreTake(g_dataMutex, portMAX_DELAY) == pdTRUE) {
+            g_pendingAlert = a;
+            g_pendingAlertMore = 0;
+            g_pendingFlash.clear();
+            g_alertPending = true;
+            xSemaphoreGive(g_dataMutex);
+        }
+        return;
+    }
     startFollow(a);
     g_follow.sim.report(followSampleOf(a, millis()));
     g_screen = Screen::RADAR;
@@ -4708,6 +4852,67 @@ void stopSoak() {
         g_madeUp.active = false;
         xSemaphoreGive(g_dataMutex);
     }
+    if (g_benchForcedFollow) {
+        g_autoFollow = g_benchAutoFollowWas;
+        g_followIn3d = g_benchIn3dWas;
+        g_benchForcedFollow = false;
+    }
+    dismissBanner();
+}
+
+// A tap at (x, y), as a finger would make it on whatever screen is up: on
+// the radar and the zoom as it lands, on the pages with sliders as it lands
+// and lifts, elsewhere as a click.
+void benchTap(int x, int y) {
+    switch (g_screen) {
+    case Screen::RADAR: handleRadarTouch(x, y); break;
+    case Screen::ZOOM: handleZoomTouch(x, y); break;
+    case Screen::VIEW3D: {
+        String hex;
+        act3d(view3d::touch(x, y, true), hex);
+        if (g_screen == Screen::VIEW3D) {
+            view3d::Action lifted = view3d::lift(hex);
+            act3d(lifted, hex);
+        }
+        break;
+    }
+    case Screen::FILTER:
+        handleFilterTouch(x, y, true, false);
+        handleFilterTouch(x, y, false, true);
+        break;
+    case Screen::DISPLAY_PAGE:
+        handleDisplayPageTouch(x, y, true, false);
+        handleDisplayPageTouch(x, y, false, true);
+        break;
+    case Screen::SETTINGS:
+        handleSettingsTouch(x, y, true, false);
+        handleSettingsTouch(x, y, false, true);
+        break;
+    case Screen::MAIN: handleMainTouch(x, y); break;
+    case Screen::LOCATION: handleLocationTouch(x, y); break;
+    case Screen::DETAIL: handleDetailTouch(x, y); break;
+    case Screen::WIFI: handleWifiTouch(x, y); break;
+    case Screen::ALERTS: handleAlertsTouch(x, y); break;
+    case Screen::WATCHLIST: handleWatchlistTouch(x, y); break;
+    case Screen::RECORDINGS: handleRecordingsTouch(x, y); break;
+    case Screen::PLAYBACK: handlePlaybackTouch(x, y); break;
+    case Screen::SHARE: handleShareTouch(x, y); break;
+    case Screen::INFO: handleInfoTouch(x, y); break;
+    default: break;
+    }
+}
+
+// The newest recording on the card that follows an aircraft - or "" - for
+// the soak's replay in 3D.
+String newestFollowingRecording() {
+    for (const String &path : recorder::list()) {
+        recorder::Header h;
+        uint32_t bytes;
+        if (recorder::readHeader(path, h, bytes) && h.followHex.length()) {
+            return path;
+        }
+    }
+    return String();
 }
 
 // A file onto the card, from tools/sd_upload.py: its name, size and CRC-32 on
@@ -5034,7 +5239,8 @@ void loop() {
         case 'd': {
             String hex;
             Aircraft ac;
-            if (g_screen == Screen::VIEW3D && view3d::benchTap(hex) && lastReported(hex, ac)) {
+            if (g_screen == Screen::VIEW3D && view3d::benchTap(hex) &&
+                (g_view3dReplay ? replayAircraft(hex, ac) : lastReported(hex, ac))) {
                 Serial.printf("[soak] tapped %s in 3D\n", ac.callsign.c_str());
                 view3d::close();
                 openDetail(ac, Screen::VIEW3D);
@@ -5050,6 +5256,79 @@ void loop() {
                 handleDetailTouch(c == 'B' ? 1202 : 1066, 30);
             }
             break;
+        case 'I': {
+            // "##I" the screen round the 3D view looked over for the alert
+            // banner's colours: none, the banner taken off as the view opened.
+            auto &canvas = screen::canvas();
+            int found = 0;
+            for (int y = 0; y < 60; y++) {
+                for (int x = 0; x < 1280; x++) {
+                    if (y >= 16 && x >= 40 && x < 1048) {
+                        continue;  // the picture: the panel's, not the canvas's
+                    }
+                    auto p = canvas.readPixelRGB(x, y);
+                    bool amber = abs(p.r - 0xB9) <= 8 && abs(p.g - 0x6A) <= 4 && abs(p.b - 0x0A) <= 8;
+                    bool red = abs(p.r - 0xC0) <= 8 && abs(p.g - 0x39) <= 4 && abs(p.b - 0x2B) <= 8;
+                    found += amber || red;
+                }
+            }
+            Serial.printf("[soak] banner check on %s: %d of its pixels round the view%s\n",
+                          g_screen == Screen::VIEW3D ? "the 3D view" : "another screen", found,
+                          found > 0 ? " - the banner left behind" : "");
+            break;
+        }
+        case 'y': {
+            // "##y" the newest recording that follows an aircraft, in the
+            // replay screen at its start - for the soak's replay in 3D.
+            String path = newestFollowingRecording();
+            if (g_screen == Screen::VIEW3D) {
+                leave3d();
+            }
+            if (path.length() && playbackScreenOpen(path)) {
+                playbackScreenSetCentre(g_radarCentre);
+                playbackScreenSetAirports(g_radarAirports);
+                g_screen = Screen::PLAYBACK;
+                playbackScreenDraw();
+                Serial.printf("[soak] replaying %s\n", path.c_str());
+            } else {
+                Serial.println("[soak] no recording that follows an aircraft");
+            }
+            break;
+        }
+        case 'j': {
+            // "##j" and a letter: the replay's - '3' its 3D, by its button;
+            // in its 3D view 'p' Play or Pause, 'b' and 'f' a minute back and
+            // on, 's' the speed, 'm' the middle of its bar, 'B' Back to it;
+            // 'x' out of the replay to the recordings.
+            int arg = Serial.read();
+            if (arg < 0) {
+                delay(5);
+                arg = Serial.read();
+            }
+            struct Spot {
+                char key;
+                int x, y;
+            };
+            static const Spot SPOTS[] = {{'p', 115, 649}, {'b', 248, 649}, {'s', 354, 649},
+                                         {'f', 460, 649}, {'m', 790, 641}, {'B', 1189, 33}};
+            if (arg == '3' && g_screen == Screen::PLAYBACK) {
+                Serial.println("[soak] replay: 3D");
+                handlePlaybackTouch(1202, 134);
+            } else if (arg == 'x' && g_screen == Screen::PLAYBACK) {
+                Serial.println("[soak] replay: Back");
+                handlePlaybackTouch(1202, 30);
+            } else if (g_screen == Screen::VIEW3D && g_view3dReplay) {
+                for (const Spot &spot : SPOTS) {
+                    if (spot.key == arg) {
+                        Serial.printf("[soak] 3D replay: %c\n", arg);
+                        String none;
+                        act3d(view3d::touch(spot.x, spot.y, true), none);
+                        view3d::lift(none);
+                    }
+                }
+            }
+            break;
+        }
         case 'P':
             // "##P" the PPA given up, as though a transfer never finished:
             // the CPU pushes the screen from then on.
@@ -5085,6 +5364,30 @@ void loop() {
             if (arg == '0' || arg == '1') {
                 airfield::benchHidePack(arg == '1');
                 Serial.printf("[soak] airfield pack %s\n", arg == '1' ? "hidden" : "back");
+            }
+            break;
+        }
+        case 't': {
+            // "##t" and "x y" on a line: a tap there, as a finger would make
+            // it on whatever screen is up - for the bench's screenshots.
+            char line[16] = {};
+            size_t n = 0;
+            uint32_t until = millis() + 1000;
+            while (n + 1 < sizeof line && (int32_t)(millis() - until) < 0) {
+                int ch = Serial.read();
+                if (ch < 0) {
+                    delay(2);
+                    continue;
+                }
+                if (ch == '\n') {
+                    break;
+                }
+                line[n++] = (char)ch;
+            }
+            int x = 0, y = 0;
+            if (sscanf(line, "%d %d", &x, &y) == 2) {
+                Serial.printf("[soak] tap at %d, %d\n", x, y);
+                benchTap(x, y);
             }
             break;
         }
