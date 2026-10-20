@@ -94,11 +94,14 @@ struct RunwayLine {
 // by the feed at the next poll, as one is as it goes. It ends with the feed
 // in charge again once it is well up, or turning off the runway's line.
 //
-// A landing begins lined up on final, low and not climbing, and runs on down
-// the runway to a stop. It ends at the first report off the runway: it is
-// shown turning off it and taxiing to where that report puts it, since
-// without the taxiways it can't be said where it would turn off before then.
-// Or with a go-around, the feed in charge again.
+// A landing begins lined up on final, low, not climbing and no faster than a
+// landing is flown, and runs on down the runway to a stop. It ends at the
+// first report off the runway: it is shown turning off it and taxiing to where
+// that report puts it, since without the taxiways it can't be said where it
+// would turn off before then. Or with a go-around, the feed in charge again.
+//
+// Both in heights above the sea, where the feed's pressure altitudes can be
+// put right - see FollowSample::pressureFt - and eased into from the feed's.
 //
 // Otherwise - and for anything higher, and a rotorcraft always - it is
 // estimateFollowed() from the last report, as before.

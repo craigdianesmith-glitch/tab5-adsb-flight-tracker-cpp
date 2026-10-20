@@ -7710,17 +7710,33 @@ float noseAhead(const Look &look) {
 // Below this over the ground, coming in, it flares; and the nose as its
 // wheels touch: an airliner's, a light aircraft's, a fast jet's.
 constexpr float FLARE_M = 15, TOUCH_PITCH = 5.5f * DEG, LIGHT_TOUCH_PITCH = 6.5f * DEG, FAST_TOUCH_PITCH = 10 * DEG;
+// The steepest approach flown: London City's.
+constexpr float STEEPEST_GLIDE = 5.5f * DEG;
 // Its main wheels down, the nose held up this long, then lowered onto its
 // wheel over this.
 constexpr float NOSE_HELD_S = 1.5f, NOSE_LOWERED_S = 3;
 
+namespace {
+// Coming down to land, by its descent - or, in the last few metres, by its not
+// climbing: the flare itself all but stops the descent, and a report in it -
+// 180ft a minute at 8m - would put the nose down onto the runway.
+bool comingIn(float climbFpm, float heightM) { return climbFpm <= -250 || (heightM < 2 * FLARE_M && climbFpm <= 0); }
+}  // namespace
+
 float landingPitch(Family family, float speedKt, float climbFpm, float heightM, float pitch) {
-    if (climbFpm > -250 || speedKt > 220 || !(heightM < 900)) {
+    if (!comingIn(climbFpm, heightM) || speedKt > 220 || !(heightM < 900)) {
         return pitch;
     }
     bool light = family == F::LIGHT_HIGH || family == F::LIGHT_LOW;
     bool fast = family == F::FIGHTER_DELTA || family == F::FIGHTER || family == F::FIGHTER_SINGLE ||
                 family == F::JET_TRAINER;
+    // No lower for coming down more steeply than an approach is flown: where
+    // the day's pressure isn't known, the feed's heights read a few hundred
+    // feet high on a day of low pressure, and the runway simulation brings
+    // that down in the last seconds - the nose would go down with it, onto
+    // the runway.
+    float glide = atanf(climbFpm * 0.00508f / (std::max(speedKt, 30.0f) * 0.5144f));
+    pitch += std::max(0.0f, -STEEPEST_GLIDE - glide);
     // Slowed for the approach, its flaps out: an airliner's nose two or
     // three degrees up on a three-degree glide.
     pitch += light ? 1 * DEG : clamp01((220 - speedKt) / 60) * (fast ? 6 : 3) * DEG;
@@ -7821,7 +7837,7 @@ void Pilot::fly(float dt, Family family, float turnRate, float speedKt, float cl
         }
     } else {
         // Quicker in the flare: it has only a few seconds.
-        bool flaring = !onGround && heightM < FLARE_M && climbFpm < -100;
+        bool flaring = !onGround && heightM < FLARE_M && comingIn(climbFpm, heightM);
         pitch += (pitchTarget_ - pitch) * (1 - expf(-dt / (flaring ? 0.6f : 1.2f)));
     }
     float pitchRate = (pitch - was) / dt;

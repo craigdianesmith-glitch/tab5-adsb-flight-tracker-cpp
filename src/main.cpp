@@ -2115,8 +2115,14 @@ bool bannerScreen(Screen s) {
 }
 
 // The screen overlay: drawn by screen::flush() over whatever is up.
+//
+// Never over the 3D view - not even as it opens, when g_screen still says the
+// radar, the zoom or the details it is opened from, until view3d::open() has
+// drawn it: auto-follow opening it on an alert put the banner into its first
+// frame, and there it stayed, round the picture, which draws only within
+// itself.
 bool drawBanner(M5Canvas &canvas) {
-    if (!g_bannerUp || !bannerScreen(g_screen)) {
+    if (!g_bannerUp || !bannerScreen(g_screen) || view3d::isOpen()) {
         return false;
     }
     if (g_bannerShownMs == 0) {

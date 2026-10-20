@@ -431,6 +431,11 @@ bool load(const String &path, LoadProgress progress) {
                 if (a.hasPos) {
                     Fix fix = {keyOf(a.hex), frameMs, a.lat, a.lon, (uint32_t)(g_frames.size() - 1),
                                followSampleOf(a, frameMs), ""};
+                    // Its height put right by its own GNSS height alone: the
+                    // day's pressure is today's, not the recording's.
+                    if (!a.hasAltGeom) {
+                        fix.s.pressureFt = 0;
+                    }
                     strlcpy(fix.callsign, a.callsign.c_str(), sizeof(fix.callsign));
                     g_fixes.push_back(fix);
                 }

@@ -101,6 +101,10 @@ constexpr float FINAL_MAX_NM = 10.0f;
 // Climbing faster than this, in the air, it is not landing - lifted off, or
 // going around - however it is lined up.
 constexpr int CLIMBING_FPM = 300;
+// Nor faster than this, however low: a Typhoon running in along the runway at
+// 1,000ft and 400kt, to break into the circuit as they do at Lossiemouth,
+// would be shown diving onto it and rolling down it at 400kt.
+constexpr float LANDING_MAX_KT = 250.0f;
 // Below this on the ground it is taxiing, and could turn any way. A departure
 // is taken to be on its roll a little sooner: lined up and moving, it has
 // only one way to go.
@@ -394,6 +398,10 @@ RunwayLine lineOf(const FollowSample &s, const Lineup &l) {
             l.fieldFt, l.ident, l.airport};
 }
 
+// Its height above the sea, as near as the feed says: its pressure altitude
+// put right where that can be - see FollowSample::pressureFt.
+int32_t aboveSeaFt(const FollowSample &s) { return s.altFt + s.pressureFt; }
+
 // On runway `r`'s centreline, or its extension, `along` from its threshold,
 // pointing down it.
 FollowEstimate onLine(const RunwayLine &r, float along, int32_t altFt, bool ground, float gs, int vsFpm,
@@ -445,9 +453,9 @@ FollowEstimate takeoffFrom(const RunwayLine &r, float along, float gs, bool airb
 
 // The landing on runway `r` from `along`, `t` seconds on. In the air: in at
 // `gs` to the touchdown point - or, past it already, down now - coming down
-// from the height it gave to the field's by then, which lines its barometric
-// height up with the ground however far out the day's pressure has it; or on
-// a three-degree glide, where it gave none. Then the rollout: braking to the
+// from the height it gave to the field's by then, which lines it up with the
+// ground whatever the day's pressure leaves it out by; or on a three-degree
+// glide, where it gave none. Then the rollout: braking to the
 // speed it would turn off at, and on more gently to a stop, no further than
 // the far end. Where it turns off is left to the feed - the runway table has
 // no taxiways - and it waits there until the feed says.
@@ -535,7 +543,8 @@ FollowEstimate estimateFollowed(const FollowSample &given, float ageS, const Sam
     bool rolling = !last.ground || gs >= (departing ? TAKEOFF_ROLLING_KT : ROLLING_KT);
     bool lowEnough = last.ground || !last.hasAlt || last.altFt < ESTIMATE_MAX_FT;
     bool climbing = !last.ground && last.hasVs && last.vsFpm >= CLIMBING_FPM;
-    bool lined = runways && rolling && lowEnough && !climbing && findLineup(last, l);
+    bool fast = !last.ground && gs > LANDING_MAX_KT;
+    bool lined = runways && rolling && lowEnough && !climbing && !fast && findLineup(last, l);
     if (!lined && runways && rolling && last.ground && departing) {
         lined = runwayUnder(last, history, l);
     }
@@ -625,6 +634,8 @@ FollowEstimate estimateFollowed(const FollowSample &given, float ageS, const Sam
     if (last.ground && departing) {
         return takeoffFrom(r, l.along, gs, false, 0, 0, ageS);
     }
+    // From the height it gave, as the feed gave it: the runway simulation's
+    // landing takes the day's pressure off it, eased into - see RunwaySim.
     return landingFrom(r, l.along, gs, !last.ground, last.hasAlt, last.altFt, ageS);
 }
 
@@ -660,9 +671,10 @@ constexpr int REJECTED_DROP_KT = 15;
 // runway: ground positions are good to a few tens of metres.
 constexpr float RUNWAY_EDGE_NM = 0.03f;
 // A correction is eased in at no more than half its speed again, over
-// between these.
+// between these - and one to its height at no more than this.
 constexpr float EASE_MIN_S = 3.0f, EASE_MAX_S = 20.0f;
 constexpr float EASE_MIN_KT = 20.0f;
+constexpr float EASE_FPM = 600.0f;
 // A turn off the runway is taxied at about this, over between these.
 constexpr float TURN_TAXI_KT = 20.0f;
 constexpr float TURN_MIN_S = 3.0f, TURN_MAX_S = 10.0f;
@@ -792,6 +804,16 @@ void RunwaySim::report(const FollowSample &s) {
         dAlt_ = (float)(shown.altFt - now.altFt);
         float halfKt = std::max((float)now.gsKt, EASE_MIN_KT) / 2.0f;
         easeS = std::min(std::max(d / halfKt * 3600.0f, EASE_MIN_S), EASE_MAX_S);
+        // Its height put right - the day's pressure taken off it, a landing
+        // begun - to be seen to settle rather than drop; but by the
+        // touchdown.
+        easeS = std::max(easeS, std::min(fabsf(dAlt_) / EASE_FPM * 60.0f, EASE_MAX_S));
+        if (phase_ == LANDING && !s.ground) {
+            float along, offset;
+            relate(rw_, s.lat, s.lon, along, offset);
+            float toTouchdownS = (TOUCHDOWN_NM - along) / std::max((float)now.gsKt, EASE_MIN_KT) * 3600.0f;
+            easeS = std::min(easeS, std::max(toTouchdownS - 1.0f, EASE_MIN_S));
+        }
         // Already handed back, and still easing: the feed's from here.
         if (!wasUnderWay && phase_ == NONE) {
             easeS = EASE_MIN_S;
@@ -812,7 +834,7 @@ bool RunwaySim::advance(const FollowSample &prev, bool hadPrev) {
     }
     bool onPavement = offset <= rw_.halfWidthNm + RUNWAY_EDGE_NM && along >= -RUNWAY_EDGE_NM &&
                       along <= rw_.len + RUNWAY_EDGE_NM;
-    float aglFt = s.hasAlt ? (float)(s.altFt - rw_.fieldFt) : 0.0f;
+    float aglFt = s.hasAlt ? (float)(aboveSeaFt(s) - rw_.fieldFt) : 0.0f;
     switch (phase_) {
     case LINED_UP:
         if (s.ground && onPavement && (gs < STOPPED_KT || off <= LINED_UP_HEADING_DEG)) {
@@ -844,7 +866,8 @@ bool RunwaySim::advance(const FollowSample &prev, bool hadPrev) {
     case LANDING:
         if (!s.ground) {
             bool goingAround = s.hasVs && s.vsFpm >= GO_AROUND_FPM;
-            if (!goingAround && along <= rw_.len && offset <= OFF_LINE_NM && off <= OFF_LINE_DEG) {
+            if (!goingAround && gs <= LANDING_MAX_KT && along <= rw_.len && offset <= OFF_LINE_NM &&
+                off <= OFF_LINE_DEG) {
                 return false;
             }
             phase_ = NONE;
@@ -879,7 +902,7 @@ void RunwaySim::start(const FollowSample &prev, bool hadPrev) {
     float gs = s.hasGs ? (float)s.gsKt : 0.0f;
     Lineup l;
     if (!s.ground) {
-        if (s.hasVs && s.vsFpm >= CLIMBING_FPM) {
+        if ((s.hasVs && s.vsFpm >= CLIMBING_FPM) || gs > LANDING_MAX_KT) {
             return;
         }
         // On the ground a moment ago, it is not out on final, however it is
@@ -896,7 +919,7 @@ void RunwaySim::start(const FollowSample &prev, bool hadPrev) {
             return;
         }
         if (findLineup(s, l) && l.along >= -FINAL_START_NM &&
-            !(s.hasAlt && s.altFt - l.fieldFt > FINAL_START_AGL_FT)) {
+            !(s.hasAlt && aboveSeaFt(s) - l.fieldFt > FINAL_START_AGL_FT)) {
             phase_ = LANDING;
             rw_ = lineOf(s, l);
         }
@@ -964,10 +987,11 @@ FollowEstimate RunwaySim::model(uint32_t ms, float maxAgeS) const {
         // In the air by the feed's say, but slower than it lifts off at, not
         // climbing, and over the runway still: on its roll - see start().
         bool airborne = !s.ground && (gs >= ROTATE_KT || (s.hasVs && s.vsFpm >= CLIMBING_FPM) || along > rw_.len);
-        return takeoffFrom(rw_, along, gs, airborne, s.hasAlt ? s.altFt : rw_.fieldFt, s.hasVs ? s.vsFpm : 0, t);
+        return takeoffFrom(rw_, along, gs, airborne, s.hasAlt ? aboveSeaFt(s) : rw_.fieldFt, s.hasVs ? s.vsFpm : 0,
+                           t);
     }
     default:
-        return landingFrom(rw_, along, gs, !s.ground, s.hasAlt, s.altFt, t);
+        return landingFrom(rw_, along, gs, !s.ground, s.hasAlt, aboveSeaFt(s), t);
     }
 }
 

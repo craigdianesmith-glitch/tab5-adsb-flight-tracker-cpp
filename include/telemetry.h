@@ -16,6 +16,12 @@ struct FollowSample {
     // height less the geoid where the feed has it: see followSampleOf().
     int32_t altFt;
     bool hasAlt;
+    // Where altFt is a pressure altitude, the feet to add to it for a height
+    // above the sea - from its GNSS height, where the feed has that, or the
+    // day's pressure, see dayPressureFt() - if either is known; 0 otherwise.
+    // For a take-off or landing, simulated from and down to the field's
+    // height: see RunwaySim.
+    int16_t pressureFt;
     bool ground;
     bool hasVs;
     int16_t vsFpm;

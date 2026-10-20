@@ -125,6 +125,21 @@ FollowSample followSampleOf(const Aircraft &ac, uint32_t ms) {
             s.altFt += pressure;
         }
     }
+    // Anything else keeps its pressure altitude, as the feed gives it - with
+    // the feet that put it right beside it: the difference from its GNSS
+    // height, less the geoid, where the feed has that, or else the day's
+    // pressure. A landing is brought down from its height to the field's, and
+    // from the pressure altitude alone - a few hundred feet high on a day of
+    // low pressure - the last of that would come down as a dive onto the
+    // runway.
+    if (!s.rotorcraft && !s.ground && s.hasAlt && ac.hasPos) {
+        if (ac.hasAltGeom) {
+            pressure = ac.altGeom - (int32_t)lroundf(geoidM(ac.lat, ac.lon) * 3.2808f) - s.altFt;
+            s.pressureFt = (int16_t)constrain((int)pressure, -3000, 3000);
+        } else if (dayPressureFt(pressure)) {
+            s.pressureFt = (int16_t)constrain((int)pressure, -3000, 3000);
+        }
+    }
     s.hasVs = ac.hasVertRate && !s.ground;
     s.vsFpm = s.hasVs ? (int16_t)constrain((int)lroundf(ac.vertRate), -32000, 32000) : 0;
     s.hasPos = ac.hasPos;
