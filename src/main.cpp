@@ -3492,7 +3492,12 @@ void handlePlaybackTouch(int x, int y) {
         openDetail(tapped, Screen::PLAYBACK);
         break;
     case PlaybackAction::EXPORT:
-        playbackScreenExport();  // blocks until the video is made or cancelled
+        // Blocks until the video is made or cancelled - minutes, for a long
+        // recording at a slow speed, which hangWatch() would otherwise take
+        // for a hang and abort 90 seconds in.
+        g_loopBusyLong = true;
+        playbackScreenExport();
+        g_loopBusyLong = false;
         break;
     case PlaybackAction::NONE:
         break;

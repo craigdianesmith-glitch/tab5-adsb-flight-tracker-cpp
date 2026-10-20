@@ -32,6 +32,7 @@ volatile bool g_mounted = false;  // read without the lock; see mounted()
 // after a failure, it isn't asked again for a few seconds.
 constexpr uint32_t MOUNT_RETRY_MS = 5000;
 uint32_t g_mountFailedMs = 0;
+bool g_saidNoCard = false;  // that there was none, and how long the slot took to give up on
 
 File g_file;
 // Read without the lock by the UI every pass of its loop, which must not wait
@@ -77,8 +78,15 @@ bool mountLocked() {
         SPI.begin(sck, miso, mosi, cs);
         g_spiStarted = true;
     }
+    uint32_t tried = millis();
     if (!SD.begin(cs, SPI, SD_SPI_HZ, "/sd", 5, false) || SD.cardType() == CARD_NONE) {
         SD.end();
+        // How long the empty slot took to give up on, said once until a card
+        // mounts: whatever asked waited that long.
+        if (!g_saidNoCard) {
+            Serial.printf("[sd] no card found, after %lums\n", (unsigned long)(millis() - tried));
+            g_saidNoCard = true;
+        }
         g_mountFailedMs = millis() | 1;  // never 0, which means "no failure"
         return false;
     }
@@ -108,6 +116,7 @@ bool mountLocked() {
     }
     g_mounted = true;
     g_mountFailedMs = 0;
+    g_saidNoCard = false;
     Serial.printf("[sd] card mounted, %llu MB\n", (unsigned long long)(SD.cardSize() / (1024 * 1024)));
     return true;
 }

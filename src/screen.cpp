@@ -192,8 +192,9 @@ bool IRAM_ATTR fillDone(ppa_client_handle_t, ppa_event_data_t *, void *done) {
 }
 
 // The last few transfers, for a stall's report: which - b a blit, B a band, f
-// a fill - from which core, where to and how big, and when sent and done (0
-// for not yet). Noted under the turn, so one at a time.
+// a fill, y a frame turned to YUV for a video - from which core, where to and
+// how big, and when sent and done (0 for not yet). Noted under the turn, so
+// one at a time.
 struct Sent {
     char kind;
     uint8_t core;
@@ -776,10 +777,30 @@ bool convertBlock(uint8_t *out, size_t outBytes, int x, int y, int w, int h) {
     op.scale_x = 1.0f;
     op.scale_y = 1.0f;
     op.byte_swap = true;  // the canvas's byte order, as for blitRect()
-    op.mode = PPA_TRANS_MODE_BLOCKING;
+    // On the screen's own client, so as the pushes are: in its turn, its end
+    // given by pushDone() - which every transfer on it calls, a blocking one
+    // too, and given no semaphore to give it asserted, the export's first
+    // frame resetting the Tab5.
+    op.mode = PPA_TRANS_MODE_NON_BLOCKING;
+    op.user_data = g_pushDone;
+    if (g_ppaStuck || xSemaphoreTake(g_pushTurn, pdMS_TO_TICKS(PPA_TURN_MS)) != pdTRUE) {
+        Serial.println("[screen] PPA YUV conversion: the PPA is stuck or busy");
+        return false;
+    }
+    g_pushStartUs = esp_timer_get_time();
+    noteSent('y', x, y, w, h);
     esp_err_t err = ppa_do_scale_rotate_mirror(g_srm, &op);
+    bool finished = err == ESP_OK && xSemaphoreTake(g_pushDone, pdMS_TO_TICKS(PPA_WAIT_MS)) == pdTRUE;
+    if (finished) {
+        noteDone();
+    }
+    xSemaphoreGive(g_pushTurn);
     if (err != ESP_OK) {
         Serial.printf("[screen] PPA YUV conversion failed: %s\n", esp_err_to_name(err));
+        return false;
+    }
+    if (!finished) {
+        ppaGiveUp("YUV conversion");
         return false;
     }
     return true;

@@ -404,6 +404,12 @@ bool packInfo(uint16_t &airfields, uint32_t &bytes, Missing &why) {
 }
 
 bool towerOf(const char *code, double &lat, double &lon) {
+    // Only from a card already mounted: with none in, a mount tries the
+    // empty slot - a while each time - and the zoom opens without waiting
+    // on it. A card put in later is mounted by the 3D view or a recording.
+    if (!recorder::mounted()) {
+        return false;
+    }
     recorder::CardLock lock;
     File f;
     uint16_t count = 0;
