@@ -42,7 +42,14 @@ void soundSetElsewhereAccent(Accent accent);
 // "Airbus... Alpha three two zero neo". In the voice of where the aircraft
 // is, (lat, lon) - NAN for not known. Returns at once: it is played out by
 // soundTick().
-void soundAlert(uint8_t reasons, const String &callsign, const String &typeName, float lat, float lon);
+//
+// Not `spoken`, the chime or warble alone - for an alert while following
+// something else - and in its turn: after what is being said, an
+// announcement or a reading, rather than cutting it short; ahead of any
+// waiting. Kept waiting more than a few seconds, it would sound well after
+// its banner, and is dropped.
+void soundAlert(uint8_t reasons, const String &callsign, const String &typeName, float lat, float lon,
+                bool spoken = true);
 
 // On the airport zoom, a take-off or landing as a controller would clear it:
 // "easyJet five three Tango Hotel, runway two three, cleared for take-off",

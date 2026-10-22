@@ -740,6 +740,11 @@ int main(int argc, char **argv) {
             float knots = sqrtf(powf(b.at.x - a.at.x, 2) + powf(b.at.y - a.at.y, 2)) / 0.2f * 1.944f;
             bool ground = now.at.z <= 0.01f && (departing || t >= landingTouchdown() - 0.05f);
             scene.followed.config = configFor(now.at.z, knots, ground, departing);
+            if (!departing) {
+                // The spoilers springing up from the touchdown, as the view's.
+                scene.followed.config.spoilerDeploy *= spoilersRising(t - landingTouchdown());
+                scene.followed.config.spoilers = scene.followed.config.spoilerDeploy > 0.01f;
+            }
         }
         if (view == "director" || departing) {
             Pose a = poseAt(t - 0.1f), b = poseAt(t + 0.1f), now = poseAt(t);

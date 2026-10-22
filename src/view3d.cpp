@@ -12,6 +12,7 @@
 #include <algorithm>
 #include <atomic>
 
+#include "ground_pack.h"
 #include "aircraft_db.h"
 #include "airfield_pack.h"
 #include "airports.h"
@@ -1636,13 +1637,28 @@ engine_noise::Sound enginesOf(s3::Family family, const String &type) {
     return s;
 }
 
+// Whether the one followed was on the ground last frame; when it last
+// touched down, on the view's clock, and where.
+bool g_wasGround = false;
+float g_touchdownAt = -100;
+// Parked at its stand since (g_seconds), -1 not; and whether it has been seen
+// moving on the ground, or was found parked.
+float g_parkedAt = -1;
+bool g_movedOnGround = false;
+// How fast it was coming down as it touched, m/s - its tyres' screech the
+// louder the harder - and, till it does, as it last was in the air.
+float g_touchdownSinkMs = 1, g_sinkMs = 1;
+s3::Pose g_touchdownPose{};
+
 // The one followed's engines as the camera hears them: their kind, from its
 // type; how hard they are working, from what it is doing - idling as it
 // taxies, take-off power on its roll and in its climb, back on the approach,
-// reverse thrust just down; and where it is from the camera - how far off,
-// how fast it is closing, and which way it faces.
+// reverse thrust just down; where it is from the camera - how far off, how
+// fast it is closing, which way it faces, and how high it and the camera
+// are over the ground, for the sound off it; and its tyres, rolling and
+// just down. See engine_noise.h for what the air does with it all.
 engine_noise::Sound engineSound(const Followed &f, const FollowEstimate &e, int shownKt, const s3::Look &look,
-                                const s3::Pose &pose, const s3::Camera &camera, float dt) {
+                                const s3::Pose &pose, const s3::Config &setUp, const s3::Camera &camera, float dt) {
     using engine_noise::Kind;
     engine_noise::Sound s = enginesOf(look.family, f.type);
     float aboveFt = g_where == Where::AIRFIELD ? pose.at.z / 0.3048f : 1e9f;
@@ -1683,6 +1699,50 @@ engine_noise::Sound engineSound(const Followed &f, const FollowEstimate &e, int 
     Vec3 nose = {cosf(pose.heading) * cosf(pose.pitch), sinf(pose.heading) * cosf(pose.pitch), sinf(pose.pitch)};
     float c = (nose.x * to.x + nose.y * to.y + nose.z * to.z) / std::max(1.0f, d);
     s.aspect = acosf(std::max(-1.0f, std::min(1.0f, c))) / (float)M_PI;
+    // Off the ground: its engines' height over it, and the camera's - high
+    // up, over the sea the round earth is, too high for an echo to matter;
+    // the ground hard where it is on the airfield or just over it, a
+    // runway's or an apron's, grass and earth elsewhere.
+    bool airfield = g_where == Where::AIRFIELD;
+    Vec3 eye = camera.eye;
+    s.sourceUpM = airfield ? pose.at.z + 2.5f * look.scale : e.altFt * 0.3048f;
+    s.earUpM = airfield ? eye.z : eye.z + (eye.x * eye.x + eye.y * eye.y) / (2 * 6371000.0f);
+    s.hardGround = airfield && (e.ground || aboveFt < 300);
+    // Its tyres: rolling at its speed on the ground; touched down lately,
+    // how long ago and how hard.
+    s.rollingMs = e.ground ? shownKt * 0.5144f : 0;
+    float since = g_seconds - g_touchdownAt;
+    s.touchdownS = since >= 0 && since < 3 ? since : -1;
+    s.sinkMs = g_touchdownSinkMs;
+    // Its airframe as the view has it set up: the air past it, its gear,
+    // flaps and spoilers.
+    s.airspeedMs = shownKt * 0.5144f;
+    s.gearDown = setUp.gear;
+    s.flapsOut = setUp.flaps;
+    s.spoilers = setUp.spoilerDeploy;
+    // Its engines shut down at its stand - a minute after it parks there,
+    // cooled at idle, or already when it was found parked, as at a gate -
+    // and started again as it is pushed back or moves off, heard spooling up
+    // from nothing. An airliner's APU running while it stands or taxies,
+    // not as it takes off. Without the airfield pack's stands there is
+    // nothing to tell a stand from a hold short of the runway: running.
+    bool parked = g_follower.parked();
+    if (!parked) {
+        g_parkedAt = -1;
+    } else if (g_parkedAt < 0) {
+        g_parkedAt = g_seconds;
+    }
+    g_movedOnGround = g_movedOnGround || (e.ground && shownKt > 3);
+    s.running = !(parked && (!g_movedOnGround || g_seconds - g_parkedAt > 60));
+    s.apu = s.kind == Kind::TURBOFAN && e.ground && (parked || shownKt < 25) &&
+            f.movement != RunwaySim::Movement::TAKEOFF;
+    static bool wasRunning = true, wasApu = false;
+    if (s.running != wasRunning || s.apu != wasApu) {
+        Serial.printf("[3d] %s: engines %s, APU %s\n", f.callsign.c_str(), s.running ? "running" : "shut down",
+                      s.apu ? "on" : "off");
+        wasRunning = s.running;
+        wasApu = s.apu;
+    }
     return s;
 }
 
@@ -1697,9 +1757,6 @@ float g_shownHeading = 0;
 bool g_haveShown = false;
 Where g_shownWhere = Where::NOWHERE;
 float g_lastSeconds = -1, g_lastTrack = 0;
-bool g_wasGround = false;
-float g_touchdownAt = -100;
-s3::Pose g_touchdownPose{};
 String g_followedHex;
 // The frame-rate governor's: aircraft drawn simpler sooner while frames run
 // long, finer again while they don't - as the bench found best.
@@ -1720,6 +1777,64 @@ uint32_t g_statStepUs[s3::STEPS] = {};
 uint32_t g_statTriangles = 0, g_statLines = 0;
 // And this view's own, round the scene's: the traffic placed, and the labels.
 uint32_t g_statTrafficUs = 0, g_statLabelsUs = 0;
+
+// What covers the land - the ground pack's tiles round (lat, lon), and where
+// the view's ground is on their grid: see scene3d's GroundCover. At an
+// airfield, straight from local()'s x and y, as it puts places there; high
+// up, from latitude and longitude about the view's origin on the sphere it
+// draws, each scaled to the ellipsoid's radii there, as g_enu is.
+#ifdef BENCH3D
+bool g_benchCoverOff = false;
+#endif
+
+void setCover(double lat, double lon, bool high, float upM) {
+    g_scene.cover = s3::GroundCover();
+#ifdef BENCH3D
+    if (g_benchCoverOff) {
+        return;
+    }
+#endif
+    if (groundpack::want(lat, lon, 45, upM)) {
+        g_scene.cover = high ? s3::roundCover(groundpack::window(), g_enuLat, g_enuLon)
+                             : s3::flatCover(groundpack::window(), g_lat0, g_lon0);
+    }
+}
+
+// The skyline: the horizon round the camera's eye, from the ground pack -
+// see groundpack::Horizon - wanted afresh as the eye moves, the last worked
+// out given the scene. The eye's latitude, longitude and height above the
+// sea from where the view puts it: at an airfield, in metres east and north
+// of the origin and up from the field; high up, about the ENU origin, the
+// earth curving away below.
+void setHorizon(const s3::Camera &camera, bool high) {
+    g_scene.horizon = nullptr;
+    if (g_scene.cover.window == nullptr) {
+        return;  // no pack, or the bench's cover off
+    }
+    Vec3 eye = camera.eye;
+    double lat0 = high ? g_enuLat : g_lat0, lon0 = high ? g_enuLon : g_lon0;
+    double lat = lat0 + eye.y / 110574.0, lon = lon0 + eye.x / (111320.0 * cos(lat0 * M_PI / 180));
+    float heightM = high ? eye.z + (eye.x * eye.x + eye.y * eye.y) / (2 * 6371000.0f) : eye.z + g_fieldFt * 0.3048f;
+    g_scene.eyeHeightM = heightM;
+    // None wanted over 4,000m, where the skyline isn't drawn - the hills seen
+    // from above - nor worked out afresh each 300m the eye goes up there, a
+    // second of the ground task's at a time.
+    if (heightM > 4000) {
+        return;
+    }
+    groundpack::wantHorizon(lat, lon, heightM);
+    const groundpack::Horizon *hz = groundpack::horizon();
+    g_scene.horizon = hz;
+    if (hz != nullptr) {
+        // Where it was worked out from, in the view's frame.
+        g_scene.horizonAt = high ? g_enu.of(hz->lat, hz->lon, hz->heightM)
+                                 : local(hz->lat, hz->lon) + Vec3{0, 0, hz->heightM - g_fieldFt * 0.3048f};
+    }
+    // North at the eye, turned from the view's north by the meridians
+    // closing in: east of the origin, towards it.
+    g_scene.horizonTurn = (float)((lon - lon0) * M_PI / 180 * sin(lat * M_PI / 180));
+    g_scene.eyeHeightM = heightM;
+}
 
 void prepareNext(const Followed &f, const std::vector<Aircraft> &traffic, uint32_t polledMs) {
     choose(f);
@@ -1886,15 +2001,23 @@ void prepareNext(const Followed &f, const std::vector<Aircraft> &traffic, uint32
     config.rudder = g_pilot.rudder;
     g_scene.followed = {pose, look, config};
     // Its tyres' smoke, where they touch.
+    if (!e.ground) {
+        g_sinkMs = std::max(0.3f, -e.vsFpm * 0.00508f);
+    }
     if (g_where == Where::AIRFIELD && e.ground && !g_wasGround && f.movement == RunwaySim::Movement::LANDING) {
         g_touchdownAt = seconds;
         g_touchdownPose = pose;
+        g_touchdownSinkMs = g_sinkMs;
         String call = f.callsign;
         call.trim();
         Serial.printf("[3d] %s down on %s at %s, its nose %.1f degrees up\n", call.length() ? call.c_str() : f.hex.c_str(),
                       f.runway.ident != nullptr ? f.runway.ident : "?", g_airport, g_pilot.pitch / DEG);
     }
     g_wasGround = e.ground;
+    // Its spoilers springing up as it touches down, not there at once.
+    s3::Config &setUp = g_scene.followed.config;
+    setUp.spoilerDeploy *= s3::spoilersRising(seconds - g_touchdownAt);
+    setUp.spoilers = setUp.spoilerDeploy > 0.01f;
     g_scene.smokeAge = seconds - g_touchdownAt < 3 ? seconds - g_touchdownAt : -1;
     g_scene.touchdown = g_touchdownPose;
 
@@ -1931,6 +2054,7 @@ void prepareNext(const Followed &f, const std::vector<Aircraft> &traffic, uint32
     g_scene.stemsAbove = high ? 0 : -1;
     g_scene.trailsAbove = 8000;
     g_scene.landAndSea = true;  // where there are coasts: high up, or an airfield's shores
+    setCover(e.lat, e.lon, high, std::max(0.0f, e.altFt * 0.3048f));
     g_scene.landingLights = !high;
     g_scene.detailPx = g_detailPx;
     g_scene.tinyPx = g_tinyPx;
@@ -1943,8 +2067,10 @@ void prepareNext(const Followed &f, const std::vector<Aircraft> &traffic, uint32
     }
     if (g_engineSound) {
         soundEngine(g_inReplay && !g_replay.playing ? engine_noise::Sound()
-                                                    : engineSound(f, e, shownKt, look, g_scene.followed.pose, camera, dt));
+                                                    : engineSound(f, e, shownKt, look, g_scene.followed.pose,
+                                                                  g_scene.followed.config, camera, dt));
     }
+    setHorizon(camera, high);
     s3::prepareBegin(VIEW_W, VIEW_H, g_rows, true, g_scene, camera);
     s3::prepareAircraft(0, 1);
     s3::prepareEnd();
@@ -2049,6 +2175,16 @@ void heightOf(const FollowEstimate &e, char *out, size_t size) {
     }
 }
 
+// Its speed: taxiing, as the view moves it - see g_taxiKt - or as `e` has
+// it; "?" where that is nought for want of one.
+void speedOf(const Followed &f, const FollowEstimate &e, char *out, size_t size) {
+    if (g_taxiKt >= 0 || speedKnown(f)) {
+        snprintf(out, size, "%d", g_taxiKt >= 0 ? g_taxiKt : e.gsKt);
+    } else {
+        snprintf(out, size, "?");
+    }
+}
+
 void drawFlightStrip(const Followed &f) {
     auto &c = screen::canvas();
     c.fillRect(VIEW_X, STRIP_Y, VIEW_W, STRIP_H, colorBg);
@@ -2061,14 +2197,14 @@ void drawFlightStrip(const Followed &f) {
     c.setTextColor(colorText);
     c.drawString(who, VIEW_X, STRIP_Y + 4);
     FollowEstimate e = estimateOf(f);
-    char height[16], clock[16] = "", line[96];
+    char height[16], speed[12], clock[16] = "", line[96];
     heightOf(e, height, sizeof height);
+    speedOf(f, e, speed, sizeof speed);
     time_t now = time(nullptr);
     if (now > 1600000000) {
         timeZoneFormat(now, timeZoneAt(e.lat, e.lon), clock, sizeof clock);
     }
-    snprintf(line, sizeof line, "%s   %d kt   %+d fpm   %s", height, g_taxiKt >= 0 ? g_taxiKt : e.gsKt,
-             e.ground ? 0 : e.vsFpm, clock);
+    snprintf(line, sizeof line, "%s   %s kt   %+d fpm   %s", height, speed, e.ground ? 0 : e.vsFpm, clock);
     c.setTextSize(2);
     c.setTextColor(colorMuted);
     c.drawString(line, VIEW_X, STRIP_Y + 44);
@@ -2143,17 +2279,18 @@ void drawReplayStrip(const Followed &f) {
     FollowEstimate e = estimateOf(f);
     String call = f.callsign;
     call.trim();
-    char height[16], when[16] = "", line[128];
+    char height[16], knots[12], when[16] = "", line[128];
     heightOf(e, height, sizeof height);
+    speedOf(f, e, knots, sizeof knots);
     if (g_replay.epoch != 0) {
         time_t t = g_replay.epoch;
         struct tm tm;
         gmtime_r(&t, &tm);
         strftime(when, sizeof when, "%H:%M:%S UTC", &tm);
     }
-    snprintf(line, sizeof line, "%s  %s   %s   %d kt   %s   %s%s", call.length() ? call.c_str() : f.hex.c_str(),
-             f.type.c_str(), height, g_taxiKt >= 0 ? g_taxiKt : e.gsKt, when,
-             g_where == Where::AIRFIELD ? "at " : "high up", g_where == Where::AIRFIELD ? g_airport : "");
+    snprintf(line, sizeof line, "%s  %s   %s   %s kt   %s   %s%s", call.length() ? call.c_str() : f.hex.c_str(),
+             f.type.c_str(), height, knots, when, g_where == Where::AIRFIELD ? "at " : "high up",
+             g_where == Where::AIRFIELD ? g_airport : "");
     c.setTextDatum(TL_DATUM);
     c.setTextSize(2);
     c.setTextColor(colorText);
@@ -2252,7 +2389,35 @@ Action press(int b) {
 int g_forceRows = 0;  // see benchBandRows()
 #endif
 
+#ifdef BENCH3D
+bool benchToggleCover() {
+    g_benchCoverOff = !g_benchCoverOff;
+    return !g_benchCoverOff;
+}
+
+void benchCoverReport() {
+    static uint32_t lastMs = 0;
+    uint64_t c[11];
+    s3::coverStats(c, true);
+    uint32_t nowMs = millis();
+    float seconds = lastMs != 0 ? (nowMs - lastMs) / 1000.0f : 0;
+    lastMs = nowMs;
+    if (seconds <= 0) {
+        Serial.println("[ground] the cover's time, from now");
+        return;
+    }
+    float perMs = getCpuFrequencyMhz() * 1000.0f * seconds;  // cycles a millisecond of each second
+    Serial.printf("[ground] the cover, ms a second of both cores': cells read %.1f (%.0f rows a second, %.1f cycles a "
+                  "cell, %.1f of them the innermost loop's), colours %.1f (%.0f worked out a second), pixels written "
+                  "%.1f; preparing: rows' places %.1f, the skyline %.1f\n",
+                  c[0] / perMs, c[3] / seconds, c[0] / (float)std::max<uint64_t>(1, c[6]),
+                  c[5] / (float)std::max<uint64_t>(1, c[6]), c[1] / perMs, c[4] / seconds, c[2] / perMs, c[7] / perMs,
+                  c[10] / perMs);
+}
+#endif
+
 bool open() {
+    groundpack::open();  // what covers the land, if the card has it: read in the background
     if (g_open) {
         return true;
     }
@@ -2364,6 +2529,7 @@ bool open() {
     g_lastSeconds = -1;
     g_spotSet = g_spotAway = false;
     g_engineDistance = -1;
+    g_parkedAt = -1;
     g_passSet = false;
     g_towerRaise = 0;
     g_labelledAt = -1;
@@ -2452,6 +2618,8 @@ void frame(const Followed &flight, const std::vector<Aircraft> &traffic, uint32_
         g_follower.end();
         g_taxiSaid[0] = 0;
         g_touchdownAt = -100;
+        g_parkedAt = -1;
+        g_movedOnGround = false;
         g_labeller.reset();
     }
     // The governor: by how long the last frame took, all told.

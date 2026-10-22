@@ -79,8 +79,8 @@ const char *const HELP[] = {
     "# Alerts",
     "Settings > Alerts picks what raises one: emergencies (squawk 7700, 7600 or 7500), military aircraft, rare "
     "types, and your watchlist. An alert puts a banner across the top - tap it for the aircraft, or X to close it - "
-    "chimes, and says what it is and its callsign. Auto-record records while one is about; auto-follow follows the "
-    "aircraft it is for.",
+    "chimes, and says what it is and its callsign. While you are following an aircraft it only chimes, unless it "
+    "is an emergency. Auto-record records while one is about; auto-follow follows the aircraft it is for.",
     "Words are said in the voice of where they are about: Scottish for Scotland, English for England, American for "
     "the United States, and the one picked under Voice for everywhere else. Read aloud says an aircraft's details "
     "as they open, a navaid's card, and one of each of an airport's frequencies.",
@@ -131,6 +131,11 @@ const char *const ABOUT[] = {
     "- Airfields in the 3D view - taxiways, aprons, stands, buildings and towers, from the card's airfields.bin: "
     "(c) OpenStreetMap contributors (openstreetmap.org/copyright), under the Open Database License 1.0, as is "
     "the file made from them by tools/gen_airfields.py.",
+    "- The land in the 3D view - what covers it, and its hills - from the card's ground.bin: ESA WorldCover 2021, "
+    "(c) ESA WorldCover project 2021 / Contains modified Copernicus Sentinel data (2021) processed by ESA "
+    "WorldCover consortium, CC BY 4.0; and the Copernicus DEM GLO-30 and GLO-90, (c) DLR e.V. 2010-2014 and (c) Airbus "
+    "Defence and Space GmbH 2014-2018 provided under COPERNICUS by the European Union and ESA; all rights "
+    "reserved.",
     "- Voices: Piper text-to-speech. Scottish, en_GB-alba-medium, from the Alba data of the CSTR, University of "
     "Edinburgh, CC BY 4.0; English, en_GB-cori-medium, from LibriVox recordings, public domain; American, "
     "en_US-amy-medium, from Mycroft AI's Mimic 3 voices, CC BY-SA 4.0.",

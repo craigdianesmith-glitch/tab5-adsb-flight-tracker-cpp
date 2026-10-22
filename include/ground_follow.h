@@ -65,6 +65,8 @@ class Follower {
     bool active() const { return active_; }
     // Parked at a stand, or landed and making for one by itself.
     bool parking() const { return active_ && (mode_ == Mode::PARKED || (mode_ == Mode::OWN_WAY && arriving_ && stand_ >= 0)); }
+    // Standing parked at a stand - not on the way to one.
+    bool parked() const { return active_ && mode_ == Mode::PARKED; }
 
     Vec2 at() const { return taxi_.at(); }
     float heading() const { return taxi_.heading(); }

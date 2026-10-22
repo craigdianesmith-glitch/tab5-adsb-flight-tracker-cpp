@@ -33,6 +33,12 @@ bool isCargo(const String &callsign);
 // takes off and lands where it likes, not on a runway, and hovers.
 bool isRotorcraft(const String &type, const String &category);
 
+// Whether an aircraft can stand still in the air over one spot: a
+// rotorcraft, or by the feed's category a balloon or airship (B2), a
+// parachutist (B3), a hang-glider or paraglider - the feed's ultralights,
+// B4 - or a drone (B6). Anything else with a height is going somewhere.
+bool canHover(const String &type, const String &category);
+
 // A vehicle on an airfield - a fire engine, a follow-me car, an ops van: the
 // feed's types GND, SERV and EMER, or its categories C1 and C2.
 bool isGroundVehicle(const String &type, const String &category);

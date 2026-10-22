@@ -6,6 +6,7 @@
 #include <esp_heap_caps.h>
 #include <math.h>
 
+#include "aircraft_db.h"
 #include "config.h"
 #include "follow.h"
 #include "psram_alloc.h"
@@ -321,6 +322,14 @@ void fillGaps(uint32_t abs, const char *followed, std::vector<Aircraft> &aircraf
         }
         const RunwaySim &sim = simFor(f.key, abs);
         if (!sim.haveFresh() || abs - sim.fresh().ms > sim.keepMs()) {
+            continue;
+        }
+        // Let go in the air with no speed to carry it on by, as live - see
+        // fillLost() in main.cpp.
+        String type, category;
+        bool military;
+        if (!sim.fresh().ground && !sim.fresh().hasGs &&
+            !(kindOf(hex, type, category, military) ? canHover(type, category) : sim.fresh().rotorcraft)) {
             continue;
         }
         FollowEstimate e = sim.at(abs);

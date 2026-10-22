@@ -8,9 +8,9 @@
 //   g++ -std=c++17 -O2 -Iinclude tools/engine_preview/preview.cpp src/engine_noise.cpp -o /tmp/engine_preview
 //   /tmp/engine_preview /tmp/engines [scene]
 //
-// The scenes: a320-takeoff, a320-landing, a320-chase, b777-takeoff,
-// a380-takeoff, atr72-takeoff, c172-flyby, h145-visit, aw139-flyby,
-// chinook-flyby, typhoon-takeoff, hawk-flyby.
+// The scenes: a320-takeoff, a320-landing, a320-touchdown, a320-flypast,
+// a320-approach-chase, a320-arrival-park, a320-departure-start, a320-chase, b777-takeoff, a380-takeoff, atr72-takeoff, c172-flyby,
+// h145-visit, aw139-flyby, chinook-flyby, typhoon-takeoff, hawk-flyby.
 #include <math.h>
 #include <stdio.h>
 #include <string.h>
@@ -39,6 +39,10 @@ struct Moment {
     bool reverse = false, afterburner = false;
     float slap = 0;
     V3 eye;
+    bool hardGround = false;  // the ground between it and the camera a runway's, not grass
+    bool gear = false, flaps = false;  // down, out
+    float spoilers = 0;               // up, 0 to 1
+    bool running = true, apu = false;  // its engines, its APU
 };
 
 struct Scene {
@@ -94,30 +98,124 @@ Moment takeoffSeen(float t, float along, float side, float liftMs) {
     return m;
 }
 
+// In on a three-degree glide at 70m/s, down 300m past the threshold - its
+// sink some 3.7m/s - its reversers out to 30m/s, then taxiing; heard from
+// `eye`.
+Moment landing(float t, V3 eye) {
+    Moment m;
+    float x = -4500 + 70 * t, tTouch = 4800 / 70.0f;
+    m.heading = 0;
+    m.pitch = 0;
+    m.power = 0.45f;
+    // Its flaps out; its gear coming down a few seconds in, late, for its
+    // clunk to be heard; the spoilers springing up as it touches down and
+    // coming down as it slows from 60kt to 40, as the 3D view has them.
+    m.flaps = true;
+    m.gear = t > 3;
+    if (t < tTouch) {
+        m.at = {x, 0, std::max(0.0f, (300 - x) * 0.0524f)};
+    } else {
+        float d = t - tTouch, v = std::max(8.0f, 70 - 2.2f * d);
+        float s = d < 28.2f ? 70 * d - 1.1f * d * d : 70 * 28.2f - 1.1f * 28.2f * 28.2f + 8 * (d - 28.2f);
+        m.at = {300 + s, 0, 0};
+        m.reverse = v > 30;
+        m.power = v > 30 ? 0.75f : 0.08f;
+        float rise = clamp01(d / 0.8f), slow = clamp01((v / 0.5144f - 40) / 20);
+        m.spoilers = rise * rise * (3 - 2 * rise) * slow * slow * (3 - 2 * slow);
+    }
+    m.eye = eye;
+    return m;
+}
+
 std::vector<Scene> scenes() {
     std::vector<Scene> out;
     out.push_back({"a320-takeoff", 70, turbofan(3100, 2), [](float t) { return takeoffSeen(t, 1200, 120, 75); }});
     out.push_back({"b777-takeoff", 75, turbofan(1100, 2), [](float t) { return takeoffSeen(t, 1500, 140, 85); }});
     out.push_back({"a380-takeoff", 80, turbofan(1200, 4), [](float t) { return takeoffSeen(t, 1700, 160, 85); }});
-    out.push_back({"a320-landing", 90, turbofan(3100, 2), [](float t) {
-                       // In on a three-degree glide at 70m/s over the camera
-                       // by the threshold, down 300m in, reversers out to
-                       // 30m/s, then taxiing.
+    out.push_back({"a320-landing", 90, turbofan(3100, 2), [](float t) { return landing(t, {0, 70, 2}); }});
+    out.push_back({"a320-touchdown", 80, turbofan(3100, 2), [](float t) {
+                       // Beside the touchdown zone, 45m off the centreline.
+                       Moment m = landing(t, {320, 45, 2});
+                       m.hardGround = true;
+                       return m;
+                   }});
+    out.push_back({"a320-flypast", 30, turbofan(3100, 2), [](float t) {
+                       // Low and level along a runway at 75m/s, 30m up, past a
+                       // camera on the tower's balcony 150m off it, 20m up:
+                       // the sound off the runway sweeping as it goes by.
                        Moment m;
-                       float x = -4500 + 70 * t, tTouch = 4800 / 70.0f;
+                       m.at = {-1100 + 75 * t, 0, 30};
                        m.heading = 0;
                        m.pitch = 0;
+                       m.power = 0.7f;
+                       m.eye = {0, 150, 20};
+                       m.hardGround = true;
+                       return m;
+                   }});
+    out.push_back({"a320-arrival-park", 60, turbofan(3100, 2), [](float t) {
+                       // Taxiing in on to its stand, its APU on, heard from the
+                       // apron 35m off: stopped at 14s, its engines shut down
+                       // at 18s - a minute after parking, on the device; here
+                       // sooner - winding down to the APU's whine alone.
+                       Moment m;
+                       float x = t < 10 ? -110 + 8 * t : t < 14 ? -30 + 8 * (t - 10) - (t - 10) * (t - 10) : -14;
+                       m.at = {x, 0, 0};
+                       m.heading = 0;
+                       m.pitch = 0;
+                       m.power = 0.06f;
+                       m.gear = true;
+                       m.apu = true;
+                       m.running = t < 18;
+                       m.eye = {-14, 35, 2};
+                       m.hardGround = true;
+                       return m;
+                   }});
+    out.push_back({"a320-departure-start", 60, turbofan(3100, 2), [](float t) {
+                       // At its stand on its APU, heard from the apron 35m off:
+                       // its engines started at 4s - the core's whine rising on
+                       // the starter, lit at a third of idle, on up to idle -
+                       // then taxiing away at 42s.
+                       Moment m;
+                       float d = t < 42 ? 0 : (t - 42) * (t - 42) * 0.3f;
+                       m.at = {std::min(d, 0.0f + 4 * (t - 42) + 30), 0, 0};
+                       if (t < 42) {
+                           m.at = {0, 0, 0};
+                       }
+                       m.heading = 0;
+                       m.pitch = 0;
+                       m.power = t < 42 ? 0.05f : 0.14f;
+                       m.gear = true;
+                       m.apu = true;
+                       m.running = t > 4;
+                       m.eye = {0, 35, 2};
+                       m.hardGround = true;
+                       return m;
+                   }});
+    out.push_back({"a320-approach-chase", 42, turbofan(3100, 2), [](float t) {
+                       // The chase camera behind and above it on its final
+                       // approach: flaps out, the gear coming down four
+                       // seconds in - its clunk as it locks - the air rushing
+                       // past it, then the touchdown: the tyres, the spoilers'
+                       // buffet and the reversers.
+                       Moment m;
+                       float tTouch = 120 / 3.7f;
+                       m.heading = 0;
+                       m.pitch = 0;
+                       m.flaps = true;
+                       m.gear = t > 4;
                        m.power = 0.45f;
                        if (t < tTouch) {
-                           m.at = {x, 0, std::max(0.0f, (300 - x) * 0.0524f)};
+                           m.at = {70 * t, 0, 120 - 3.7f * t};
                        } else {
                            float d = t - tTouch, v = std::max(8.0f, 70 - 2.2f * d);
-                           float s = d < 28.2f ? 70 * d - 1.1f * d * d : 70 * 28.2f - 1.1f * 28.2f * 28.2f + 8 * (d - 28.2f);
-                           m.at = {300 + s, 0, 0};
+                           m.at = {70 * tTouch + 70 * d - 1.1f * d * d, 0, 0};
                            m.reverse = v > 30;
                            m.power = v > 30 ? 0.75f : 0.08f;
+                           float rise = clamp01(d / 0.8f), slow = clamp01((v / 0.5144f - 40) / 20);
+                           m.spoilers = rise * rise * (3 - 2 * rise) * slow * slow * (3 - 2 * slow);
+                           m.hardGround = true;
                        }
-                       m.eye = {0, 70, 2};
+                       m.eye = {m.at.x - 54, 0, m.at.z + 10};
                        return m;
                    }});
     out.push_back({"a320-chase", 45, turbofan(3100, 2), [](float t) {
@@ -268,7 +366,8 @@ int main(int argc, char **argv) {
         engine_noise::Synth synth;
         std::vector<int16_t> samples;
         const int BLOCK = engine_noise::RATE / 50;  // a frame's worth
-        float lastDistance = -1;
+        float lastDistance = -1, touchdownAt = -1, lastZ = -1;
+        V3 lastAt = {0, 0, 0};
         double sum = 0;
         int peak = 0, counted = 0;
         printf("%s:", scene.name);
@@ -288,6 +387,29 @@ int main(int argc, char **argv) {
             V3 nose = {cosf(m.heading) * cosf(m.pitch), sinf(m.heading) * cosf(m.pitch), sinf(m.pitch)};
             float c = (nose.x * to.x + nose.y * to.y + nose.z * to.z) / std::max(1.0f, d);
             s.aspect = acosf(std::max(-1.0f, std::min(1.0f, c))) / (float)M_PI;
+            // Off the ground: its engines' height and the camera's. Its
+            // tyres: rolling at its speed on the ground; touched down, how
+            // long ago and how fast it was coming down.
+            s.sourceUpM = mid.z;
+            s.earUpM = m.eye.z;
+            s.hardGround = m.hardGround;
+            bool onGround = m.at.z <= 0.01f;
+            V3 moved = m.at - lastAt;
+            float speed = t > 0 ? length(moved) * 50 : 0;
+            if (onGround && lastZ > 0.01f) {
+                touchdownAt = t;
+                s.sinkMs = (lastZ - m.at.z) * 50;
+            }
+            s.rollingMs = onGround ? speed : 0;
+            s.touchdownS = touchdownAt >= 0 && t - touchdownAt < 3 ? t - touchdownAt : -1;
+            s.airspeedMs = speed;
+            s.gearDown = m.gear;
+            s.flapsOut = m.flaps;
+            s.spoilers = m.spoilers;
+            s.running = m.running;
+            s.apu = m.apu;
+            lastAt = m.at;
+            lastZ = m.at.z;
             synth.set(s);
             size_t from = samples.size();
             samples.resize(from + BLOCK);

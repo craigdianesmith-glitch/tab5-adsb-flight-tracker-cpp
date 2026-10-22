@@ -4,6 +4,7 @@
 
 #include <Arduino.h>
 #include <M5Unified.h>
+#include <esp_cpu.h>
 #include <esp_heap_caps.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/semphr.h>
@@ -169,11 +170,14 @@ uint32_t g_pushWaitUs = 0;
 void *g_pipe[3] = {nullptr, nullptr, nullptr};
 int g_pipeRows = 8;
 
+size_t g_pipeBytes = 0;  // each of the three's, while they are held
+
 void releasePipe() {
     for (void *&p : g_pipe) {
         heap_caps_free(p);
         p = nullptr;
     }
+    g_pipeBytes = 0;
 }
 
 size_t pipeColorBytes() { return ((size_t)g_vw * g_pipeRows * 2 + 63) & ~(size_t)63; }
@@ -344,6 +348,12 @@ char g_runwayName[8] = "09";
 // setDeparture() were given them; and whether the one followed is departing.
 int g_landRunway = 0, g_landEnd = 0, g_departRunway = -1, g_departEnd = 0;
 bool g_departing = false;
+// Where the airport's places are about - see useAirport() - and whether its
+// land, and the cruise's, are drawn in what covers them: see scene3d's
+// GroundCover.
+double g_airportLat0 = 0, g_airportLon0 = 0;
+float g_airportFieldM = 0;
+bool g_cover = false;
 
 // Where the one followed is at t: landing, or - lined up for twenty seconds
 // first - departing.
@@ -366,6 +376,9 @@ bool useAirport(const char *code, const char *land, const char *depart) {
     }
     lat0 /= open;
     lon0 /= open;
+    g_airportLat0 = lat0;
+    g_airportLon0 = lon0;
+    g_airportFieldM = runways[0].elevationFt * 0.3048f;
     auto local = [&](double lat, double lon) {
         return Vec3{(float)((lon - lon0) * 111320.0 * cos(lat0 * M_PI / 180)), (float)((lat - lat0) * 110574.0), 0};
     };
@@ -423,6 +436,10 @@ Scene sceneAt(float t, TimeOfDay time) {
         float knots = sqrtf((b.at.x - a.at.x) * (b.at.x - a.at.x) + (b.at.y - a.at.y) * (b.at.y - a.at.y)) / 0.2f * 1.944f;
         bool ground = s.followed.pose.at.z <= 0.01f && (g_departing || t >= landingTouchdown() - 0.05f);
         s.followed.config = configFor(s.followed.pose.at.z, knots, ground, g_departing);
+        if (!g_departing) {
+            s.followed.config.spoilerDeploy *= spoilersRising(t - landingTouchdown());
+            s.followed.config.spoilers = s.followed.config.spoilerDeploy > 0.01f;
+        }
     }
     s.traffic = g_parked;
     s.trafficCount = g_parkedCount;
@@ -438,6 +455,14 @@ Scene sceneAt(float t, TimeOfDay time) {
     }
     s.seconds = t;
     s.sun = sunFor(time);
+    if (g_cover) {
+        Vec3 at = s.followed.pose.at;
+        double lat = g_airportLat0 + at.y / 110574.0,
+               lon = g_airportLon0 + at.x / (111320.0 * cos(g_airportLat0 * M_PI / 180));
+        if (groundpack::want(lat, lon, 45)) {
+            s.cover = flatCover(groundpack::window(), g_airportLat0, g_airportLon0);
+        }
+    }
     if (!g_departing && t >= landingTouchdown()) {
         s.smokeAge = t - landingTouchdown();
         s.touchdown = landingPose(landingTouchdown());
@@ -738,16 +763,19 @@ void bench() {
             panel = std::min(panel, draw(true, Sink::PANEL));
             vTaskDelay(1);
         }
-        // Where a frame's drawing goes, on one core, in C.
-        setSimd(false);
-        memset(g_stageUs, 0, sizeof g_stageUs);
-        g_profile = true;
-        draw(false, Sink::NONE);
-        g_profile = false;
-        Serial.printf("[3d]   drawing on one core: sky %.1f, ground %.1f, shadows %.1f, depth clear %.1f, solids %.1f, "
-                      "lines and lights %.1f ms\n",
-                      g_stageUs[0][0] / 1000.0f, g_stageUs[0][1] / 1000.0f, g_stageUs[0][2] / 1000.0f,
-                      g_stageUs[0][3] / 1000.0f, g_stageUs[0][4] / 1000.0f, g_stageUs[0][5] / 1000.0f);
+        // Where a frame's drawing goes, on one core, in C and with PIE.
+        for (bool simd : {false, true}) {
+            setSimd(simd);
+            memset(g_stageUs, 0, sizeof g_stageUs);
+            g_profile = true;
+            draw(false, Sink::NONE);
+            g_profile = false;
+            Serial.printf("[3d]   drawing on one core, %s: sky %.1f, ground %.1f, shadows %.1f, depth clear %.1f, "
+                          "solids %.1f, lines and lights %.1f ms\n",
+                          simd ? "PIE" : "C  ", g_stageUs[0][0] / 1000.0f, g_stageUs[0][1] / 1000.0f,
+                          g_stageUs[0][2] / 1000.0f, g_stageUs[0][3] / 1000.0f, g_stageUs[0][4] / 1000.0f,
+                          g_stageUs[0][5] / 1000.0f);
+        }
         // The same frame in C, then with PIE against it.
         setSimd(false);
         draw(true, Sink::CANVAS);
@@ -1014,6 +1042,9 @@ void enrouteAt(float t, TimeOfDay time, Scene &scene, Camera &cam, const char **
     scene.trailsAbove = 8000;
     scene.landAndSea = true;
     scene.landingLights = false;
+    if (g_cover && groundpack::want(lat, lon, 45, FEET * 0.3048f)) {
+        scene.cover = roundCover(groundpack::window(), CRUISE_LAT, CRUISE_LON);
+    }
     float size = sizeOf(look), phase = fmodf(t, 30);
     if (phase < 10) {
         *shot = "chase";
@@ -1027,6 +1058,41 @@ void enrouteAt(float t, TimeOfDay time, Scene &scene, Camera &cam, const char **
     }
 }
 
+// The skyline for a frame with the land's cover - as view3d's setHorizon()
+// has it: the eye's place from the camera, about the airport or the cruise's
+// origin; with `wait`, till the ground pack has worked a horizon out.
+void benchHorizon(Scene &scene, const Camera &cam, bool wait) {
+    if (!g_cover) {
+        return;
+    }
+    Vec3 eye = cam.eye;
+    double lat0 = g_enroute ? CRUISE_LAT : g_airportLat0, lon0 = g_enroute ? CRUISE_LON : g_airportLon0;
+    double lat = lat0 + eye.y / 110574.0, lon = lon0 + eye.x / (111320.0 * cos(lat0 * M_PI / 180));
+    float heightM = g_enroute ? eye.z + (eye.x * eye.x + eye.y * eye.y) / (2 * 6371000.0f) : eye.z + g_airportFieldM;
+    scene.eyeHeightM = heightM;
+    if (heightM > 4000) {
+        return;  // as the view: no skyline up there, nor one worked out for it
+    }
+    groundpack::wantHorizon(lat, lon, heightM);
+    for (uint32_t start = millis(); wait && millis() - start < 3000; delay(20)) {
+        const groundpack::Horizon *hz = groundpack::horizon();
+        if (hz != nullptr && fabs(hz->lat - lat) < 0.003 && fabs(hz->lon - lon) < 0.005 &&
+            fabsf(hz->heightM - heightM) < 30) {
+            break;
+        }
+    }
+    const groundpack::Horizon *hz = groundpack::horizon();
+    scene.horizon = hz;
+    scene.horizonTurn = (float)((lon - lon0) * M_PI / 180 * sin(lat * M_PI / 180));
+    scene.eyeHeightM = heightM;
+    if (hz != nullptr) {
+        // Where it was worked out from, in the scene's frame.
+        scene.horizonAt = g_enroute ? g_enu.of(hz->lat, hz->lon, hz->heightM)
+                                    : Vec3{(float)((hz->lon - lon0) * 111320.0 * cos(lat0 * M_PI / 180)),
+                                           (float)((hz->lat - lat0) * 110574.0), hz->heightM - g_airportFieldM};
+    }
+}
+
 // The landing from `from` to `to` seconds in, in real time, pipelined: the
 // helper draws each frame - and the PPA pushes it, a band behind - while this
 // core prepares the next. A frame then takes as long as the slowest of the
@@ -1037,10 +1103,24 @@ void playPipelined(TimeOfDay time, int vw, int vh, float from = 0, float to = -1
     setView(vw, vh);
     g_pipeRows = rows;
     setSimd(simd);
+    uint32_t discard[6];
+    spanStats(discard, true);
+    uint64_t discard64[11];
+    coverStats(discard64, true);
+    seeStats(discard64, true);
+    aircraftStats(discard64, true);
     size_t bytes = 3 * pipeColorBytes();
+    // Held from one run to the next of a command, given back with the rest
+    // by release(): taken afresh for each, the chip's own memory had broken
+    // up by the third - the network's and the card's own small takings
+    // landing in the gaps - and there was no room left for them.
     bool room = ready(false);
-    for (void *&p : g_pipe) {
-        room = room && (p = heap_caps_aligned_alloc(64, pipeColorBytes(), MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA));
+    if (g_pipeBytes != pipeColorBytes()) {
+        releasePipe();
+        for (void *&p : g_pipe) {
+            room = room && (p = heap_caps_aligned_alloc(64, pipeColorBytes(), MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA));
+        }
+        g_pipeBytes = room ? pipeColorBytes() : 0;
     }
     if (!room) {
         Serial.printf("[3d] no room for the pipeline's bands: %uKB free, largest block %uKB\n",
@@ -1081,6 +1161,7 @@ void playPipelined(TimeOfDay time, int vw, int vh, float from = 0, float to = -1
             scene.detailPx = detailPx;
             scene.tinyPx = tinyPx;
             trafficMost = std::max(trafficMost, scene.trafficCount);
+            benchHorizon(scene, cam, false);
             prepareBegin(vw, vh, rows, true, scene, cam);
             prepareAircraft(0, 1);
             prepareEnd();
@@ -1111,6 +1192,7 @@ void playPipelined(TimeOfDay time, int vw, int vh, float from = 0, float to = -1
         } else {
             cam = cameraAt(View::CINEMA, t, scene.followed.pose, &nextShot);
         }
+        benchHorizon(scene, cam, false);
         prepareBegin(vw, vh, rows, true, scene, cam);
         prepareAircraft(0, 1);
         prepareEnd();
@@ -1196,12 +1278,52 @@ void playPipelined(TimeOfDay time, int vw, int vh, float from = 0, float to = -1
     Serial.printf("[3d]   pushes: %.1f a frame, %.2f ms each start to finish, %.1f ms a frame\n",
                   pushes / (float)frames, pushBusy / 1000.0f / std::max<uint32_t>(1, pushes), pushBusy / 1000.0f / frames);
     clearOverlay();
-    releasePipe();
     Counts last = counts();
     Serial.printf("[3d]   the last frame: %d triangles, %d lines, %d lights; aircraft %d full, %d simple, %d tiny, %d as "
                   "lights\n",
                   last.triangles, last.lines, last.lights, last.aircraftFull, last.aircraftSimple, last.aircraftTiny,
                   last.aircraftDots);
+    uint32_t spans[6];
+    spanStats(spans, true);
+    uint32_t allSpans = std::max<uint32_t>(1, spans[0] + spans[1] + spans[2]),
+             allPixels = std::max<uint32_t>(1, spans[3] + spans[4] + spans[5]);
+    Serial.printf("[3d]   solids' spans a frame: %.0f, of which %.0f%% under 8px (%.0f%% of the pixels), %.0f%% 8-23px "
+                  "(%.0f%%), %.0f%% 24px and more, PIE's (%.0f%%); %.1f pixels a span\n",
+                  allSpans / (float)frames, 100.0f * spans[0] / allSpans, 100.0f * spans[3] / allPixels,
+                  100.0f * spans[1] / allSpans, 100.0f * spans[4] / allPixels, 100.0f * spans[2] / allSpans,
+                  100.0f * spans[5] / allPixels, allPixels / (float)allSpans);
+    uint64_t see[7];
+    seeStats(see, true);
+    Serial.printf("[3d]   the solids and see-through together: %.2f ms by the clock, %.2f ms by the cycle counter\n",
+                  see[5] / 1000.0f / frames, see[6] / (getCpuFrequencyMhz() * 1000.0f * frames));
+    float frameMs = getCpuFrequencyMhz() * 1000.0f * frames;
+    Serial.printf("[3d]   see-through a frame: %.2f ms, %.0f pixels looked at, %.1f cycles each; the solids %.2f ms, "
+                  "%.0f triangles a band at a time and %.0f rows of them, %.0f cycles a row\n",
+                  see[0] / frameMs, see[1] / (float)frames, see[0] / (float)std::max<uint64_t>(1, see[1]),
+                  see[2] / frameMs, see[4] / (float)frames, see[3] / (float)frames,
+                  see[2] / (float)std::max<uint64_t>(1, see[3]));
+    uint64_t plane[6];
+    aircraftStats(plane, true);
+    Serial.printf("[3d]   the one followed a frame: its corners placed %.2f ms (%.0f of them, %.0f cycles each), its "
+                  "faces %.2f ms (%.0f of them, %.0f cycles each, making %.0f triangles)\n",
+                  plane[0] / frameMs, plane[3] / (float)frames, plane[0] / (float)std::max<uint64_t>(1, plane[3]),
+                  plane[1] / frameMs, plane[4] / (float)frames, plane[1] / (float)std::max<uint64_t>(1, plane[4]),
+                  plane[5] / (float)frames);
+    uint64_t cover[11];
+    coverStats(cover, true);
+    if (cover[3] > 0) {
+        float perMs = getCpuFrequencyMhz() * 1000.0f * frames;
+        Serial.printf("[3d]   the land's cover a frame, %s: cells read %.2f ms (%.0f rows of them, %.1f cycles a cell, "
+                      "%.1f of it the innermost loop's), their colours %.2f ms (%.0f worked out), pixels written %.2f "
+                      "ms\n",
+                      simd ? "assembly and PIE" : "C", cover[0] / perMs, cover[3] / (float)frames,
+                      cover[0] / (float)std::max<uint64_t>(1, cover[6]), cover[5] / (float)std::max<uint64_t>(1, cover[6]),
+                      cover[1] / perMs, cover[4] / (float)frames, cover[2] / perMs);
+        Serial.printf("[3d]   and preparing: the rows' places on its grid %.2f ms (%.0f rows worked out, %.0f cycles "
+                      "a row), stored %.2f ms; the skyline %.2f ms\n",
+                      cover[7] / perMs, cover[8] / (float)frames, cover[7] / (float)std::max<uint64_t>(1, cover[8]),
+                      cover[9] / perMs, cover[10] / perMs);
+    }
     Serial.printf("[3d] pipelined %dx%d, %d-row bands (%uKB), %s, for %.1fs: %u frames, %.1f a second, average %.1fms (preparing %.1f; waiting "
                   "on the drawing %.1f), worst frame %.1fms, %u over %.0fms; detail ended at %.0f/%.0fpx; up to %d "
                   "other aircraft; internal RAM at least %uKB free%s%s\n",
@@ -1293,6 +1415,55 @@ void play(TimeOfDay time, int vw = W, int vh = H, float from = 0, float to = -1)
     setView(W, H);
 }
 
+// One frame, prepared as `scene` from `cam` - the whole screen, as the
+// comparing has it - drawn in C into the canvas and then with assembly and
+// PIE against it: how many pixels differ - nought,
+// or the two ways aren't the same.
+int coverMismatches(const Scene &given, const Camera &cam) {
+    Scene scene = given;
+    benchHorizon(scene, cam, true);
+    prepare(W, H, BAND_ROWS, true, scene, cam);
+    setSimd(false);
+    draw(true, Sink::CANVAS);
+    setSimd(true);
+    g_mismatched = 0;
+    draw(true, Sink::COMPARE);
+    return (int)g_mismatched;
+}
+
+// The ground pack open, and its tiles round (lat, lon) read in - till the
+// reads stop for two seconds, or 20 seconds: a run timed from there, as
+// the live view is once it has been at a place a while. False with no pack.
+bool coverAt(double lat, double lon) {
+    groundpack::open();
+    uint32_t start = millis();
+    while (!groundpack::isOpen() && millis() - start < 5000) {
+        delay(50);
+    }
+    if (!groundpack::want(lat, lon, 45)) {
+        Serial.println("[3d] no ground pack - /overhead/ground.bin - to cover the land with");
+        return false;
+    }
+    int held = 0, detailHeld = 0, finerHeld = 0, reads = -1, last = -2;
+    uint32_t readUs = 0, finerUs = 0, quietSince = millis();
+    while (millis() - start < 20000) {
+        groundpack::want(lat, lon, 45);
+        groundpack::stats(held, detailHeld, finerHeld, reads, readUs, finerUs);
+        reads += finerHeld;  // a level worked out counts as a read: quiet once they are done too
+        if (reads != last) {
+            last = reads;
+            quietSince = millis();
+        } else if (millis() - quietSince > 2000) {
+            break;
+        }
+        delay(50);
+    }
+    Serial.printf("[3d] the land's cover: %d tiles of it in close, %d of them in detail and %d finer still, %d read "
+                  "in %.1fs, the finer worked out in %.1fs\n",
+                  held, detailHeld, finerHeld, reads - finerHeld, readUs / 1e6f, finerUs / 1e6f);
+    return true;
+}
+
 }  // namespace
 
 namespace {
@@ -1336,6 +1507,23 @@ void runCommand(char c) {
         setAirfield(nullptr, 0, nullptr, 0);
         snprintf(g_runwayName, sizeof g_runwayName, "09");
         release();
+        g_repaint();
+        break;
+    }
+    case 'c': {
+        // Heathrow as '0' has it, by day, but in plain C throughout - no PIE
+        // for the spans, the fills or the labels: what the vector
+        // instructions are worth, set against '0'.
+        labels3d::setSimd(false);
+        if (useAirport("LHR", "27L", "27R")) {
+            playPipelined(TimeOfDay::DAY, 960, 544, 0, -1, 16, false);
+        }
+        labels3d::setSimd(true);
+        g_busy = false;
+        setAirfield(nullptr, 0, nullptr, 0);
+        snprintf(g_runwayName, sizeof g_runwayName, "09");
+        release();
+        setSimd(true);
         g_repaint();
         break;
     }
@@ -1430,6 +1618,128 @@ void runCommand(char c) {
         }
         enrouteEnd();
         release();
+        g_repaint();
+        break;
+    }
+    case 'q': {
+        // The cycle counter against the microsecond clock: busy, then reading
+        // PSRAM a cache line at a time - whether a stall on memory counts -
+        // on this core, then on the other, where the drawing is.
+        uint8_t *buf = (uint8_t *)heap_caps_malloc(4 << 20, MALLOC_CAP_SPIRAM);
+        if (buf == nullptr) {
+            break;
+        }
+        static uint8_t *s_buf;
+        s_buf = buf;
+        static SemaphoreHandle_t s_done;
+        s_done = xSemaphoreCreateBinary();
+        auto calibrate = [](void *arg) {
+            uint8_t *b = s_buf;
+            for (int run = 0; run < 3; run++) {
+                uint32_t t0 = micros(), c0 = esp_cpu_get_cycle_count();
+                volatile uint32_t sink = 0;
+                if (run == 0) {
+                    for (int i = 0; i < 1000000; i++) {
+                        sink = sink + i;
+                    }
+                } else if (run == 1) {
+                    for (int i = 0; i < (4 << 20); i += 64) {
+                        sink = sink + b[i];
+                    }
+                } else {
+                    // Half a second, the other tasks on the core their turns.
+                    while (micros() - t0 < 500000) {
+                        sink = sink + 1;
+                    }
+                }
+                uint32_t us = micros() - t0, cycles = esp_cpu_get_cycle_count() - c0;
+                Serial.printf("[3d] core %d, %s: %u us, %u cycles - %.1f cycles a microsecond\n", xPortGetCoreID(),
+                              run == 0 ? "busy" : run == 1 ? "PSRAM a line at a time" : "half a second, sharing",
+                              (unsigned)us, (unsigned)cycles, cycles / (float)us);
+            }
+            xSemaphoreGive(s_done);
+            if (arg != nullptr) {
+                vTaskDelete(nullptr);
+            }
+        };
+        calibrate(nullptr);
+        xTaskCreatePinnedToCore(calibrate, "calibrate", 4096, (void *)1, 3, nullptr, 0);
+        xSemaphoreTake(s_done, pdMS_TO_TICKS(5000));
+        xSemaphoreTake(s_done, pdMS_TO_TICKS(5000));
+        vSemaphoreDelete(s_done);
+        heap_caps_free(buf);
+        break;
+    }
+    case 'f': {
+        // What the land's cover costs - see scene3d's GroundCover: the first
+        // minute of Heathrow's landing by day as '0' has it, then the first
+        // half minute of the cruise as 'h' has it - each with the cover in
+        // assembly and PIE, with it in C, and without it. The frames compared,
+        // C against assembly, first of all, while the chip's own memory is
+        // still in large enough pieces for both cores' bands - the radar's
+        // polls, going on all the while, break it up - and the pipeline's
+        // bands then held from the first run to the last.
+        auto heathrow = [] {
+            if (!useAirport("LHR", "27L", "27R")) {
+                return false;
+            }
+            Vec3 at = landingPose(0).at;
+            return coverAt(g_airportLat0 + at.y / 110574.0,
+                           g_airportLon0 + at.x / (111320.0 * cos(g_airportLat0 * M_PI / 180)));
+        };
+        auto leaveHeathrow = [] {
+            g_busy = false;
+            setAirfield(nullptr, 0, nullptr, 0);
+            snprintf(g_runwayName, sizeof g_runwayName, "09");
+        };
+        auto compare = [](const char *where, float t, const Scene &scene, const Camera &cam) {
+            Serial.printf("[3d] %s at %.0fs with the cover: %d pixels differ between C and assembly\n", where, t,
+                          coverMismatches(scene, cam));
+            uint32_t micro[4];
+            coverMicro(960, 544, scene, cam, micro);
+            Serial.printf("[3d]   a row's places on the grid %u cycles, a point's %u, storing a row's %u; every "
+                          "other row's %u\n",
+                          (unsigned)micro[0], (unsigned)micro[1], (unsigned)micro[2], (unsigned)micro[3]);
+        };
+        g_cover = true;
+        if (heathrow() && ready()) {
+            for (float t : {5.0f, 20.0f}) {
+                Scene scene = sceneAt(t, TimeOfDay::DAY);
+                const char *shot = nullptr;
+                compare("Heathrow", t, scene, cameraAt(View::CINEMA, t, scene.followed.pose, &shot));
+            }
+        }
+        leaveHeathrow();
+        buildModels();
+        if (enrouteSetup() && coverAt(CRUISE_LAT, CRUISE_LON) && ready()) {
+            for (float t : {3.0f, 14.0f, 25.0f}) {
+                Scene scene;
+                Camera cam;
+                const char *shot = nullptr;
+                enrouteAt(t, TimeOfDay::DAY, scene, cam, &shot);
+                compare("the cruise", t, scene, cam);
+            }
+        }
+        enrouteEnd();
+        release();
+        if (heathrow()) {
+            for (int run = 0; run < 3; run++) {
+                g_cover = run < 2;
+                playPipelined(TimeOfDay::DAY, 960, 544, 0, 60, 16, run != 1);
+            }
+        }
+        leaveHeathrow();
+        buildModels();
+        if (enrouteSetup() && coverAt(CRUISE_LAT, CRUISE_LON)) {
+            for (int run = 0; run < 3; run++) {
+                g_cover = run < 2;
+                playPipelined(TimeOfDay::DAY, 960, 544, 0, 30, 16, run != 1);
+            }
+        }
+        g_cover = false;
+        enrouteEnd();
+        release();
+        setSimd(true);
         g_repaint();
         break;
     }

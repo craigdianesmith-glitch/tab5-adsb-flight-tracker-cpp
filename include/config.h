@@ -193,6 +193,10 @@ constexpr int DESCEND_THRESHOLD_FPM = -150;
 // taken to be bogus, and the report left out. A field by the sea on the
 // deepest high reads about a thousand feet below nought.
 constexpr int LOWEST_PRESSURE_ALT_FT = -1500;
+// A groundspeed under this, with a height in the air, is a report of
+// something standing still up there - nought as the table rounds it, or
+// readsb's 0.7 for a velocity of nothing: see stillInTheAir().
+constexpr float AIRBORNE_STILL_KT = 1.0f;
 
 // --- data sources ---------------------------------------------------------
 //

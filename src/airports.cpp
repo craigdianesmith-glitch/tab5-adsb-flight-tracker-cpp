@@ -5,6 +5,9 @@
 
 #include <algorithm>
 #include <utility>
+#include <vector>
+
+#include "psram_alloc.h"
 
 namespace {
 
@@ -1108,7 +1111,51 @@ const AirportEntry AIRPORTS[] = {
 constexpr size_t AIRPORT_COUNT = sizeof(AIRPORTS) / sizeof(AIRPORTS[0]);
 constexpr size_t MILITARY_COUNT = sizeof(MILITARY_AIRPORTS) / sizeof(MILITARY_AIRPORTS[0]);
 
+// Both tables by latitude, for the scans: each airport's position as its
+// table has it, and its place there - the civil table's first, then the
+// military's - which a tie goes to, as it did when the tables were scanned in
+// turn. A scan of the tables read all 60KB of them for each answer, and from
+// flash at 28MB/s when the 3D view had the caches: 2ms a time, asked about
+// every low contact at each poll, held the screen 220ms. By latitude, an
+// answer reads only the band it is in. Made the first time it is asked for,
+// in the PSRAM, 12 bytes an airport.
+struct ByLatitude {
+    float lat, lon;
+    uint16_t order;
+    bool military;
+};
+using LatitudeRows = std::vector<ByLatitude, PsramAllocator<ByLatitude>>;
+
 bool isMilitary(const AirportEntry *e) { return e >= MILITARY_AIRPORTS && e < MILITARY_AIRPORTS + MILITARY_COUNT; }
+
+const AirportEntry *entryOf(uint16_t order) {
+    return order < AIRPORT_COUNT ? &AIRPORTS[order] : &MILITARY_AIRPORTS[order - AIRPORT_COUNT];
+}
+
+const LatitudeRows &byLatitude() {
+    static const LatitudeRows rows = [] {
+        LatitudeRows v;
+        v.reserve(AIRPORT_COUNT + MILITARY_COUNT);
+        for (size_t i = 0; i < AIRPORT_COUNT; i++) {
+            v.push_back({AIRPORTS[i].lat, AIRPORTS[i].lon, (uint16_t)i, false});
+        }
+        for (size_t i = 0; i < MILITARY_COUNT; i++) {
+            v.push_back({MILITARY_AIRPORTS[i].lat, MILITARY_AIRPORTS[i].lon, (uint16_t)(AIRPORT_COUNT + i), true});
+        }
+        std::sort(v.begin(), v.end(), [](const ByLatitude &a, const ByLatitude &b) {
+            return a.lat < b.lat || (a.lat == b.lat && a.order < b.order);
+        });
+        return v;
+    }();
+    return rows;
+}
+
+// The first row at or north of `lat`.
+size_t firstFrom(const LatitudeRows &rows, float lat) {
+    return (size_t)(std::lower_bound(rows.begin(), rows.end(), lat,
+                                     [](const ByLatitude &r, float l) { return r.lat < l; }) -
+                    rows.begin());
+}
 
 // The scans below are of the whole table, 3244 entries, and the military's, and are asked for
 // by the radar about its centre, by following about the aircraft, by the
@@ -1150,15 +1197,16 @@ template <typename T> T &oldest(T (&slots)[CACHE_SLOTS]) {
 
 // Squared distance in nm, flat-earth - or past `max2` without finishing the
 // sum, from the latitude alone, which rules out nearly all of the table.
-inline float dist2(const AirportEntry &a, float lat, float lon, float cosLat, float max2) {
-    float dy = (a.lat - lat) * 60.0f;
+inline float dist2(float aLat, float aLon, float lat, float lon, float cosLat, float max2) {
+    float dy = (aLat - lat) * 60.0f;
     float dy2 = dy * dy;
     if (dy2 > max2) {
         return dy2;
     }
-    float dx = (a.lon - lon) * 60.0f * cosLat;
+    float dx = (aLon - lon) * 60.0f * cosLat;
     return dx * dx + dy2;
 }
+
 
 }  // namespace
 
@@ -1173,25 +1221,48 @@ bool nearestAirport(double lat, double lon, Airport &out, float maxNm, bool mili
     if (hit == nullptr) {
         // Flat-earth rather than haversine: over the tens of miles that
         // decide the nearest airport the difference is far below the precision
-        // that matters, and it keeps this to a few flops per entry.
+        // that matters, and it keeps this to a few flops per entry. Outward
+        // from its latitude, north and south in turn, each way given up once
+        // its latitude alone is further off than the nearest found.
         float flat = (float)lat, flon = (float)lon;
         float cosLat = cosf(flat * (float)M_PI / 180.0f);
         float best = maxNm * maxNm;
-        const AirportEntry *bestEntry = nullptr;
-        for (const auto &a : AIRPORTS) {
-            float d2 = dist2(a, flat, flon, cosLat, best);
-            if (d2 < best) {
+        int bestOrder = -1;
+        const LatitudeRows &rows = byLatitude();
+        size_t up = firstFrom(rows, flat);
+        ptrdiff_t down = (ptrdiff_t)up - 1;
+        auto consider = [&](const ByLatitude &r) {
+            if (r.military && !military) {
+                return;
+            }
+            float d2 = dist2(r.lat, r.lon, flat, flon, cosLat, best);
+            if (d2 < best || (bestOrder >= 0 && d2 == best && r.order < bestOrder)) {
                 best = d2;
-                bestEntry = &a;
+                bestOrder = r.order;
+            }
+        };
+        auto beyond = [&](const ByLatitude &r) {
+            float dy = (r.lat - flat) * 60.0f;
+            return dy * dy > best;
+        };
+        bool north = true, south = true;
+        while (north || south) {
+            if (north) {
+                if (up >= rows.size() || beyond(rows[up])) {
+                    north = false;
+                } else {
+                    consider(rows[up++]);
+                }
+            }
+            if (south) {
+                if (down < 0 || beyond(rows[down])) {
+                    south = false;
+                } else {
+                    consider(rows[down--]);
+                }
             }
         }
-        for (size_t i = 0; military && i < MILITARY_COUNT; i++) {
-            float d2 = dist2(MILITARY_AIRPORTS[i], flat, flon, cosLat, best);
-            if (d2 < best) {
-                best = d2;
-                bestEntry = &MILITARY_AIRPORTS[i];
-            }
-        }
+        const AirportEntry *bestEntry = bestOrder >= 0 ? entryOf((uint16_t)bestOrder) : nullptr;
         hit = &oldest(g_nearest);
         hit->lat = lat;
         hit->lon = lon;
@@ -1241,31 +1312,29 @@ const std::vector<Airport> &airportsWithin(double lat, double lon, float rangeNm
         }
     }
     // The same flat-earth distance the radar projects with, so everything
-    // returned lands inside its outer ring.
+    // returned lands inside its outer ring - from the band of latitude it
+    // could be in, a little wider than it need be: dist2() decides.
     float flat = (float)lat, flon = (float)lon;
     float cosLat = cosf(flat * (float)M_PI / 180.0f);
     float max2 = rangeNm * rangeNm;
-    std::vector<std::pair<float, const AirportEntry *>> found;
-    for (const auto &a : AIRPORTS) {
-        float d2 = dist2(a, flat, flon, cosLat, max2);
+    const LatitudeRows &rows = byLatitude();
+    std::vector<std::pair<float, const ByLatitude *>> found;
+    float band = rangeNm / 60.0f + 0.01f;
+    for (size_t i = firstFrom(rows, flat - band); i < rows.size() && rows[i].lat <= flat + band; i++) {
+        float d2 = dist2(rows[i].lat, rows[i].lon, flat, flon, cosLat, max2);
         if (d2 <= max2) {
-            found.push_back({d2, &a});
-        }
-    }
-    for (const auto &a : MILITARY_AIRPORTS) {
-        float d2 = dist2(a, flat, flon, cosLat, max2);
-        if (d2 <= max2) {
-            found.push_back({d2, &a});
+            found.push_back({d2, &rows[i]});
         }
     }
     std::sort(found.begin(), found.end(),
-              [](const std::pair<float, const AirportEntry *> &a, const std::pair<float, const AirportEntry *> &b) {
-                  return a.first < b.first;
+              [](const std::pair<float, const ByLatitude *> &a, const std::pair<float, const ByLatitude *> &b) {
+                  return a.first < b.first || (a.first == b.first && a.second->order < b.second->order);
               });
     WithinCache &c = oldest(g_within);
     c.airports.clear();
     for (const auto &f : found) {
-        c.airports.push_back({f.second->code, f.second->lat, f.second->lon, isMilitary(f.second)});
+        const AirportEntry *e = entryOf(f.second->order);
+        c.airports.push_back({e->code, e->lat, e->lon, f.second->military});
     }
     c.lat = lat;
     c.lon = lon;
@@ -1273,3 +1342,143 @@ const std::vector<Airport> &airportsWithin(double lat, double lon, float rangeNm
     c.used = ++g_cacheUse;
     return c.airports;
 }
+
+#ifdef BENCH3D
+#include <Arduino.h>
+#include <esp_heap_caps.h>
+
+namespace {
+
+// The scans as they were - each table in turn - for the bench to check the
+// index against.
+const AirportEntry *nearestLinear(float flat, float flon, float maxNm, bool military) {
+    float cosLat = cosf(flat * (float)M_PI / 180.0f);
+    float best = maxNm * maxNm;
+    const AirportEntry *bestEntry = nullptr;
+    for (const auto &a : AIRPORTS) {
+        float d2 = dist2(a.lat, a.lon, flat, flon, cosLat, best);
+        if (d2 < best) {
+            best = d2;
+            bestEntry = &a;
+        }
+    }
+    for (size_t i = 0; military && i < MILITARY_COUNT; i++) {
+        float d2 = dist2(MILITARY_AIRPORTS[i].lat, MILITARY_AIRPORTS[i].lon, flat, flon, cosLat, best);
+        if (d2 < best) {
+            best = d2;
+            bestEntry = &MILITARY_AIRPORTS[i];
+        }
+    }
+    return bestEntry;
+}
+
+std::vector<const AirportEntry *> withinLinear(float flat, float flon, float rangeNm) {
+    float cosLat = cosf(flat * (float)M_PI / 180.0f), max2 = rangeNm * rangeNm;
+    std::vector<const AirportEntry *> out;
+    for (const auto &a : AIRPORTS) {
+        if (dist2(a.lat, a.lon, flat, flon, cosLat, max2) <= max2) {
+            out.push_back(&a);
+        }
+    }
+    for (const auto &a : MILITARY_AIRPORTS) {
+        if (dist2(a.lat, a.lon, flat, flon, cosLat, max2) <= max2) {
+            out.push_back(&a);
+        }
+    }
+    return out;
+}
+
+}  // namespace
+
+// "##=a" (bench2d.h): the index against the scans it replaced - the same
+// answers, at random points and close by airports - and how long each takes,
+// warm and with the caches swept as the 3D view sweeps them.
+void airportsBench() {
+    uint32_t seed = 7;
+    auto rnd = [&]() {
+        seed = seed * 1664525u + 1013904223u;
+        return (seed >> 8) / 16777216.0f;
+    };
+    constexpr int N = 3000;
+    std::vector<std::pair<float, float>> points;
+    for (int i = 0; i < N; i++) {
+        if (i % 2 == 0) {
+            points.push_back({-60 + rnd() * 135, -180 + rnd() * 360});
+        } else {
+            const AirportEntry &a = AIRPORTS[(size_t)(rnd() * AIRPORT_COUNT) % AIRPORT_COUNT];
+            points.push_back({a.lat + (rnd() - 0.5f) * 0.6f, a.lon + (rnd() - 0.5f) * 0.6f});
+        }
+    }
+    int nearestWrong = 0, withinWrong = 0;
+    for (int i = 0; i < N; i++) {
+        float lat = points[i].first, lon = points[i].second;
+        // A point of its own each time, so the caches don't answer.
+        for (bool military : {false, true}) {
+            for (float maxNm : {15.0f, 120.0f}) {
+                Airport got;
+                bool found = nearestAirport(lat + 1e-4f * i, lon, got, maxNm, military);
+                const AirportEntry *want = nearestLinear(lat + 1e-4f * i, lon, maxNm, military);
+                if (found != (want != nullptr) || (found && got.code != want->code)) {
+                    nearestWrong++;
+                }
+            }
+        }
+        for (float range : {5.0f, 15.0f, 60.0f}) {
+            const std::vector<Airport> &got = airportsWithin(lat + 2e-4f * i, lon, range);
+            std::vector<const AirportEntry *> want = withinLinear(lat + 2e-4f * i, lon, range);
+            std::vector<String> a, b;
+            for (const Airport &x : got) a.push_back(x.code);
+            for (const AirportEntry *x : want) b.push_back(x->code);
+            std::sort(a.begin(), a.end());
+            std::sort(b.begin(), b.end());
+            withinWrong += a == b ? 0 : 1;
+        }
+    }
+    Serial.printf("[bench] airports: %d points - nearest %d different, within %d different\n", N, nearestWrong,
+                  withinWrong);
+    // Time: warm, then with the caches swept between - a MB of the PSRAM read.
+    uint8_t *sweep = (uint8_t *)heap_caps_malloc(1 << 20, MALLOC_CAP_SPIRAM);
+    for (bool cold : {false, true}) {
+        uint32_t indexUs = 0, linearUs = 0, withinUs = 0, withinLinearUs = 0;
+        volatile uint32_t sink = 0;
+        constexpr int M = 200;
+        for (int i = 0; i < M; i++) {
+            float lat = points[i].first + 3e-4f * i, lon = points[i].second;
+            if (cold && sweep != nullptr) {
+                for (int k = 0; k < (1 << 20); k += 64) sink += sweep[k];
+            }
+            uint32_t t0 = micros();
+            Airport a;
+            nearestAirport(lat, lon, a, 120.0f, true);
+            uint32_t t1 = micros();
+            if (cold && sweep != nullptr) {
+                for (int k = 0; k < (1 << 20); k += 64) sink += sweep[k];
+            }
+            uint32_t t2 = micros();
+            sink += (uint32_t)(uintptr_t)nearestLinear(lat, lon, 120.0f, true);
+            uint32_t t3 = micros();
+            if (cold && sweep != nullptr) {
+                for (int k = 0; k < (1 << 20); k += 64) sink += sweep[k];
+            }
+            uint32_t t4 = micros();
+            airportsWithin(lat + 1e-5f, lon, 15.0f);
+            uint32_t t5 = micros();
+            if (cold && sweep != nullptr) {
+                for (int k = 0; k < (1 << 20); k += 64) sink += sweep[k];
+            }
+            uint32_t t6 = micros();
+            withinLinear(lat + 1e-5f, lon, 15.0f);
+            uint32_t t7 = micros();
+            indexUs += t1 - t0;
+            linearUs += t3 - t2;
+            withinUs += t5 - t4;
+            withinLinearUs += t7 - t6;
+        }
+        Serial.printf("[bench] airports %s: nearest by index %.1fus, by scan %.1fus; within 15nm by index %.1fus, by "
+                      "scan %.1fus\n",
+                      cold ? "with the caches swept" : "warm", indexUs / (float)M, linearUs / (float)M,
+                      withinUs / (float)M, withinLinearUs / (float)M);
+    }
+    heap_caps_free(sweep);
+}
+#endif

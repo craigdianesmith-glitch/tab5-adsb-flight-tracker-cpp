@@ -51,6 +51,7 @@
 #include "watchlist_screen.h"
 #include "airfield_pack.h"
 #include "bench3d.h"
+#include "bench2d.h"
 #include "wifi_screen.h"
 
 // The loop's stack, 10KB rather than the framework's 8: at its deepest it had
@@ -937,6 +938,7 @@ const char *const SOAK_NAMES[] = {
     "an A320 landing on 23 at Glasgow on a day of low pressure, by its pressure altitude and the day's pressure",
     "an A320 landing on 23 at Lossiemouth on a day of high pressure, its pressure altitude under nought on short final",
     "an alert for an A320 landing at Glasgow, auto-followed into 3D: no banner left round the view",
+    "a U-2 at 65,000ft circling over Fairford: the 3D view twice the cruise's height up, the horizon 500km off",
 };
 
 MadeUp circling(const char *hex, const char *callsign, const char *type, const char *category, bool military,
@@ -1439,7 +1441,9 @@ void putEstimate(std::vector<Aircraft> &aircraft, const Aircraft &base, const Fo
     ghost.hasTrack = true;
     ghost.track = e.track;
     ghost.altStr = e.ground ? String("GND") : String(feedAltFt(e));
-    ghost.speedStr = String(e.gsKt);
+    // Not known if the feed never gave it: the estimate's nought is only for
+    // want of one.
+    ghost.speedStr = base.speedStr == "?" ? base.speedStr : String(e.gsKt);
     ghost.status = estimateStatus(e);
     // In its place where the list has it, so the radar's new-contact marks,
     // which go by position in the list, stay with the contacts they are for.
@@ -1548,10 +1552,20 @@ bool lowSample(const FollowSample &s) { return s.ground || (s.hasAlt && s.altFt 
 void noteTracks(const std::vector<Aircraft> &list, bool zoomList, const String &provider) {
     uint32_t now = millis();
     notePressure(list);
+#ifdef BENCH3D
+    // A list that takes long, said in the log with the one that took longest.
+    uint32_t startUs = micros(), worstUs = 0;
+    const Aircraft *worst = nullptr;
+    size_t worstKept = 0;
+    const char *worstPhase = "";
+#endif
     for (const Aircraft &a : list) {
         if (!a.hasPos) {
             continue;
         }
+#ifdef BENCH3D
+        uint32_t t0 = micros();
+#endif
         Track &t = g_tracks[a.hex];
         t.sim.report(followSampleOf(a, now));
         if (zoomList) {
@@ -1563,7 +1577,26 @@ void noteTracks(const std::vector<Aircraft> &list, bool zoomList, const String &
             t.provider = provider;
             (zoomList ? t.inZoomMs : t.inMainMs) = now;
         }
+#ifdef BENCH3D
+        uint32_t us = micros() - t0;
+        if (us > worstUs) {
+            worstUs = us;
+            worst = &a;
+            worstKept = t.sim.historySize();
+            worstPhase = t.sim.phase();
+        }
+#endif
     }
+#ifdef BENCH3D
+    uint32_t tookUs = micros() - startUs;
+    if (tookUs > 30000 && worst != nullptr) {
+        Serial.printf("[bench] tracks: %u in the %s list took %.1fms; the longest, %s %s %s ft %s kt, %.1fms with "
+                      "%u reports kept, %s\n",
+                      (unsigned)list.size(), zoomList ? "zoom's" : "main", tookUs / 1000.0f, worst->hex.c_str(),
+                      worst->callsign.c_str(), worst->altStr.c_str(), worst->speedStr.c_str(), worstUs / 1000.0f,
+                      (unsigned)worstKept, worstPhase);
+    }
+#endif
     // Past how long it is kept for without a current position, it can't be
     // put back into any list, so there is nothing left to keep it for.
     for (auto it = g_tracks.begin(); it != g_tracks.end();) {
@@ -1594,6 +1627,12 @@ void fillLost(std::vector<Aircraft> &aircraft, bool zoomList, const String &prov
         if (!lowSample(t.sim.fresh()) && !otherProvider) {
             continue;  // most likely flown out of range
         }
+        // In the air with no speed to carry it on by, the estimate would hold
+        // it where it was: standing still in the air, as only what hovers
+        // does - see stillInTheAir(). It is let go instead.
+        if (!t.sim.fresh().ground && !t.sim.fresh().hasGs && !canHover(t.last.type, t.last.category)) {
+            continue;
+        }
         bool current = false;
         for (const Aircraft &a : aircraft) {
             if (a.hex == kv.first) {
@@ -1606,6 +1645,56 @@ void fillLost(std::vector<Aircraft> &aircraft, bool zoomList, const String &prov
         }
     }
 }
+
+#ifdef BENCH3D
+// "##=k" (bench2d.h): a poll's list taken into the tracks, as every poll's
+// is - 120 made-up aircraft round home, a third of them low - six polls of
+// it, ten seconds apart as the aircraft go; then each step of taking one in,
+// timed on its own; and the made-up tracks let go again.
+void benchTracks() {
+    constexpr int N = 120;
+    uint32_t whole[6];
+    for (int round = 0; round < 6; round++) {
+        std::vector<Aircraft> list = benchMadeUp(N, g_lat, g_lon, 50, 10.0f * round);
+        uint32_t t0 = micros();
+        noteTracks(list, false, "bench");
+        whole[round] = micros() - t0;
+    }
+    Serial.printf("[bench] tracks: %d aircraft taken in %.2fms the first time, then %.2f %.2f %.2f %.2f %.2fms\n", N,
+                  whole[0] / 1000.0f, whole[1] / 1000.0f, whole[2] / 1000.0f, whole[3] / 1000.0f, whole[4] / 1000.0f,
+                  whole[5] / 1000.0f);
+    std::vector<Aircraft> list = benchMadeUp(N, g_lat, g_lon, 50, 60);
+    uint32_t pressureUs = micros();
+    notePressure(list);
+    pressureUs = micros() - pressureUs;
+    uint32_t findUs = 0, sampleUs = 0, reportUs = 0, copyUs = 0, now = millis();
+    for (const Aircraft &a : list) {
+        uint32_t t0 = micros();
+        auto it = g_tracks.find(a.hex);
+        uint32_t t1 = micros();
+        FollowSample s = followSampleOf(a, now);
+        uint32_t t2 = micros();
+        if (it != g_tracks.end()) {
+            it->second.sim.report(s);
+        }
+        uint32_t t3 = micros();
+        if (it != g_tracks.end()) {
+            it->second.last = a;
+        }
+        uint32_t t4 = micros();
+        findUs += t1 - t0;
+        sampleUs += t2 - t1;
+        reportUs += t3 - t2;
+        copyUs += t4 - t3;
+    }
+    Serial.printf("[bench] tracks, a step at a time for %d: the day's pressure %.2fms; finding each %.2fms, its "
+                  "sample %.2fms, its runway simulation %.2fms, keeping its report %.2fms\n",
+                  N, pressureUs / 1000.0f, findUs / 1000.0f, sampleUs / 1000.0f, reportUs / 1000.0f, copyUs / 1000.0f);
+    for (auto it = g_tracks.begin(); it != g_tracks.end();) {
+        it = it->first.startsWith("~") ? g_tracks.erase(it) : std::next(it);
+    }
+}
+#endif
 
 // Where the radar centres while following: where the aircraft is estimated
 // to be by now - moved on between polls as its blip is, and on through a gap
@@ -2318,10 +2407,15 @@ void tickAlerts() {
                       alertReasonText(g_bannerAc, g_bannerAc.alert).c_str(), g_bannerMore);
         g_bannerUp = true;
         g_bannerShownMs = 0;
+        // Following, the chime and the banner alone: the words cut across
+        // the clearances and the engines of the one being watched, with news
+        // of something else. An emergency is said whatever.
+        bool spoken = !g_follow.active || (g_bannerAc.alert & ALERT_EMERGENCY);
         // In the voice of where it is - or, with no position, of home, which it is near.
         soundAlert(g_bannerAc.alert, g_bannerAc.callsign,
                    g_bannerAc.type.length() ? lookupAircraftType(g_bannerAc.type, g_bannerAc.military) : String(),
-                   g_bannerAc.hasPos ? g_bannerAc.lat : (float)g_lat, g_bannerAc.hasPos ? g_bannerAc.lon : (float)g_lon);
+                   g_bannerAc.hasPos ? g_bannerAc.lat : (float)g_lat, g_bannerAc.hasPos ? g_bannerAc.lon : (float)g_lon,
+                   spoken);
         if (g_autoFollow) {
             autoFollow(g_bannerAc);
         }
@@ -3096,7 +3190,7 @@ bool replayAircraft(const String &hex, Aircraft &out) {
     out.lon = f.now.lon;
     out.track = f.now.track;
     out.altStr = f.now.ground ? String("GND") : String(feedAltFt(f.now));
-    out.speedStr = String(f.now.gsKt);
+    out.speedStr = view3d::speedKnown(f) ? String(f.now.gsKt) : String("?");
     out.status = estimateStatus(f.now);
     return true;
 }
@@ -4790,6 +4884,11 @@ void startSoak(int n) {
         m.baroOverFt = 40;  // and the day's pressure a little out for it
         ok = onRunwayAt(m, "GLA", "23");
         break;
+    case 19:
+        // A spy plane at 65,000ft - one was seen over the UK in October - a
+        // wide circle over Fairford, where they fly from, at its 410kt.
+        m = circling("aa0023", "DRAGN71", "U2", "A2", true, 51.682, -1.790, 25000, 410, 65000);
+        break;
     case 17:
         m = circling("aa0021", "EZY88HP", "A320", "A3", false, 0, 0, 0, 0, 0);
         m.pattern = Pattern::LAND;
@@ -4938,7 +5037,10 @@ void uploadToCard() {
     line[n] = 0;
     char name[32] = {};
     unsigned long size = 0, crc = 0;
-    if (sscanf(line, "%31s %lu %lx", name, &size, &crc) != 3 || strcmp(name, "airfields.bin") != 0 ||
+    // The airfield pack, the ground pack, or a reply from the feed for
+    // bench2d.h's "##=p".
+    if (sscanf(line, "%31s %lu %lx", name, &size, &crc) != 3 ||
+        (strcmp(name, "airfields.bin") != 0 && strcmp(name, "ground.bin") != 0 && strncmp(name, "bench-", 6) != 0) ||
         size == 0 || size > 64UL * 1024 * 1024) {
         Serial.printf("UPLOAD REFUSED %s\n", line);
         return;
@@ -5101,10 +5203,43 @@ void loop() {
         case 'h':
         case 'n':
         case 'l':
+        case 'c':
+        case 'f':
+        case 'q':
             g_loopBusyLong = true;  // minutes, some of them
             bench3dCommand((char)c, repaintCurrentScreen);
             g_loopBusyLong = false;
             break;
+        case '_':
+            // "##_" the 3D view's land in its cover, from the ground pack,
+            // or one colour, as it was - each time the other.
+            Serial.printf("[ground] the land's cover %s\n", view3d::benchToggleCover() ? "on" : "off");
+            break;
+        case 'O':
+            // "##O" where the cover's time has gone since the last "##O".
+            view3d::benchCoverReport();
+            break;
+        case '=': {
+            // "##=" and a letter: the rest of the app timed, a part at a
+            // time - see bench2d.h.
+            int which = -1;
+            uint32_t until = millis() + 1000;
+            while (which < 0 && (int32_t)(millis() - until) < 0) {
+                which = Serial.read();
+                if (which < 0) {
+                    delay(2);
+                }
+            }
+            g_loopBusyLong = true;
+            if (which == 'k') {
+                benchTracks();
+                Serial.println("[bench] done");
+            } else {
+                bench2dCommand((char)which, repaintCurrentScreen);
+            }
+            g_loopBusyLong = false;
+            break;
+        }
         case 'o':
             // "##o" the 3D view's orbit camera swept every way for 45
             // seconds, as a finger might turn it.

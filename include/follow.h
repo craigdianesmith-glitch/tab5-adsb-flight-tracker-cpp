@@ -127,6 +127,7 @@ public:
     }
     const FollowSample &fresh() const { return fresh_; }  // its last report with a current position
     const char *phase() const;                              // for the log
+    size_t historySize() const { return history_.size(); }  // its low reports kept, for the bench
     // The take-off or landing under way, for the zoom to announce: lined up
     // counts as a take-off, cleared for it. `runway()` is which, while one is.
     enum class Movement : uint8_t { NONE, TAKEOFF, LANDING };

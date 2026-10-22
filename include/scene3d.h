@@ -1,5 +1,6 @@
 #pragma once
 
+#include "ground_pack.h"
 #include <math.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -115,9 +116,18 @@ const char *typeOf(Family family);
 // it right; its propellers and rotors turning, or stopped.
 struct Config {
     bool gear = true, flaps = false, spoilers = false;
+    float spoilerDeploy = 0;  // how far up the spoilers are, 0 to 1 of their travel
     float aileron = 0, elevator = 0, rudder = 0;
     bool turning = true;
 };
+
+// How far up the ground spoilers of one that touched down `sinceS` seconds
+// ago are, as far as that goes: up in under a second, as they spring up
+// once the main wheels spin up.
+inline float spoilersRising(float sinceS) {
+    float t = sinceS < 0 ? 0 : sinceS > 0.8f ? 1 : sinceS / 0.8f;
+    return t * t * (3 - 2 * t);
+}
 
 // Flies an aircraft the way its track says it is being flown - which ADS-B
 // doesn't report, but its turning, climbing and slowing give away. Fed, a
@@ -183,6 +193,30 @@ Sun sunAt(int64_t utc, double lat, double lon);
 enum class TimeOfDay { DAY, DUSK, NIGHT };
 Sun sunFor(TimeOfDay time);
 
+// What covers the land, from the ground pack - see ground_pack.h - stamped
+// onto the ground's rows: trees, fields, moor, towns and water, shaded as
+// the hills lie. `window` the pack's tiles, as they are this frame, or
+// nullptr for none. Where a point on the ground is in the window, in tiles -
+// u east from its west edge, v south from its north edge: flat, at an
+// airfield, straight from the world's x and y, u = ux x + u0 and v = vy y +
+// v0; round, high up, from the point's latitude and longitude on the
+// sphere about the origin, (lat0, lon0) in degrees, each offset scaled by
+// `kLat` or `kLon` - the sphere's radius over the ellipsoid's there, which
+// the view's own places are on.
+struct GroundCover {
+    const groundpack::Window *window = nullptr;
+    bool round = false;
+    float ux = 0, u0 = 0, vy = 0, v0 = 0;
+    double lat0 = 0, lon0 = 0;
+    float kLat = 1, kLon = 1;
+};
+// The cover over `window` for a view whose places are about (lat0, lon0):
+// flat, at an airfield, each x metres east and y north of there - 111,320m
+// to a degree of longitude at the equator, by the cosine of lat0, and
+// 110,574m to one of latitude; or round, high up, on WGS84 about there.
+GroundCover flatCover(const groundpack::Window &window, double lat0, double lon0);
+GroundCover roundCover(const groundpack::Window &window, double lat0, double lon0);
+
 struct Scene {
     Aircraft followed;                   // the aircraft the view is about
     const Aircraft *traffic = nullptr;   // everything else about - parked, taxiing, flying
@@ -211,6 +245,18 @@ struct Scene {
     // coast's land on the side it says: high up, or low by an airfield on
     // the sea, the land then its grass.
     bool landAndSea = false;
+    // What covers the land - see GroundCover - or none, the land one colour.
+    GroundCover cover;
+    // The skyline - the hills along the horizon - from the ground pack's
+    // horizon round the eye (see groundpack::Horizon), or nullptr for none.
+    // `horizonTurn` how far north at the eye is turned from the view's
+    // north, radians, the meridians closing in; and the eye's height above
+    // the sea now.
+    const groundpack::Horizon *horizon = nullptr;
+    float horizonTurn = 0, eyeHeightM = 0;
+    // Where the horizon was worked out from, in the view's own frame - its
+    // highest points are put there and seen from where the eye is now.
+    Vec3 horizonAt{};
 };
 
 // What is drawn of the country under an aircraft high up: lines on the
@@ -331,6 +377,30 @@ struct Counts {
     uint32_t stepUs[STEPS];
 };
 Counts counts();
+#ifdef BENCH3D
+// Solids' spans since the last reset: how many under 8 pixels long, 8 to 23,
+// and 24 and more - PIE's - then the pixels in each.
+void spanStats(uint32_t out[6], bool reset);
+// The land's cover since the last reset, in CPU cycles: reading the cells
+// along the rows, working out their colours, and writing the pixels; then
+// the rows read, the colours worked out, the cycles of the reading spent in
+// its innermost loop - C's or the assembly's - and the cells it read; and,
+// preparing, the cycles working out where rows are on the pack's grid, the
+// rows, and the cycles storing what was worked out; and the skyline's.
+void coverStats(uint64_t out[11], bool reset);
+// The see-through - blades' blur, and the like - since the last reset: its
+// cycles drawing, and the pixels it looked at; then the solids': their
+// cycles, the rows stepped down, and the triangles taken up, a band at a time.
+void seeStats(uint64_t out[7], bool reset);
+// The aircraft followed since the last reset: cycles placing its corners,
+// and lighting and setting up its faces; its corners, its faces, and the
+// triangles they made.
+void aircraftStats(uint64_t out[6], bool reset);
+// A frame prepared, then one row's points on the pack's grid worked out 256
+// times over - the cycles each time - one point's 256 times, the row's
+// stored 256 times, and every other row's points once, together.
+void coverMicro(int w, int h, const Scene &scene, const Camera &camera, uint32_t out[4]);
+#endif
 void setClock(uint32_t (*micros)());
 
 // On the device: whether solids' long spans are drawn eight pixels at a time

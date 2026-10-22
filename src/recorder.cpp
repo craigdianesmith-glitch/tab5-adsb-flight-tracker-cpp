@@ -600,7 +600,12 @@ bool parseAircraftLine(char *line, Aircraft &a) {
     a.altGeom = a.hasAltGeom ? atoi(f[15]) : 0;
     a.hasDist = f[16][0] != 0;
     a.distNm = a.hasDist ? strtof(f[16], nullptr) : 0;
-    return true;
+    // Recorded standing still in the air, before the poll left that out: its
+    // speed as the table had it, in whole knots - a 0.7 was kept as 1, and
+    // is let be.
+    bool airborne = a.altStr.length() && a.altStr != "GND" && a.altStr != "?";
+    bool knownSpeed = a.speedStr.length() && a.speedStr != "?";
+    return !(airborne && knownSpeed && stillInTheAir(a.speedStr.toFloat(), a.type, a.category));
 }
 
 }  // namespace recorder

@@ -32,12 +32,13 @@ void toRunway(float lat, float lon, float &along, float &cross) {
 float rwHeading() { float h = atan2f(UX, UY) * 180 / M_PI; return h < 0 ? h + 360 : h; }
 
 bool g_rotor = false;  // the reports a rotorcraft's
+bool g_noGs = false;   // the reports without a ground speed, as some feeds' military contacts are
 
 FollowSample sampleOf(const Truth &t, uint32_t ms, int baroBias) {
     FollowSample s = {};
     s.rotorcraft = g_rotor;
     s.ms = ms; s.ground = t.ground; s.hasAlt = true; s.altFt = t.ground ? FIELD : (int)t.alt + baroBias;
-    s.hasGs = true; s.gsKt = (int16_t)lroundf(t.gs); s.hasPos = true; place(t.along, t.cross, s.lat, s.lon);
+    s.hasGs = !g_noGs; s.gsKt = (int16_t)lroundf(t.gs); s.hasPos = true; place(t.along, t.cross, s.lat, s.lon);
     s.hasTrack = true; s.track = t.track; s.hasVs = !t.ground; s.vsFpm = 0;
     return s;
 }
@@ -96,6 +97,20 @@ void run(const char *name, std::function<Truth(float)> truth, std::function<bool
     }
     printf("  worst speed excess over 1.6x truth: %.0f kt at t=%.1f\n", worst, worstT);
     printf("  worst backwards: %.0f m in half a second at t=%.1f; skimming the ground %.1f s\n", back, backT, skimS);
+}
+
+// On a base leg five miles out, across the extended centreline at 160kt,
+// coming down at 1200ft a minute and levelling at 2000ft - lost at t=0 and
+// not found again. Shown, it should carry on across and level off, not hold
+// still and sink into the ground where it was lost.
+Truth baseLeg(float t) {
+    Truth r = {};
+    r.along = -5;
+    r.cross = 3 - 160 * (t + 60) / 3600;
+    r.alt = std::max(2000.0f, 2500 - 1200 * t / 60);
+    r.gs = 160;
+    r.track = fmodf(rwHeading() + 270, 360);
+    return r;
 }
 
 // Landing on 23: touchdown at t=0 at 0.17nm, 140kt; braking 2.5kt/s to 20kt;
@@ -212,4 +227,8 @@ int main() {
     g_rotor = false;
     g_heliSaysGround = true;
     run("the same, not known for a helicopter (as before)", helicopter, [](float t) { return true; }, -60, 200, 0, -1);
+    run("base leg five miles out, lost coming down", baseLeg, [](float t) { return t <= 0; }, -60, 180, 0, -1);
+    g_noGs = true;
+    run("the same, no speed in its reports", baseLeg, [](float t) { return t <= 0; }, -60, 180, 0, -1);
+    g_noGs = false;
 }

@@ -42,10 +42,22 @@ struct Followed {
     String note;
 };
 
+// Whether the speed `now` has is one: its report gave it, or its take-off or
+// landing is simulated. Otherwise its nought is only for want of one, and is
+// shown as "?".
+inline bool speedKnown(const Followed &f) { return f.report.hasGs || f.simulating; }
+
 // Takes the screen and what drawing it takes - 90KB of the chip's own memory
 // for the bands the picture is drawn in - and draws its buttons: false, and
 // nothing taken, if there isn't the memory.
 bool open();
+#ifdef BENCH3D
+// The land's cover - see scene3d's GroundCover - off, or on again: true for on.
+bool benchToggleCover();
+// Where the cover's time has gone since the last asked, both cores', to the
+// log: a second's worth of each part of it.
+void benchCoverReport();
+#endif
 // Gives them back, the frame being drawn finished first.
 void close();
 // Whether the one followed's engines are heard - the SOUND button's, which

@@ -8,6 +8,7 @@
 #include <M5Unified.h>
 #include <math.h>
 
+#include <algorithm>
 #include <new>
 
 #include "aircraft_db.h"
@@ -335,6 +336,20 @@ constexpr int MAX_ANNOUNCEMENTS = 3;
 Announcement g_announcements[MAX_ANNOUNCEMENTS];
 int g_announcementCount = 0;
 
+// An alert's notes alone, waiting their turn - see soundAlert() - and since
+// when; gone stale as an announcement does.
+bool g_chimeWaiting = false;
+bool g_chimeEmergency = false;
+uint32_t g_chimeQueuedMs = 0;
+
+// Begins an alert's notes - the warble for an emergency, else the chime -
+// with what has been queued in g_spoken to say after them.
+void startNotes(bool emergency) {
+    g_notes = emergency ? WARBLE : CHIME;
+    g_noteCount = emergency ? (int)(sizeof(WARBLE) / sizeof(Note)) : (int)(sizeof(CHIME) / sizeof(Note));
+    g_nextNote = 0;
+}
+
 // Begins saying what has been queued in g_spoken: no notes, then the words.
 void speakQueued(bool reading) {
     g_notes = NO_NOTES;
@@ -585,13 +600,22 @@ void soundNewFlight() {
     M5.Speaker.tone(1568, 70, CHANNEL, false);
 }
 
-void soundAlert(uint8_t reasons, const String &callsign, const String &typeName, float lat, float lon) {
+void soundAlert(uint8_t reasons, const String &callsign, const String &typeName, float lat, float lon,
+                bool spoken) {
     Held held;
     if (!g_ready || g_muted) {
         Serial.printf("[sound] alert for %s not sounded: %s\n", callsign.c_str(), g_muted ? "muted" : "no speaker");
         return;
     }
     bool emergency = (reasons & ALERT_EMERGENCY) != 0;
+    if (!spoken) {
+        g_chimeWaiting = true;
+        g_chimeEmergency = emergency;
+        g_chimeQueuedMs = millis();
+        Serial.printf("[sound] alert for %s: %s alone, in its turn\n", callsign.c_str(), emergency ? "warble" : "chime");
+        return;
+    }
+    g_chimeWaiting = false;  // this one's notes are its
     g_spokenCount = g_nextSpoken = 0;
     g_voice = voiceOf(regionNear(lat, lon));
     g_readingNow = false;
@@ -605,13 +629,11 @@ void soundAlert(uint8_t reasons, const String &callsign, const String &typeName,
         pauseAfter(AFTER_CALLSIGN_MS);
     }
     sayType(typeName);
-    g_notes = emergency ? WARBLE : CHIME;
+    startNotes(emergency);
     // A line for each, as the speaker can go silent with nothing else to
     // show for it - see the README.
     Serial.printf("[sound] alert for %s: %s, then %d spoken\n", callsign.c_str(), emergency ? "warble" : "chime",
                   g_spokenCount);
-    g_noteCount = emergency ? (int)(sizeof(WARBLE) / sizeof(Note)) : (int)(sizeof(CHIME) / sizeof(Note));
-    g_nextNote = 0;
 }
 
 void soundAnnounce(const String &callsign, const String &runway, bool takeoff, const char *airport) {
@@ -700,25 +722,8 @@ constexpr int16_t ADPCM_STEP[89] = {
     9493,  10442, 11487, 12635, 13899, 15289, 16818, 18500, 20350, 22385, 24623, 27086, 29794, 32767};
 constexpr int8_t ADPCM_INDEX[8] = {-1, -1, -1, -1, 2, 4, 6, 8};
 
-// A clip turned back into 16-bit samples - into one of two buffers in PSRAM
-// in turn, the speaker's task reading from the other until it has finished
-// with the word before - and handed to the speaker. A second of a word is a
-// millisecond's work.
-void playClip(const Clip &clip, uint32_t rate) {
-    static int16_t *buffers[2] = {nullptr, nullptr};
-    static size_t sizes[2] = {0, 0};
-    static int next = 0;
-    int b = next;
-    next ^= 1;
-    if (sizes[b] < clip.count) {
-        heap_caps_free(buffers[b]);
-        buffers[b] = (int16_t *)heap_caps_malloc(clip.count * sizeof(int16_t), MALLOC_CAP_SPIRAM);
-        sizes[b] = buffers[b] ? clip.count : 0;
-        if (buffers[b] == nullptr) {
-            return;
-        }
-    }
-    int16_t *out = buffers[b];
+// A clip turned back into 16-bit samples, into `out`.
+void decodeClip(const Clip &clip, int16_t *out) {
     int pred = 0, index = 0;
     for (size_t i = 0; i < clip.count; i++) {
         int code = (clip.adpcm[i >> 1] >> ((i & 1) * 4)) & 15;
@@ -738,7 +743,28 @@ void playClip(const Clip &clip, uint32_t rate) {
         index = index < 0 ? 0 : index > 88 ? 88 : index;
         out[i] = (int16_t)pred;
     }
-    M5.Speaker.playRaw(out, clip.count, rate, false, 1, ALERT_CHANNEL, true);
+}
+
+// A clip turned back into samples - into one of two buffers in PSRAM in
+// turn, the speaker's task reading from the other until it has finished with
+// the word before - and handed to the speaker. A second of a word is a
+// millisecond's work.
+void playClip(const Clip &clip, uint32_t rate) {
+    static int16_t *buffers[2] = {nullptr, nullptr};
+    static size_t sizes[2] = {0, 0};
+    static int next = 0;
+    int b = next;
+    next ^= 1;
+    if (sizes[b] < clip.count) {
+        heap_caps_free(buffers[b]);
+        buffers[b] = (int16_t *)heap_caps_malloc(clip.count * sizeof(int16_t), MALLOC_CAP_SPIRAM);
+        sizes[b] = buffers[b] ? clip.count : 0;
+        if (buffers[b] == nullptr) {
+            return;
+        }
+    }
+    decodeClip(clip, buffers[b]);
+    M5.Speaker.playRaw(buffers[b], clip.count, rate, false, 1, ALERT_CHANNEL, true);
 }
 
 }  // namespace
@@ -823,11 +849,22 @@ void engineTick() {
 void soundTick() {
     engineTick();
     Held held;
-    // Nothing being said: the next announcement - a clearance is only worth
-    // hearing as it happens, and goes stale in seconds - or else a reading
-    // asked for, which can wait the few seconds one takes.
+    // Nothing being said: an alert's notes waiting, which are news; the next
+    // announcement - a clearance is only worth hearing as it happens, and
+    // goes stale in seconds - or else a reading asked for, which can wait
+    // the few seconds one takes.
     if (g_notes == nullptr && !M5.Speaker.isPlaying(ALERT_CHANNEL)) {
-        if (g_announcementCount > 0) {
+        if (g_chimeWaiting) {
+            g_chimeWaiting = false;
+            if (millis() - g_chimeQueuedMs > ANNOUNCE_STALE_MS) {
+                Serial.printf("[sound] alert's %s dropped: %lus late\n", g_chimeEmergency ? "warble" : "chime",
+                              (unsigned long)((millis() - g_chimeQueuedMs) / 1000));
+            } else if (!g_muted) {
+                g_spokenCount = g_nextSpoken = 0;
+                g_readingNow = false;
+                startNotes(g_chimeEmergency);
+            }
+        } else if (g_announcementCount > 0) {
             Announcement a = g_announcements[0];
             for (int i = 1; i < g_announcementCount; i++) {
                 g_announcements[i - 1] = g_announcements[i];
@@ -876,3 +913,95 @@ void soundTick() {
     const Note &n = g_notes[g_nextNote++];
     M5.Speaker.tone(n.hz, n.ms, ALERT_CHANNEL, true);
 }
+
+#ifdef BENCH3D
+// "##=s" (bench2d.h): the voices' words turned back into samples as they are
+// said - every letter, digit, maker and airline of each - and a few seconds
+// of each kind of engine's noise made, as the sound's task makes it.
+void soundBench() {
+    static const char *const NAMES[] = {"Scottish", "English", "American"};
+    size_t most = 0;
+    for (const Voice *v : VOICES) {
+        for (const Clip &c : v->letters) most = std::max(most, c.count);
+        for (const Clip &c : v->digits) most = std::max(most, c.count);
+        for (size_t i = 0; i < v->makerCount; i++) most = std::max(most, v->makers[i].clip.count);
+        for (size_t i = 0; i < v->airlineCount; i++) most = std::max(most, v->airlines[i].clip.count);
+    }
+    int16_t *out = (int16_t *)heap_caps_malloc(most * sizeof(int16_t), MALLOC_CAP_SPIRAM);
+    if (out == nullptr) {
+        Serial.println("[bench] no room to decode into");
+        return;
+    }
+    for (size_t k = 0; k < sizeof(VOICES) / sizeof(VOICES[0]); k++) {
+        const Voice *v = VOICES[k];
+        uint64_t samples = 0;
+        uint32_t clips = 0, t0 = micros();
+        auto decode = [&](const Clip &c) {
+            decodeClip(c, out);
+            samples += c.count;
+            clips++;
+        };
+        for (const Clip &c : v->letters) decode(c);
+        for (const Clip &c : v->digits) decode(c);
+        for (size_t i = 0; i < v->makerCount; i++) decode(v->makers[i].clip);
+        for (size_t i = 0; i < v->airlineCount; i++) decode(v->airlines[i].clip);
+        uint32_t us = micros() - t0;
+        float seconds = (float)samples / v->rate;
+        Serial.printf("[bench] voice %s: %u words, %.1fs of sound decoded in %.2fms - %.2fms a second, %.0fns a sample\n",
+                      NAMES[k], (unsigned)clips, seconds, us / 1000.0f, us / 1000.0f / seconds, us * 1000.0f / samples);
+    }
+    heap_caps_free(out);
+
+    void *room = heap_caps_malloc(sizeof(engine_noise::Synth), MALLOC_CAP_SPIRAM);
+    int16_t *block = (int16_t *)heap_caps_malloc(ENGINE_BLOCK * sizeof(int16_t), MALLOC_CAP_SPIRAM);
+    if (room == nullptr || block == nullptr) {
+        heap_caps_free(room);
+        heap_caps_free(block);
+        Serial.println("[bench] no room for an engine");
+        return;
+    }
+    struct Engine {
+        const char *name;
+        engine_noise::Kind kind;
+        bool afterburner, approach;
+    };
+    const Engine ENGINES[] = {{"turbofan", engine_noise::Kind::TURBOFAN, false, false},
+                              {"fighter, reheat", engine_noise::Kind::LOW_BYPASS, true, false},
+                              {"turboprop", engine_noise::Kind::TURBOPROP, false, false},
+                              {"piston", engine_noise::Kind::PISTON, false, false},
+                              {"helicopter", engine_noise::Kind::ROTOR, false, false},
+                              {"airliner on its approach", engine_noise::Kind::TURBOFAN, false, true}};
+    for (const Engine &e : ENGINES) {
+        engine_noise::Synth *synth = new (room) engine_noise::Synth();
+        engine_noise::Sound s;
+        s.kind = e.kind;
+        s.power = 0.8f;
+        s.afterburner = e.afterburner;
+        s.distanceM = 400;
+        s.closingMs = 60;
+        if (e.approach) {
+            // Its airframe's rush too: gear down, flaps out, at 140kt.
+            s.power = 0.45f;
+            s.airspeedMs = 72;
+            s.gearDown = true;
+            s.flapsOut = true;
+        }
+        synth->set(s);
+        constexpr int BLOCKS = 250;  // ten seconds
+        uint32_t us = 0, sum = 2166136261u;  // and what it made, every sample, for a change to be checked by
+        for (int i = 0; i < BLOCKS; i++) {
+            uint32_t t0 = micros();
+            synth->render(block, ENGINE_BLOCK);
+            us += micros() - t0;
+            for (int k = 0; k < ENGINE_BLOCK; k++) {
+                sum = (sum ^ (uint16_t)block[k]) * 16777619u;
+            }
+        }
+        synth->~Synth();
+        Serial.printf("[bench] engine %s: %.3fms a 40ms block, %.2f%% of a core; its sound %08lx\n", e.name,
+                      us / 1000.0f / BLOCKS, us / (BLOCKS * 400.0f), (unsigned long)sum);
+    }
+    heap_caps_free(room);
+    heap_caps_free(block);
+}
+#endif

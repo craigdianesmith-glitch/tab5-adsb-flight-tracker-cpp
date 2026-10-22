@@ -167,7 +167,10 @@ public:
 // Parses a header line into `h`; false for a line that isn't one.
 bool parseHeaderLine(const char *line, Header &h);
 
-// Parses an `A` line (with its leading "A ") into an aircraft.
+// Parses an `A` line (with its leading "A ") into an aircraft. False too for
+// one the poll would now leave out - recorded standing still in the air
+// before it did (see stillInTheAir()) - so a replay is of the sky as the
+// screens show it now.
 bool parseAircraftLine(char *line, Aircraft &out);
 
 }  // namespace recorder

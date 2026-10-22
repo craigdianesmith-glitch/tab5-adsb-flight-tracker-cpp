@@ -17,6 +17,9 @@
 #include <freertos/FreeRTOS.h>
 #include <freertos/semphr.h>
 #include <freertos/task.h>
+#ifdef BENCH3D
+#include <esp_cpu.h>
+#endif
 
 #include "psram_alloc.h"
 #endif
@@ -164,6 +167,8 @@ enum Move : uint8_t {
     MOVE_RUDDER,
     MOVE_RUDDER_2,
     MOVE_CANARD,
+    MOVE_SPOILER_L,
+    MOVE_SPOILER_R,
     MOVE_SPIN  // and on: spinner i turns with MOVE_SPIN + i
 };
 constexpr int HINGES = MOVE_SPIN, MAX_SPINNERS = 8;
@@ -761,12 +766,19 @@ void wings(Vector<ModelTri> &out, int level, const Wing &w, Design &d) {
                 slab(out, flap(from), flap(out1), AXIS_Z, FLAP);
             }
             if (w.spoilers) {
+                // Made lying on the wing, and raised on their hinge - their
+                // front edge - as far as the touchdown has them: up to 50
+                // degrees, the ground spoilers' travel.
                 Using spoilers(shown(SHOW_SPOILERS));
+                Using raised(moving(s > 0 ? MOVE_SPOILER_L : MOVE_SPOILER_R));
+                auto hingeAt = [&](float y) {
+                    WingStation e = wingAt(w, y);
+                    return Vec3{e.te + (e.le - e.te) * 0.3f, s * y, e.z + e.thick * 0.3f};
+                };
                 auto spoiler = [&](float y) {
                     WingStation e = wingAt(w, y);
-                    float c = e.le - e.te;
-                    Vec3 hinge = {e.te + c * 0.3f, s * y, e.z + e.thick * 0.3f};
-                    return Section{hinge, hinge + Vec3{-0.95f, 0, 0.5f} * (c / 4.5f), 0.06f};
+                    Vec3 hinge = hingeAt(y);
+                    return Section{hinge, hinge + Vec3{-(e.le - e.te) / 4.5f, 0, 0}, 0.06f};
                 };
                 float sFrom = w.root.y + span * 0.05f, sTo = w.root.y + span * std::min(w.flapsTo, 0.6f);
                 if (w.kink.y > sFrom && w.kink.y < sTo) {
@@ -775,6 +787,7 @@ void wings(Vector<ModelTri> &out, int level, const Wing &w, Design &d) {
                 } else {
                     slab(out, spoiler(sFrom), spoiler(sTo), AXIS_Z, SPOILER);
                 }
+                d.hinge[s > 0 ? MOVE_SPOILER_L : MOVE_SPOILER_R] = hingeAlong(hingeAt(sFrom), hingeAt(sTo), 0.87f, AXIS_Y);
             }
         }
     }
@@ -4335,6 +4348,7 @@ struct Frame {
     float sunElevationDeg = 40;
     bool shadows = true;
     int shadow256 = 256;
+    alignas(16) uint16_t shadowLanes[4][8] = {};  // scene3d_darken8's constants: k, then red's, green's and blue's masks
     float cx = 0, cy = 0, f = 1;
     // The view's sides, guard band and all, as slopes - x or y over depth -
     // and how much a point's distance in from them is to be scaled for a
@@ -4373,6 +4387,68 @@ struct Frame {
     Vector<uint8_t> rowGround, rowFirst;
     Vector<uint32_t> rowStart;
     Vector<Crossing> rowCross;
+    // What covers the land, where the view has the ground pack - see
+    // GroundCover. For a row of ground, where five points along it are on
+    // the pack's grid, in tiles - its left end, a quarter, half and three
+    // quarters of the way, its right end - and the level its cells are read
+    // at, the finest whose cells are still four pixels or more; -1 for a row
+    // the land is one colour in. `straight` where the five are on a line - the
+    // ground flat, or the earth's curve across the row a twentieth of a cell
+    // or less - for its cells to be read along the one line, end to end.
+    // Flat, worked out as each row is drawn, in a few dozen cycles; round,
+    // here, for each even row - the odd row under it takes its cells - a
+    // thousand or two each.
+    // A row's cover: its level - NO_LEVEL where the row has no ground.
+    static constexpr int8_t NO_LEVEL = -128;
+    struct RowCover {
+        int8_t level;
+        bool straight;
+        bool tall;  // its cells eight rows or more tall: four rows can share a walk along it
+        bool wide;  // and sixteen pixels or more wide: a sample of them each eight pixels
+        float u[5], v[5];
+    };
+    GroundCover cover;
+    bool coverOn = false;
+    // Towns in the cover as well, by day: its own town middles, suburbs and
+    // parks say more than one grey. After dark, the towns' own colour, with
+    // the glow of their lights far off, over a cover all but black.
+    bool coverTowns = false;
+    Vector<RowCover> rowCover;
+    // Flat, a row's ends on the grid from y in a dozen multiply-adds and a
+    // divide, these worked out once a frame - see coverFlatEnds(): the row's
+    // slope, sy = y/f + sy0; the ray's height, dz = fz + dz1 sy; how far
+    // along it the ground is, t = ez / -dz; and its left end, u = au + t (bu +
+    // cu sy), stepping t ku a pixel - v the same.
+    struct CoverFlat {
+        float perF, sy0, fz, dz1, ez, au, bu, cu, ku, av, bv, cv, kv;
+    } coverFlat;
+    uint8_t coverLit[16][3] = {};  // each cover's colour, lit as the land is
+    uint8_t coverRgb[256][3] = {};  // each cell's: its cover's colour, lit, by its shade
+    // A round cover's origin, in degrees, and the sine and cosine of its
+    // latitude: as floats once a frame, not converted from double - in
+    // software, the P4 having no double in its FPU - at every point.
+    float coverLat0 = 0, coverLon0 = 0, coverSin = 0, coverCos = 1;
+    float perW = 1;  // 1/w
+    // The hills along the skyline, a range at a time - see
+    // groundpack::Horizon - the furthest drawn first and each nearer over
+    // it: each column's first row of the range's hills and the row after
+    // its last - the same for none - and its colour, the hill there hazed as
+    // far off as it is, dithered for even rows and odd, and how far off it
+    // is, as 1/z and then, once the frame's scale for it is known, as the
+    // depth buffer has it; in PSRAM, 16-byte aligned, as PIE reads them (see
+    // scene3d_hills8); and the rows they reach between.
+    struct HillRange {
+        bool on = false;
+        int top = 0, bottom = 0;
+        int16_t *from = nullptr, *to = nullptr;
+        uint16_t *pixels[2] = {};  // each column's colour, for even rows and odd
+        float *iz = nullptr;
+        uint16_t *depth = nullptr;
+    };
+    HillRange hills[groundpack::Horizon::RANGES];
+    Vector<int16_t> hillRows;
+    Vector<uint16_t> hillColors, hillDepths;
+    Vector<float> hillIz;
     // Depth is kept in 16 bits - half the memory of a float, and eight to a
     // PIE vector: 1/z scaled so that the nearest thing in the frame comes to
     // DEPTH_TOP, which spends all 16 bits' precision on what is there to draw.
@@ -4408,8 +4484,11 @@ uint16_t pack(Rgb c) {
 // pixels, whose levels average out to the colour between. A pair is what one
 // 32-bit write puts down, so it costs no more than a plain colour.
 uint16_t packDithered(Rgb c, float d) {
-    auto level = [d](float v, int top) { return std::min(top, std::max(0, (int)(v * top / 255 + d))); };
-    return swapIf((uint16_t)(level(c.r, 31) << 11 | level(c.g, 63) << 5 | level(c.b, 31)));
+    // Times top/255, not times top over 255: a multiply, where the division
+    // was a float divide a channel - six to a pair, three pairs to a row.
+    auto level = [d](float v, float scale, int top) { return std::min(top, std::max(0, (int)(v * scale + d))); };
+    return swapIf((uint16_t)(level(c.r, 31.0f / 255, 31) << 11 | level(c.g, 63.0f / 255, 63) << 5 |
+                             level(c.b, 31.0f / 255, 31)));
 }
 
 uint32_t pair(Rgb c, int y) {
@@ -4892,6 +4971,9 @@ inline void raster(const ScreenTri &t, int y0, int y1, Span &&span) {
 extern "C" void scene3d_span8(uint16_t *c, uint16_t *z, int chunks, int32_t at, int32_t step8,
                               const int16_t *ramp, const uint16_t *color);
 extern "C" void scene3d_fill8(uint16_t *row, int chunks, const uint32_t *pattern);
+extern "C" void scene3d_darken8(uint16_t *c, const uint16_t *m, int chunks, const uint16_t *constants);
+extern "C" void scene3d_tint8(uint16_t *c, const uint16_t *z, int chunks, int32_t at, int32_t step8,
+                              const uint16_t *constants, const uint16_t *head, const uint16_t *tail);
 bool g_simd = true;
 #endif
 
@@ -4933,6 +5015,29 @@ inline uint16_t darken(uint16_t c) {
     int k = d.shadow256;
     c = (uint16_t)(((c >> 11) * k >> 8) << 11 | ((c >> 5 & 63) * k >> 8) << 5 | ((c & 31) * k >> 8));
     return swapIf(c);
+}
+
+// Pixels [xs, xe) of a row darkened where its mask row `m` isn't nought - with
+// PIE, high byte first, eight at a time from a multiple of 8, the sums the
+// same: see scene3d_pie.S.
+inline void darkenRow(uint16_t *c, const uint16_t *m, int xs, int xe) {
+#if defined(ESP_PLATFORM)
+    if (g_simd && d.swap && xe - xs >= 16) {
+        for (int x8 = (xs + 7) & ~7; xs < x8; xs++) {
+            if (m[xs]) {
+                c[xs] = darken(c[xs]);
+            }
+        }
+        int chunks = (xe - xs) / 8;
+        scene3d_darken8(c + xs, m + xs, chunks, &d.shadowLanes[0][0]);
+        xs += chunks * 8;
+    }
+#endif
+    for (; xs < xe; xs++) {
+        if (m[xs]) {
+            c[xs] = darken(c[xs]);
+        }
+    }
 }
 
 void drawLine(const ScreenLine &l, int y0, int y1, uint16_t *color, uint16_t *depth) {
@@ -5061,6 +5166,91 @@ inline void spanC(uint16_t *c, uint16_t *z, int xs, int xe, int32_t at, int32_t 
 }
 
 
+// A see-through triangle's spans' constants, worked out once for the
+// triangle: its depth's step along a row, as a solid's, and in each of a
+// chunk of eight pixels, the ramp; the eighths of what is behind kept,
+// 8 - e; and the tint's share of each channel, e/8 of it rounded down, in
+// place - see tintC(). In lanes, for PIE: the ramp, 8 - e, the masks of
+// red, green and blue, and the share.
+struct Tinter {
+    int32_t step;
+    uint16_t keep, share;
+    alignas(16) uint16_t constants[6][8];
+    Tinter(int32_t step, uint16_t tint, int eighths) : step(step) {
+        keep = (uint16_t)(8 - eighths);
+        share = (uint16_t)((((tint & 0xF800) * eighths >> 3) & 0xF800) | (((tint & 0x07E0) * eighths >> 3) & 0x07E0) |
+                           (((tint & 0x001F) * eighths >> 3) & 0x001F));
+        for (int i = 0; i < 8; i++) {
+            constants[0][i] = (uint16_t)(int16_t)((int64_t)step * i >> 16);
+            constants[1][i] = keep;
+            constants[2][i] = 0xF800;
+            constants[3][i] = 0x07E0;
+            constants[4][i] = 0x001F;
+            constants[5][i] = share;
+        }
+    }
+};
+
+// For a span's first chunk of eight, the lanes before it - all ones - and
+// for its last, those after it: left as they are.
+struct ChunkEdges {
+    alignas(16) uint16_t before[8][8], after[9][8];
+    ChunkEdges() {
+        for (int s = 0; s < 8; s++) {
+            for (int i = 0; i < 8; i++) {
+                before[s][i] = i < s ? 0xFFFF : 0;
+            }
+        }
+        for (int e = 0; e <= 8; e++) {
+            for (int i = 0; i < 8; i++) {
+                after[e][i] = i >= e ? 0xFFFF : 0;
+            }
+        }
+    }
+};
+const ChunkEdges g_chunkEdges;
+
+// Pixels [xs, xe) of a row seen through a see-through triangle where it
+// isn't behind what is drawn: each channel keeps (8 - e)/8 of itself, in
+// place, rounded down, and takes the tint's share; the depth left as it
+// was. Its depth as scene3d_tint8 has it, a chunk of eight at a time from
+// x8, xs's multiple of 8 - `base` there in 16.16 fixed point, going on by
+// eight steps a chunk, and the ramp's share in each - so the two are the
+// same, pixel for pixel.
+inline void tintC(uint16_t *c, const uint16_t *z, int xs, int xe, int x8, int32_t base, const Tinter &t) {
+    for (int x = xs; x < xe; x++) {
+        int chunk = (x - x8) >> 3, lane = (x - x8) & 7;
+        int32_t at = (int32_t)((uint32_t)base + (uint32_t)t.step * 8u * (uint32_t)chunk);
+        int depth = std::max(-32768, std::min(32767, (int)(int16_t)(at >> 16) + (int16_t)t.constants[0][lane]));
+        if (depth < (int16_t)z[x]) {
+            continue;
+        }
+        uint32_t v = d.swap ? (uint16_t)(c[x] >> 8 | c[x] << 8) : c[x], k = t.keep;
+        uint16_t tinted = (uint16_t)(((((v & 0xF800) * k) >> 3) & 0xF800) + ((((v & 0x07E0) * k) >> 3) & 0x07E0) +
+                                     ((((v & 0x001F) * k) >> 3) & 0x001F) + t.share);
+        c[x] = d.swap ? (uint16_t)(tinted >> 8 | tinted << 8) : tinted;
+    }
+}
+
+// The same, `at` the depth at xs: every chunk of it with PIE, the lanes
+// outside the span left as they are.
+inline void tint(uint16_t *c, const uint16_t *z, int xs, int xe, int32_t at, const Tinter &t) {
+    if (xs >= xe) {
+        return;
+    }
+    int x8 = xs & ~7;
+    int32_t base = (int32_t)((uint32_t)at - (uint32_t)t.step * (uint32_t)(xs - x8));
+#if defined(ESP_PLATFORM)
+    if (g_simd && d.swap) {
+        int chunks = (xe - x8 + 7) >> 3;
+        scene3d_tint8(c + x8, z + x8, chunks, base, (int32_t)((uint32_t)t.step * 8u), &t.constants[0][0],
+                      g_chunkEdges.before[xs - x8], g_chunkEdges.after[xe - (x8 + 8 * (chunks - 1))]);
+        return;
+    }
+#endif
+    tintC(c, z, xs, xe, x8, base, t);
+}
+
 // A solid triangle's spans' constants, worked out once for the triangle
 // rather than once a span - a close-up's tens of thousands of them a frame:
 // its colour, its depth's step along a row and, for PIE, those in each of
@@ -5082,7 +5272,21 @@ struct Spanner {
     }
 };
 
+#ifdef BENCH3D
+// For the bench, a core's own: solids' spans counted by how long they are -
+// under 8 pixels, 8 to 23, 24 and more, which PIE draws - and their pixels.
+uint32_t g_spanStats[2][6];
+#endif
+
 inline void span(uint16_t *c, uint16_t *z, int xs, int xe, int32_t at, const Spanner &s) {
+#ifdef BENCH3D
+    {
+        int n = xe - xs, bucket = n < 8 ? 0 : n < 24 ? 1 : 2;
+        uint32_t *st = g_spanStats[xPortGetCoreID() & 1];
+        st[bucket]++;
+        st[3 + bucket] += (uint32_t)n;
+    }
+#endif
 #if defined(ESP_PLATFORM)
     // Long enough to be worth it: the pixels to the next multiple of 8 one
     // at a time, the rest eight at a time, and what is left over.
@@ -5100,14 +5304,189 @@ inline void span(uint16_t *c, uint16_t *z, int xs, int xe, int32_t at, const Spa
     spanC(c, z, xs, xe, at, s.step, s.color);
 }
 
+// A solid triangle's rows in a band, as a trapezoid - its top corner to
+// its middle one, or the middle to the bottom: a left and a right edge
+// stepped down a row at a time in 16.16 fixed point, the half pixel and the
+// rounding up folded in, so a row's first pixel is xl >> 16 and the one
+// after its last xr >> 16; and its depth at x nought, in float, stepped
+// down too, the depth at a row's first pixel fused-multiplied from it.
+// scene3d_solid's - see scene3d_pie.S, which has the fields where they are.
+struct Trapezoid {
+    uint16_t *c, *z;  // row 0's colours and depths, at x nought
+    int32_t rows, w;
+    int32_t xl, dl, xr, dr;
+    float zrow, dzrow, zx;
+    int32_t step;  // the depth's a pixel, 16.16
+    uint32_t color;
+    const int16_t *ramp;  // PIE's - see Spanner
+    const uint16_t *colors;
+    int32_t simd;
+};
+#if defined(ESP_PLATFORM)  // the PC's pointers are twice as long, and it has no scene3d_solid
+static_assert(offsetof(Trapezoid, xl) == 16 && offsetof(Trapezoid, zrow) == 32 && offsetof(Trapezoid, step) == 44 &&
+                  offsetof(Trapezoid, ramp) == 52 && offsetof(Trapezoid, simd) == 60,
+              "scene3d_solid has the fields where they were");
+#endif
+
+// The C of scene3d_solid, which is this exactly.
+void solidRowsC(const Trapezoid &tr) {
+    uint16_t *c = tr.c, *z = tr.z;
+    int32_t xl = tr.xl, xr = tr.xr;
+    float zrow = tr.zrow;
+    for (int r = 0; r < tr.rows; r++, c += tr.w, z += tr.w) {
+        int xs = (int)std::max<int32_t>(0, xl >> 16), xe = (int)std::min<int32_t>(tr.w, xr >> 16);
+        if (xs < xe) {
+            int32_t at = std::max<int32_t>(0, (int32_t)fmaf(tr.zx, (float)xs, zrow));
+#if defined(ESP_PLATFORM)
+            if (tr.simd && xe - xs >= 24) {
+                int x8 = (xs + 7) & ~7;
+                spanC(c, z, xs, x8, at, tr.step, (uint16_t)tr.color);
+                at = (int32_t)((uint32_t)at + (uint32_t)tr.step * (uint32_t)(x8 - xs));
+                int chunks = (xe - x8) / 8;
+                scene3d_span8(c + x8, z + x8, chunks, at, (int32_t)((uint32_t)tr.step * 8u), tr.ramp, tr.colors);
+                int done = x8 + chunks * 8;
+                spanC(c, z, done, xe, (int32_t)((uint32_t)at + (uint32_t)tr.step * 8u * (uint32_t)chunks), tr.step,
+                      (uint16_t)tr.color);
+            } else
+#endif
+            {
+                spanC(c, z, xs, xe, at, tr.step, (uint16_t)tr.color);
+            }
+        }
+        xl += tr.dl;
+        xr += tr.dr;
+        zrow += tr.dzrow;
+    }
+}
+
+#if defined(ESP_PLATFORM)
+extern "C" void scene3d_solid(const Trapezoid *t);
+#endif
+
+// A triangle's rows from y0 to y1 as its two trapezoids - its top corner to
+// its middle one, and the middle to the bottom - each passed to `trapezoid`
+// with its first row, its rows, and its left and right edges in 16.16 fixed
+// point, the half pixel and the rounding up folded in, so a row's first
+// pixel is xl >> 16 and the one after its last xr >> 16, stepping dl and dr
+// a row; or, an edge so far off the screen or so near flat that 16.16 can't
+// hold it, to `floating` with its first row and the one after its last, to
+// be drawn as raster() has it.
+template <typename Trap, typename Floating>
+void trapezoids(const ScreenTri &t, int y0, int y1, Trap &&trapezoid, Floating &&floating) {
+    int ys = std::max(y0, (int)t.top), ye = std::min(y1, (int)t.bottom);
+    if (ys >= ye) {
+        return;
+    }
+    int ymid = std::max(ys, std::min(ye, ceilInt(t.by - 0.5f)));
+    for (int part = 0; part < 2; part++) {
+        int ya = part == 0 ? ys : ymid, yb = part == 0 ? ymid : ye;
+        if (ya >= yb) {
+            continue;
+        }
+        float sy = ya + 0.5f, sa = t.dAC, sb = part == 0 ? t.dAB : t.dBC;
+        float xa = t.ax + (sy - t.ay) * sa, xb = part == 0 ? t.ax + (sy - t.ay) * sb : t.bx + (sy - t.by) * sb;
+        // Which side is which: the long edge's or the other's, half way down.
+        float half = (yb - ya - 1) * 0.5f;
+        bool aLeft = xa + sa * half <= xb + sb * half;
+        float xl = aLeft ? xa : xb, xr = aLeft ? xb : xa, dl = aLeft ? sa : sb, dr = aLeft ? sb : sa;
+        float last = (float)(yb - ya);
+        if (!(fabsf(xl) < 30000 && fabsf(xr) < 30000 && fabsf(dl) < 16384 && fabsf(dr) < 16384 &&
+              fabsf(xl + dl * last) < 30000 && fabsf(xr + dr * last) < 30000)) {
+            floating(ya, yb);
+            continue;
+        }
+        trapezoid(ya, yb - ya, floorInt((xl - 0.5f) * 65536.0f) + 65535, (int32_t)lroundf(dl * 65536.0f),
+                  floorInt((xr - 0.5f) * 65536.0f) + 65535, (int32_t)lroundf(dr * 65536.0f));
+    }
+}
+
+// Solid triangle t's rows in the band from y0 to y1, into its colours and
+// depths - see trapezoids() and scene3d_solid.
+void solidRows(const ScreenTri &t, uint16_t *color, uint16_t *depth, int y0, int y1, float fixed,
+               const Spanner &spanner) {
+    trapezoids(
+        t, y0, y1,
+        [&](int ya, int rows, int32_t xl, int32_t dl, int32_t xr, int32_t dr) {
+            Trapezoid tr;
+            tr.c = color + (size_t)(ya - y0) * d.w;
+            tr.z = depth + (size_t)(ya - y0) * d.w;
+            tr.rows = rows;
+            tr.w = d.w;
+            tr.xl = xl;
+            tr.dl = dl;
+            tr.xr = xr;
+            tr.dr = dr;
+            tr.zrow = (t.za * 0.5f + t.zb * (ya + 0.5f) + t.zc) * fixed;
+            tr.dzrow = t.zb * fixed;
+            tr.zx = t.za * fixed;
+            tr.step = spanner.step;
+            tr.color = spanner.color;
+#if defined(ESP_PLATFORM)
+            tr.ramp = spanner.ramp;
+            tr.colors = spanner.colors;
+            tr.simd = g_simd;
+            if (g_simd) {
+                scene3d_solid(&tr);
+                return;
+            }
+#else
+            tr.ramp = nullptr;
+            tr.colors = nullptr;
+            tr.simd = 0;
+#endif
+            solidRowsC(tr);
+        },
+        [&](int ya, int yb) {
+            raster(t, ya, yb, [&](int y, int xs, int xe) {
+                int32_t from = std::max<int32_t>(0, (int32_t)((t.za * (xs + 0.5f) + t.zb * (y + 0.5f) + t.zc) * fixed));
+                span(color + (size_t)(y - y0) * d.w, depth + (size_t)(y - y0) * d.w, xs, xe, from, spanner);
+            });
+        });
+}
+
+// The ground's triangle t's rows in the band from y0 to y1, each in its
+// colour hazed as the row is - worked out again only where the row's haze
+// isn't the last row's of the same parity, which down most of a triangle
+// it is.
+void groundRows(const ScreenTri &t, uint16_t *color, int y0, int y1, const int haze[3]) {
+    int lastHaze[2] = {-1, -1};
+    uint32_t lastPair[2] = {0, 0};
+    auto row = [&](int y, int xs, int xe) {
+        int hz = d.rowHaze[y], p = y & 1;
+        if (hz != lastHaze[p]) {
+            lastHaze[p] = hz;
+            lastPair[p] = pairInt(t.lit, haze, hz, y);
+        }
+        fill(color + (size_t)(y - y0) * d.w, xs, xe, lastPair[p]);
+    };
+    trapezoids(
+        t, y0, y1,
+        [&](int ya, int rows, int32_t xl, int32_t dl, int32_t xr, int32_t dr) {
+            for (int y = ya; y < ya + rows; y++, xl += dl, xr += dr) {
+                int xs = (int)std::max<int32_t>(0, xl >> 16), xe = (int)std::min<int32_t>(d.w, xr >> 16);
+                if (xs < xe) {
+                    row(y, xs, xe);
+                }
+            }
+        },
+        [&](int ya, int yb) { raster(t, ya, yb, row); });
+}
+
 const Design &designOf(const Look &look) { return designs()[std::min((int)look.family, (int)Family::COUNT - 1)]; }
 
 Rgb rgbOf(uint32_t c) { return {(float)(c >> 16 & 255), (float)(c >> 8 & 255), (float)(c & 255)}; }
 
-// v turned by `angle` about the line through `origin` along `axis`.
-Vec3 turnAbout(Vec3 v, Vec3 origin, Vec3 axis, float angle) {
+// v turned about the line through `origin` along `axis`, by the angle whose
+// cosine and sine are c and s.
+#if defined(BENCH3D) && defined(ESP_PLATFORM)
+// The one followed, each core's: cycles placing its corners, and lighting
+// and setting up its faces; then its corners, its faces, and the triangles
+// they made.
+uint64_t g_aircraftStats[2][6];
+#endif
+
+Vec3 turnAbout(Vec3 v, Vec3 origin, Vec3 axis, float c, float s) {
     Vec3 p = v - origin;
-    float c = cosf(angle), s = sinf(angle);
     return origin + p * c + cross(axis, p) * s + axis * (dot(axis, p) * (1 - c));
 }
 
@@ -5135,9 +5514,13 @@ void addAircraft(const Placed &p, Part &out) {
         out.cam.resize(n);
         out.proj.resize(n);
         float angle[MOVE_SPIN + MAX_SPINNERS] = {};
+        // Each angle's cosine and sine, once: not again for each of the
+        // hundreds of corners a control or a propeller has.
+        float cosine[MOVE_SPIN + MAX_SPINNERS], sine[MOVE_SPIN + MAX_SPINNERS];
         if (mesh.moving) {
             const Config &c = p.config;
-            const float command[HINGES] = {0, c.aileron, c.aileron, c.elevator, c.elevator, c.rudder, c.rudder, c.elevator};
+            const float command[HINGES] = {0,         c.aileron, c.aileron, c.elevator,      c.elevator,
+                                           c.rudder,  c.rudder,  c.elevator, c.spoilerDeploy, c.spoilerDeploy};
             for (int h = 1; h < HINGES; h++) {
                 angle[h] = dsn.hinge[h].travel * command[h];
             }
@@ -5148,17 +5531,29 @@ void addAircraft(const Placed &p, Part &out) {
                 angle[MOVE_SPIN + i] =
                     p.config.turning ? fmodf(scene.seconds * dsn.spinners[i].rate + phase + i, 2 * PI) : phase + i;
             }
+            for (int m = 1; m < MOVE_SPIN + dsn.spinnerCount; m++) {
+                cosine[m] = cosf(angle[m]);
+                sine[m] = sinf(angle[m]);
+            }
         }
+#if defined(BENCH3D) && defined(ESP_PLATFORM)
+        uint64_t *astats = g_aircraftStats[xPortGetCoreID() & 1];
+        uint32_t aclock = esp_cpu_get_cycle_count();
+        if (p.followed) {
+            astats[3] += n;
+            astats[4] += mesh.faceCount();
+        }
+#endif
         for (size_t v = 0; v < n; v++) {
             Vec3 corner = mesh.corner(v);
             uint8_t move = mesh.moves[v];
             if (move != MOVE_NONE && angle[move] != 0) {
                 if (move >= MOVE_SPIN) {
                     const Spinner &s = dsn.spinners[move - MOVE_SPIN];
-                    corner = turnAbout(corner, s.hub, s.axis, angle[move]);
+                    corner = turnAbout(corner, s.hub, s.axis, cosine[move], sine[move]);
                 } else {
                     const Hinge &h = dsn.hinge[move];
-                    corner = turnAbout(corner, h.origin, h.axis, angle[move]);
+                    corner = turnAbout(corner, h.origin, h.axis, cosine[move], sine[move]);
                 }
             }
             out.world[v] = at.place(corner);
@@ -5168,6 +5563,14 @@ void addAircraft(const Placed &p, Part &out) {
                 out.proj[v] = project(out.cam[v]);
             }
         }
+#if defined(BENCH3D) && defined(ESP_PLATFORM)
+        size_t madeBefore = out.solid.size() + out.clear.size();
+        if (p.followed) {
+            uint32_t c = esp_cpu_get_cycle_count();
+            astats[0] += c - aclock;
+            aclock = c;
+        }
+#endif
         float haze = 1 - expf(-p.distance / pal.visibility);
         for (size_t f = 0; f < mesh.faceCount(); f++) {
             uint8_t show = mesh.show(f);
@@ -5180,7 +5583,8 @@ void addAircraft(const Placed &p, Part &out) {
             // A blade's facing from where its corners now are: it turns right
             // round. Any other's as built - a control's few degrees of travel
             // don't change which way it faces.
-            Vec3 normal = mesh.moves[i[0]] >= MOVE_SPIN
+            uint8_t moved = mesh.moves[i[0]];
+            Vec3 normal = moved >= MOVE_SPIN || moved == MOVE_SPOILER_L || moved == MOVE_SPOILER_R
                               ? normalize(cross(out.world[i[1]] - out.world[i[0]], out.world[i[2]] - out.world[i[0]]))
                               : at.turn(mesh.normal(f));
             float facing = dot(normal, out.world[i[0]] - g.eye);
@@ -5229,6 +5633,14 @@ void addAircraft(const Placed &p, Part &out) {
                 });
             }
         }
+#if defined(BENCH3D) && defined(ESP_PLATFORM)
+        if (p.followed) {
+            uint32_t c = esp_cpu_get_cycle_count();
+            astats[1] += c - aclock;
+            aclock = c;
+            astats[5] += out.solid.size() + out.clear.size() - madeBefore;
+        }
+#endif
         // Its shadow, while it is near enough the ground to see it by. The
         // one followed: the simple model's faces towards the sun, flattened
         // onto the ground along its rays - together, the outline the sun
@@ -5514,6 +5926,378 @@ std::atomic<Solids> g_solids{Solids::DONE};
 void (*g_solidsReady)() = nullptr;
 }  // namespace
 
+// --- what covers the land -----------------------------------------------------
+
+#if defined(BENCH3D) && defined(ESP_PLATFORM)
+// Where the cover's time goes, each core's - see coverStats() - and the
+// see-through's: its cycles and pixels.
+uint64_t g_coverStats[2][11];
+uint64_t g_seeStats[2][7];
+#endif
+
+GroundCover flatCover(const groundpack::Window &window, double lat0, double lon0) {
+    GroundCover c;
+    c.window = &window;
+    c.ux = (float)(groundpack::TILES_PER_DEG / (111320.0 * cos(lat0 * M_PI / 180)));
+    c.u0 = (float)((lon0 + 180) * groundpack::TILES_PER_DEG - window.west);
+    c.vy = (float)(-groundpack::TILES_PER_DEG / 110574.0);
+    c.v0 = (float)((90 - lat0) * groundpack::TILES_PER_DEG - window.north);
+    return c;
+}
+
+GroundCover roundCover(const groundpack::Window &window, double lat0, double lon0) {
+    // The sphere's radius over the ellipsoid's two there: north and south,
+    // and east and west.
+    constexpr double A = 6378137.0, E2 = 6.69437999014e-3, R = 6371000.0;
+    double sp = sin(lat0 * M_PI / 180), q = 1 - E2 * sp * sp;
+    GroundCover c;
+    c.window = &window;
+    c.round = true;
+    c.lat0 = lat0;
+    c.lon0 = lon0;
+    c.kLat = (float)(R / (A * (1 - E2) / (q * sqrt(q))));
+    c.kLon = (float)(R / (A / sqrt(q)));
+    return c;
+}
+
+// The angle whose tangent is y / x, x positive, for one a fifth or less -
+// eleven degrees, further than the view sees from its origin - from the
+// series, t - t³/3 + t⁵/5 - t⁷/7, good to 6e-8 of a radian, or 40cm:
+// a division and four multiplies, where atan2f takes a hundred instructions
+// and more, and asinf as many. atan2f itself past that.
+inline float atanSmall(float y, float x) {
+    float t = y / x;
+    if (!(x > 0 && fabsf(t) <= 0.2f)) {
+        return atan2f(y, x);
+    }
+    float t2 = t * t;
+    return t * (1 + t2 * (-1.0f / 3 + t2 * (1.0f / 5 + t2 * (-1.0f / 7))));
+}
+
+// Where point `p` on the ground is on the cover's grid, in tiles: flat,
+// straight from its x and y; round, from its latitude and longitude, worked
+// out from its direction from the earth's middle about the origin.
+void coverPoint(Vec3 p, float er, float &u, float &v) {
+    const GroundCover &c = g.cover;
+    const groundpack::Window &W = *c.window;
+    if (!c.round) {
+        u = c.ux * p.x + c.u0;
+        v = c.vy * p.y + c.v0;
+        return;
+    }
+    // Its direction from the earth's middle, turned for the origin's
+    // meridian to be the X-Z plane: its latitude atan2(Z, √(X² + Y²)), its
+    // longitude from the origin's atan2(Y, X) - and its latitude's from the
+    // origin's, by tan(a - b)'s formula, atan2(Z cos φ0 - h sin φ0, h cos φ0 +
+    // Z sin φ0), h being √(X² + Y²). Both small, for atanSmall().
+    float nx = p.x, ny = p.y, nz = p.z + er, s0 = g.coverSin, c0 = g.coverCos;
+    float X = -ny * s0 + nz * c0, Y = nx, Z = ny * c0 + nz * s0, h = sqrtf(X * X + Y * Y);
+    float latDeg = g.coverLat0 + atanSmall(Z * c0 - h * s0, h * c0 + Z * s0) * (1 / DEG) * c.kLat;
+    float lonDeg = g.coverLon0 + atanSmall(Y, X) * (1 / DEG) * c.kLon;
+    v = (90 - latDeg) * groundpack::TILES_PER_DEG - W.north;
+    u = (lonDeg + 180) * groundpack::TILES_PER_DEG - W.west;
+}
+
+// Row y's five points on the cover's grid, from its ray down the middle,
+// `dir`, swung to each across the row - and the level its cells are read
+// at: the finest whose cells are four pixels or more, along the row or
+// down from the row before.
+// Round: row y's five points - see Frame::RowCover - from its ray down the
+// middle, `dir`, swung to each across the row. The ends and the middle
+// first: where the middle is on the line between the ends, within a
+// twentieth of a cell, the earth's curve across the row is too slight to
+// matter - the near ground's - and the other two aren't worked out. The
+// level from how fast the points go along the row, and down the screen
+// from the even row before.
+void coverAnchors(int y, Vec3 dir, float er, Frame::RowCover &rc) {
+    float ex = g.eye.x, ey = g.eye.y, ez = g.eye.z;
+    float above = ex * ex + ey * ey + ez * (ez + 2 * er);
+    auto point = [&](int i) {
+        Vec3 d = dir + g.right * ((i * g.w * 0.25f - g.cx) / g.f);
+        float l = length(d), b = (ex * d.x + ey * d.y + (ez + er) * d.z) / l, disc = b * b - above;
+        if (!(disc >= 0 && b < 0 && above > 0)) {
+            return false;
+        }
+        coverPoint(g.eye + d * (above / (-b + sqrtf(disc)) / l), er, rc.u[i], rc.v[i]);
+        return true;
+    };
+    rc.level = Frame::NO_LEVEL;
+    if (!point(0) || !point(4) || !point(2)) {
+        return;
+    }
+    float along = std::max(fabsf(rc.u[4] - rc.u[0]), fabsf(rc.v[4] - rc.v[0])) / g.w, rate = along, down = 1e9f;
+    if (y >= 2 && g.rowCover[(y >> 1) - 1].level != Frame::NO_LEVEL) {
+        const Frame::RowCover &p = g.rowCover[(y >> 1) - 1];
+        down = std::max(fabsf(rc.u[2] - p.u[2]), fabsf(rc.v[2] - p.v[2])) * 0.5f;
+        rate = std::max(rate, down);
+    }
+    float cellsPerPx = rate * (groundpack::ROWS0 << -groundpack::FINEST);
+    int level = groundpack::FINEST;
+    while (level < groundpack::LEVELS - 1 && cellsPerPx * 4 > 1) {
+        cellsPerPx *= 0.5f;
+        level++;
+    }
+    float cell = 1.0f / (level < 0 ? groundpack::ROWS0 << -level : groundpack::ROWS0 >> level), off = 0.05f * cell;
+    rc.straight = fabsf(rc.u[2] - (rc.u[0] + rc.u[4]) * 0.5f) <= off && fabsf(rc.v[2] - (rc.v[0] + rc.v[4]) * 0.5f) <= off;
+    rc.tall = down * 8 <= cell;
+    rc.wide = along * 16 <= cell;
+    if (!rc.straight && (!point(1) || !point(3))) {
+        return;
+    }
+    rc.level = (int8_t)level;
+}
+
+// Flat: row y's two ends on the pack's grid - every point between on the
+// line from one to the other, the ground being a plane - straight from the
+// camera: the row's rays all meet the ground the same way along them, the
+// eye's height over how steeply the row looks down, the camera having no
+// roll. False where the row doesn't look down at the ground.
+inline bool coverFlatEnds(const Frame &f, int y, float &u0, float &v0, float &u4, float &v4) {
+    const Frame::CoverFlat &k = f.coverFlat;
+    float sy = y * k.perF + k.sy0, dz = k.fz + k.dz1 * sy;
+    if (!(dz < 0 && k.ez > 0)) {
+        return false;
+    }
+    float t = k.ez / -dz, du = t * k.ku, dv = t * k.kv;  // a pixel's worth
+    u0 = k.au + t * (k.bu + k.cu * sy);
+    v0 = k.av + t * (k.bv + k.cv * sy);
+    u4 = u0 + du * f.w;
+    v4 = v0 + dv * f.w;
+    return true;
+}
+
+// The same, as Frame::RowCover has it, with its level - from how fast the
+// ends go along the row, and how fast the middle goes down the screen to
+// the row two under it.
+bool coverFlatRow(const Frame &f, int y, Frame::RowCover &rc) {
+    float u2, v2, u6, v6;
+    if (!coverFlatEnds(f, y, rc.u[0], rc.v[0], rc.u[4], rc.v[4]) || !coverFlatEnds(f, y + 2, u2, v2, u6, v6)) {
+        rc.level = Frame::NO_LEVEL;
+        return false;
+    }
+    float along = std::max(fabsf(rc.u[4] - rc.u[0]), fabsf(rc.v[4] - rc.v[0])) * f.perW;
+    float down = std::max(fabsf(u2 + u6 - rc.u[0] - rc.u[4]), fabsf(v2 + v6 - rc.v[0] - rc.v[4])) * 0.25f;
+    float rate = std::max(along, down);
+    // The finest level whose cells are four pixels or more: a cell of level
+    // L is 2^L / 288 of a tile, from level -2's 1/1152.
+    constexpr float FINE = 1.0f / (4 * (groundpack::ROWS0 << -groundpack::FINEST));
+    rc.level = (int8_t)(groundpack::FINEST + (rate > FINE) + (rate > 2 * FINE) + (rate > 4 * FINE) +
+                        (rate > 8 * FINE) + (rate > 16 * FINE) + (rate > 32 * FINE));
+    rc.straight = true;
+    // A cell of level L is 4 FINE 2^(L - FINEST) of a tile.
+    float cell = 4 * FINE * (float)(1 << (rc.level - groundpack::FINEST));
+    rc.tall = down * 8 <= cell;
+    rc.wide = along * 16 <= cell;
+    return true;
+}
+
+template <typename T>
+T *align16(T *p) {
+    return (T *)(((uintptr_t)p + 15) & ~(uintptr_t)15);
+}
+
+// The hills along the skyline, from the horizon worked out round a place
+// near the eye - see Scene::horizon - a range at a time. Each bearing's
+// highest point put where it is from there, at the angle and distance the
+// horizon has, and seen from where the eye is now: as the eye comes closer
+// or goes by, the hills move and grow as they would, rather than standing
+// still till the next horizon. Along the screen, each column between two
+// such points, a bearing apart - eight pixels or so - has the row of the
+// hill's top on the line between theirs, and the row of its foot, where the
+// ground the view draws is as far off; and its colour that of the nearer
+// of the two: the dark green of wet moorland and plantations, lit as the
+// land is, in a damp haze - cooler than the sky's, and thicker than the
+// view's, as Scotland's air mostly is - as far off as that hill is, so a
+// hill comes out of the haze as it is neared. The two further ranges down
+// to their feet - below the eye's level, a thin hazy band where they hide
+// the land behind them - but the nearest down to the eye's horizon only:
+// below that, close enough for it to matter, the cover's light and shade
+// on the ground shows the hills, and a ridge falling below the level runs
+// down into the horizon rather than ending in a wall. None at all above
+// 4,000m, where the hills are seen from above.
+void skyline(const Scene &scene, float groundLight) {
+    constexpr int R = groundpack::Horizon::RANGES, B = groundpack::Horizon::BEARINGS;
+    for (Frame::HillRange &range : g.hills) {
+        range.on = false;
+    }
+    const groundpack::Horizon *hz = scene.horizon;
+    if (hz == nullptr || scene.eyeHeightM > 4000) {
+        return;
+    }
+    int w = g.w, h = g.h;
+    size_t n = ((size_t)w + 7) & ~(size_t)7;
+    g.hillRows.resize(2 * R * n + 8);
+    g.hillColors.resize(2 * R * n + 8);
+    g.hillDepths.resize(R * n + 8);
+    g.hillIz.resize(R * n + 4);
+    int16_t *rows = align16(g.hillRows.data());
+    uint16_t *colors = align16(g.hillColors.data()), *depths = align16(g.hillDepths.data());
+    for (int r = 0; r < R; r++) {
+        g.hills[r].from = rows + 2 * r * n;
+        g.hills[r].to = rows + (2 * r + 1) * n;
+        g.hills[r].pixels[0] = colors + 2 * r * n;
+        g.hills[r].pixels[1] = colors + (2 * r + 1) * n;
+        g.hills[r].depth = depths + r * n;
+        g.hills[r].iz = g.hillIz.data() + r * n;
+    }
+    float er = g.scene.earthRadius;
+    Vec3 centre = {0, 0, -er}, at = scene.horizonAt, eye = g.eye;
+    // Up, north and east where the horizon was worked out: flat, the view's
+    // own; round, the sphere's there.
+    Vec3 up = {0, 0, 1}, north = {0, 1, 0}, east = {1, 0, 0};
+    if (er > 0) {
+        up = normalize(at - centre);
+        north = normalize(Vec3{0, 1, 0} - up * up.y);
+        east = cross(north, up);
+    }
+    // The row the eye's horizon is at: flat, its level; round, below it by
+    // its height over the sphere - as straight across the middle of the
+    // screen, the camera having no roll.
+    float overGround = er > 0 ? length(eye - centre) - er : eye.z;
+    float dip = er > 0 ? sqrtf(2 * std::max(0.0f, overGround) / er) : 0;
+    Vec3 level = {g.forward.x, g.forward.y, 0};
+    level = normalize(Vec3{level.x, level.y, -dip * length(level)});
+    float horizonRow = dot(level, g.forward) > 1e-3f ? g.cy + g.f * dot(level, g.down) / dot(level, g.forward) - 0.5f
+                                                     : (dot(level, g.down) > 0 ? (float)h : 0.0f);
+    // The colours: a damp haze - the view's, cooled towards a blue grey as
+    // bright, as wet air scatters - thicker than the view's, 30km taking 63%
+    // of a colour; over the dark green of wet hills, lit.
+    const Rgb &haze = g.pal.haze;
+    float bright = 0.3f * haze.r + 0.59f * haze.g + 0.11f * haze.b;
+    Rgb damp = mix(haze, {bright * 0.88f, bright * 0.97f, bright * 1.08f}, 0.5f);
+    Rgb hills = scale({52, 72, 50}, groundLight);
+    float perVisibility = 1 / std::min(g.pal.visibility, 30000.0f);
+    // A bearing's point as the screen has it: where across, the rows of
+    // its top and foot, and its colour's four pixels - by row and column
+    // parity - or none.
+    struct Seen {
+        bool on = false;
+        float x = 0, top = 0, foot = 0, iz = 0;
+        uint16_t pixels[2][2] = {};
+    };
+    auto see = [&](int r, int b, Vec3 dir, Seen &out) {
+        out.on = false;
+        float far = hz->distance[r][b], tanUp = hz->tanUp[r][b];
+        if (!(tanUp > -0.5f)) {
+            return;
+        }
+        Vec3 top = at + dir * far + up * (far * tanUp);
+        Vec3 foot = er > 0 ? centre + normalize(top - centre) * er : Vec3{top.x, top.y, 0};
+        Vec3 ct = top - eye, cf = foot - eye;
+        float zt = dot(ct, g.forward), zf = dot(cf, g.forward);
+        if (zt < 1 || zf < 1) {
+            return;  // behind the eye, or beside it
+        }
+        float pt = g.f / zt, pf = g.f / zf;
+        out.iz = 1 / zt;
+        out.x = g.cx + dot(ct, g.right) * pt - 0.5f;
+        out.top = g.cy + dot(ct, g.down) * pt - 0.5f;
+        out.foot = g.cy + dot(cf, g.down) * pf - 0.5f;
+        float x = length(ct) * perVisibility;
+        float clear = 1 / (1 + x * (1 + x * (0.5f + x * (1.0f / 6 + x * (1.0f / 24)))));
+        Rgb color = mix(hills, damp, 1 - clear);
+        // Dithered to the screen's 5, 6 and 5 bits by an ordered 2 by 2's
+        // quarters, in whole quarters: floor(c + d) is (floor(4c) + 4d) / 4.
+        int qr = (int)(color.r * (4 * 31.0f / 255)), qg = (int)(color.g * (4 * 63.0f / 255)),
+            qb = (int)(color.b * (4 * 31.0f / 255));
+        static const int BAYER4[2][2] = {{0, 2}, {3, 1}};
+        for (int p = 0; p < 2; p++) {
+            for (int q = 0; q < 2; q++) {
+                int d = BAYER4[p][q];
+                int lr = std::min(31, (qr + d) >> 2), lg = std::min(63, (qg + d) >> 2), lb = std::min(31, (qb + d) >> 2);
+                out.pixels[p][q] = swapIf((uint16_t)(lr << 11 | lg << 5 | lb));
+            }
+        }
+        out.on = true;
+    };
+    // The bearings in view, left to right: those the screen's edges reach -
+    // as each of its top, the horizon's and its bottom rows has them, the
+    // camera having no roll - and two more each side, for the spans to reach
+    // the edges. Looking straight up or down, half a turn about where it
+    // looks, as all of them might be.
+    float lookingAt = atan2f(g.forward.x, g.forward.y), spread = 0;
+    {
+        float rowsAt[3] = {0, std::min((float)h, std::max(0.0f, horizonRow)), (float)h};
+        for (float y : rowsAt) {
+            Vec3 d = g.forward + g.down * ((y - g.cy) / g.f);
+            float along = d.x * g.forward.x + d.y * g.forward.y, flat = length(Vec3{g.forward.x, g.forward.y, 0});
+            along = flat > 1e-4f ? along / flat : 0;
+            spread = along > 1e-3f ? std::max(spread, atanf((g.cx + 1) / g.f / along)) : PI / 2;
+        }
+        spread = std::min(spread, PI / 2);
+    }
+    float looking = lookingAt + scene.horizonTurn, step = 2 * PI / B;
+    int first = (int)floorf((looking - spread) / step) - 2, last = (int)ceilf((looking + spread) / step) + 2;
+    last = std::min(last, first + B / 2 + 2);
+    // Each bearing's direction, turned on from the last's by a bearing's
+    // angle - two multiplies and an add each way, where sinf and cosf were a
+    // hundred cycles and more each.
+    float a0 = first * step - scene.horizonTurn, sa = sinf(a0), ca = cosf(a0);
+    const float SS = sinf(step), CS = cosf(step);
+    Seen left[R];
+    int top[R], bottom[R], lowest[R];
+    for (int r = 0; r < R; r++) {
+        memset(g.hills[r].from, 0, n * sizeof(int16_t));
+        memset(g.hills[r].to, 0, n * sizeof(int16_t));
+        top[r] = h;
+        bottom[r] = 0;
+        // The nearest down to the horizon at most - see above.
+        lowest[r] = r == 0 ? std::max(0, std::min(h, ceilInt(horizonRow))) : h;
+    }
+    for (int k = first; k <= last; k++) {
+        int b = (k % B + B) % B;
+        Vec3 dir = east * sa + north * ca;
+        float s2 = sa * CS + ca * SS;
+        ca = ca * CS - sa * SS;
+        sa = s2;
+        for (int r = 0; r < R; r++) {
+            Frame::HillRange &range = g.hills[r];
+            Seen right;
+            see(r, b, dir, right);
+            const Seen &l = left[r];
+            if (l.on && right.on && right.x > l.x) {
+                // The columns between the two, on the lines between.
+                int x0 = std::max(0, ceilInt(l.x)), x1 = std::min(w, ceilInt(right.x));
+                if (x0 < x1) {
+                    float perSpan = 1 / (right.x - l.x), t = (x0 - l.x) * perSpan;
+                    float dTop = (right.top - l.top) * perSpan, dFoot = (right.foot - l.foot) * perSpan;
+                    float *iz = range.iz;
+                    float rowTop = l.top + (right.top - l.top) * t, rowFoot = l.foot + (right.foot - l.foot) * t;
+                    for (int x = x0; x < x1; x++, t += perSpan, rowTop += dTop, rowFoot += dFoot) {
+                        int rt = std::max(0, std::min(h, ceilInt(rowTop))),
+                            rf = std::max(0, std::min(lowest[r], ceilInt(rowFoot)));
+                        if (rt >= rf) {
+                            continue;
+                        }
+                        range.from[x] = (int16_t)rt;
+                        range.to[x] = (int16_t)rf;
+                        iz[x] = l.iz + (right.iz - l.iz) * t;  // 1/z goes straight across the screen
+                        top[r] = std::min(top[r], rt);
+                        bottom[r] = std::max(bottom[r], rf);
+                        // The colour of one or the other, by how far across
+                        // it is against an ordered dither's thresholds: the
+                        // two blended over the span between them, two hills'
+                        // hazes a bearing apart with no seam between, for
+                        // nothing.
+                        static const float THRESHOLD[2][4] = {{0.125f, 0.625f, 0.375f, 0.875f},
+                                                              {0.875f, 0.375f, 0.625f, 0.125f}};
+                        for (int p = 0; p < 2; p++) {
+                            range.pixels[p][x] = (t < THRESHOLD[p][x & 3] ? l : right).pixels[p][x & 1];
+                        }
+                    }
+                }
+            }
+            left[r] = right;
+        }
+    }
+    for (int r = 0; r < R; r++) {
+        Frame::HillRange &range = g.hills[r];
+        range.top = top[r];
+        range.bottom = bottom[r];
+        range.on = top[r] < bottom[r];
+    }
+}
+
 void prepareBegin(int w, int h, int bandRows, bool swapBytes, const Scene &scene, const Camera &camera) {
     uint32_t t0 = now();
     const Models &m = models();
@@ -5540,6 +6324,12 @@ void prepareBegin(int w, int h, int bandRows, bool swapBytes, const Scene &scene
     float shadowing = clamp01((scene.sun.elevationDeg - 3) / 5);
     g.shadows = shadowing > 0;
     g.shadow256 = (int)((1 - (1 - pal.shadow) * shadowing) * 256);
+    for (int i = 0; i < 8; i++) {
+        g.shadowLanes[0][i] = (uint16_t)g.shadow256;
+        g.shadowLanes[1][i] = 0xF800;
+        g.shadowLanes[2][i] = 0x07E0;
+        g.shadowLanes[3][i] = 0x001F;
+    }
     g.w = w;
     g.h = h;
     g.bandRows = bandRows;
@@ -5600,7 +6390,58 @@ void prepareBegin(int w, int h, int bandRows, bool swapBytes, const Scene &scene
     // they run together - near, the lights themselves, strewn over it (see
     // lightTowns()), on the dark.
     Rgb town = scale({124, 118, 108}, groundLight), townGlow = {72, 46, 22};
+    // What covers the land, each cover's colour lit as the land is - see
+    // GroundCover: none, trees, shrubs, grass, crops, built over, bare, snow
+    // and ice, water, marsh, mangroves, moss and lichen; and the mixes -
+    // suburbs, towns' middles, moor, rocky ground. A wet country's: the
+    // grass a deep green, fields more green than gold, the shrubs the brown
+    // green of heather, bare ground grey rock; the suburbs' roofs among
+    // gardens and trees a grey green, a town's middle a darker grey, the
+    // moor's deer grass and bracken a russet brown.
+    static const Rgb COVER_RGB[groundpack::COVERS] = {
+        {86, 98, 70},   {40, 72, 42},    {94, 90, 64},   {80, 118, 58},   {126, 128, 76},  {124, 118, 108},
+        {128, 124, 112}, {236, 240, 244}, {44, 66, 90},   {70, 90, 70},    {40, 84, 54},    {102, 110, 88},
+        {100, 106, 84}, {112, 106, 100}, {108, 100, 64}, {118, 116, 100}};
+    g.cover = scene.cover;
+    bool coverOn = g.cover.window != nullptr && g.cover.window->rows > 0;
+    g.coverLat0 = (float)g.cover.lat0;
+    g.coverLon0 = (float)g.cover.lon0;
+    g.coverSin = sinf(g.coverLat0 * DEG);
+    g.coverCos = cosf(g.coverLat0 * DEG);
+    for (int c = 0; c < groundpack::COVERS; c++) {
+        Rgb lit = scale(COVER_RGB[c], groundLight);
+        g.coverLit[c][0] = (uint8_t)std::min(255.0f, std::max(0.0f, lit.r));
+        g.coverLit[c][1] = (uint8_t)std::min(255.0f, std::max(0.0f, lit.g));
+        g.coverLit[c][2] = (uint8_t)std::min(255.0f, std::max(0.0f, lit.b));
+    }
+    g.coverOn = coverOn;
+    g.perW = 1.0f / w;
+    if (coverOn && !g.cover.round) {
+        Frame::CoverFlat &k = g.coverFlat;
+        const GroundCover &c = g.cover;
+        k.perF = 1 / g.f;
+        k.sy0 = (0.5f - g.cy) * k.perF;
+        k.fz = g.forward.z;
+        k.dz1 = g.down.z;
+        k.ez = g.eye.z > 0 ? g.eye.z : 0;  // under the ground: no row reaches it
+        k.ku = c.ux * g.right.x * k.perF;
+        k.kv = c.vy * g.right.y * k.perF;
+        k.au = c.ux * g.eye.x + c.u0;
+        k.av = c.vy * g.eye.y + c.v0;
+        k.bu = c.ux * g.forward.x - k.ku * g.cx;
+        k.bv = c.vy * g.forward.y - k.kv * g.cx;
+        k.cu = c.ux * g.down.x;
+        k.cv = c.vy * g.down.y;
+    }
+    g.rowCover.resize(coverOn && g.cover.round ? (h + 1) / 2 : 0);
+    for (int cell = 0; coverOn && cell < 256; cell++) {
+        int k = (cell & 15) * 256 / 11;  // shade 11 is flat ground
+        for (int i = 0; i < 3; i++) {
+            g.coverRgb[cell][i] = (uint8_t)std::min(255, g.coverLit[cell >> 4][i] * k >> 8);
+        }
+    }
     float dark = clamp01((0.36f - groundLight) / 0.18f);
+    g.coverTowns = coverOn && dark < 0.5f;
     bool landRows = scene.landAndSea && !m.groundLines.empty(), townRows = landRows && m.towns;
     if (scene.earthRadius <= 0) {
         land = grass;
@@ -5619,7 +6460,7 @@ void prepareBegin(int w, int h, int bandRows, bool swapBytes, const Scene &scene
     // apart from the sea - see groundAndCoasts(): the dithering of each is
     // a good part of the rows' time.
     float er = scene.earthRadius, ex = g.eye.x, ey = g.eye.y, ez = g.eye.z;
-    float above = ex * ex + ey * ey + ez * (ez + 2 * er);
+    float above = ex * ex + ey * ey + ez * (ez + 2 * er), perVisibility = 1 / pal.visibility;
     for (int y = 0; y < h; y++) {
         Vec3 dir = g.forward + g.down * ((y + 0.5f - g.cy) / g.f);
         float l = length(dir), distance = -1;
@@ -5631,8 +6472,30 @@ void prepareBegin(int w, int h, int bandRows, bool swapBytes, const Scene &scene
         } else if (dir.z < 0 && g.eye.z > 0) {
             distance = g.eye.z / -dir.z * l;
         }
+        if (coverOn && g.cover.round && !(y & 1)) {
+            Frame::RowCover rc;
+            rc.level = Frame::NO_LEVEL;
+#if defined(BENCH3D) && defined(ESP_PLATFORM)
+            uint64_t *stats = g_coverStats[xPortGetCoreID() & 1];
+            uint32_t clock = esp_cpu_get_cycle_count();
+#endif
+            if (distance > 0) {
+                coverAnchors(y, dir, er, rc);
+#if defined(BENCH3D) && defined(ESP_PLATFORM)
+                stats[8]++;
+#endif
+            }
+#if defined(BENCH3D) && defined(ESP_PLATFORM)
+            uint32_t mid = esp_cpu_get_cycle_count();
+            stats[7] += mid - clock;
+            g.rowCover[y >> 1] = rc;
+            stats[9] += esp_cpu_get_cycle_count() - mid;
+#else
+            g.rowCover[y >> 1] = rc;
+#endif
+        }
         if (distance > 0) {
-            float haze = 1 - expf(-distance / pal.visibility);
+            float haze = 1 - expf(-distance * perVisibility);
             g.rowColor[y] = pair(mix(grass, pal.haze, haze), y);
             if (landRows) {
                 g.rowLand[y] = pair(mix(land, pal.haze, haze), y);
@@ -5652,6 +6515,13 @@ void prepareBegin(int w, int h, int bandRows, bool swapBytes, const Scene &scene
             g.rowHaze[y] = 256;
         }
     }
+#if defined(BENCH3D) && defined(ESP_PLATFORM)
+    uint32_t skylineClock = esp_cpu_get_cycle_count();
+    skyline(scene, groundLight);
+    g_coverStats[xPortGetCoreID() & 1][10] += esp_cpu_get_cycle_count() - skylineClock;
+#else
+    skyline(scene, groundLight);
+#endif
     lap(STEP_ROWS);
 
     // The ground, lit all alike, hazed a row at a time as it is drawn.
@@ -5969,8 +6839,8 @@ void groundAndCoasts() {
     if (m.groundLines.empty()) {
         return;
     }
-    float r = g.scene.earthRadius;
-    g_groundReach2 = r > 0 ? 2 * r * std::max(1.0f, heightOf(g.eye)) : 0;
+    float r = g.scene.earthRadius, eyeUp = std::max(1.0f, heightOf(g.eye));
+    g_groundReach2 = r > 0 ? 2 * r * eyeUp : 0;
     bool fill = g.scene.landAndSea;
     // Each line's crossing of the rows on the screen, once: where it is on
     // the first row it crosses, how far along a row it moves a row, its rows,
@@ -5999,6 +6869,7 @@ void groundAndCoasts() {
     middle.clear();
     const float middleX = (float)(g.w / 2);
     static const Rgb KINDS[] = {{222, 216, 196}, {196, 206, 214}, {150, 150, 158}, {128, 130, 138}};
+    static const Rgb LAND_LINE = {86, 98, 70};  // the land's own colour, for a line seen along it
     // Cells none of whose lines can be on the screen passed over: all of one
     // behind the eye, off a side of the view, or past the horizon. (Those off
     // to the sides were once read for where a coast crossed a row out of
@@ -6039,8 +6910,13 @@ void groundAndCoasts() {
         }
         uint8_t layer = layerOf(l.kind);
         if (layer != TOWNS) {  // a town's edge isn't drawn: it is where the town is drawn to
+            // Pale where it is seen looking well down on it, as surf and sand
+            // are; seen low along the ground - a coast twenty miles off from
+            // 1,500ft - the strip of beach a hundredth of a pixel, and the
+            // line the land's colour, not a white thread along the horizon.
             Vec3 mid = lerp(l.a, l.b, 0.5f) - g.eye;
-            addSeenLine(a, b, KINDS[(int)l.kind & 3], sqrtf(dot(mid, mid)));
+            float far = sqrtf(dot(mid, mid)), steep = clamp01((eyeUp / far - 0.02f) * (1 / 0.06f));
+            addSeenLine(a, b, mix(LAND_LINE, KINDS[(int)l.kind & 3], steep), far);
         }
         if (!fill || layer == NO_LAYER) {
             return;
@@ -6617,6 +7493,15 @@ void prepareEnd() {
         nearest = std::max(nearest, dot.iz);
     }
     g.depthK = DEPTH_TOP / nearest;
+    // The hills' depths, at that scale - the depth buffer's own sums.
+    for (Frame::HillRange &range : g.hills) {
+        if (range.on) {
+            float k = g.depthK * 1.002f;
+            for (int x = 0; x < g.w; x++) {
+                range.depth[x] = range.from[x] < range.to[x] ? (uint16_t)std::min(65535.0f, range.iz[x] * k) : 0;
+            }
+        }
+    }
     lap(STEP_DEPTH);
 
     Counts &c = g.counts;
@@ -6661,6 +7546,17 @@ void flip() {
 
 Counts counts() { return d.counts; }
 
+#ifdef BENCH3D
+void spanStats(uint32_t out[6], bool reset) {
+    for (int i = 0; i < 6; i++) {
+        out[i] = g_spanStats[0][i] + g_spanStats[1][i];
+        if (reset) {
+            g_spanStats[0][i] = g_spanStats[1][i] = 0;
+        }
+    }
+}
+#endif
+
 const char *stepName(int step) {
     static const char *const NAMES[STEPS] = {"rows",    "far ground", "ground",  "paint",   "placing", "sorting",
                                              "followed", "traffic",   "its shadow", "solids", "wires",  "country",
@@ -6679,6 +7575,494 @@ uint16_t *drawBand(int band, void *scratch, uint32_t *stageUs) {
     return color;
 }
 
+// The cover's innermost loops, in C - and on the device, in assembly: see
+// scene3d_cover.S, which the bench sets against these.
+//
+// `n` of a tile's cells, `stride` to its row, along a line from (cu, cv) in
+// 16.16 fixed point, stepping (dcu, dcv): into `out`, each marked in `seen`.
+void coverCellsC(const uint8_t *cells, int stride, int32_t cu, int32_t cv, int32_t dcu, int32_t dcv, int n,
+                 uint8_t *out, uint8_t *seen) {
+    for (int i = 0; i < n; i++) {
+        uint8_t c = cells[(cv >> 16) * stride + (cu >> 16)];
+        out[i] = c;
+        seen[c] = 1;
+        cu += dcu;
+        cv += dcv;
+    }
+}
+
+// `n` samples' four pixels each, from a pixel whose x is a multiple of 4:
+// each the colour pair of its cell.
+void coverWriteC(uint16_t *row, const uint8_t *cells, const uint32_t *pairs, int n) {
+    uint32_t *out = (uint32_t *)row;
+    for (int i = 0; i < n; i++) {
+        uint32_t p = pairs[cells[i]];
+        out[2 * i] = p;
+        out[2 * i + 1] = p;
+    }
+}
+
+// The same for samples of eight pixels.
+void coverWrite8C(uint16_t *row, const uint8_t *cells, const uint32_t *pairs, int n) {
+    uint32_t *out = (uint32_t *)row;
+    for (int i = 0; i < n; i++) {
+        uint32_t p = pairs[cells[i]];
+        out[4 * i] = p;
+        out[4 * i + 1] = p;
+        out[4 * i + 2] = p;
+        out[4 * i + 3] = p;
+    }
+}
+
+#if defined(ESP_PLATFORM)
+extern "C" void scene3d_cover_cells(const uint8_t *cells, int stride, int32_t cu, int32_t cv, int32_t dcu,
+                                    int32_t dcv, int n, uint8_t *out, uint8_t *seen);
+extern "C" void scene3d_cover_write(uint16_t *row, const uint8_t *cells, const uint32_t *pairs, int n);
+extern "C" void scene3d_cover_write8(uint16_t *row, const uint8_t *cells, const uint32_t *pairs, int n);
+#endif
+
+// A run of `m` samples kept in a tile `cells` wide, 16.16 fixed point: the
+// first put inside it, and the step cut where the last would go out of it -
+// by rounding, only ever just - and every one between with them.
+inline void keepIn(int32_t &at, int32_t &step, int m, int cells) {
+    int32_t top = cells * 65536 - 1;
+    at = std::max<int32_t>(0, std::min(at, top));
+    if (m > 1) {
+        int32_t end = at + step * (m - 1);
+        if (end > top) {
+            step -= (end - top + m - 2) / (m - 1);
+        } else if (end < 0) {
+            step += (m - 2 - end) / (m - 1);
+        }
+    }
+}
+
+// The pack's cells along a stretch of a row of ground: `n` samples from
+// (u, v), in tiles, stepping (du, dv) a sample, read at `level` - or, where
+// a tile's cells at that level aren't in yet, the finest it has - into
+// `out`, 0 where there is no tile, each marked in `seen`. A tile at a time:
+// the tile worked out again only as one is crossed, and its cells stepped
+// through. At level 0 and finer, a part of a tile at a time - see
+// groundpack::Window - as many parts each way as the level asked for has,
+// the walk's units that many to a tile.
+void coverWalk(float u, float v, float du, float dv, int n, int level, uint8_t *out, uint8_t *seen) {
+    const groundpack::Window &W = *d.cover.window;
+    level = std::max(groundpack::FINEST, std::min(groundpack::LEVELS - 1, level));  // never a table past the ends
+    int sBits = level <= 0 ? 1 - level : 0;  // the walk's units, 2^sBits to a tile each way
+    if (sBits != 0) {
+        float split = (float)(1 << sBits);
+        u *= split;
+        v *= split;
+        du *= split;
+        dv *= split;
+    }
+    float iu = du != 0 ? 1 / du : 0, iv = dv != 0 ? 1 / dv : 0;
+    while (n > 0) {
+        int tu = floorInt(u), tv = floorInt(v);
+        int m = n;
+        if (du > 0) {
+            m = std::min(m, ceilInt((tu + 1 - u) * iu));
+        } else if (du < 0) {
+            m = std::min(m, ceilInt((tu - u) * iu));
+        }
+        if (dv > 0) {
+            m = std::min(m, ceilInt((tv + 1 - v) * iv));
+        } else if (dv < 0) {
+            m = std::min(m, ceilInt((tv - v) * iv));
+        }
+        m = std::max(m, 1);
+        // The cells: the finest the tile has at `level` or coarser, and the
+        // corner (ou, ov) of their part, and how many units it spans, 2^k.
+        const uint8_t *cells = nullptr;
+        int stride = 0, rows = 0, ou = 0, ov = 0, k = 0;
+        int su = tu >> sBits, sv = tv >> sBits;  // the tile
+        if ((unsigned)su < (unsigned)W.cols && (unsigned)sv < (unsigned)W.rows) {
+            int slot = sv * W.cols + su, c0 = groundpack::cols0At(W.north + sv);
+            int at = level;
+            for (;; at++) {
+                if (at < 0) {
+                    cells = W.finer[-1 - at][slot];
+                } else if (at == 0) {
+                    cells = W.detail[slot];
+                } else if (at < groundpack::LEVELS - 1) {
+                    if (const uint8_t *mid = W.mid[slot]) {
+                        constexpr int R1 = groundpack::ROWS0 >> 1;
+                        int c1 = c0 >> 1;
+                        cells = mid + (at >= 2 ? R1 * c1 : 0) + (at >= 3 ? (R1 >> 1) * (c1 >> 1) : 0);
+                    }
+                } else {
+                    cells = W.coarse[slot];
+                }
+                if (cells != nullptr || at >= groundpack::LEVELS - 1) {
+                    break;
+                }
+            }
+            if (cells != nullptr) {
+                int pBits = at <= 0 ? 1 - at : 0;  // its parts, 2^pBits each way
+                stride = at <= 0 ? c0 >> 1 : c0 >> at;
+                rows = at <= 0 ? groundpack::ROWS0 >> 1 : groundpack::ROWS0 >> at;
+                k = sBits - pBits;
+                int pu = (tu >> k) & ((1 << pBits) - 1), pv = (tv >> k) & ((1 << pBits) - 1);
+                cells += (size_t)((pv << pBits) + pu) * rows * stride;
+                ou = (tu >> k) << k;
+                ov = (tv >> k) << k;
+            }
+        }
+        if (cells == nullptr || stride == 0) {
+            memset(out, 0, m);
+            seen[0] = 1;
+        } else {
+            float part = 1.0f / (1 << k), ku = part * stride * 65536.0f, kv = part * rows * 65536.0f;
+            int32_t cu = (int32_t)((u - ou) * ku), cv = (int32_t)((v - ov) * kv);
+            int32_t dcu = (int32_t)(du * ku), dcv = (int32_t)(dv * kv);
+            keepIn(cu, dcu, m, stride);
+            keepIn(cv, dcv, m, rows);
+#if defined(BENCH3D) && defined(ESP_PLATFORM)
+            uint64_t *stats = g_coverStats[xPortGetCoreID() & 1];
+            uint32_t clock = esp_cpu_get_cycle_count();
+#endif
+#if defined(ESP_PLATFORM)
+            if (g_simd) {
+                scene3d_cover_cells(cells, stride, cu, cv, dcu, dcv, m, out, seen);
+            } else
+#endif
+            {
+                coverCellsC(cells, stride, cu, cv, dcu, dcv, m, out, seen);
+            }
+#if defined(BENCH3D) && defined(ESP_PLATFORM)
+            stats[5] += esp_cpu_get_cycle_count() - clock;
+            stats[6] += m;
+#endif
+        }
+        out += m;
+        u += du * m;
+        v += dv * m;
+        n -= m;
+    }
+}
+
+// What covers a row of ground: the cell at each four pixels - read at the
+// middle of the four - and which cells there are among them, worked out for
+// a row and kept for the row under it, which takes them as they are: a cell
+// is some rows tall wherever it is fewer pixels across than four. Each core
+// its own.
+constexpr int COVER_SAMPLE = 4;
+constexpr int COVER_SAMPLES_MOST = 1280 / COVER_SAMPLE;
+struct CoverCells {
+    int y = -100, share = 2;  // the first row it is for, and how many from there
+    int shift = 2;            // a sample each 4 pixels, or - 3 - each 8
+    int count = 0;  // in `list`
+    alignas(8) uint8_t cell[COVER_SAMPLES_MOST];
+    uint8_t list[256];
+    alignas(4) uint8_t seen[256];
+};
+CoverCells g_coverCells[2];
+
+// The colour pairs of the cells for a row's haze, to 32 levels, one for each
+// parity of row, as the dithering has it - shared by the rows the haze is
+// the same in, which on a core are most of a band's in turn: each worked out
+// as its cell is first wanted. `checked` the row whose cells it has every
+// one of.
+struct CoverPairs {
+    int haze = -1, checked = -100;
+    uint32_t valid[8];
+    alignas(16) uint32_t pair[256];
+};
+CoverPairs g_coverPairs[2][2];
+
+
+// Row y's place on the cover's grid, and its level: false where it looks at
+// no ground. Round, the even row's of its pair.
+bool rowCoverOf(int y, Frame::RowCover &rc) {
+    if (d.cover.round) {
+        rc = d.rowCover[y >> 1];
+        return rc.level != Frame::NO_LEVEL;
+    }
+    return coverFlatRow(d, y, rc);
+}
+
+// The cells along a row of ground, `rc`, into `out`.
+void coverCells(const Frame::RowCover &rc, CoverCells &out) {
+    int sample = 1 << out.shift, w = d.w, n = (w + sample - 1) >> out.shift;
+    // Four stretches between the five points - or, straight, one from end
+    // to end, which crosses fewer tiles' edges.
+    int stretches = rc.straight ? 1 : 4, step = 4 / stretches;
+    for (int seg = 0; seg < 4; seg += step) {
+        int i0 = seg * n / 4, i1 = (seg + step) * n / 4;
+        float span = w * 0.25f * step, du = (rc.u[seg + step] - rc.u[seg]) / span,
+              dv = (rc.v[seg + step] - rc.v[seg]) / span;
+        float at = i0 * sample + sample * 0.5f - seg * w * 0.25f;  // the first sample's middle, from the point
+        coverWalk(rc.u[seg] + du * at, rc.v[seg] + dv * at, du * sample, dv * sample, i1 - i0, rc.level, out.cell + i0,
+                  out.seen);
+    }
+    // The cells marked, gathered into the list, and the marks cleared - a
+    // word at a time, most of them nought.
+    out.count = 0;
+    uint32_t *words = (uint32_t *)out.seen;
+    for (int i = 0; i < 64; i++) {
+        if (words[i] != 0) {
+            for (int b = 0; b < 4; b++) {
+                if (out.seen[4 * i + b] != 0) {
+                    out.list[out.count++] = (uint8_t)(4 * i + b);
+                }
+            }
+            words[i] = 0;
+        }
+    }
+}
+
+// Pixels [xa, xb) of row y, land, in what covers it - see GroundCover - each
+// four the colour of its cell, lit, shaded and hazed as the row is; `land`
+// where there is no tile, or the pack has nothing.
+void coverSpan(uint16_t *row, int y, int xa, int xb, uint32_t land, const int haze[3]) {
+#if defined(ESP_PLATFORM)
+    int core = xPortGetCoreID() & 1;
+#else
+    int core = 0;
+#endif
+#if defined(BENCH3D) && defined(ESP_PLATFORM)
+    uint64_t *stats = g_coverStats[core];
+    uint32_t clock = esp_cpu_get_cycle_count();
+    auto lap = [&](int i) {
+        uint32_t c = esp_cpu_get_cycle_count();
+        stats[i] += c - clock;
+        clock = c;
+    };
+#else
+    auto lap = [](int) {};
+#endif
+    CoverCells &cells = g_coverCells[core];
+    if (!(y >= cells.y && y < cells.y + cells.share)) {
+        // Four rows' alike, read along the third of them - near the middle -
+        // where its cells are tall enough for them to be: eight rows or more,
+        // the near land's, close to, a cell's edge then never more than two
+        // rows out. Otherwise two rows', read along the first.
+        // Or - flat, the row above it just over the horizon, looking at no
+        // ground - its own, alone.
+        int g4 = y & ~3, g2 = y & ~1;
+        Frame::RowCover rc;
+        if (g4 + 2 < d.h && rowCoverOf(g4 + 2, rc) && rc.tall) {
+            cells.y = g4;
+            cells.share = 4;
+        } else if (rowCoverOf(g2, rc)) {
+            cells.y = g2;
+            cells.share = 2;
+        } else if (rowCoverOf(y, rc)) {
+            cells.y = y;
+            cells.share = 1;
+        } else {
+            cells.y = -100;
+            fill(row, xa, xb, land);
+            return;
+        }
+        // A sample each eight pixels where the cells are sixteen or more wide.
+        cells.shift = rc.wide ? 3 : 2;
+        coverCells(rc, cells);
+#if defined(BENCH3D) && defined(ESP_PLATFORM)
+        stats[3]++;
+#endif
+    }
+    lap(0);
+    CoverPairs &pairs = g_coverPairs[core][y & 1];
+    int h = d.rowHaze[y] >> 3;
+    if (pairs.haze != h) {
+        pairs.haze = h;
+        pairs.checked = -100;
+        memset(pairs.valid, 0, sizeof pairs.valid);
+        pairs.valid[0] = 0xFFFF;  // nothing, set below
+    }
+    for (int i = 0; i < 16; i++) {
+        pairs.pair[i] = land;
+    }
+    if (pairs.checked != cells.y) {
+        pairs.checked = cells.y;
+        for (int i = 0; i < cells.count; i++) {
+            int c = cells.list[i];
+            if (!(pairs.valid[c >> 5] >> (c & 31) & 1)) {
+                pairs.pair[c] = pairInt(d.coverRgb[c], haze, h << 3, y);
+                pairs.valid[c >> 5] |= 1u << (c & 31);
+#if defined(BENCH3D) && defined(ESP_PLATFORM)
+                stats[4]++;
+#endif
+            }
+        }
+    }
+    lap(1);
+    // A pixel at a time to a sample's edge, a sample at a time - four
+    // pixels or eight - to the last whole one, then a pixel at a time.
+    int x = xa, shift = cells.shift, mask = (1 << shift) - 1;
+    for (; x < xb && (x & mask) != 0; x++) {
+        uint32_t p = pairs.pair[cells.cell[x >> shift]];
+        row[x] = (uint16_t)(x & 1 ? p >> 16 : p);
+    }
+    int n = (xb - x) >> shift;
+    if (n > 0) {
+#if defined(ESP_PLATFORM)
+        if (g_simd) {
+            (shift == 3 ? scene3d_cover_write8 : scene3d_cover_write)(row + x, cells.cell + (x >> shift), pairs.pair, n);
+        } else
+#endif
+        {
+            (shift == 3 ? coverWrite8C : coverWriteC)(row + x, cells.cell + (x >> shift), pairs.pair, n);
+        }
+        x += n << shift;
+    }
+    for (; x < xb; x++) {
+        uint32_t p = pairs.pair[cells.cell[x >> shift]];
+        row[x] = (uint16_t)(x & 1 ? p >> 16 : p);
+    }
+    lap(2);
+}
+
+#ifdef BENCH3D
+void coverMicro(int w, int h, const Scene &scene, const Camera &camera, uint32_t out[4]) {
+    for (int i = 0; i < 4; i++) {
+        out[i] = 0;
+    }
+#if defined(ESP_PLATFORM)
+    prepareBegin(w, h, 16, true, scene, camera);
+    prepareAircraft(0, 1);
+    prepareEnd();
+    // An even row of ground three quarters of the way down, its points
+    // worked out over and over - in the cache, all of it, after the first.
+    int y = h * 3 / 4 & ~1;
+    bool round = g.cover.round;
+    Frame::RowCover rc;
+    Vec3 dir = g.forward + g.down * ((y + 0.5f - g.cy) / g.f);
+    float er = g.scene.earthRadius;
+    if (!g.coverOn || !g.rowGround[y]) {
+        flip();
+        return;
+    }
+    auto row = [&](int r, Vec3 rdir) {
+        if (round) {
+            coverAnchors(r, rdir, er, rc);
+        } else {
+            coverFlatRow(g, r, rc);
+        }
+    };
+    row(y, dir);
+    uint32_t c0 = esp_cpu_get_cycle_count();
+    for (int i = 0; i < 256; i++) {
+        row(y, dir);
+        __asm__ volatile("" ::: "memory");
+    }
+    out[0] = (esp_cpu_get_cycle_count() - c0) / 256;
+    float u = 0, v = 0;
+    Vec3 p = g.eye + dir * (g.eye.z > 0 ? 1.0f : 0.0f);
+    c0 = esp_cpu_get_cycle_count();
+    for (int i = 0; i < 256; i++) {
+        coverPoint(p, er, u, v);
+        __asm__ volatile("" ::: "memory");
+    }
+    out[1] = (esp_cpu_get_cycle_count() - c0) / 256;
+    if (round) {
+        c0 = esp_cpu_get_cycle_count();
+        for (int i = 0; i < 256; i++) {
+            g.rowCover[y >> 1] = rc;
+            __asm__ volatile("" ::: "memory");
+        }
+        out[2] = (esp_cpu_get_cycle_count() - c0) / 256;
+    }
+    // And every even row's, once, as the frame has them.
+    c0 = esp_cpu_get_cycle_count();
+    for (int r = 0; r < h; r += 2) {
+        if (g.rowGround[r]) {
+            row(r, g.forward + g.down * ((r + 0.5f - g.cy) / g.f));
+        }
+    }
+    out[3] = (esp_cpu_get_cycle_count() - c0);
+    flip();
+#endif
+}
+
+void aircraftStats(uint64_t out[6], bool reset) {
+#if defined(ESP_PLATFORM)
+    for (int i = 0; i < 6; i++) {
+        out[i] = g_aircraftStats[0][i] + g_aircraftStats[1][i];
+        if (reset) {
+            g_aircraftStats[0][i] = g_aircraftStats[1][i] = 0;
+        }
+    }
+#else
+    (void)reset;
+    for (int i = 0; i < 6; i++) {
+        out[i] = 0;
+    }
+#endif
+}
+
+void seeStats(uint64_t out[7], bool reset) {
+#if defined(ESP_PLATFORM)
+    for (int i = 0; i < 7; i++) {
+        out[i] = g_seeStats[0][i] + g_seeStats[1][i];
+        if (reset) {
+            g_seeStats[0][i] = g_seeStats[1][i] = 0;
+        }
+    }
+#else
+    (void)reset;
+    for (int i = 0; i < 7; i++) {
+        out[i] = 0;
+    }
+#endif
+}
+
+void coverStats(uint64_t out[11], bool reset) {
+#if defined(ESP_PLATFORM)
+    for (int i = 0; i < 11; i++) {
+        out[i] = g_coverStats[0][i] + g_coverStats[1][i];
+        if (reset) {
+            g_coverStats[0][i] = g_coverStats[1][i] = 0;
+        }
+    }
+#else
+    (void)reset;
+    for (int i = 0; i < 11; i++) {
+        out[i] = 0;
+    }
+#endif
+}
+#endif
+
+// Row y's pixels where a range's hill is - its column's top at or above the
+// row, its foot below it - in the hill's colour, and with its depth where
+// the row has depth, `depth` not nullptr: scene3d_hills8's sums.
+void hillsRowC(uint16_t *row, uint16_t *depth, int y, int from, int to, const Frame::HillRange &range) {
+    const uint16_t *pixels = range.pixels[y & 1];
+    for (int x = from; x < to; x++) {
+        if (range.from[x] <= y && y < range.to[x]) {
+            row[x] = pixels[x];
+            if (depth != nullptr) {
+                depth[x] = range.depth[x];
+            }
+        }
+    }
+}
+
+#if defined(ESP_PLATFORM)
+extern "C" void scene3d_hills8(uint16_t *row, const int16_t *top, const int16_t *foot, const uint16_t *hill, int y,
+                               int chunks);
+extern "C" void scene3d_hills8d(uint16_t *row, uint16_t *depth, const int16_t *top, const int16_t *foot,
+                                const uint16_t *hill, const uint16_t *hillDepth, int y, int chunks);
+#endif
+
+void hillsRow(uint16_t *row, uint16_t *depth, int y, const Frame::HillRange &range) {
+#if defined(ESP_PLATFORM)
+    if (g_simd) {
+        int chunks = d.w / 8;
+        if (depth != nullptr) {
+            scene3d_hills8d(row, depth, range.from, range.to, range.pixels[y & 1], range.depth, y, chunks);
+        } else {
+            scene3d_hills8(row, range.from, range.to, range.pixels[y & 1], y, chunks);
+        }
+        hillsRowC(row, depth, y, chunks * 8, d.w, range);
+        return;
+    }
+#endif
+    hillsRowC(row, depth, y, 0, d.w, range);
+}
+
 void drawBandInto(int band, uint16_t *color, uint16_t *depth, uint32_t *stageUs) {
     uint32_t mark = stageUs != nullptr ? now() : 0;
     auto stage = [&](int i) {
@@ -6689,35 +8073,60 @@ void drawBandInto(int band, uint16_t *color, uint16_t *depth, uint32_t *stageUs)
         }
     };
     int w = d.w, y0 = band * d.bandRows, rows = std::min(d.bandRows, d.h - y0), y1 = y0 + rows;
+    const int haze[3] = {(int)d.pal.haze.r, (int)d.pal.haze.g, (int)d.pal.haze.b};
 
     for (int y = y0; y < y1; y++) {
         uint16_t *row = color + (size_t)(y - y0) * w;
+        // Land in what covers it, where the view has the ground pack.
+        bool covered = d.coverOn && d.rowGround[y] && (!d.cover.round || d.rowCover[y >> 1].level != Frame::NO_LEVEL);
         if (!d.landSea || !d.rowGround[y]) {
-            fill(row, 0, w, d.rowColor[y]);
+            if (covered && d.rowGround[y] && !d.cover.round) {
+                coverSpan(row, y, 0, w, d.rowColor[y], haze);  // an airfield inland: all of it land
+            } else {
+                fill(row, 0, w, d.rowColor[y]);
+            }
             continue;
         }
         bool on[2] = {(d.rowFirst[y] & 1) != 0, (d.rowFirst[y] & 2) != 0};  // land; a town
+        // Each stretch drawn as one - in the cover, or in one colour - not
+        // broken where a crossing changes neither: a town's edge, where the
+        // cover is drawn for towns too.
+        auto covers = [&]() { return covered && on[0] && (!on[1] || d.coverTowns); };
         auto color = [&]() { return !on[0] ? d.rowColor[y] : on[1] ? d.rowTown[y] : d.rowLand[y]; };
         int x = 0;
+        bool cover = covers();
+        uint32_t flat = cover ? 0 : color();
+        auto stretch = [&](int to) {
+            if (to <= x) {
+                return;
+            }
+            if (cover) {
+                coverSpan(row, y, x, to, d.rowLand[y], haze);
+            } else {
+                fill(row, x, to, flat);
+            }
+            x = to;
+        };
         for (uint32_t i = d.rowStart[y]; i < d.rowStart[y + 1]; i++) {
             int to = std::max(x, std::min(w, (int)d.rowCross[i].x));
-            fill(row, x, to, color());
-            x = to;
             on[d.rowCross[i].layer] = d.rowCross[i].on;
+            bool nowCover = covers();
+            uint32_t nowFlat = nowCover ? 0 : color();
+            if (nowCover != cover || nowFlat != flat) {
+                stretch(to);
+                cover = nowCover;
+                flat = nowFlat;
+            }
         }
-        fill(row, x, w, color());
+        stretch(w);
     }
     stage(0);
 
     // The ground, painted in order - the runway over the grass, its markings
     // over the runway - with no depth to it: it is all at the same height.
     const Bins &gb = d.groundBins;
-    const int haze[3] = {(int)d.pal.haze.r, (int)d.pal.haze.g, (int)d.pal.haze.b};
     for (uint32_t k = gb.start[band]; k < gb.start[band + 1]; k++) {
-        const ScreenTri &t = d.ground[gb.index[k] & PLACE_MASK];
-        raster(t, y0, y1, [&](int y, int xs, int xe) {
-            fill(color + (size_t)(y - y0) * w, xs, xe, pairInt(t.lit, haze, d.rowHaze[y], y));
-        });
+        groundRows(d.ground[gb.index[k] & PLACE_MASK], color, y0, y1, haze);
     }
 
     stage(1);
@@ -6745,12 +8154,7 @@ void drawBandInto(int band, uint16_t *color, uint16_t *depth, uint32_t *stageUs)
             });
         }
         for (int r = 0; r < rows; r++) {
-            uint16_t *c = color + (size_t)r * w, *m = depth + (size_t)r * w;
-            for (int x = left[r]; x < right[r]; x++) {
-                if (m[x]) {
-                    c[x] = darken(c[x]);
-                }
-            }
+            darkenRow(color + (size_t)r * w, depth + (size_t)r * w, left[r], right[r]);
         }
     }
 
@@ -6765,44 +8169,66 @@ void drawBandInto(int band, uint16_t *color, uint16_t *depth, uint32_t *stageUs)
     if (deep) {
         fill(depth, 0, w * rows, 0);  // infinitely far - eight to a PIE store, not memset's one word
     }
+    // The hills along the skyline, over the sky and the far land - a range
+    // at a time, the furthest first - and over the ground's paint and
+    // shadows, which are behind a hill wherever one is drawn over them: a
+    // point of the ground as far off as a hill's foot is on the foot's row,
+    // and further off, above it. With their depth, so that what is drawn
+    // after is behind them where it is further off - a coast's pale line
+    // twenty miles away, an aircraft beyond a hill.
+    for (int r = groundpack::Horizon::RANGES - 1; r >= 0; r--) {
+        const Frame::HillRange &range = d.hills[r];
+        if (range.on && y1 > range.top && y0 < range.bottom) {
+            for (int y = std::max(y0, range.top); y < std::min(y1, range.bottom); y++) {
+                hillsRow(color + (size_t)(y - y0) * w, deep ? depth + (size_t)(y - y0) * w : nullptr, y, range);
+            }
+        }
+    }
     stage(3);
     // Depth across a row in 16.16 fixed point, in whole-number steps.
     float fixed = d.depthK * 65536.0f;
+#if defined(BENCH3D) && defined(ESP_PLATFORM)
+    uint64_t *solidStats = g_seeStats[xPortGetCoreID() & 1];
+    uint32_t solidClock = esp_cpu_get_cycle_count();
+    uint32_t solidUs = now();
+    solidStats[4] += ob.start[band + 1] - ob.start[band];
+#endif
     for (uint32_t k = ob.start[band]; k < ob.start[band + 1]; k++) {
         uint32_t at = ob.index[k];
         const ScreenTri &t = (*d.solidLists[at >> LIST_SHIFT])[at & PLACE_MASK];
         Spanner spanner((int32_t)(t.za * fixed), t.color);
-        raster(t, y0, y1, [&](int y, int xs, int xe) {
-            int32_t from = std::max<int32_t>(0, (int32_t)((t.za * (xs + 0.5f) + t.zb * (y + 0.5f) + t.zc) * fixed));
-            span(color + (size_t)(y - y0) * w, depth + (size_t)(y - y0) * w, xs, xe, from, spanner);
-        });
+#if defined(BENCH3D) && defined(ESP_PLATFORM)
+        solidStats[3] += std::max(0, std::min(y1, (int)t.bottom) - std::max(y0, (int)t.top));
+#endif
+        solidRows(t, color, depth, y0, y1, fixed, spanner);
     }
-    // See-through: turning blades' blur, where nothing nearer is - what is
-    // behind it tinted so many eighths of the way to its colour, the depth
-    // left as it was.
+#if defined(BENCH3D) && defined(ESP_PLATFORM)
+    solidStats[2] += esp_cpu_get_cycle_count() - solidClock;
+#endif
+#if defined(BENCH3D) && defined(ESP_PLATFORM)
+    uint64_t *seeStats = g_seeStats[xPortGetCoreID() & 1];
+    uint32_t seeClock = esp_cpu_get_cycle_count();
+#endif
+    // See-through: contrails, and turning blades' blur, where nothing nearer
+    // is - what is behind tinted so many eighths of the way to its colour,
+    // the depth left as it was.
     for (uint32_t k = cb.start[band]; k < cb.start[band + 1]; k++) {
         uint32_t at = cb.index[k];
         const ScreenTri &t = (*d.clearLists[at >> LIST_SHIFT])[at & PLACE_MASK];
-        int eighths = t.lit[0];
-        uint16_t tint = d.swap ? (uint16_t)(t.color >> 8 | t.color << 8) : t.color;
-        int tr = tint >> 11, tg = tint >> 5 & 63, tb = tint & 31;
+        Tinter tinter((int32_t)(t.za * fixed), d.swap ? (uint16_t)(t.color >> 8 | t.color << 8) : t.color, t.lit[0]);
         raster(t, y0, y1, [&](int y, int xs, int xe) {
-            uint16_t *c = color + (size_t)(y - y0) * w, *z = depth + (size_t)(y - y0) * w;
-            float row = t.zb * (y + 0.5f) + t.zc;
-            for (int x = xs; x < xe; x++) {
-                if ((uint16_t)std::min(65535.0f, (t.za * (x + 0.5f) + row) * d.depthK) < z[x]) {
-                    continue;
-                }
-                uint16_t v = d.swap ? (uint16_t)(c[x] >> 8 | c[x] << 8) : c[x];
-                int r = v >> 11, gr = v >> 5 & 63, b = v & 31;
-                r += (tr - r) * eighths / 8;
-                gr += (tg - gr) * eighths / 8;
-                b += (tb - b) * eighths / 8;
-                v = (uint16_t)(r << 11 | gr << 5 | b);
-                c[x] = d.swap ? (uint16_t)(v >> 8 | v << 8) : v;
-            }
+#if defined(BENCH3D) && defined(ESP_PLATFORM)
+            seeStats[1] += xe - xs;
+#endif
+            int32_t from = std::max<int32_t>(0, (int32_t)((t.za * (xs + 0.5f) + t.zb * (y + 0.5f) + t.zc) * fixed));
+            tint(color + (size_t)(y - y0) * w, depth + (size_t)(y - y0) * w, xs, xe, from, tinter);
         });
     }
+#if defined(BENCH3D) && defined(ESP_PLATFORM)
+    seeStats[0] += esp_cpu_get_cycle_count() - seeClock;
+    solidStats[5] += now() - solidUs;
+    solidStats[6] += esp_cpu_get_cycle_count() - solidClock;
+#endif
     stage(4);
     for (uint32_t k = wb.start[band]; k < wb.start[band + 1]; k++) {
         drawLine(d.wires[wb.index[k] & PLACE_MASK], y0, y1, color, depth);
@@ -7497,6 +8923,7 @@ const TypeShape TYPES[] = {
     {"E314", F::LIGHT_LOW, 11.38f},
     // Military transports
     {"C17", F::AIRLIFTER, 53.04f}, {"C5", F::AIRLIFTER, 75.31f}, {"C5M", F::AIRLIFTER, 75.31f},
+    {"U2", F::BUSINESS_JET, 31.4f},  // a slim single-seat jet of a glider's span: the nearest there is
     {"IL76", F::AIRLIFTER, 46.59f}, {"A124", F::AIRLIFTER, 68.96f}, {"B52", F::AIRLIFTER, 48.5f},
     {"C130", F::HERCULES, 29.79f}, {"C30J", F::HERCULES, 34.37f}, {"L100", F::HERCULES, 34.37f},
     {"AN12", F::HERCULES, 33.1f},  {"A400", F::ATLAS, 45.1f},
@@ -7870,8 +9297,11 @@ Config configFor(float heightM, float speedKt, bool onGround, bool departing) {
         c.gear = onGround || heightM < 15;
     } else if (onGround) {
         // Spoilers up and flaps out from the touchdown until the roll-out
-        // slows; cleaned up to taxi in.
-        c.spoilers = speedKt > 60;
+        // slows - the spoilers coming down as it slows from 60kt to 40; cleaned
+        // up to taxi in.
+        float k = clamp01((speedKt - 40) / 20);
+        c.spoilerDeploy = k * k * (3 - 2 * k);
+        c.spoilers = c.spoilerDeploy > 0.01f;
         c.flaps = speedKt > 40;
     } else {
         // Coming in: the gear down below 2,000ft or so and the flaps out below

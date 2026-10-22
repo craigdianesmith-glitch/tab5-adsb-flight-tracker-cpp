@@ -496,7 +496,9 @@ void keepFollowedInScene() {
     ghost.hasTrack = true;
     ghost.track = e.track;
     ghost.altStr = e.ground ? String("GND") : String(feedAltFt(e));
-    ghost.speedStr = String(e.gsKt);
+    // Not known if the recording never had it: the estimate's nought is only
+    // for want of one.
+    ghost.speedStr = ghost.speedStr == "?" ? ghost.speedStr : String(e.gsKt);
     ghost.status = e.ground                           ? (e.gsKt > 2 ? "TAXI" : "GROUND")
                    : e.vsFpm >= CLIMB_THRESHOLD_FPM   ? "CLIMB"
                    : e.vsFpm <= DESCEND_THRESHOLD_FPM ? "DESCEND"

@@ -48,6 +48,8 @@ has them:
        its GNSS height right
     i  an alert for an A320 landing at Glasgow, auto-followed into 3D: no
        alert banner left round the view (##I looks)
+    j  a U-2 circling RAF Fairford at 65,000ft and 410kt - twice the
+       cruise's height, the horizon 500km off
     R  not a flight: the newest recording that follows an aircraft, replayed
        in 3D - played, 4x, a minute back and on, its bar, another aircraft
        picked, Back and 3D again
@@ -75,7 +77,7 @@ import serial
 
 ap = argparse.ArgumentParser()
 ap.add_argument("--minutes", type=float, default=60)
-ap.add_argument("--scenarios", default="0123456789abefghiR")
+ap.add_argument("--scenarios", default="0123456789abefghijR")
 ap.add_argument("--port", default="/dev/ttyACM0")
 ap.add_argument("--out", default=time.strftime("soak-%Y%m%d-%H%M"))
 ap.add_argument("--sun", choices=["real", "day", "dusk", "night"], default="real",

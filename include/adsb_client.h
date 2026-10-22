@@ -55,5 +55,14 @@ struct Aircraft {
 // measured from the point it was fetched around.
 float haversineNm(double lat1, double lon1, double lat2, double lon2);
 
+// The speed and height rule: whether a report with a height in the air and a
+// groundspeed of `gsKt` is of nothing that flies - standing still up there,
+// which only what can hover does (see canHover()). Anything else reported so
+// is a transponder left on, parked, that doesn't say it is on the ground, or
+// one reporting nonsense - a Typhoon was seen with a height and nought knots
+// - and is left out of every poll, whatever its callsign or type, and of a
+// replay of a recording made before it was.
+bool stillInTheAir(float gsKt, const String &type, const String &category);
+
 bool fetchAircraft(double lat, double lon, int radiusNm, bool military, AdsbSource source,
                    std::vector<Aircraft> &out, const char *&usedProvider);

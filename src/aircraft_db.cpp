@@ -241,3 +241,8 @@ bool isRotorcraft(const String &type, const String &category) {
     }
     return false;
 }
+
+bool canHover(const String &type, const String &category) {
+    return isRotorcraft(type, category) || category == "B2" || category == "B3" || category == "B4" ||
+           category == "B6";
+}

@@ -11,6 +11,8 @@ The commands, as that firmware takes them over serial after "##":
 
     0   busy airports at 960x544, pipelined: Heathrow by day landing 27L,
         then Kennedy at dusk landing 22L - about two and a half minutes
+    c   Heathrow as 0 has it, in plain C throughout - no PIE for the spans,
+        the fills or the labels: what the vector instructions are worth
     1   the director at Heathrow, as though live: a landing on 27L with its
         touchdown replayed in slow motion, then a 787 departing 27R
     4   the landing through the cinema's shots, full screen, by day
@@ -25,6 +27,11 @@ The commands, as that firmware takes them over serial after "##":
     n   half a minute of it at night
     l   the traffic's labels stamped into a frame's bands, in C and with PIE,
         against how the bench wrote them before
+    f   the land's cover, from the card's ground pack: Heathrow's landing for a
+        minute and the cruise for half a minute, each with the cover in
+        assembly and PIE, in C, and without it - what it costs
+    q   the CPU's cycle counter against the microsecond clock, busy and
+        reading PSRAM a cache line at a time
 
 It prints the firmware's report - frames a second, and where the time went -
 and returns when the firmware says it has finished. Needs pyserial; close any
@@ -37,7 +44,7 @@ import time
 import serial
 
 ap = argparse.ArgumentParser()
-ap.add_argument("command", choices=list("013456789hnl"))
+ap.add_argument("command", choices=list("013456789hnlcfq"))
 ap.add_argument("--port", default="/dev/ttyACM0")
 args = ap.parse_args()
 

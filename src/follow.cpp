@@ -333,6 +333,31 @@ bool trackFromHistory(const SampleList &history, const FollowSample &last, float
     return false;
 }
 
+// Its ground speed, knots, from how far it went since its last report a
+// little way off - for a report the feed gave no speed with. Over at least
+// 10 seconds and no more than a minute: closer, a position's few metres
+// of error are most of the distance.
+bool speedFromHistory(const SampleList &history, const FollowSample &last, float &knots) {
+    for (auto it = history.rbegin(); it != history.rend(); ++it) {
+        const FollowSample &s = *it;
+        if (s.ms >= last.ms || !s.hasPos || s.posStale) {
+            continue;
+        }
+        uint32_t ms = last.ms - s.ms;
+        if (ms > 60000) {
+            break;
+        }
+        if (ms < 10000) {
+            continue;
+        }
+        float dNorth = (last.lat - s.lat) * 60.0f;
+        float dEast = (last.lon - s.lon) * 60.0f * cosf(last.lat * (float)M_PI / 180.0f);
+        knots = hypotf(dNorth, dEast) / (ms / 3600000.0f);
+        return true;
+    }
+    return false;
+}
+
 // For a departure gathering speed that no runway end lines up with by its
 // track - none given, or still turning on - the runway whose pavement it is
 // on, taken in the direction it was moving along it, or failing that towards
@@ -546,6 +571,12 @@ FollowEstimate estimateFollowed(const FollowSample &given, float ageS, const Sam
     FollowEstimate e = {last.lat, last.lon, last.track, last.hasAlt ? aboveSeaFt(last) : 0, last.ground,
                         last.hasGs ? last.gsKt : 0, last.hasVs ? last.vsFpm : 0, "held", last.pressureFt};
     float gs = last.hasGs ? (float)last.gsKt : 0.0f;
+    // In the air with no speed given - some feeds' military contacts - how
+    // fast it went between reports: carried on at that, where it was held
+    // where it was, standing still in the air, as only what hovers does.
+    if (!last.hasGs && !last.ground && !last.rotorcraft && speedFromHistory(history, last, gs)) {
+        e.gsKt = (int)lroundf(gs);
+    }
     float nmPerDegLon = 60.0f * cosf(last.lat * (float)M_PI / 180.0f);
     auto place = [&](float x, float y) {
         e.lat = last.lat + y / 60.0f;
@@ -646,9 +677,18 @@ FollowEstimate estimateFollowed(const FollowSample &given, float ageS, const Sam
             // the grass at 30 knots.
             e.altFt = std::max((int32_t)0, aboveSeaFt(last) + (int32_t)lroundf(60.0f * last.vsFpm / gs * travelled));
             e.vsFpm = (int)lroundf((float)last.vsFpm * e.gsKt / gs);
-        } else if (last.hasAlt && last.hasVs) {
-            e.altFt = std::max((int32_t)0, aboveSeaFt(last) + (int32_t)(last.vsFpm * ageS / 60.0f));
+        } else if (last.hasAlt && last.hasVs && gs > 0) {
+            // Climbing or coming down, the rate fading over half a minute or
+            // so - it levels off somewhere, unseen - so no more than half a
+            // minute's worth of it in all: held, a descent lost five miles
+            // out came down for minutes, through the ground, and was shown
+            // standing in a field.
+            constexpr float FADE_S = 30.0f;
+            float done = FADE_S * (1 - expf(-ageS / FADE_S));
+            e.altFt = std::max((int32_t)0, aboveSeaFt(last) + (int32_t)lroundf(last.vsFpm * done / 60.0f));
+            e.vsFpm = (int)lroundf(last.vsFpm * expf(-ageS / FADE_S));
         }
+        // With no speed to carry it on by, held at its last height too.
         return e;
     }
 
