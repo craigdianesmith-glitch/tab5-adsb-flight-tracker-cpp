@@ -7606,7 +7606,12 @@ void terrainMarch() {
     for (int L = groundpack::FINEST; L < groundpack::LEVELS; L++, cell *= 2) {
         g.tLevelZ[L - groundpack::FINEST] = cell * g.f / 4;
     }
-    g.tUnit = skimp > 0.6f ? 4 : 2;
+    // Four rows a sample from 0.65 of skimping, and two again under 0.45:
+    // the governor's steps across one line would switch the land's detail
+    // to and fro every few frames.
+    static int unit = 2;
+    unit = skimp > 0.65f ? 4 : skimp < 0.45f ? 2 : unit;
+    g.tUnit = unit;
     g.tLevelPer = (g.tUnit == 4 ? 2.0f : 1.0f) / g.tLevelZ[0];
     stats[0] += cycles() - marchClock;
     CACHE_END(cacheAtStart, g_terrainCache[coreNow()]);

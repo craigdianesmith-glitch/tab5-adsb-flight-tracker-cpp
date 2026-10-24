@@ -239,7 +239,9 @@ struct Scene {
     float detailPx = 60, tinyPx = 12;
     // How much the land at its height may skimp, 0 to 1, as the frame-rate
     // governor sets it: from steps a fortieth further each, half a grid cell
-    // at least, out to 100km, to a twentieth, a whole cell, and 70km.
+    // at least, out to 100km, to a twentieth, a whole cell, and 70km - and
+    // its colours a sample every four rows, not two, once past 0.65, till
+    // back under 0.45.
     float terrainEffort = 0;
     // High up: the ground the sphere it is, `earthRadius` metres round, its
     // middle that far under the origin - 0 for an airfield's flat ground; how
