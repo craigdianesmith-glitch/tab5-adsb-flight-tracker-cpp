@@ -6652,63 +6652,78 @@ HOT_INLINE int stepFrom(const float *far, int steps, int from, float s) {
     return lo;
 }
 
-// A column's march where scene3d_march_flat (scene3d_terrain.S) runs it:
-// what it needs of the frame and the column, and where the march is, which
-// it and marchColumn() hand back and forth. Its offsets are the assembly's.
+// A column's march where scene3d_march_flat or _round (scene3d_march.S)
+// runs it: what it needs of the frame - filled in by terrainMarch() - and of
+// the column, and what it hands back. Its offsets are the assembly's.
 struct MarchState {
-    const float *far;        // 0: the steps' distances; their bases MARCH_MOST floats on
-    int steps;               // 4
-    const int16_t *heights;  // 8
-    int cellMaxBytes;        // 12: the cells' highest corners, this many bytes on from their heights
-    int rowBytes;            // 16: a row of the grid's
-    uint32_t xLim, yLim;     // 20, 24
-    int bcols;               // 28
-    float Fz, Dz, f, cyLess; // 32, 36, 40, 44: cyLess = cy - 0.5
-    float cyMore;            // 48: cy + 0.5
-    float zHigh, skipTo;     // 52, 56
-    uint16_t *tz;            // 60
-    int bandRows1, bandBack; // 64, 68: bandRows - 1; the row above a band's first, in the band before
-    float X0, XS, Y0, YS;    // 72, 76, 80, 84
-    float A, B;              // 88, 92
-    int iEaseLo, iEaseHi;    // 96, 100: the steps in the ring an airfield's ground eases over
-    float e2, eh2, groundUp; // 104, 108, 112
-    float flatIn, perRing;   // 116, 120: 2500, 1 / 2500
-    float tiny, notSloped;   // 124, 128: 1e-3, -1e-4
-    float minusInf, three;   // 132, 136
-    int i, filled, at, off;  // 140, 144, 148, 152
-    float k, gk, gkLine;     // 156, 160, 164
-    int sloped;              // 168
-    int prev, known, shown;  // 172, 176, 180
-    float knownH, shownRho, shownW;  // 184, 188, 192
-    int curBlk;              // 196
-    uint32_t samples;        // 200
-    float rXS, rYS;          // 204, 208: 1 / XS and 1 / YS, nought for none
-    float gez, fall, twoFall;  // 212, 216, 220: groundUp + ez; the earth's fall, and twice it
-    float easeLoF, easeHiF;  // 224, 228: the ring's distances
-    const int16_t *blockMax; // 232
-    int iEaseLo0;            // 236: the ring's first step, kept
-    uint32_t skips;          // 240
-    float farOff;            // 244: 1e9, a block not left
-    const float *zHighAt;    // 248: the column's highest land, from the eye, from each sixteenth step on
-    float XS2, YS2;          // 252, 256: round, the ray's curve over the grid
-    float eh2f;              // 260: round, the column's part of the earth's fall, s eh2f
-    float tinyStep;          // 264: 1e-9, a ray too near square to the grid's x or y for 1 / it
+    // The frame's.
+    const float *far;          // 0: the steps' distances; their bases MARCH_MOST floats on
+    const float *farEnd;       // 4: &far[steps]
+    const float *farSkipTo;    // 8: &far[the first step not nearer than skipTo]
+    const int16_t *heights;    // 12
+    int cellMaxBytes;          // 16: the cells' highest corners, this many bytes on from their heights
+    int rowBytes;              // 20: a row of the grid's
+    uint32_t xLim, yLim;       // 24, 28
+    int bcols;                 // 32
+    const int16_t *blockMax;   // 36
+    const float *zHighAt;      // 40: the column's highest land, from the eye, from each sixteenth step on
+    int bandRows, bandBack2;   // 44, 48: the row above a band's first, in the band before, in bytes from it
+    float Fz, Dz, f, cyLess;   // 52, 56, 60, 64: cyLess = cy - 0.5
+    float cyMore, fDz;         // 68, 72: cy + 0.5, f Dz
+    float fall, twoFall;       // 76, 80: the earth's fall, and twice it
+    float half, one, perQ;     // 84, 88, 92: 0.5, 1, 1 / 65536
+    float tiny, notSloped;     // 96, 100: 1e-3, -1e-4
+    float minusInf, farOff;    // 104, 108: -inf, 1e9 - a block not left
+    float tinyStep;            // 112: 1e-9, a ray too near square to the grid's x or y for 1 / it
+    float flatIn, perRing;     // 116, 120: 2500, 1 / 2500
+    float three;               // 124
+    // The column's.
+    float X0, XS, XS2;         // 128, 132, 136
+    float Y0, YS, YS2;         // 140, 144, 148
+    float A, B, fB;            // 152, 156, 160
+    float eh2f, gez;           // 164, 168: round, the column's part of the earth's fall; groundUp + ez or the round's
+    float groundUp, e2, eh2;   // 172, 176, 180
+    float rXS, rYS;            // 184, 188: flat, 1 / XS and 1 / YS, nought for none
+    float easeLo, easeHi;      // 192, 196: where the ray crosses the ring an airfield's ground eases over
+    const float *farLo, *farHi;  // 200, 204: &far[the ring's first step], &far[the first past it]
+    const float *farFirst;     // 208: &far[the first step]
+    uint16_t *at;              // 212: row filled - 1's 1 / depth
+    int filled, off;           // 216, 220: and that row in its band
+    float lastW, lastRho;      // 224, 228: the sample before the first's w - nought, none - and row
+    // What the march hands back: its samples, blocks skipped and, on the
+    // bench, the samples worked out, those the second pass went through,
+    // those seen, samples before one seen worked out again, blocks tested
+    // and samples off the grid.
+    uint32_t samples, skips;   // 232, 236
+    uint32_t worked, passed;   // 240, 244
+    uint32_t seen, again;      // 248, 252
+    uint32_t tested, offGrid;  // 256, 260
 };
 #if TERRAIN_IN_ASM
-static_assert(offsetof(MarchState, X0) == 72 && offsetof(MarchState, iEaseLo) == 96 &&
-                  offsetof(MarchState, minusInf) == 132 && offsetof(MarchState, i) == 140 &&
-                  offsetof(MarchState, k) == 156 && offsetof(MarchState, prev) == 172 &&
-                  offsetof(MarchState, knownH) == 184 && offsetof(MarchState, samples) == 200,
-              "scene3d_terrain.S has MarchState's fields where these are");
-static_assert(offsetof(MarchState, rXS) == 204 && offsetof(MarchState, blockMax) == 232 &&
-                  offsetof(MarchState, farOff) == 244 && offsetof(MarchState, zHighAt) == 248 &&
-                  offsetof(MarchState, eh2f) == 260 && offsetof(MarchState, tinyStep) == 264,
-              "scene3d_terrain.S has MarchState's fields where these are");
-// The march of one column over flat ground from step m->i, the common ways:
-// 0 when the column is done, 1 at a step it leaves for C - see
-// scene3d_terrain.S. And over the round earth.
+static_assert(offsetof(MarchState, heights) == 12 && offsetof(MarchState, zHighAt) == 40 &&
+                  offsetof(MarchState, Fz) == 52 && offsetof(MarchState, fDz) == 72 &&
+                  offsetof(MarchState, half) == 84 && offsetof(MarchState, tinyStep) == 112 &&
+                  offsetof(MarchState, three) == 124,
+              "scene3d_march.S has MarchState's fields where these are");
+static_assert(offsetof(MarchState, X0) == 128 && offsetof(MarchState, A) == 152 &&
+                  offsetof(MarchState, eh2f) == 164 && offsetof(MarchState, groundUp) == 172 &&
+                  offsetof(MarchState, rXS) == 184 && offsetof(MarchState, easeLo) == 192 &&
+                  offsetof(MarchState, farLo) == 200 && offsetof(MarchState, farFirst) == 208 &&
+                  offsetof(MarchState, at) == 212 && offsetof(MarchState, lastW) == 224,
+              "scene3d_march.S has MarchState's fields where these are");
+static_assert(offsetof(MarchState, samples) == 232 && offsetof(MarchState, worked) == 240 &&
+                  offsetof(MarchState, seen) == 248 && offsetof(MarchState, tested) == 256 &&
+                  offsetof(MarchState, offGrid) == 260,
+              "scene3d_march.S has MarchState's fields where these are");
+// A column's march over flat ground, and over the round earth - see
+// scene3d_march.S: its rows filled, the top one returned. On the bench,
+// _masked, its heights read from the grid's first four rows.
 extern "C" int scene3d_march_flat(MarchState *m);
 extern "C" int scene3d_march_round(MarchState *m);
+#ifdef BENCH3D
+extern "C" int scene3d_march_flat_masked(MarchState *m);
+extern "C" int scene3d_march_round_masked(MarchState *m);
+#endif
 #endif
 
 // One column's march, out from its first step: its rows filled from
@@ -6802,6 +6817,67 @@ int marchColumn(const MarchFrame &K, const MarchRay &R, MarchCounts &counts) {
             lastRho = fmaf(lyc * lastW, f, cyLess);
         }
     }
+#if TERRAIN_IN_ASM
+#ifdef BENCH3D
+    const bool inC = g_terrainProbe & 8;  // the bench's check: C alone, to compare
+#else
+    constexpr bool inC = false;
+#endif
+    if (!inC) {
+        // The whole column in assembly, the frame's part of its state filled
+        // in already.
+        MarchState &m = *K.asmState;
+        m.X0 = X0;
+        m.XS = XS;
+        m.XS2 = XS2;
+        m.Y0 = Y0;
+        m.YS = YS;
+        m.YS2 = YS2;
+        m.A = A;
+        m.B = B;
+        m.fB = f * B;
+        m.eh2f = eh2f;
+        m.gez = gez;
+        m.groundUp = groundUp;
+        m.e2 = e2;
+        m.eh2 = eh2;
+        m.rXS = rXS;
+        m.rYS = rYS;
+        m.easeLo = easeLo;
+        m.easeHi = easeHi;
+        // The ring's steps: none, round.
+        int iLo = ROUND ? 0 : stepFrom(far, steps, 0, easeLo);
+        int iHi = ROUND ? 0 : stepFrom(far, steps, iLo, easeHi);
+        m.farLo = far + iLo;
+        m.farHi = far + iHi;
+        m.farFirst = far + R.first;
+        m.at = tz + at;
+        m.filled = filled;
+        m.off = off;
+        m.lastW = lastW;
+        m.lastRho = lastRho;
+#ifdef BENCH3D
+        if (K.rowMask != -1) {
+            filled = ROUND ? scene3d_march_round_masked(&m) : scene3d_march_flat_masked(&m);
+        } else
+#endif
+        {
+            filled = ROUND ? scene3d_march_round(&m) : scene3d_march_flat(&m);
+        }
+        counts.samples += m.samples;
+        counts.rows += R.filled - filled;
+        counts.skips += m.skips;
+#ifdef BENCH3D
+        counts.paths[0] += m.samples - m.worked - m.skips;
+        counts.paths[1] += m.passed - m.seen;
+        counts.paths[3] += m.seen;
+        counts.paths[4] += m.again;
+        counts.paths[5] += m.tested;
+        counts.paths[6] += m.offGrid;
+#endif
+        return filled;
+    }
+#endif
     int curBlk = -1;
     int skipped = -1;  // a block's last step, skipped to: on into the next go
     uint32_t samples = 0, skips = 0;
@@ -7253,33 +7329,37 @@ void terrainMarch() {
     {
         MarchState &m = asmState;
         m.far = far;
-        m.steps = steps;
+        m.farEnd = far + steps;
+        m.farSkipTo = far + stepFrom(far, steps, 0, K.skipTo);
         m.heights = G.heights;
         m.cellMaxBytes = (int)((const uint8_t *)G.cellMax - (const uint8_t *)G.heights);
         m.rowBytes = G.cols * 2;
         m.xLim = K.xLim;
         m.yLim = K.yLim;
         m.bcols = G.blockCols;
+        m.blockMax = G.blockMax;
+        m.zHighAt = zHighAt;
+        m.bandRows = bandRows;
+        m.bandBack2 = (bandRows - 1 - cols * bandRows) * 2;
         m.Fz = F.z;
         m.Dz = D.z;
         m.f = g.f;
         m.cyLess = g.cy - 0.5f;
         m.cyMore = g.cy + 0.5f;
-        m.zHigh = zHigh;
-        m.skipTo = K.skipTo;
-        m.tz = tz;
-        m.bandRows1 = bandRows - 1;
-        m.bandBack = bandRows - 1 - cols * bandRows;
-        m.flatIn = 2500;
-        m.perRing = 1.0f / 2500;
+        m.fDz = g.f * D.z;
+        m.fall = K.fall;
+        m.twoFall = 2 * K.fall;
+        m.half = 0.5f;
+        m.one = 1;
+        m.perQ = 1.0f / 65536;
         m.tiny = 1e-3f;
         m.notSloped = -1e-4f;
         m.minusInf = -INFINITY;
-        m.three = 3;
-        m.blockMax = G.blockMax;
         m.farOff = 1e9f;
         m.tinyStep = 1e-9f;
-        m.zHighAt = zHighAt;
+        m.flatIn = 2500;
+        m.perRing = 1.0f / 2500;
+        m.three = 3;
     }
     K.asmState = &asmState;
     MarchCounts counts;
