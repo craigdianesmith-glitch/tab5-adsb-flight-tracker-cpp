@@ -9498,13 +9498,45 @@ struct CellMap {
     int cols = 0, rows = 0, stride = 0;
 };
 
+// Cells of none of the pack's, nought: a row of them, read as every row of
+// a map over a tile the pack hasn't - see cellSlow().
+const uint8_t g_noCells[256] = {};
+
 // The cell at (u, v) at depth z found the long way - cellAt() - and the map
 // made from where it was; -1 off the tiles.
 __attribute__((noinline)) int cellSlow(const groundpack::Window &W, float u, float v, float z, CellMap &map,
                                        CellPart &part) {
     int level = levelFor(z);
     int cell = cellAt(W, u, v, level, part);
-    if (cell < 0 || part.level != level || part.cells == nullptr) {
+    if (cell < 0) {
+        // Off the tiles - the sea round the coasts, mostly, which a pack
+        // leaves out - the tile's whole square nothing, at every level: a
+        // map of g_noCells over it, and its part for the assembly to keep,
+        // so that it passes over the rest of the square itself rather than
+        // handing back every sample in it. 256 cells across, to read where
+        // the square ends as finely as a part's own cells read theirs.
+        float tu = floorf(u), tv = floorf(v);
+        part.level = 1 << 20;  // none, for cellAt()
+        part.split = 1;
+        part.u0 = tu;
+        part.v0 = tv;
+        part.u1 = tu + 1;
+        part.v1 = tv + 1;
+        part.ku = part.kv = 256;
+        part.cells = g_noCells;
+        part.stride = 0;
+        part.cols1 = part.rows1 = 255;
+        map.zLo = 0;
+        map.zHi = INFINITY;
+        map.au = map.av = 256;
+        map.bu = 1024 - tu * 256;
+        map.bv = 1024 - tv * 256;
+        map.cells = g_noCells;
+        map.cols = map.rows = 256;
+        map.stride = 0;
+        return cell;
+    }
+    if (part.level != level || part.cells == nullptr) {
         map.zLo = INFINITY;
         return cell;
     }
@@ -9794,8 +9826,9 @@ const TerrainStrips &terrainStrips(int core) {
 
 // The map C has just made on the long way, from `part`: its level's 1 /
 // depths in t, for the assembly to go on reading it, and the map kept for
-// it among the core's - the oldest going, once there are sixteen. None,
-// off the tiles, kept as none.
+// it among the core's - the oldest going, once there are sixteen; off the
+// tiles, the map of nothing over the tile's square, every level's. None -
+// a level the tile hasn't yet, read from a coarser one - kept as none.
 void terrainKeep(TerrainMaps &maps, TerrainCol &t, const CellPart &part) {
     if (!(t.zLo < INFINITY)) {
         t.wLo = t.wRange = 0;
