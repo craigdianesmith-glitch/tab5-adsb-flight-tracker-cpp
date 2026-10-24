@@ -512,9 +512,14 @@ struct Other {
 // Clyde, heading south-west and turning, with traffic about at other heights,
 // over the coasts, lakes and borders of the firmware's own map and the
 // runways of its own table - the earth curving away to a horizon two hundred
-// miles off. Frames from t seconds into it.
+// miles off. Frames from t seconds into it. AT="lat lon": the same flight
+// over somewhere else - a ground pack's own country, made by
+// tools/make_ground_pack.py.
 void enroute(const std::string &dir, float fps, float from, float to, const std::string &time) {
-    const double LAT0 = 55.58, LON0 = -5.25;
+    double LAT0 = 55.58, LON0 = -5.25;
+    if (const char *at = getenv("AT")) {
+        sscanf(at, "%lf %lf", &LAT0, &LON0);
+    }
     Enu enu(LAT0, LON0);
     std::vector<GroundLine> lines;
     LineSink sink = {&enu, &lines, LAT0, LON0};

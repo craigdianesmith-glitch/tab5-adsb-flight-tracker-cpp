@@ -1,0 +1,10 @@
+# What tools/make_ground_pack.py - and tools/gen_ground.py - need: the three
+# add-ons to Python they import. In this folder:
+#
+#     python -m pip install -r requirements.txt
+#
+# (on Windows, py -m pip install -r requirements.txt). The other tools here
+# say what they need at their tops.
+numpy>=1.21
+rasterio>=1.3
+pillow>=9.0

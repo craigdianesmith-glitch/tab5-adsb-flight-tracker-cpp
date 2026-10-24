@@ -5,6 +5,11 @@ to stamp onto the ground it draws, and their heights for its skyline.
 
     tools/gen_ground.py OUT.bin [--south 49.8 --north 61 --west -10.8 --east 2] [--jobs 8]
 
+This is the pack the releases carry, the United Kingdom and Ireland, made in
+one go over a box. For anywhere else - a country, a state, the country round
+a town - tools/make_ground_pack.py makes one by name, with these same tiles:
+it imports them from here.
+
 Needs numpy and rasterio (pip install numpy rasterio), and reads straight
 from the datasets' open archives on AWS, a window at a time - nothing to
 download first:
@@ -63,6 +68,8 @@ from 400m on the south coast to 150m in Shetland, ragged by up to 100m
 either side of it in patches some 600m across, as a head dyke is, or on
 slopes steeper than 22 degrees - which WorldCover counts as grass, as it does the lowland's
 pasture; 15 rocky, a fifth or more of it bare rock and scree, but not most.
+The moor's line is the British Isles' own: tools/make_ground_pack.py draws
+it there only, and leaves grass as grass elsewhere.
 """
 
 import argparse
@@ -99,6 +106,17 @@ COVER = {10: TREES, 20: SHRUBS, 30: GRASS, 40: CROPS, 50: BUILT, 60: BARE, 70: S
 LOOKUP = np.zeros(256, np.uint8)
 for _wc, _code in COVER.items():
     LOOKUP[_wc] = _code
+# A tile's bytes as this file makes them: one more each time a change here
+# changes them, so that tools/make_ground_pack.py doesn't take a tile it built
+# before - and kept - for one built now.
+TILE_VERSION = 1
+# Every tile the archives have - the paths dataset() is asked for, as
+# WORLDCOVER, DEM30 and DEM90 make them - or None, as here, to find out by
+# trying each one. tools/make_ground_pack.py sets it from the archives' own
+# lists of their tiles: then a tile not on its list is the sea, with nothing
+# asked of the network, and one on it that can't be read is the network
+# failing - an error - not the sea.
+KNOWN = None
 
 
 def k_for(lat):
@@ -124,9 +142,14 @@ def dataset(path):
         if _open[oldest] is not None:
             _open[oldest].close()
         del _open[oldest]
+    if KNOWN is not None and path not in KNOWN:
+        _open[path] = None  # not on the archive's list: the sea
+        return None
     try:
         _open[path] = rasterio.open(path)
     except rasterio.errors.RasterioIOError:
+        if KNOWN is not None:
+            raise  # one the archive has, not read
         _open[path] = None  # the sea: the archive has no tile there
     return _open[path]
 
@@ -152,11 +175,13 @@ def cover_counts(south, west, rows, cols):
     return counts
 
 
-def heights(south, west, rows, cols, border=0, template=DEM90, resampling=Resampling.bilinear):
+def heights(south, west, rows, cols, border=0, template=DEM90, resampling=Resampling.bilinear, fallback=None,
+            used=None):
     """Heights over a tile, metres - on `rows` by `cols` cells and `border`
     more round them, for the slopes at its edges, from the neighbouring
     tiles of the archive where the border crosses into them; nought where
-    the sea is."""
+    the sea is. Where `template`'s archive has no tile, `fallback`'s, if
+    given and it has one - a degree it stood in for added to `used`."""
     dy, dx = TILE_DEG / rows, TILE_DEG / cols
     s, w = south - border * dy, west - border * dx
     n, e = south + TILE_DEG + border * dy, west + TILE_DEG + border * dx
@@ -166,6 +191,10 @@ def heights(south, west, rows, cols, border=0, template=DEM90, resampling=Resamp
         for lo in range(int(math.floor(w)), int(math.floor(e - 1e-9)) + 1):
             ns, a, ew, o = ns_ew(la, lo)
             ds = dataset(template.format(ns=ns, lat=a, ew=ew, lon=o))
+            if ds is None and fallback is not None:
+                ds = dataset(fallback.format(ns=ns, lat=a, ew=ew, lon=o))
+                if ds is not None and used is not None:
+                    used.append((la, lo))
             if ds is not None:
                 sources.append(ds)
     if not sources:
@@ -241,15 +270,17 @@ def ragged(r0, c0, rows, cols, f):
 def classify(counts, z, steep, moorline, dither):
     """Each cell's cover - see the top - from how many of its samples are
     each of WorldCover's: the most of them, or the mixes. The moor's line,
-    `moorline`, up or down by `dither`, 0 to 1, each cell's."""
+    `moorline`, up or down by `dither`, 0 to 1, each cell's - or no moor at
+    all, the grass left grass, with `moorline` None."""
     n = np.maximum(counts.sum(axis=2), 1).astype(np.float32)
     most = counts.astype(np.float32)
     most[:, :, NONE] -= 0.5  # nought, none, loses to anything - ties to the lower code
     out = most.argmax(axis=2).astype(np.uint8)
     built, bare = counts[:, :, BUILT] / n, counts[:, :, BARE] / n
     land = (out != NONE) & (out != WATER) & (out != SNOW)
-    up = z >= moorline + (dither - 0.5) * 200
-    out[land & (out == GRASS) & (up | (steep >= 0.4))] = MOOR
+    if moorline is not None:
+        up = z >= moorline + (dither - 0.5) * 200
+        out[land & (out == GRASS) & (up | (steep >= 0.4))] = MOOR
     out[land & (bare >= 0.2) & (out != BARE)] = ROCKY
     out[land & (built >= 0.2)] = SUBURB
     out[land & (built >= 0.6)] = BUILT
@@ -262,26 +293,31 @@ def deflate(data):
     return raw.compress(data) + raw.flush()
 
 
-def tile(job):
-    """The coarse, mid and detail blocks of the tile `job` - (row, col) in
-    tiles from the south pole and 180 west - or None for one that is all
-    sea."""
-    ty, tx = job
+def make_tile(ty, tx, moor=True, dem_fallback=False):
+    """The coarse, mid and detail blocks of the tile (ty, tx) - in tiles from
+    the south pole and 180 west - or None for one that is all sea; and
+    whether the GLO-90 stood in for the GLO-30 for its light and shade.
+    With `moor` False, no moor - the grass left grass; with `dem_fallback`,
+    the GLO-90's heights for the shade where the GLO-30 has no tile of its
+    own, as over Armenia and Azerbaijan, which it leaves out - else flat
+    there, as the sea is."""
     south, west = ty / TILES_PER_DEG - 90, tx / TILES_PER_DEG - 180
     k = k_for(south + TILE_DEG / 2)
     if k is None:
-        return None
+        return None, False
     rows, cols = ROWS0, int(ROWS0 / k)
     counts = cover_counts(south, west, rows, cols)
-    z = heights(south, west, rows, cols, border=1, template=DEM30, resampling=Resampling.average)
+    stood_in = []
+    z = heights(south, west, rows, cols, border=1, template=DEM30, resampling=Resampling.average,
+                fallback=DEM90 if dem_fallback else None, used=stood_in)
     if counts[:, :, NONE].all() and not (z > 0).any():
-        return None
+        return None, False
     mid = math.radians(south + TILE_DEG / 2)
     cell_y = TILE_DEG / rows * 111320.0
     cell_x = TILE_DEG / cols * 111320.0 * math.cos(mid)
     light, steep = shade(z, cell_y, cell_x)  # rows north first, as a picture's are
     ground = z[1:-1, 1:-1]
-    moorline = min(400.0, max(150.0, 400 - 25 * (abs(south + TILE_DEG / 2) - 50)))
+    moorline = min(400.0, max(150.0, 400 - 25 * (abs(south + TILE_DEG / 2) - 50))) if moor else None
     north_row = (180 * TILES_PER_DEG - ty - 1) * rows  # the tile's first row of cells, from the north pole
     west_col = tx * cols
     levels = []
@@ -290,8 +326,8 @@ def tile(job):
         r, c = rows // f, cols // f
         cell_counts = counts if f == 1 else blocks(counts.astype(np.uint16), f)
         mean = lambda a: blocks(a, f) / (f * f)
-        covers = classify(cell_counts, mean(ground), mean(steep), moorline,
-                          ragged(north_row // f, west_col // f, r, c, f))
+        dither = ragged(north_row // f, west_col // f, r, c, f) if moor else None
+        covers = classify(cell_counts, mean(ground), mean(steep), moorline, dither)
         shades = np.clip(np.rint(mean(light)), 0, 15).astype(np.uint8)
         levels.append((covers << 4) | shades)
     fine_h = heights(south, west, rows // 6, cols // 6)
@@ -301,7 +337,40 @@ def tile(job):
     detail = b"".join(level0[a:a + h, b:b + w].tobytes() for a in (0, h) for b in (0, w))
     middle = levels[1].tobytes() + levels[2].tobytes() + levels[3].tobytes() + fine_h.astype("<i2").tobytes()
     coarse = levels[4].tobytes() + coarse_h.astype("<i2").tobytes()
-    return deflate(coarse), deflate(middle), deflate(detail)
+    return (deflate(coarse), deflate(middle), deflate(detail)), bool(stood_in)
+
+
+def tile(job):
+    """The coarse, mid and detail blocks of the tile `job` - (row, col) in
+    tiles from the south pole and 180 west - or None for one that is all
+    sea: the pack's own, with the moor's line, from the GLO-30 alone."""
+    return make_tile(*job)[0]
+
+
+def write_pack(f, south, west, rows, cols, tiles):
+    """The pack, written to the open file `f`: its grid `rows` by `cols`
+    tiles from `south` and `west` - in tiles from the equator and the
+    meridian - and `tiles` on it, (row, col, coarse, mid, detail) each, by
+    latitude then longitude, as the index has them. Its size, where its
+    detail blocks start, and how long its coarse blocks are together."""
+    header_size, row = 32, struct.calcsize("<HHIIIIII")
+    index_offset = header_size
+    coarse_offset = index_offset + row * len(tiles)
+    coarse_length = sum(len(t[2]) for t in tiles)
+    mid_offset = coarse_offset + coarse_length
+    detail_offset = mid_offset + sum(len(t[3]) for t in tiles)
+    f.write(struct.pack("<4sHHhhHHIIII", b"OVGR", 2, TILES_PER_DEG, south, west, rows, cols, len(tiles),
+                        index_offset, coarse_offset, coarse_length))
+    co, mo, do = coarse_offset, mid_offset, detail_offset
+    for r, c, cb, mb, db in tiles:
+        f.write(struct.pack("<HHIIIIII", r, c, co, len(cb), mo, len(mb), do, len(db)))
+        co += len(cb)
+        mo += len(mb)
+        do += len(db)
+    for part in (2, 3, 4):
+        for t in tiles:
+            f.write(t[part])
+    return f.tell(), detail_offset, coarse_length
 
 
 def start_worker():
@@ -327,42 +396,22 @@ def main():
     w0 = int(math.floor(args.west * TILES_PER_DEG))
     e0 = int(math.ceil(args.east * TILES_PER_DEG))
     jobs = [(ty + 90 * TILES_PER_DEG, tx + 180 * TILES_PER_DEG) for ty in range(s0, n0) for tx in range(w0, e0)]
-    index, coarses, middles, details = [], [], [], []
+    tiles = []
     started = time.time()
     total = len(jobs)
     size = 0
     with multiprocessing.Pool(args.jobs, initializer=start_worker) as pool:
         for done, ((ty, tx), got) in enumerate(zip(jobs, pool.imap(tile, jobs, chunksize=2)), 1):
             if got is not None:
-                index.append((ty - 90 * TILES_PER_DEG - s0, tx - 180 * TILES_PER_DEG - w0))
-                coarses.append(got[0])
-                middles.append(got[1])
-                details.append(got[2])
+                tiles.append((ty - 90 * TILES_PER_DEG - s0, tx - 180 * TILES_PER_DEG - w0) + got)
                 size += sum(map(len, got))
             if done % 50 == 0:
                 rate = done / max(1e-6, time.time() - started)
-                print(f"{done}/{total} tiles, {len(index)} with land, {size / 1e6:.1f}MB, "
+                print(f"{done}/{total} tiles, {len(tiles)} with land, {size / 1e6:.1f}MB, "
                       f"{(total - done) / rate / 60:.1f} min to go", flush=True)
-    header_size, row = 32, struct.calcsize("<HHIIIIII")
-    index_offset = header_size
-    coarse_offset = index_offset + row * len(index)
-    coarse_length = sum(map(len, coarses))
-    mid_offset = coarse_offset + coarse_length
-    detail_offset = mid_offset + sum(map(len, middles))
     with open(args.out, "wb") as f:
-        f.write(struct.pack("<4sHHhhHHIIII", b"OVGR", 2, TILES_PER_DEG, s0, w0, n0 - s0, e0 - w0, len(index),
-                            index_offset, coarse_offset, coarse_length))
-        co, mo, do = coarse_offset, mid_offset, detail_offset
-        for (r, c), cb, mb, db in zip(index, coarses, middles, details):
-            f.write(struct.pack("<HHIIIIII", r, c, co, len(cb), mo, len(mb), do, len(db)))
-            co += len(cb)
-            mo += len(mb)
-            do += len(db)
-        for blocks_ in (coarses, middles, details):
-            for b in blocks_:
-                f.write(b)
-        size = f.tell()
-    print(f"{args.out}: {len(index)} tiles of {total}, {size / 1e6:.1f}MB - coarse {coarse_length / 1e3:.0f}KB, "
+        size, detail_offset, coarse_length = write_pack(f, s0, w0, n0 - s0, e0 - w0, tiles)
+    print(f"{args.out}: {len(tiles)} tiles of {total}, {size / 1e6:.1f}MB - coarse {coarse_length / 1e3:.0f}KB, "
           f"detail {(size - detail_offset) / 1e6:.1f}MB - in {(time.time() - started) / 60:.1f} min")
 
 
