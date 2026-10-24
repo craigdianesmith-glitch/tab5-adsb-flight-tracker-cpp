@@ -14,19 +14,19 @@ A C++ rewrite of [Overhead](https://github.com/craigdianesmith-glitch/tab5-adsb-
 
 | | |
 | --- | --- |
-| ![The 3D view: an Emirates A380 at 1,000ft over London at sunset, Heathrow's approach lights ahead and the traffic on the ground labelled, in FLY PAST](docs/screenshots/3d-sunset.png) | ![The 3D view: the A380 just down on Heathrow's 27L at sunset, smoke off its main wheels, the runway and taxiway lights lit](docs/screenshots/3d-touchdown.png) |
+| ![The 3D view: an Emirates A380 at 1,200ft over London at dusk on its way into Heathrow, the towns lit below, from the ORBIT camera](docs/screenshots/3d-sunset.png) | ![The 3D view: the A380 just down on Heathrow's 27L at dusk, in CINEMA's touchdown shot, the runway and approach lights lit](docs/screenshots/3d-touchdown.png) |
 | ![The table of aircraft overhead, sorted by status with a filter on](docs/screenshots/table.png) | ![The radar 20nm around Heathrow after a free look, with its navaids and Surrey named under the traffic](docs/screenshots/radar.png) |
 | ![Free look: a line dragged 36nm out of the plot, which is redrawn at a range that takes it with its coast and airports alone](docs/screenshots/freelook-drag.png) | ![And let go: the radar centred there, with the traffic around Edinburgh](docs/screenshots/freelook.png) |
 | ![Heathrow's airport zoom at night, with runway 27L in use and the control tower marked](docs/screenshots/zoom.png) | ![Heathrow's card: its tower, ground, delivery, radar and ATIS frequencies beside a radar on its mast](docs/screenshots/card.png) |
 | ![The detail screen for one flight, its route as buttons, with SAY, WATCH and FOLLOW](docs/screenshots/detail.png) | ![Following a flight on the radar, with its height charted on the left](docs/screenshots/follow.png) |
 | ![Following an arrival in Heathrow's zoom, on short final for runway 27L](docs/screenshots/follow-zoom.png) | ![A recording of a followed Typhoon, ready to play back, with 3D under Export](docs/screenshots/replay.png) |
-| ![The recording replayed in 3D: the Typhoon from below against the morning sun as it was then, the replay's controls under the picture](docs/screenshots/replay-3d.png) | ![The filter: civil traffic only, ground transmitters hidden](docs/screenshots/filter.png) |
+| ![The recording replayed in 3D: the Typhoon at 15,700ft over the hills in the morning light as it was then, the replay's controls under the picture](docs/screenshots/replay-3d.png) | ![The filter: civil traffic only, ground transmitters hidden](docs/screenshots/filter.png) |
 | ![A recording exported to video, the aircraft's climb-out charted with its take-off](docs/screenshots/export.png) | ![The recordings on the card, and the videos made from them](docs/screenshots/recordings.png) |
 | ![Sharing over WiFi, with a QR code to the page](docs/screenshots/share.png) | ![The settings screen](docs/screenshots/settings.png) |
 | ![The alerts, voice and recording settings, with auto-follow into 3D](docs/screenshots/alerts.png) | ![Help, on how to use the tracker](docs/screenshots/help.png) |
 | ![About: the version, a disclaimer and the credits](docs/screenshots/about.png) | |
 
-Captured from the device with `tools/screenshot.py` - see [Screenshots](#screenshots). The address and network name on the settings and share screens are placeholders. The table, details, radar, zoom, replay, replay in 3D, filter, settings and alerts were taken on v1.5.0; the first two 3D pictures in the table are from its test scene of an Emirates A380 landing at Heathrow; the Alps above them is the 3D view's picture alone, on v1.5.1, the land held at full detail for the still by the bench build; the rest on v1.4.0, or the export and share screens on v1.3.1, unchanged since.
+Captured from the device with `tools/screenshot.py` - see [Screenshots](#screenshots). The address and network name on the settings and share screens are placeholders. The table, details, radar, zoom, replay, filter, settings and alerts were taken on v1.5.0; the first two 3D pictures in the table, from the bench's test scene of an Emirates A380 landing at Heathrow, and the replay in 3D are on v1.5.1, as is the Alps above them - the 3D view's picture alone, the land held at full detail for the still by the bench build; the rest on v1.4.0, or the export and share screens on v1.3.1, unchanged since.
 
 ## Hardware
 
