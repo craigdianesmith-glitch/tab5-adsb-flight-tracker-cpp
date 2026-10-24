@@ -373,6 +373,12 @@ uint16_t *drawBand(int band, void *scratch, uint32_t *stageUs = nullptr);
 // to the screen from the other.
 void drawBandInto(int band, uint16_t *color, uint16_t *depth, uint32_t *stageUs = nullptr);
 int bandCount();
+#if !defined(ESP_PLATFORM)
+// Off the Tab5, the core a band is drawn as on, 0 or 1 - the terrain keeps
+// caches of each core's own - for the preview to draw them as the Tab5's
+// two cores share them.
+extern int g_previewCore;
+#endif
 
 // What the frame prepared holds, after clipping and culling - and, given a
 // clock, how long each step of preparing it took.

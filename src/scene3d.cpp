@@ -6511,11 +6511,14 @@ HOT_INLINE uint32_t cycles() {
         .count();
 #endif
 }
+#if !defined(ESP_PLATFORM)
+int g_previewCore = 0;
+#endif
 HOT_INLINE int coreNow() {
 #if defined(ESP_PLATFORM)
     return xPortGetCoreID() & 1;
 #else
-    return 0;
+    return g_previewCore;
 #endif
 }
 
@@ -9938,13 +9941,15 @@ void terrainBand(uint16_t *color, int y0, int y1, const int haze[3]) {
     }
 #endif
 #if defined(BENCH3D) || !defined(ESP_PLATFORM)
-    // The bench's check of the check: C in the assembly's order - row by
-    // row-pair across every column - for what the order alone changes.
+    // The bench's check of the check: C in the assembly's order - a unit of
+    // rows at a time across every column - for what the order alone changes
+    // where a sample is a hair from a part's edge: the C the assembly
+    // matches to the bit (tools/terrain_check).
     bool rowMajor = g_terrainProbe & 16;
 #if !defined(ESP_PLATFORM)
     rowMajor = rowMajor || getenv("ROW_MAJOR") != nullptr;
 #endif
-    if (rowMajor && unit == 2) {
+    if (rowMajor) {
         auto at = [&](int c, int y, int rows) {
             t.zc = zs + (size_t)c * bandRows - y0;
             t.px = (uint32_t *)color + (size_t)(y - y0) * (d.w / 2) + 2 * c;
@@ -9960,30 +9965,18 @@ void terrainBand(uint16_t *color, int y0, int y1, const int haze[3]) {
             }
         };
         t.keyE = t.keyO = ~0u;
+        // A unit's rows at a time - the band's first to the next multiple of
+        // the unit, then a unit each - and in each, every column's sample:
+        // on the unit's first row, or on the column's first of land in it.
         for (int y = y0; y < yb;) {
-            if (y & 1) {
-                for (int c = 0; c < cols; c++) {
-                    if (tops[c] <= y) {
-                        at(c, y, 1);
-                    }
-                }
-                y++;
-                continue;
-            }
+            int ye = std::min((y & -unit) + unit, yb);
             for (int c = 0; c < cols; c++) {
-                int top = tops[c];
-                if (top > y + 1) {
-                    continue;
+                int top = std::max(y, (int)tops[c]);
+                if (top < ye) {
+                    at(c, top, ye - top);
                 }
-                if (top == y + 1) {
-                    if (y + 1 < yb) {
-                        at(c, y + 1, 1);
-                    }
-                    continue;
-                }
-                at(c, y, y + 1 < yb ? 2 : 1);
             }
-            y += 2;
+            y = ye;
         }
         cols = 0;
     }

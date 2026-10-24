@@ -16,6 +16,35 @@
 // "LHR 27L 27R" - built from the firmware's own runway and navaid tables,
 // and its real taxiways, stands and buildings with AIRFIELDS=airfields.bin;
 // what covers the land round it, and its hills, with GROUND=ground.bin.
+//
+// And from the environment:
+//   AIRFIELDS=, GROUND=   the packs, as above; TERRAIN=1 the land at its
+//                         height from GROUND's hills, TERRAIN_EFFORT=0.8 as
+//                         the governor skimps it (0 to 1)
+//   PREVIEW_W=, PREVIEW_H= another size, the Tab5's 3D view's 1008 by 560
+//                         say (a multiple of 4 wide, to 2048)
+//   BAND_ROWS=            the bands' rows: 16, as the Tab5 has them with room,
+//                         or 15, 14, 12, 10 or 8, as it has them without
+//   BAND_SPLIT=1          the bands drawn as the Tab5's two cores share them:
+//                         one from the top, one from the bottom, each on its
+//                         core's own caches
+//   PREVIEW_SWAP=1        the pixels' bytes swapped, as the Tab5's panel has
+//                         them (the PPMs' colours come out wrong: for checks)
+//   NOSAVE=1              each frame's hash in the log, not its PPM
+//   TSTATS=1              each frame's terrain in the log, and the march's
+//                         digest - see terrainLine()
+//   ROW_MAJOR=1           the terrain's C in the assembly's order, row-pair by
+//                         row-pair across every column (scene3d.cpp)
+//   PROFILE=1             each step of the preparing, averaged, at the end
+//   EYE_AT="x,y,z,tx,ty,tz,fov"  the airfield views' eye and what it looks
+//                         at, metres from the airfield's middle, and the
+//                         view's width in degrees
+//   OVERHEAD=metres       straight down on the airfield's middle
+//   STAND=ref             the followed aircraft pulling onto that stand
+//   NO_TOWNS=1, NO_LANDSEA=1  without the towns' outlines, or the shores
+//   FEET=, AT="lat lon"   the enroute view's height and where it flies;
+//                         TOPDOWN=metres, ORBIT="yaw pitch spans fov" its
+//                         camera held
 #include <cctype>
 #include <chrono>
 #include <ctime>
@@ -68,14 +97,11 @@ const Navaid NAVAIDS[] = {
 
 using namespace scene3d;
 
-// PREVIEW_W and PREVIEW_H: another size - the Tab5's 3D view's 1008 by 560,
-// say, to see a frame as it draws one.
-const int W = getenv("PREVIEW_W") ? atoi(getenv("PREVIEW_W")) : 1280,
-          H = getenv("PREVIEW_H") ? atoi(getenv("PREVIEW_H")) : 720;
-// The bands' rows: 16, as the Tab5 has them with room - or BAND_ROWS, 15
-// say, as it has them without.
-const int BAND = getenv("BAND_ROWS") ? atoi(getenv("BAND_ROWS")) : 16;
-std::vector<uint16_t> image(W *H);
+// The frame's size and its bands' rows - PREVIEW_W, PREVIEW_H and BAND_ROWS
+// - read as main() starts: under qemu-riscv32 (tools/terrain_check) the
+// environment is there no sooner.
+int W = 1280, H = 720, BAND = 16;
+std::vector<uint16_t> image;
 
 void text(const char *s, int x, int y, int size, uint16_t color) {
     for (; *s; s++, x += 6 * size) {
@@ -150,6 +176,27 @@ void terrainLine(int frame) {
     printf("tstats %04d: march %.0fus %llu samples %llu rows %llu skips; band %.0fus %llu samples %llu long; digest %08x\n",
            frame, t[0] / 1000.0, (unsigned long long)t[1], (unsigned long long)t[2], (unsigned long long)t[3],
            t[4] / 1000.0, (unsigned long long)t[5], (unsigned long long)t[6], (unsigned)terrainDigest());
+}
+
+// The frame prepared, drawn band by band into the image - with BAND_SPLIT,
+// as the Tab5's two cores share them: the helper's core from the top, the
+// loop's from the bottom, each band on its own core's caches.
+void drawFrame(void *scratch) {
+    const int n = bandCount();
+    const bool split = getenv("BAND_SPLIT") != nullptr;
+    for (int k = 0; k < n; k++) {
+        int b = !split ? k : k & 1 ? n - 1 - (k >> 1) : k >> 1;
+        g_previewCore = split ? k & 1 : 0;
+        uint16_t *rows = drawBand(b, scratch);
+        int y = b * BAND;
+        memcpy(&image[(size_t)y * W], rows, sizeof(uint16_t) * W * std::min(BAND, H - y));
+    }
+    g_previewCore = 0;
+}
+
+// PREVIEW_SWAP: the pixels as the Tab5's panel takes them, high byte first.
+bool swapped() {
+    return getenv("PREVIEW_SWAP") != nullptr;
 }
 
 void save(const std::string &path) {
@@ -442,12 +489,8 @@ void fleet(const std::string &dir, const std::string &time) {
             float reach = std::max(14.0f, 37.6f * size);
             Camera cam = shot == 0 ? orbitCamera(pose, 140, 9, reach * 1.55f, 40)
                                    : orbitCamera(pose, 35, 14, reach * 1.45f, 40);
-            prepare(W, H, BAND, false, scene, cam);
-            for (int b = 0; b < bandCount(); b++) {
-                uint16_t *rows = drawBand(b, band);
-                int y = b * BAND;
-                memcpy(&image[(size_t)y * W], rows, sizeof(uint16_t) * W * std::min(BAND, H - y));
-            }
+            prepare(W, H, BAND, swapped(), scene, cam);
+            drawFrame(band);
             text(NAMES[f], 40, 30, 4, 0xFFFF);
             char name[64];
             snprintf(name, sizeof name, "/%02d-%s.ppm", f, shot == 0 ? "ground" : "air");
@@ -676,7 +719,7 @@ void enroute(const std::string &dir, float fps, float from, float to, const std:
             cam = orbitCamera(pose, 200 + (phase - 20) * 3, -18, 120 * size, 52);
         }
         auto start = std::chrono::steady_clock::now();
-        prepare(W, H, BAND, false, scene, cam);
+        prepare(W, H, BAND, swapped(), scene, cam);
         if (getenv("PROFILE")) {  // each step of the preparing, averaged, at the end
             static double sums[STEPS] = {};
             static int frames = 0;
@@ -695,11 +738,7 @@ void enroute(const std::string &dir, float fps, float from, float to, const std:
                 printf("\n");
             }
         }
-        for (int b = 0; b < bandCount(); b++) {
-            uint16_t *rows = drawBand(b, band);
-            int y = b * BAND;
-            memcpy(&image[(size_t)y * W], rows, sizeof(uint16_t) * W * std::min(BAND, H - y));
-        }
+        drawFrame(band);
         totalMs += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
         terrainLine(frame);
         char line[96];
@@ -741,6 +780,15 @@ int main(int argc, char **argv) {
         return 1;
     }
     std::string view = argv[1], dir = argv[2];
+    W = getenv("PREVIEW_W") ? atoi(getenv("PREVIEW_W")) : 1280;
+    H = getenv("PREVIEW_H") ? atoi(getenv("PREVIEW_H")) : 720;
+    BAND = getenv("BAND_ROWS") ? atoi(getenv("BAND_ROWS")) : 16;
+    if (W < 64 || W > 2048 || W % 4 != 0 || H < 64 || H > 2048 || BAND < 2 || BAND > 64) {
+        // The terrain's strips hold 2048 pixels' columns, of four pixels each.
+        fprintf(stderr, "PREVIEW_W: a multiple of 4, 64 to 2048; PREVIEW_H: 64 to 2048; BAND_ROWS: 2 to 64\n");
+        return 1;
+    }
+    image.assign((size_t)W * H, 0);
     setClock([]() {
         return (uint32_t)std::chrono::duration_cast<std::chrono::microseconds>(
                    std::chrono::steady_clock::now().time_since_epoch())
@@ -902,7 +950,12 @@ int main(int argc, char **argv) {
         if (getenv("OVERHEAD")) {  // straight down on the airfield's middle from OVERHEAD metres
             cam = {{0, -1, (float)atof(getenv("OVERHEAD"))}, {0, 0, 0}, 70};
         }
-        prepare(W, H, BAND, false, scene, cam);
+        if (const char *e = getenv("EYE_AT")) {  // the eye where it is wanted: out on the cover, say
+            float v[7] = {0, 0, 0, 0, 0, 0, 60};
+            sscanf(e, "%f,%f,%f,%f,%f,%f,%f", &v[0], &v[1], &v[2], &v[3], &v[4], &v[5], &v[6]);
+            cam = {{v[0], v[1], v[2]}, {v[3], v[4], v[5]}, v[6]};
+        }
+        prepare(W, H, BAND, swapped(), scene, cam);
         if (getenv("PROFILE")) {  // each step of the preparing, averaged, at the end
             static double sums[STEPS] = {};
             static int frames = 0;
@@ -921,11 +974,7 @@ int main(int argc, char **argv) {
                 printf("\n");
             }
         }
-        for (int b = 0; b < bandCount(); b++) {
-            uint16_t *rows = drawBand(b, band);
-            int y = b * BAND;
-            memcpy(&image[(size_t)y * W], rows, sizeof(uint16_t) * W * std::min(BAND, H - y));
-        }
+        drawFrame(band);
         totalMs += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
         terrainLine(frame);
 
