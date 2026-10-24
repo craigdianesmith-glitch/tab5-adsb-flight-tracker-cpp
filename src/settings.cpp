@@ -72,7 +72,7 @@ AppSettings loadSettings() {
         s.clockZone = CLOCK_ZONE_AUTO;
     }
     s.autoZoom = prefs.getBool("autozoom", false);
-    s.terrain = prefs.getBool("terrain", true);
+    s.terrain = prefs.getBool("terrain", false);  // off to start with: the frames twice as quick
     s.replayTracks = prefs.getBool("rtracks", true);
     uint8_t sort = prefs.getUChar("tsort", 4);  // DIST, nearest first
     s.tableSortCol = sort & 7;

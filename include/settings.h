@@ -46,7 +46,7 @@ struct AppSettings {
     // CLOCK_ZONE_AUTO, never picked, for the zone home is in.
     uint8_t clockZone;
     bool autoZoom;           // following, the radar's range sized to the sky round the aircraft
-    bool terrain;            // the 3D view's land at its height, where the pack has it - its GROUND button
+    bool terrain;            // the 3D view's land at its height, where the pack has it - its GROUND button; off at first
     bool replayTracks;       // each aircraft's last ten minutes behind it in a replay
     uint8_t tableSortCol;    // the table's order - see displayHitHeader()
     bool tableSortDesc;

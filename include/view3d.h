@@ -61,8 +61,9 @@ void benchCoverReport();
 // Gives them back, the frame being drawn finished first.
 void close();
 // Whether the land is drawn at its height, where the card's ground pack has
-// it - the GROUND button's, which saves it; this from the settings at boot.
-// Off, or with no pack, the ground is flat, its hills a skyline.
+// it - the GROUND button's, which saves it; this from the settings at boot,
+// off to start with. Off, or with no pack, the ground is flat, its hills a
+// skyline.
 void setTerrain(bool on);
 bool isOpen();
 // Showing the one followed parked at a stand, or making for one - landed,

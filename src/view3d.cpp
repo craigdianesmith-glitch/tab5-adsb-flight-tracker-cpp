@@ -1640,9 +1640,10 @@ void setCover(double lat, double lon, bool high, float upM) {
 // Where the eye was last, for ##D.
 double g_eyeLat = 0, g_eyeLon = 0;
 // The land at its height - the hills from any height - rather than flat
-// with a skyline: the GROUND button's, saved, and the settings' at boot; on
-// the bench ##m switches it too, unsaved, to set the two side by side.
-bool g_terrain = true;
+// with a skyline: the GROUND button's, saved, and the settings' at boot -
+// off to start with; on the bench ##m switches it too, unsaved, to set the
+// two side by side.
+bool g_terrain = false;
 
 // The land can be drawn at its height here: the card's pack read in, with
 // land of it round the eye. Else it is flat whatever GROUND says - the strip

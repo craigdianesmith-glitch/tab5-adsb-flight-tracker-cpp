@@ -71,8 +71,9 @@ const char *const HELP[] = {
     "it - drag the picture to turn it - and TOWER watches from the airfield's tower.",
     "- FLY PAST sets a camera down ahead of it, beside its way, for it to go by - then ahead again for the next "
     "pass, the other side. ZOOM IN and ZOOM OUT bring the camera nearer or further off.",
-    "- GROUND: the land at its height, its hills and mountains, from the ground pack. Off, the ground is flat, its "
-    "hills along the skyline, and the pictures come quicker. Greyed with no pack, or away from the land it covers.",
+    "- GROUND: the land at its height, its hills and mountains, from the ground pack - press it to see them. Off, "
+    "as it starts, the ground is flat, its hills along the skyline, and the pictures come twice as quick. Greyed "
+    "with no pack, or away from the land it covers.",
     "- Tap another aircraft for its details. Back goes to the radar.",
     "- An airport's taxiways, stands, buildings and tower come from the airfield pack, airfields.bin, in the SD "
     "card's overhead folder - as does the tower on the zoom. Without it, or at an airport it hasn't got, the view "
