@@ -1457,6 +1457,30 @@ int coverMismatches(const Scene &given, const Camera &cam) {
     return (int)g_mismatched;
 }
 
+// The ground pack's tiles round (lat, lon), seen from upM metres up, read
+// in and the heights built from them - till nothing more has come for a
+// second and a half, or ten seconds: so that a frame drawn twice over, in
+// assembly and in C, reads the same tiles both times.
+void settleAt(double lat, double lon, float upM = 0) {
+    int held = 0, detailHeld = 0, finerHeld = 0, reads = 0, last = -1;
+    uint32_t readUs = 0, finerUs = 0, start = millis(), quietSince = start;
+    const groundpack::TerrainGrid *grid = nullptr;
+    while (millis() - start < 10000) {
+        groundpack::want(lat, lon, 45, upM);
+        groundpack::stats(held, detailHeld, finerHeld, reads, readUs, finerUs);
+        reads += finerHeld;
+        const groundpack::TerrainGrid *now = groundpack::terrainGrid();
+        if (reads != last || now != grid) {
+            last = reads;
+            grid = now;
+            quietSince = millis();
+        } else if (millis() - quietSince > 1500) {
+            break;
+        }
+        delay(50);
+    }
+}
+
 // The ground pack open, and its tiles round (lat, lon) read in - till the
 // reads stop for two seconds, or 20 seconds: a run timed from there, as
 // the live view is once it has been at a place a while. False with no pack.
@@ -1707,27 +1731,35 @@ void runCommand(char c) {
         float work = per(bench_mem_work(N / 4), N / 4);
         // The other core copying PSRAM all the while, as the drawing reads
         // and writes it.
-        static std::atomic<bool> s_copying;
+        static std::atomic<bool> s_copying, s_copied;
         static uint8_t *s_from, *s_to;
         s_from = big + BIG / 2;
         s_to = big + BIG / 2 + (1 << 20);
         s_copying = true;
+        s_copied = false;
         TaskHandle_t copier = nullptr;
-        xTaskCreatePinnedToCore(
-            [](void *) {
-                while (s_copying.load()) {
-                    memcpy(s_to, s_from, 512 << 10);
-                }
-                vTaskDelete(nullptr);
-            },
-            "memcopy", 3072, nullptr, 1, &copier, 1 - xPortGetCoreID());
+        bool copying = xTaskCreatePinnedToCore(
+                           [](void *) {
+                               while (s_copying.load()) {
+                                   memcpy(s_to, s_from, 512 << 10);
+                               }
+                               s_copied = true;
+                               vTaskDelete(nullptr);
+                           },
+                           "memcopy", 3072, nullptr, 1, &copier, 1 - xPortGetCoreID()) == pdPASS;
         delay(20);
         // On the first half's lines only, away from those being copied.
         void **q = chain(lines / 2);
         bench_mem_chase(q, N);
-        float contended = per(bench_mem_chase(along(q, 5555), N), N);
+        float contended = copying ? per(bench_mem_chase(along(q, 5555), N), N) : NAN;
+        // The copier stopped - out of the copy it is in the middle of - before
+        // its memory is given back: kept, if it never says so.
         s_copying = false;
-        delay(50);
+        uint32_t asked = millis();
+        while (copying && !s_copied.load() && millis() - asked < 5000) {
+            delay(10);
+        }
+        bool copierDone = !copying || s_copied.load();
         // A ring that fits the L2 but not the L1, and one that fits the L1.
         void **l2 = chain(96 * 1024 / LINE);
         bench_mem_chase(l2, 3 * 96 * 1024 / LINE);
@@ -1746,7 +1778,11 @@ void runCommand(char c) {
                                                       : "in between",
                       contended);
         heap_caps_free(order);
-        heap_caps_free(big);
+        if (copierDone) {
+            heap_caps_free(big);
+        } else {
+            Serial.println("[3d] memory bench: the copier never stopped - its 4MB kept");
+        }
         Serial.println("[3d] done");
         break;
     }
@@ -1902,6 +1938,14 @@ void runCommand(char c) {
                 terrainProbe(0);
                 Serial.printf("[3d]   in C, row-pair by row-pair as the assembly goes: %d pixels differ\n",
                               (int)g_mismatched);
+                // And the assembly again, against its own first frame: the
+                // same, or the ground changed under the check - a tile come
+                // in between the draws - and the pixels are neither's fault.
+                g_mismatched = 0;
+                g_misCount = 0;
+                draw(false, Sink::COMPARE);
+                Serial.printf("[3d]   the assembly again, against its first: %d pixels differ%s\n", (int)g_mismatched,
+                              g_mismatched > 0 ? " - the ground changed during the check" : "");
                 g_misCount = 0;
                 uint64_t again[8];
                 terrainStats(again, true);
@@ -1937,11 +1981,10 @@ void runCommand(char c) {
                           (unsigned)check[0], (unsigned)check[1], check[2] / 360000.0f, check[3] / 360000.0f);
             terrainEvents(ev);
             prepareBegin(g_vw, g_vh, BAND_ROWS, true, scene, cam);
-            Serial.printf("[3d]   the samples: %u hidden by their cell's highest, %u hidden worked out, %u seen "
-                          "with no rows, %u filling rows; %u before worked out again, %u blocks tested, %u off "
-                          "the grid\n",
-                          (unsigned)paths[0], (unsigned)paths[1], (unsigned)(paths[2] - paths[3]),
-                          (unsigned)paths[3], (unsigned)paths[4], (unsigned)paths[5], (unsigned)paths[6]);
+            Serial.printf("[3d]   the samples: %u hidden by their cell's highest, %u hidden worked out, %u filling "
+                          "rows; %u before worked out again, %u blocks tested, %u off the grid\n",
+                          (unsigned)paths[0], (unsigned)paths[1], (unsigned)paths[3], (unsigned)paths[4],
+                          (unsigned)paths[5], (unsigned)paths[6]);
             prepareAircraft(0, 1);
             prepareEnd();
             flip();
@@ -1967,10 +2010,19 @@ void runCommand(char c) {
                 break;
             }
             for (View view : {View::CHASE, View::CINEMA}) {
+                // The tiles round where the aircraft is by then read in, and
+                // the heights built from them, before the frame is drawn
+                // over and over - so that every draw reads the same tiles.
+                Vec3 at = sceneAt(t, TimeOfDay::DAY).followed.pose.at;
+                settleAt(g_airportLat0 + at.y / 110574.0,
+                         g_airportLon0 + at.x / (111320.0 * cos(g_airportLat0 * M_PI / 180)));
                 Scene scene = sceneAt(t, TimeOfDay::DAY);
                 scene.terrain = true;
-                scene.terrainGrid = grid;
+                scene.terrainGrid = groundpack::terrainGrid();
                 scene.groundUpM = g_airportFieldM;
+                if (scene.terrainGrid == nullptr) {
+                    continue;
+                }
                 const char *shot = "chase";
                 Camera cam = cameraAt(view, t, scene.followed.pose, &shot);
                 measure(t, scene, cam, shot);
@@ -1995,8 +2047,9 @@ void runCommand(char c) {
                 groundpack::want(CRUISE_LAT, CRUISE_LON, 45, 35000 * 0.3048f);
                 delay(100);
             }
-            const groundpack::TerrainGrid *high = groundpack::terrainGrid();
             for (float t : {3.0f, 14.0f, 25.0f}) {
+                settleAt(CRUISE_LAT, CRUISE_LON, 35000 * 0.3048f);
+                const groundpack::TerrainGrid *high = groundpack::terrainGrid();
                 if (high == nullptr) {
                     break;
                 }

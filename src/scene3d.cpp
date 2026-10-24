@@ -6628,19 +6628,22 @@ struct MarchRay {
 struct MarchCounts {
     uint32_t samples = 0, rows = 0, skips = 0;
     // On the bench, the samples by the way they went: hidden by their
-    // cell's highest corner, hidden worked out, seen with no rows, seen
-    // filling rows, the previous sample's height worked out again, blocks
-    // tested, and samples outside the grid.
+    // cell's highest corner, hidden worked out, (none: in two passes no
+    // sample is seen without filling rows), seen filling rows, the previous
+    // sample's height worked out again, blocks tested, and samples outside
+    // the grid.
     uint32_t paths[7] = {};
 };
 MarchCounts g_marchPaths;
 // On the bench, ##i: what the terrain's memory costs it - 1 the march's
 // heights read from four rows of the grid, 2 the drawing's cells all one -
 // for its cycles with and without; 4 the drawing in C alone, for the
-// assembly to be checked against.
+// assembly to be checked against, and 16 with it that C in the assembly's
+// order; 8 the march in C alone, likewise.
 int g_terrainProbe = 0;
 
 constexpr int MARCH_MOST = 400;  // steps a column's march takes at most
+static_assert(MARCH_MOST * sizeof(float) == 1600, "scene3d_march.S has the steps' bases 1600 bytes past far");
 
 // The first of the steps' distances, from step `from` on, not under s - by
 // halves, where walking them one at a time took hundreds a column.
@@ -6753,6 +6756,7 @@ int marchColumn(const MarchFrame &K, const MarchRay &R, MarchCounts &counts) {
     constexpr float PER_Q = 1.0f / 65536, FLAT_IN = 2500, FLAT_OUT = 5000;
     constexpr int BLOCK_BITS = 11;  // a block, 8 cells, 2048 256ths of one
     constexpr int GO = 16;          // steps a go: to each sixteenth, the give-up's
+    static_assert(GO == 16, "scene3d_march.S's goes are sixteen steps, their records its frame's");
     const float *far = K.far, *base = K.base;
     const int steps = K.steps;
     const int16_t *heights = K.heights, *cellMax = K.cellMax, *blockMax = K.blockMax;

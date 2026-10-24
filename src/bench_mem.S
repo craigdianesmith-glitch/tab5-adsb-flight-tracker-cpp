@@ -4,7 +4,8 @@
 // the first instruction that wants its value, and whether two or four
 // misses can be on their way at once. Each walks chains of pointers - one
 // to a cache line, in an order made up so that nothing guesses the next -
-// timed with the cycle counter. The loops are written out here, not left
+// timed with the cycle counter. And the latencies of the instructions the
+// terrain's loops wait on (##iT). The loops are written out here, not left
 // to the compiler, so that what is measured is exactly what is written.
 
 #if defined(BENCH3D)
@@ -106,5 +107,71 @@ bench_mem_work:
     sub     a0, t1, t0
     ret
     .size   bench_mem_work, .-bench_mem_work
+
+// void scene3d_latencies(uint32_t out[12]);
+//
+// The P4's latencies and throughputs the terrain's loops wait on (##iT's
+// first line), each the best of four runs of 32 turns of eight - the
+// loop's own two instructions a turn spread over the eight - with the
+// core's interrupts off: cycles for all 256 (fcvt and fmv pairs: 128 of
+// each). In order: fadd.s, fmul.s, fmadd.s chains; fmadd.s two chains
+// interleaved and four; fmadd.s independent; fcvt.w.s then fcvt.s.w, a
+// chain; fcvt.w.s independent; fdiv.s chain; fdiv.s independent; lw, a
+// pointer chased; fmv.x.w then fmv.w.x, a chain.
+
+.macro LAT_TEST slot, body:vararg
+    li      t5, 4                   // runs
+    li      t6, -1                  // the best
+91:
+    csrr    t2, mcycle
+    li      t1, 32
+    .balign 16
+92:
+    .rept 8
+    \body
+    .endr
+    addi    t1, t1, -1
+    bnez    t1, 92b
+    csrr    t3, mcycle
+    sub     t3, t3, t2
+    bgeu    t3, t6, 93f
+    mv      t6, t3
+93:
+    addi    t5, t5, -1
+    bnez    t5, 91b
+    sw      t6, \slot(a0)
+.endm
+
+    .align  2
+    .global scene3d_latencies
+    .type   scene3d_latencies, @function
+scene3d_latencies:
+    csrrci  a7, mstatus, 8          // interrupts off; their state kept in a7
+    addi    sp, sp, -16
+    sw      sp, 0(sp)               // a word that points to itself, to chase
+    li      t0, 0x3f800000
+    fmv.w.x ft1, t0                 // 1
+    fmv.w.x ft2, zero               // 0
+    fmv.w.x ft0, t0
+    fmv.w.x ft3, t0
+    fmv.w.x ft4, t0
+    fmv.w.x ft5, t0
+    LAT_TEST 0, fadd.s ft0, ft0, ft2
+    LAT_TEST 4, fmul.s ft0, ft0, ft1
+    LAT_TEST 8, fmadd.s ft0, ft0, ft1, ft2
+    LAT_TEST 12, fmadd.s ft0, ft0, ft1, ft2; fmadd.s ft3, ft3, ft1, ft2
+    LAT_TEST 16, fmadd.s ft0, ft0, ft1, ft2; fmadd.s ft3, ft3, ft1, ft2; fmadd.s ft4, ft4, ft1, ft2; fmadd.s ft5, ft5, ft1, ft2
+    LAT_TEST 20, fmadd.s ft6, ft1, ft1, ft2
+    LAT_TEST 24, fcvt.w.s t4, ft0, rtz; fcvt.s.w ft0, t4
+    LAT_TEST 28, fcvt.w.s t4, ft1, rtz
+    LAT_TEST 32, fdiv.s ft0, ft1, ft0
+    LAT_TEST 36, fdiv.s ft6, ft1, ft1
+    mv      t4, sp
+    LAT_TEST 40, lw t4, 0(t4)
+    LAT_TEST 44, fmv.x.w t4, ft0; fmv.w.x ft0, t4
+    addi    sp, sp, 16
+    csrw    mstatus, a7             // interrupts as they were
+    ret
+    .size   scene3d_latencies, .-scene3d_latencies
 
 #endif

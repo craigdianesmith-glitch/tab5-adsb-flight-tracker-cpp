@@ -30,11 +30,12 @@
 // Then the records in order, a compare each: one whose top row is above the
 // top filled is seen, and its rows filled - those the drawing reads, the
 // even ones, each band's first and the top - band by band, from the top
-// filled up, bfloat16. Its sample before not worked out in the first pass -
-// hidden by its cell, or in a block skipped - both are worked out again, as
-// the C does, for the change between them. Then, after each sixteenth step,
-// the column given up once the highest land along it from there couldn't
-// rise above the rows filled.
+// filled up, bfloat16. Where its sample before wasn't worked out in the
+// first pass - hidden by its cell, or in a block skipped - that one is
+// worked out again for the change between them, as the C does, and this
+// one with it: a record holds neither w nor row. Then, after each
+// sixteenth step, the column given up once the highest land along it from
+// there couldn't rise above the rows filled.
 //
 // Near the eye - nearer than skipTo - into another block of the grid, the
 // line sloped, the block is skipped whole where its highest can't reach the
@@ -69,7 +70,9 @@
 // fs4 the line's slope, fs5 A, fs6 B, fs7 Fz, fs8 Dz, fs9 f, fs10 cy - 0.5,
 // fs11 1/65536, fa0 0.5, fa1 1, fa2 1e-3, fa3 0, fa4 and fa5 the last sample
 // worked out's w and row, fa6 groundUp (round, XS2), fa7 (round) YS2, ft11
-// (round) eh2f. It calls nothing: s0-s11, fs0-fs11 and ra saved.
+// (round) eh2f; ra the go's end in the first pass, and in the second the way
+// back from its own _sample. It calls nothing else: s0-s11, fs0-fs11 and ra
+// saved.
 
 #define MS_FAR          0
 #define MS_FAREND       4
@@ -152,6 +155,13 @@
 #define F_REC           128     // the record before the go's first
 #define F_REC0          144     // the go's first
 #define F_SIZE          400
+// Sixteen steps a go - marchColumn's GO, static_assert'ed beside it - so
+// sixteen records at most after the one before: to the frame's end. The
+// go's end below (ori 60, srli 6) counts the same sixteen steps.
+#define GO_STEPS        16
+    .if F_REC0 + GO_STEPS * 16 > F_SIZE
+    .error "a go's records run past the march's frame"
+    .endif
 
 // --- the first pass's parts ---------------------------------------------------
 
@@ -261,7 +271,8 @@
 
 // From the sample before's w and row, fa4 and fa5, and this one's, ft6 and
 // ft7, its top row t4: w's change a row down in ft9 - nought unless the one
-// before is on the screen and lower - and w at the top row in ft10, as the
+// before is in front of the eye (its w over nought) and lower - and w at
+// the top row in ft10, as the
 // second pass of marchColumn has them. The record: the step, its top row,
 // those two; and this sample the one before the next. t5, t6 and ft8 scratch.
 .macro RECORD
@@ -297,9 +308,11 @@
 // y and the line in ft0, ft2, ft3 and ft4; t0-t2, t6 and ft0-ft4 kept, t3-t5,
 // a1-a3 and ft5-ft10 scratch.
 .macro BLOCK_TEST pfx, cell, round
+#ifdef BENCH3D
     lw      t3, MS_TESTED(a0)
     addi    t3, t3, 1
     sw      t3, MS_TESTED(a0)
+#endif
     srai    a1, t0, 11              // the block's column...
     srai    a2, t1, 11              // ...and row
   .if \round
@@ -490,10 +503,12 @@
     addi    s0, s0, 4
     bltu    s0, s1, \pfx\()_\v
     j       \pfx\()_drive
-\pfx\()_\v\()_off:
-    lw      t3, MS_OFFGRID(a0)      // off the grid: the sea's height
+\pfx\()_\v\()_off:  // off the grid: the sea's height
+#ifdef BENCH3D
+    lw      t3, MS_OFFGRID(a0)
     addi    t3, t3, 1
     sw      t3, MS_OFFGRID(a0)
+#endif
     fmv.w.x ft2, zero
     j       \pfx\()_\v\()_h
   .if \near
@@ -694,10 +709,10 @@
     sw      zero, MS_WORKED(a0)
     sw      zero, MS_PASSED(a0)
     sw      zero, MS_SEEN(a0)
-#endif
     sw      zero, MS_AGAIN(a0)
     sw      zero, MS_TESTED(a0)
     sw      zero, MS_OFFGRID(a0)
+#endif
 
 \pfx\()_go:  // a go: steps [i, end), end the next sixteenth or the last
     lw      t0, F_FPI(sp)
@@ -879,9 +894,11 @@
     j       \pfx\()_next
 
 \pfx\()_again:  // the sample before, hidden by its cell or skipped: it, and this, worked out again
+#ifdef BENCH3D
     lw      t2, MS_AGAIN(a0)
     addi    t2, t2, 1
     sw      t2, MS_AGAIN(a0)
+#endif
     sw      t0, F_TOP(sp)
     sw      t1, F_STEP(sp)
     addi    t2, t1, -4
