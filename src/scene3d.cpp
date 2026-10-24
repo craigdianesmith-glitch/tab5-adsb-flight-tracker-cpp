@@ -6438,8 +6438,10 @@ void skyline(const Scene &scene, float groundLight) {
 // Left to itself the compiler fuses a multiply into an add wherever it sees
 // one, and where it does so shifts with whatever code is near: the march's C
 // and its assembly, written to match it bit for bit, came apart that way in
-// a few frames of a hundred over the round earth. Off from here to the end
-// of terrainDepth().
+// a few frames of a hundred over the round earth. Off for the terrain
+// alone: from here to the march's end, and from the cells' CellPart to the
+// end of terrainDepth() - not for the frame's preparing and the flat cover
+// between, which keep their fused sums.
 #pragma GCC push_options
 #pragma GCC optimize("fp-contract=off")
 
@@ -7605,6 +7607,7 @@ void terrainMarch() {
     stats[0] += cycles() - marchClock;
     CACHE_END(cacheAtStart, g_terrainCache[coreNow()]);
 }
+#pragma GCC pop_options
 
 void prepareBegin(int w, int h, int bandRows, bool swapBytes, const Scene &scene, const Camera &camera) {
     uint32_t t0 = now();
@@ -9381,6 +9384,11 @@ void coverSpan(uint16_t *row, int y, int xa, int xb, uint32_t land, const int ha
     }
     lap(2);
 }
+
+// The terrain's own sums fused only where they say so again - see the
+// march's - to the end of terrainDepth().
+#pragma GCC push_options
+#pragma GCC optimize("fp-contract=off")
 
 // Where a sample's cell is: the part of a tile it was last read from - its
 // level, where it lies in the walk's units, and its cells - for the next
