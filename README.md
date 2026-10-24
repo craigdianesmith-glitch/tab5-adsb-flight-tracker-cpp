@@ -236,6 +236,35 @@ The hills are drawn with their depth, after the ground's paint and shadows: what
 
 Where the near land's cells are tall and wide on the screen, the drawing does less for the same picture: one walk along the cells for four rows rather than two, where they are eight rows or more tall, and a sample every eight pixels rather than four, where they are sixteen or more wide, written eight pixels to a PIE store. Measured on the Tab5: coming in to land at Glasgow behind the aircraft, at 1,000ft over the city - ground filling the screen - 41 to 42 frames a second with the cover, the finer levels and the hills, against 42 to 45 without the cover; at the bench's busy Heathrow, 44 against 47.5; in the cruise, 55 against 62. The skyline is about 1ms of a frame's preparing at Heathrow and 1.8ms over Glasgow's hills.
 
+#### A ground pack for your own country
+
+The pack on each release is the UK and Ireland's. `tools/make_ground_pack.py` makes one for anywhere else, on a computer - Windows, a Mac or Linux - from the same open archives, read over the internet as it goes, nothing to download first: for a country, by its name or its code; for a state, province or region of one - Texas, Bavaria, Scotland, Lombardy; for several of them; or for a circle round a town, or round a latitude and longitude. Run with nothing after it, it asks where, says what the pack will take, and asks before it starts.
+
+Getting ready, once:
+
+1. Install Python 3 from [python.org](https://www.python.org/downloads/). On Windows, tick **Add python.exe to PATH** on its first screen; on a Mac, run **Install Certificates.command**, in its folder under Applications, afterwards.
+2. Download this project - **Code**, then **Download ZIP**, at the top of its GitHub page - unzip it, and open a terminal in its `tools` folder: on Windows, click the folder's address bar in File Explorer, type `cmd` and press Enter; on a Mac, open Terminal, type `cd ` and drag the folder onto it, then press Enter.
+3. Install the three add-ons to Python it needs - numpy, rasterio and Pillow, listed in `tools/requirements.txt`. On Windows: `py -m pip install -r requirements.txt`. On a Mac or Linux: `python3 -m venv ~/groundpack`, then `~/groundpack/bin/pip install -r requirements.txt` (on Debian or Ubuntu, `sudo apt install python3-venv` first).
+
+Then make the pack: `py make_ground_pack.py` on Windows, `~/groundpack/bin/python make_ground_pack.py` on a Mac or Linux, and answer its questions - or say where after it:
+
+```
+py make_ground_pack.py Luxembourg
+py make_ground_pack.py France Belgium
+py make_ground_pack.py Texas
+py make_ground_pack.py "Limburg, Belgium"
+py make_ground_pack.py --around Zermatt --radius 25
+py make_ground_pack.py --around 46.02,7.75 --radius 25
+py make_ground_pack.py --list Germany
+```
+
+It makes the tiles the areas touch and some 30km round them (`--margin`), so the hills just over a border or across the water are there too; tiles of nothing but open sea are left out, the 3D view drawing the sea the same without them. A country's parts far from the rest - France's overseas regions, the Caribbean Netherlands, Hawaii - are left out and named, each to be made a pack of on its own. The moor - grass high up or steep - is the British Isles' hill grazing, so it is drawn on the tiles in and near them only, and grass is grass everywhere else (`--moor on` or `off` to choose). Where the GLO-30 isn't public - Armenia and Azerbaijan - the hills' light and shade come from the GLO-90 instead, and it says so. The tiles are `tools/gen_ground.py`'s own, which it imports: a box of latitude and longitude made by either is the same pack, byte for byte.
+
+Before it starts it says how many tiles the pack will be, its size, the Tab5's memory for it and how long it will take; and it won't make one the Tab5 can't hold - past `MAX_TILES`, `MAX_COARSE_BYTES` or `MAX_GRID` - saying instead how to make a smaller one: some of a country's regions, or `--around` your home with a `--radius` of up to some 600km. Each tile it makes is kept in a cache folder as it is done, so a build stopped - the connection dropped, the laptop closed, Ctrl+C - carries on where it stopped when the same command is run again; the pack is written to a temporary file, and renamed only once every tile is in. Beside the pack - `ground.bin`, unless `--out` names another - it writes `ground-NOTICE.txt`, the data's credits, to keep with the pack if it is passed on, and `ground-preview.png`, a picture of what it made: the land in the 3D view's colours, shaded by its hills, the areas chosen outlined. Last, it says what to do with the pack - onto the card's `overhead` folder as `ground.bin` - and the line Settings > About will show for it.
+
+Luxembourg and the land 30km round it came to 84 tiles and 3.2MB, made in two minutes; 25km round Zermatt, 16 tiles and 1MB; Malta, 5 tiles and 49KB, 24 more of open sea left out; Switzerland and the land round it, 337 tiles and 18MB, in seven minutes - on a computer busy with other work, and so slower than they need be. On a quiet one a tile takes some two seconds for each 192 columns it has, three south of 50 degrees, eight made at a time, most of it reading WorldCover: the UK and Ireland's pack, twelve minutes. Every pack these made was taken by the firmware's own checks, `tools/ground_pack_test`, and drawn by the preview, `tools/landing3d_preview` - its enroute view over a pack's own country with `AT="lat lon"`.
+
+
 ## Alerts
 
 Four kinds, each switched on or off under **Settings > Alerts & recording**:
@@ -431,7 +460,7 @@ Place search is [Open-Meteo's geocoding API](https://open-meteo.com/), free for 
 
 The airport, runway, navaid and airport-frequency tables are generated from [OurAirports](https://ourairports.com/data/), which is released into the public domain. The radar's map - coasts, lakes, borders and state lines - and the 3D view's towns and rivers are generated from [Natural Earth](https://www.naturalearthdata.com/), which is in the public domain too; and the height of the sea above the GPS ellipsoid - for a helicopter's GNSS height, in the 3D view - from the NGA's EGM96 geoid model, public domain as well.
 
-The ground pack, `ground.bin`, is built from [ESA WorldCover](https://esa-worldcover.org) 2021 - © ESA WorldCover project 2021 / Contains modified Copernicus Sentinel data (2021) processed by ESA WorldCover consortium, under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/) - and the [Copernicus DEM](https://spacedata.copernicus.eu/collections/copernicus-digital-elevation-model) GLO-30 and GLO-90 - © DLR e.V. 2010-2014 and © Airbus Defence and Space GmbH 2014-2018 provided under COPERNICUS by the European Union and ESA; all rights reserved. About credits both. The firmware carries neither.
+The ground pack, `ground.bin`, is built from [ESA WorldCover](https://esa-worldcover.org) 2021 - © ESA WorldCover project 2021 / Contains modified Copernicus Sentinel data (2021) processed by ESA WorldCover consortium, under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/) - and the [Copernicus DEM](https://spacedata.copernicus.eu/collections/copernicus-digital-elevation-model) GLO-30 and GLO-90 - © DLR e.V. 2010-2014 and © Airbus Defence and Space GmbH 2014-2018 provided under COPERNICUS by the European Union and ESA; all rights reserved. About credits both. The firmware carries neither. A pack made by `tools/make_ground_pack.py` carries the same credits in the `ground-NOTICE.txt` it writes beside it; the tool chooses its area with Natural Earth's countries and regions, and finds a town by name with Open-Meteo's geocoding API.
 
 The 3D view's engines are cut from recordings on [Freesound](https://freesound.org), each under [CC0](https://creativecommons.org/publicdomain/zero/1.0/) - public domain - by `tools/gen_roar.py`: a fighter's from Eurofighter Typhoons by [johnnyguitar01](https://freesound.org/people/johnnyguitar01/sounds/416788/) and [joly1](https://freesound.org/people/joly1/sounds/69878/); and, to set against their synthesised voices, an airliner's from [PostProdDog](https://freesound.org/people/PostProdDog/sounds/536510/)'s and [C-V](https://freesound.org/people/C-V/sounds/509046/)'s, a turboprop's from an ATR 72 by [Hoscalegeek](https://freesound.org/people/Hoscalegeek/sounds/315660/) and a King Air 350 by [highflyer500](https://freesound.org/people/highflyer500/sounds/502670/), and a light aircraft's from a Cessna by [MarioV360](https://freesound.org/people/MarioV360/sounds/828766/). About credits them all.
 
