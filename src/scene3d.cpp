@@ -6434,6 +6434,15 @@ void skyline(const Scene &scene, float groundLight) {
 
 // --- the terrain -----------------------------------------------------------------------
 
+// The terrain's sums fused only where they say so - fmaf - and nowhere else.
+// Left to itself the compiler fuses a multiply into an add wherever it sees
+// one, and where it does so shifts with whatever code is near: the march's C
+// and its assembly, written to match it bit for bit, came apart that way in
+// a few frames of a hundred over the round earth. Off from here to the end
+// of terrainDepth().
+#pragma GCC push_options
+#pragma GCC optimize("fp-contract=off")
+
 // The terrain's colour pairs, a few of them at a time: by cell and haze -
 // a sample's mostly the last's, or one a few back - each core its own, in
 // the chip's own memory, 1.3KB, where a table of them all, 33KB, had to be
@@ -9597,8 +9606,9 @@ HOT_INLINE void terrainSampleC(TerrainCol &t, int rows, CellMap &map, CellPart &
     int y = t.y;
     float z = y >= t.flatTop ? t.flatZ[y] : 1 / fromBf16(t.zc[y]), u, v;
     if (!ROUND) {
-        u = t.ue + z * (t.rowU[y] + t.cu);
-        v = t.ve + z * (t.rowV[y] + t.cv);
+        // Fused as scene3d_terrain_band fuses it.
+        u = fmaf(z, t.rowU[y] + t.cu, t.ue);
+        v = fmaf(z, t.rowV[y] + t.cv, t.ve);
     } else {
         // Fused as scene3d_terrain_band_round fuses it, to the bit.
         float dx = z * (t.rowU[y] + t.cu), dy = z * (t.rowV[y] + t.cv);
@@ -10017,6 +10027,7 @@ void terrainDepth(uint16_t *depth, int y0, int y1) {
         }
     }
 }
+#pragma GCC pop_options
 
 #ifdef BENCH3D
 void coverMicro(int w, int h, const Scene &scene, const Camera &camera, uint32_t out[4]) {
