@@ -319,7 +319,9 @@ size_t buildModels();
 // Gets a frame ready: the aircraft and the camera placed, and every triangle,
 // line and light lit, clipped to the view, projected and sorted into the
 // bands of `bandRows` rows it will be drawn in. `swapBytes` for the device's
-// canvas, which holds RGB565 high byte first.
+// canvas, which holds RGB565 high byte first. `w` a multiple of four - the
+// land at its height is drawn a column of four pixels at a time - and in
+// assembly to 2048 of them, C past that.
 void prepare(int w, int h, int bandRows, bool swapBytes, const Scene &scene, const Camera &camera);
 
 // The same in three steps, for two cores to share the middle one: the
@@ -453,7 +455,7 @@ uint32_t terrainDigest();
 // On the bench, the caches' data hits and misses over the march (L1 hits,
 // misses, L2 hits, misses) and over the drawing (likewise), both cores'.
 void terrainCache(uint64_t out[8], bool reset);
-// On the bench: 1 the march's heights read from one corner of the grid, 2
+// On the bench: 1 the march's heights read from the grid's first four rows, 2
 // the drawing's cells made up, 3 both, 0 neither - what memory costs them.
 void terrainProbe(int which);
 // On the bench: the march of the frame being prepared run again - as it is,

@@ -1,9 +1,22 @@
-// The land at its height, in assembly: the innermost loops of the 3D view's
-// terrain (see scene3d.cpp's terrainMarch() and terrainBand()), written for
-// the ESP32-P4's RV32IMAFC core by hand - every value the loop needs kept in
-// a register, the floating-point unit's latencies covered by work that
+// The land at its height, in assembly: the colours of the 3D view's
+// terrain, a band at a time (see scene3d.cpp's terrainBand(); the march
+// that works out its depths is scene3d_march.S's), written for the
+// ESP32-P4's RV32IMAFC core by hand - every value the loop needs kept in a
+// register, the floating-point unit's latencies covered by work that
 // doesn't wait on them, and nothing but the common case in the loop: what
-// is rare is handed back to C, which does it and comes back.
+// is rare is handed back to C, which does it and comes back. Four ways in,
+// one macro's:
+//
+//   scene3d_terrain_band        the flat cover, a sample every two rows
+//   scene3d_terrain_band_round  the round earth's cover, likewise
+//   scene3d_terrain_quad        the flat cover, a sample every four rows -
+//                               the governor skimping, the cells a level
+//                               coarser, so that one is still four rows
+//                               tall where it is four pixels wide
+//   scene3d_terrain_quad_round  the round earth's, likewise
+//
+// A unit is the rows a sample covers - two, or four - from a multiple of
+// it: a band's first rows, to the next multiple, are a unit too.
 
 // int scene3d_terrain_band(TerrainCol *t);
 //
@@ -143,8 +156,8 @@
     .equ    M_COLS1, 76
     .equ    M_ROWS1, 80
     .equ    M_SIZE, 96
-    .equ    MS_COUNT, 4
-    .equ    MS_MAP, 16
+    .equ    MP_COUNT, 4
+    .equ    MP_MAP, 16
     .equ    P_KEY, 4
     .equ    P_PAIR, 260
 // The stack frame's: s0-s11 and ra, fs0-fs11, then what is kept in it.
@@ -903,9 +916,9 @@
     jr      s3
 .Lg_switch\@:  // off the map: the part cellAt() would read it in, among those kept - see cellSlow()
     lw      t0, T_MAPS(a0)
-    lw      t1, MS_COUNT(t0)
-    addi    t2, t0, MS_MAP          // the first
-    slli    t3, t1, 6
+    lw      t1, MP_COUNT(t0)
+    addi    t2, t0, MP_MAP          // the first
+    slli    t3, t1, 6               // count M_SIZE, 96 = 64 + 32
     slli    t1, t1, 5
     add     t1, t1, t3
     add     t3, t2, t1              // past the last

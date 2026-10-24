@@ -56,7 +56,6 @@ Vec3 operator*(Vec3 a, float s) { return {a.x * s, a.y * s, a.z * s}; }
 float dot(Vec3 a, Vec3 b) { return a.x * b.x + a.y * b.y + a.z * b.z; }
 Vec3 cross(Vec3 a, Vec3 b) { return {a.y * b.z - a.z * b.y, a.z * b.x - a.x * b.z, a.x * b.y - a.y * b.x}; }
 float length(Vec3 a) { return sqrtf(dot(a, a)); }
-float lengthSquared(Vec3 a) { return dot(a, a); }
 Vec3 normalize(Vec3 a) {
     float l = length(a);
     return l > 0 ? a * (1 / l) : a;
@@ -4461,13 +4460,16 @@ struct Frame {
     Vector<float> hillIz;
     // The land at its height - see terrainMarch(): for each fourth column,
     // 1 / how deep along the view each row meets the land, bfloat16 - the
-    // top half of a float - a column's rows together, as the march writes them
-    // and a band reads them; and the column's highest row that does: above it, sky or the land past reach. And what a row and a
-    // column each add to where on the cover's grid that depth puts the land:
-    // u = tUe + z (tRowU[y] + tColU[c]), and v likewise; the depth each
-    // level of the cover is read out to, its cells a sample or more; and how
-    // much haze a depth puts over the land, a row at a time - tRowFar[y]
-    // the distance a metre of depth comes to along its ray.
+    // top half of a float - a column's rows together, as the march writes
+    // them and a band reads them: those the drawing reads, the even rows,
+    // each band's first and the column's top, the others never written; and
+    // the column's highest row that does: above it, sky or the land past
+    // reach. And what a row and a column each add to where on the cover's
+    // grid that depth puts the land: u = tUe + z (tRowU[y] + tColU[c]), and
+    // v likewise; the depth each level of the cover is read out to, its
+    // cells a sample or more; and how much haze a depth puts over the land,
+    // a row at a time - tRowFar[y] the distance a metre of depth comes to
+    // along its ray.
     bool terrainOn = false;
     int tCols = 0;
     Vector<uint16_t> tz;
@@ -4578,7 +4580,10 @@ uint32_t pairInt(const uint8_t lit[3], const int towards[3], int haze, int y) {
             int x = c * top + dither;
             return std::min(top, (x + 1 + (x >> 8)) >> 8);
         };
-        return swapIf((uint16_t)(level(v[0], 31) << 11 | level(v[1], 63) << 5 | level(v[2], 31)));
+        // Its bytes as the frame being drawn has them - a band's, not the
+        // frame the other core is preparing meanwhile.
+        uint16_t c = (uint16_t)(level(v[0], 31) << 11 | level(v[1], 63) << 5 | level(v[2], 31));
+        return d.swap ? (uint16_t)(c >> 8 | c << 8) : c;
     };
     return pack(BAYER[y & 1][0]) | (uint32_t)pack(BAYER[y & 1][1]) << 16;
 }
@@ -4604,13 +4609,9 @@ bool overHorizon(Vec3 p) {
     return dx * dx + dy * dy > reach * reach;
 }
 
-// The same for a point on the ground, squared and worked out once a frame -
-// no root to take for each of thousands of coastline points.
+// How far off the horizon is from the eye, squared - 2 r h - worked out
+// once a frame, for the lines on the ground to reach to.
 float g_groundReach2 = 0;
-bool groundOverHorizon(Vec3 p) {
-    float dx = p.x - g.eye.x, dy = p.y - g.eye.y;
-    return g.scene.earthRadius > 0 && dx * dx + dy * dy > g_groundReach2;
-}
 
 // The ground under a point: on the round earth, straight down towards its
 // middle.
@@ -6582,8 +6583,10 @@ HOT_INLINE float packHeight(const groundpack::Window &W, float u, float v) {
 // screen; each sample standing above all those nearer fills the column's
 // rows from theirs up to its own, with how deep along the view it is there,
 // between the depths of it and the sample before. Nearer than the last
-// filled row, a sample is hidden, and is told so by a multiply and a
-// compare, the division only for one seen. The samples a fiftieth of the
+// filled row, a sample is hidden: told so in the first of two passes by
+// its cell's highest corner against the line of sight, two integer
+// compares, and otherwise worked out, its depth's division and all; the
+// second fills the rows of those seen. The samples a fortieth of the
 // way further each, from a metre or so out to 100km - their heights between
 // samples 460m apart, nearer than that adds nothing - and a column given up
 // once nothing further could rise above what it has: the highest land
@@ -6607,7 +6610,7 @@ struct MarchFrame {
     int gcols, bcols, rowMask;
     uint32_t xLim, yLim;  // a sample's place on the grid under these, 256ths of a cell, has its neighbours
     float ez, groundUp, e2, fall;  // the earth's fall: flat, s^2 fall; round, (r^2) fall from the origin
-    float Fz, Dz, f, cy, zHigh;
+    float Fz, Dz, f, cy;
     float skipTo;  // blocks skipped only nearer than this: further, a step or two crosses one
     uint16_t *tz;
     int cols, bandRows;
@@ -6801,7 +6804,7 @@ int marchColumn(const MarchFrame &K, const MarchRay &R, MarchCounts &counts) {
         return ((top << 8) + (bottom - top) * fy) * PER_Q;
     };
     // A step's height, all of it worked out: for a sample before one seen,
-    // hidden by its cell.
+    // hidden by its cell or in a block skipped.
     auto heightAt = [&](float s) {
         float x = ROUND ? fmaf(s, fmaf(s, XS2, XS), X0) : fmaf(s, XS, X0);
         float y = ROUND ? fmaf(s, fmaf(s, YS2, YS), Y0) : fmaf(s, YS, Y0);
@@ -6814,9 +6817,9 @@ int marchColumn(const MarchFrame &K, const MarchRay &R, MarchCounts &counts) {
     int at = (((filled - 1) / bandRows) * cols + R.c) * bandRows + off;
     const int bandBack = bandRows - 1 - cols * bandRows;  // the row above a band's first, in the band before
     // The sample before, for the rows between it and one seen: its w and its
-    // row - w nought, none to go by; -1, hidden by its cell, its height
-    // worked out if it is wanted. The first's: the flat ground's edge, or
-    // none.
+    // row - w nought, none to go by; -1, hidden by its cell or in a block
+    // skipped, its height worked out if it is wanted. The first's: the flat
+    // ground's edge, or none.
     float lastW = 0, lastRho = 0;
     if (R.lastS >= 0) {
         float lastS = R.lastS, ldz = R.lastH - underOf(lastS);
@@ -7326,7 +7329,6 @@ void terrainMarch() {
     K.Dz = D.z;
     K.f = g.f;
     K.cy = g.cy;
-    K.zHigh = zHigh;
     K.skipTo = 10 * BLOCK * cellSize;
     K.tz = tz;
     K.cols = cols;
@@ -7505,7 +7507,7 @@ void terrainMarch() {
     // or more there, a sample's.
     g.tUe = ue;
     g.tVe = ve;
-    g.tRowU.resize(h + 1);  // and one over: the assembly reads a pair's odd row's with its even's
+    g.tRowU.resize(h + 1);  // and a row over, to spare
     g.tRowV.resize(h + 1);
     g.tRowFar.resize(h + 1);
     g.tColU.resize(cols);
@@ -9623,7 +9625,8 @@ TerrainMaps g_terrainMaps[2];
 struct TerrainStrips {
     uint32_t serial = 0xFFFFFFFF;
     int top = 0;
-    int16_t strip[64][4];  // the least top, the most, the least flat top, nought
+    static constexpr int MOST = 64;  // eight columns each: a view 2048 pixels wide
+    int16_t strip[MOST][4];  // the least top, the most, the least flat top, nought
 };
 TerrainStrips g_terrainStrips[2];
 
@@ -9880,8 +9883,9 @@ void terrainKeep(TerrainMaps &maps, TerrainCol &t, const CellPart &part) {
 // distance, four pixels of it a row; the row's own colours where the pack
 // has nothing. Rows an airfield's flat ground fills right across are the
 // flat ground's, drawn as it is; above them, a column's own rows of it have
-// their depths from the plane. The pairs of rows in assembly, flat; what
-// it can't do, and round, here.
+// their depths from the plane. In assembly - scene3d_terrain.S, flat or
+// round, a sample every two rows or four - and here the samples it hands
+// back: one in a part of the cover none of its kept maps holds.
 void terrainBand(uint16_t *color, int y0, int y1, const int haze[3]) {
     int yb = std::min(y1, d.tFlatAll);
     if (y0 >= yb) {
@@ -9935,8 +9939,9 @@ void terrainBand(uint16_t *color, int y0, int y1, const int haze[3]) {
 #ifdef BENCH3D
     bool inC = g_terrainProbe & 4;  // the bench's check: C alone, to compare
 #else
-    const bool inC = false;
+    bool inC = false;
 #endif
+    inC = inC || cols > TerrainStrips::MOST * 8;  // wider than the strips hold: never on the Tab5
     if (!inC) {
         // Every column with land in assembly - nothing at all where the band
         // has none; what it can't do here, a sample at a time, and on: the
@@ -9959,9 +9964,10 @@ void terrainBand(uint16_t *color, int y0, int y1, const int haze[3]) {
         t.color = (uint32_t *)color;
         t.coverRgb = &d.coverRgb[0][0];
         t.hazeColor = haze;
-        t.swap = g.swap;
+        t.swap = d.swap;
         t.misses = 0;
-        t.keyE = t.keyO = ~0u;
+        t.keyE = t.keyO = ~0u;  // no key: the pairs read before any is stored
+        t.pairE = t.pairO = 0;
         t.top = strips.top;
         t.strips = strips.strip;
         t.maps = &maps;
