@@ -9,7 +9,6 @@
 #include <math.h>
 
 #include <algorithm>
-#include <new>
 
 #include "aircraft_db.h"
 #include "alerts.h"
@@ -54,26 +53,6 @@ constexpr uint8_t CLICK_CHANNEL = 1;
 // block the UI loop until there was room for each note in turn, so they are
 // fed to a channel of their own one at a time instead, from soundTick().
 constexpr uint8_t ALERT_CHANNEL = 2;
-// The 3D view's engine noise, made as it plays - see soundEngine() - three
-// blocks of it in turn, 40ms each: one playing, one queued behind it, one
-// being made.
-constexpr uint8_t ENGINE_CHANNEL = 3;
-constexpr int ENGINE_BLOCK = engine_noise::RATE / 25;
-// Nothing set for this long - the 3D view closed or covered without saying
-// so - and it fades out.
-constexpr uint32_t ENGINE_STALE_MS = 1000;
-// What the 3D view last asked it to sound like, and when - its own lock, a
-// moment's, not the sound's: the view sets it every frame, and was kept
-// waiting while a block was made.
-portMUX_TYPE g_engineMux = portMUX_INITIALIZER_UNLOCKED;
-engine_noise::Sound g_engineWant;
-uint32_t g_engineSetMs = 0;
-// The sound task's alone.
-engine_noise::Synth *g_engine = nullptr;
-int16_t *g_engineBlocks[3] = {};
-int g_engineNext = 0;
-bool g_enginePlaying = false;  // something to play: set as it is asked for, cleared once faded out
-bool g_engineFailed = false;   // no room for it
 
 struct Note {
     uint16_t hz;
@@ -542,8 +521,8 @@ void soundInit() {
     Serial.printf("[sound] speaker ready, volume %d\n", SOUND_VOLUME);
     g_lock = xSemaphoreCreateRecursiveMutex();
     // A step above the loop on its core: it takes a moment every 10ms, and a
-    // millisecond to ready each word. Its stack 6KB: making the 3D view's
-    // engine noise as well as the words, it had 1.1KB of 4 to spare.
+    // millisecond to ready each word. Its stack 6KB, the most the words have
+    // taken some 2.5KB of it.
     xTaskCreatePinnedToCore(
         [](void *) {
             for (;;) {
@@ -555,13 +534,6 @@ void soundInit() {
 }
 
 void soundSetMuted(bool muted) { g_muted = muted; }
-
-void soundEngine(const engine_noise::Sound &sound) {
-    taskENTER_CRITICAL(&g_engineMux);
-    g_engineWant = sound;
-    g_engineSetMs = millis();
-    taskEXIT_CRITICAL(&g_engineMux);
-}
 
 bool soundMuted() { return g_muted; }
 
@@ -769,85 +741,7 @@ void playClip(const Clip &clip, uint32_t rate) {
 
 }  // namespace
 
-namespace {
-
-// The engine noise's next blocks made and queued, as there is room for them
-// - under the words, if there are any. Its synthesiser and its blocks are
-// this task's alone, made the first time it is asked for.
-void engineTick() {
-    taskENTER_CRITICAL(&g_engineMux);
-    engine_noise::Sound want = g_engineWant;
-    uint32_t setMs = g_engineSetMs;
-    taskEXIT_CRITICAL(&g_engineMux);
-    if (g_muted || millis() - setMs > ENGINE_STALE_MS) {
-        want.kind = engine_noise::Kind::NONE;
-    }
-    if (g_engine == nullptr) {
-        if (want.kind == engine_noise::Kind::NONE || g_engineFailed || !g_ready) {
-            return;
-        }
-        for (int16_t *&b : g_engineBlocks) {
-            b = b != nullptr ? b : (int16_t *)heap_caps_malloc(ENGINE_BLOCK * sizeof(int16_t), MALLOC_CAP_SPIRAM);
-            if (b == nullptr) {
-                Serial.println("[sound] no room for the engine noise");
-                g_engineFailed = true;
-                return;
-            }
-        }
-        // In PSRAM, as its blocks are: made the first time the 3D view asks
-        // for it, in the chip's own memory it lay between the view's buffers
-        // and split the room they come back to.
-        void *room = heap_caps_malloc(sizeof(engine_noise::Synth), MALLOC_CAP_SPIRAM);
-        if (room == nullptr) {
-            Serial.println("[sound] no room for the engine noise");
-            g_engineFailed = true;
-            return;
-        }
-        g_engine = new (room) engine_noise::Synth();
-    }
-    g_engine->set(want);
-    if (want.kind != engine_noise::Kind::NONE) {
-        g_enginePlaying = true;
-    }
-    if (!g_enginePlaying) {
-        return;
-    }
-    g_engine->duck(g_notes != nullptr || M5.Speaker.isPlaying(ALERT_CHANNEL) || M5.Speaker.isPlaying(CHANNEL));
-    // For the log every half minute: what making it costs, and how often the
-    // speaker ran out of it - this task kept from it 80ms - and was silent
-    // a moment.
-    static uint32_t madeUs = 0, made = 0, gaps = 0, saidMs = 0;
-    static bool started = false;
-    if (started && M5.Speaker.isPlaying(ENGINE_CHANNEL) == 0) {
-        gaps++;
-    }
-    while (M5.Speaker.isPlaying(ENGINE_CHANNEL) < 2) {
-        int16_t *block = g_engineBlocks[g_engineNext];
-        g_engineNext = (g_engineNext + 1) % 3;
-        uint32_t t0 = micros();
-        bool more = g_engine->render(block, ENGINE_BLOCK);
-        madeUs += micros() - t0;
-        made++;
-        M5.Speaker.playRaw(block, ENGINE_BLOCK, engine_noise::RATE, false, 1, ENGINE_CHANNEL, false);
-        started = true;
-        if (!more) {
-            g_enginePlaying = false;
-            started = false;
-            break;
-        }
-    }
-    if (millis() - saidMs >= 30000 && made > 0) {
-        Serial.printf("[sound] engine noise: %.2fms a 40ms block, %.1f%% of a core; %u gaps\n",
-                      madeUs / 1000.0f / made, madeUs / (made * 400.0f), (unsigned)gaps);
-        saidMs = millis();
-        madeUs = made = gaps = 0;
-    }
-}
-
-}  // namespace
-
 void soundTick() {
-    engineTick();
     Held held;
     // Nothing being said: an alert's notes waiting, which are news; the next
     // announcement - a clearance is only worth hearing as it happens, and
@@ -916,8 +810,7 @@ void soundTick() {
 
 #ifdef BENCH3D
 // "##=s" (bench2d.h): the voices' words turned back into samples as they are
-// said - every letter, digit, maker and airline of each - and a few seconds
-// of each kind of engine's noise made, as the sound's task makes it.
+// said - every letter, digit, maker and airline of each.
 void soundBench() {
     static const char *const NAMES[] = {"Scottish", "English", "American"};
     size_t most = 0;
@@ -951,57 +844,5 @@ void soundBench() {
                       NAMES[k], (unsigned)clips, seconds, us / 1000.0f, us / 1000.0f / seconds, us * 1000.0f / samples);
     }
     heap_caps_free(out);
-
-    void *room = heap_caps_malloc(sizeof(engine_noise::Synth), MALLOC_CAP_SPIRAM);
-    int16_t *block = (int16_t *)heap_caps_malloc(ENGINE_BLOCK * sizeof(int16_t), MALLOC_CAP_SPIRAM);
-    if (room == nullptr || block == nullptr) {
-        heap_caps_free(room);
-        heap_caps_free(block);
-        Serial.println("[bench] no room for an engine");
-        return;
-    }
-    struct Engine {
-        const char *name;
-        engine_noise::Kind kind;
-        bool afterburner, approach;
-    };
-    const Engine ENGINES[] = {{"turbofan", engine_noise::Kind::TURBOFAN, false, false},
-                              {"fighter, reheat", engine_noise::Kind::LOW_BYPASS, true, false},
-                              {"turboprop", engine_noise::Kind::TURBOPROP, false, false},
-                              {"piston", engine_noise::Kind::PISTON, false, false},
-                              {"helicopter", engine_noise::Kind::ROTOR, false, false},
-                              {"airliner on its approach", engine_noise::Kind::TURBOFAN, false, true}};
-    for (const Engine &e : ENGINES) {
-        engine_noise::Synth *synth = new (room) engine_noise::Synth();
-        engine_noise::Sound s;
-        s.kind = e.kind;
-        s.power = 0.8f;
-        s.afterburner = e.afterburner;
-        s.distanceM = 400;
-        s.closingMs = 60;
-        if (e.approach) {
-            // Its airframe's rush too: gear down, flaps out, at 140kt.
-            s.power = 0.45f;
-            s.airspeedMs = 72;
-            s.gearDown = true;
-            s.flapsOut = true;
-        }
-        synth->set(s);
-        constexpr int BLOCKS = 250;  // ten seconds
-        uint32_t us = 0, sum = 2166136261u;  // and what it made, every sample, for a change to be checked by
-        for (int i = 0; i < BLOCKS; i++) {
-            uint32_t t0 = micros();
-            synth->render(block, ENGINE_BLOCK);
-            us += micros() - t0;
-            for (int k = 0; k < ENGINE_BLOCK; k++) {
-                sum = (sum ^ (uint16_t)block[k]) * 16777619u;
-            }
-        }
-        synth->~Synth();
-        Serial.printf("[bench] engine %s: %.3fms a 40ms block, %.2f%% of a core; its sound %08lx\n", e.name,
-                      us / 1000.0f / BLOCKS, us / (BLOCKS * 400.0f), (unsigned long)sum);
-    }
-    heap_caps_free(room);
-    heap_caps_free(block);
 }
 #endif

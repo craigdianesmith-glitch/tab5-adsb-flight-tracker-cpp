@@ -72,8 +72,7 @@ AppSettings loadSettings() {
         s.clockZone = CLOCK_ZONE_AUTO;
     }
     s.autoZoom = prefs.getBool("autozoom", false);
-    s.engineSound = prefs.getBool("engsound", true);
-    s.hills = prefs.getBool("hills", true);
+    s.terrain = prefs.getBool("terrain", true);
     s.replayTracks = prefs.getBool("rtracks", true);
     uint8_t sort = prefs.getUChar("tsort", 4);  // DIST, nearest first
     s.tableSortCol = sort & 7;
@@ -222,17 +221,10 @@ void saveAutoZoom(bool autoZoom) {
     prefs.end();
 }
 
-void saveEngineSound(bool on) {
+void saveTerrain(bool on) {
     Preferences prefs;
     prefs.begin(NAMESPACE, false);
-    prefs.putBool("engsound", on);
-    prefs.end();
-}
-
-void saveHills(bool on) {
-    Preferences prefs;
-    prefs.begin(NAMESPACE, false);
-    prefs.putBool("hills", on);
+    prefs.putBool("terrain", on);
     prefs.end();
 }
 

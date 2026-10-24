@@ -5,7 +5,6 @@
 
 #include "adsb_client.h"
 #include "airport_info.h"
-#include "engine_noise.h"
 #include "config.h"
 #include "navaids.h"
 
@@ -83,13 +82,6 @@ void soundStopReading();
 // A few words in voice `accent`, as it is chosen: "Runway two three, cleared
 // for take-off."
 void soundSampleAccent(Accent accent);
-
-// The 3D view's engine noise - see engine_noise.h: what the one followed's
-// engines sound like from the camera now, set each frame. Made as it plays,
-// on a channel of its own, by the sound's task; down to a murmur while an
-// alert's chime or any words play. Kind::NONE fades it out, as does a
-// second with nothing set - the view closed, or covered. Not while muted.
-void soundEngine(const engine_noise::Sound &sound);
 
 // Plays the next note or word of what is queued once the one before has
 // finished. Run every 10ms by the sound's own task, which soundInit() starts.

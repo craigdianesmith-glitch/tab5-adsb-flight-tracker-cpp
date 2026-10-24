@@ -46,8 +46,7 @@ struct AppSettings {
     // CLOCK_ZONE_AUTO, never picked, for the zone home is in.
     uint8_t clockZone;
     bool autoZoom;           // following, the radar's range sized to the sky round the aircraft
-    bool engineSound;        // the 3D view's engine noise - its SOUND button
-    bool hills;              // the 3D view's land at its height, where the pack has it - its HILLS button
+    bool terrain;            // the 3D view's land at its height, where the pack has it - its GROUND button
     bool replayTracks;       // each aircraft's last ten minutes behind it in a replay
     uint8_t tableSortCol;    // the table's order - see displayHitHeader()
     bool tableSortDesc;
@@ -75,8 +74,7 @@ void saveVoice(bool readAloud, Accent elsewhere);
 void saveTableSort(int col, bool descending);
 void saveDisplay(uint8_t brightnessPct, uint8_t dimMinutes, uint8_t clockZone, bool replayTracks);
 void saveAutoZoom(bool autoZoom);
-void saveEngineSound(bool on);
-void saveHills(bool on);
+void saveTerrain(bool on);
 // The filter screen's, apart from the rest as it is put in force apart.
 TrafficFilterSet loadTrafficFilter();
 void saveTrafficFilter(const TrafficFilterSet &f);

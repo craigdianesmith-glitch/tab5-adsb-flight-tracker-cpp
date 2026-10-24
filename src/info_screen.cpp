@@ -71,10 +71,8 @@ const char *const HELP[] = {
     "it - drag the picture to turn it - and TOWER watches from the airfield's tower.",
     "- FLY PAST sets a camera down ahead of it, beside its way, for it to go by - then ahead again for the next "
     "pass, the other side. ZOOM IN and ZOOM OUT bring the camera nearer or further off.",
-    "- HILLS: the land at its height, its hills and mountains, from the ground pack. Off, the land is flat with its "
+    "- GROUND: the land at its height, its hills and mountains, from the ground pack. Off, the ground is flat, its "
     "hills along the skyline, and the pictures come quicker. Greyed with no pack, or away from the land it covers.",
-    "- SOUND: its engines, as they sound from the camera - loud close by, muffled far off, the pitch dropping as it "
-    "passes one standing still. The speaker's mute silences them too.",
     "- Tap another aircraft for its details. Back goes to the radar.",
     "- An airport's taxiways, stands, buildings and tower come from the airfield pack, airfields.bin, in the SD "
     "card's overhead folder - as does the tower on the zoom. Without it, or at an airport it hasn't got, the view "
@@ -148,9 +146,6 @@ const char *const ABOUT[] = {
     "- Voices: Piper text-to-speech. Scottish, en_GB-alba-medium, from the Alba data of the CSTR, University of "
     "Edinburgh, CC BY 4.0; English, en_GB-cori-medium, from LibriVox recordings, public domain; American, "
     "en_US-amy-medium, from Mycroft AI's Mimic 3 voices, CC BY-SA 4.0.",
-    "- Engines in the 3D view, from recordings on Freesound (freesound.org), each CC0, public domain: "
-    "Eurofighter Typhoons by johnnyguitar01 and joly1; airliners by PostProdDog and C-V; an ATR 72 by "
-    "Hoscalegeek, a King Air 350 by highflyer500 and a Cessna by MarioV360.",
     "- Built on M5Unified, M5GFX and ArduinoJson (MIT), the ESP32 Arduino core (LGPL 2.1) and ESP-IDF "
     "(Apache 2.0).",
     "- Airline names identify the operator, and imply no endorsement by it.",

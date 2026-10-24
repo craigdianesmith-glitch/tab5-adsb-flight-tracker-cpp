@@ -4628,8 +4628,7 @@ void setup() {
     g_alertRules.watch = parseWatchlist(g_watchlist);
     soundSetMuted(g_muted);
     radarScreenSetMuted(g_muted, false);
-    view3d::setEngineSound(s.engineSound);
-    view3d::setHills(s.hills);
+    view3d::setTerrain(s.terrain);
     soundSetReadAloud(g_readAloud);
     soundSetElsewhereAccent(g_elsewhereAccent);
     displaySetSort(s.tableSortCol, s.tableSortDesc);
@@ -5311,14 +5310,6 @@ void loop() {
         case 'O':
             // "##O" where the cover's time has gone since the last "##O".
             view3d::benchCoverReport();
-            break;
-        case 'e':
-            // "##e" airliners', turboprops' and light aircraft's engines from
-            // recordings or synthesised, each time the other: the two side
-            // by side, by ear.
-            engine_noise::g_recordedVoices = !engine_noise::g_recordedVoices;
-            Serial.printf("[sound] airliners, turboprops and light aircraft: %s\n",
-                          engine_noise::g_recordedVoices ? "recorded" : "synthesised");
             break;
         case '=': {
             // "##=" and a letter: the rest of the app timed, a part at a

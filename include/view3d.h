@@ -60,13 +60,10 @@ void benchCoverReport();
 #endif
 // Gives them back, the frame being drawn finished first.
 void close();
-// Whether the one followed's engines are heard - the SOUND button's, which
-// saves it; this from the settings at boot.
-void setEngineSound(bool on);
 // Whether the land is drawn at its height, where the card's ground pack has
-// it - the HILLS button's, which saves it; this from the settings at boot.
-// Off, or with no pack, the land is flat, its hills a skyline.
-void setHills(bool on);
+// it - the GROUND button's, which saves it; this from the settings at boot.
+// Off, or with no pack, the ground is flat, its hills a skyline.
+void setTerrain(bool on);
 bool isOpen();
 // Showing the one followed parked at a stand, or making for one - landed,
 // its signal lost on the ground, taxied in by itself: following is kept on
@@ -98,8 +95,8 @@ struct ReplayBar {
     uint32_t epoch = 0;              // UTC seconds at t; 0 where the recording's clock wasn't set
 };
 // Showing a replay, `bar` as it is - each frame - or live, null. In a replay
-// the strip under the picture has the replay's controls, the flight on a line
-// above them, and the engines fall quiet while it is paused.
+// the strip under the picture has the replay's controls, and the flight on a
+// line above them.
 void setReplay(const ReplayBar *bar);
 // Where the traffic's pressure altitudes are put right from - see
 // FollowSample::pressureFt: the live day's pressure, or a replay's own.
