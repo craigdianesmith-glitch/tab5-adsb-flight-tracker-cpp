@@ -68,7 +68,10 @@ const Navaid NAVAIDS[] = {
 
 using namespace scene3d;
 
-constexpr int W = 1280, H = 720;
+// PREVIEW_W and PREVIEW_H: another size - the Tab5's 3D view's 1008 by 560,
+// say, to see a frame as it draws one.
+const int W = getenv("PREVIEW_W") ? atoi(getenv("PREVIEW_W")) : 1280,
+          H = getenv("PREVIEW_H") ? atoi(getenv("PREVIEW_H")) : 720;
 // The bands' rows: 16, as the Tab5 has them with room - or BAND_ROWS, 15
 // say, as it has them without.
 const int BAND = getenv("BAND_ROWS") ? atoi(getenv("BAND_ROWS")) : 16;
