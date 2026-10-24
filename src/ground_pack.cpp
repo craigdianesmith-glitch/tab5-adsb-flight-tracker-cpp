@@ -91,6 +91,9 @@ TerrainGrid g_grids[2];
 const TerrainGrid *volatile g_terrainGridNow = nullptr;
 int g_gridBuilt = -1, g_gridMids = -1;
 uint32_t g_gridAt = 0;
+// g_frame as the last grid was published: the one before it is built over
+// only once no frame can still be marching it - two on.
+uint32_t g_gridFrame = 0;
 // The eye's tile when the grid was last built - or found to have no tile of
 // the pack in it, and none built: g_gridNone, the land flat there.
 int g_gridRow = -1, g_gridCol = -1;
@@ -98,6 +101,7 @@ volatile bool g_gridNone = false;
 volatile int g_midsIn = 0;  // mid blocks read in so far
 volatile int g_horizonAt = -1;
 bool g_horizonWanted = false;
+uint32_t g_horizonFrame = 0;  // g_frame as it was last asked for
 double g_horizonLat = 0, g_horizonLon = 0;
 float g_horizonHeight = 0;
 volatile bool g_coarseReady = false;
@@ -538,7 +542,9 @@ Horizon *horizonDue(double &lat, double &lon, float &heightM) {
         }
     }
     xSemaphoreTake(g_lock, portMAX_DELAY);
-    bool wanted = g_horizonWanted;
+    // Asked for in the last few frames: none once the view has stopped
+    // asking - the hills drawn instead, say.
+    bool wanted = g_horizonWanted && g_frame - g_horizonFrame <= 3;
     lat = g_horizonLat;
     lon = g_horizonLon;
     heightM = g_horizonHeight;
@@ -644,28 +650,15 @@ void task(void *) {
                   (unsigned)(check.coarseBytes / 1024));
 
     for (;;) {
-        // The horizon first, when the eye has moved far enough for it.
-        double hLat, hLon;
-        float hHeight;
-        if (Horizon *h = horizonDue(hLat, hLon, hHeight)) {
-            uint32_t h0 = millis();
-            workOutHorizon(*h, hLat, hLon, hHeight);
-            __sync_synchronize();  // the horizon before the index to it
-            g_horizonAt = (int)(h - g_horizons);
-            static uint32_t loggedAt = 0;
-            if (millis() - loggedAt > 30000) {
-                loggedAt = millis();
-                Serial.printf("[ground] the horizon round %.3f,%.3f at %.0fm, in %lums\n", hLat, hLon, hHeight,
-                              (unsigned long)(millis() - h0));
-            }
-        }
-        // The terrain's grid, about the eye - or none, where the pack has no
-        // tile anywhere in it: the land there flat, as with no pack, not a
-        // grid of noughts for the march to cross.
+        // The terrain's grid, about the eye, first - the hills it draws
+        // instead of the skyline - or none, where the pack has no tile
+        // anywhere in it: the land there flat, as with no pack, not a grid
+        // of noughts for the march to cross.
         if (g_wantRow >= 0) {
             int wr = g_wantRow, wc = g_wantCol;
             bool moved = g_gridRow < 0 || abs(wr - g_gridRow) >= 2 || abs(wc - g_gridCol) >= 2;
             bool more = !g_gridNone && g_midsIn != g_gridMids && millis() - g_gridAt > 1000;
+            bool free = g_frame - g_gridFrame >= 2;  // see g_gridFrame
             if ((moved || more) &&
                 !hasTiles(g_window, wr - GRID_DOWN / 2, wc - GRID_ACROSS / 2, GRID_DOWN, GRID_ACROSS)) {
                 g_terrainGridNow = nullptr;  // the grids' memory kept: a frame may be reading the last
@@ -675,7 +668,7 @@ void task(void *) {
                 g_gridNone = true;
                 g_gridRow = wr;
                 g_gridCol = wc;
-            } else if (moved || more) {
+            } else if ((moved || more) && free) {
                 int next = g_gridBuilt == 0 ? 1 : 0;
                 TerrainGrid &G = g_grids[next];
                 if (G.heights == nullptr) {
@@ -713,6 +706,7 @@ void task(void *) {
                     __sync_synchronize();  // the grid before the pointer to it
                     g_terrainGridNow = &G;
                     g_gridBuilt = next;
+                    g_gridFrame = g_frame;
                     g_gridMids = mids;
                     g_gridAt = millis();
                     g_gridRow = wr;
@@ -726,6 +720,22 @@ void task(void *) {
                                       wr, wc, mids, (unsigned long)(millis() - t0), G.highest);
                     }
                 }
+            }
+        }
+        // Then the skyline, when the eye has moved far enough for it - while
+        // the view asks for it: until the hills are ready, or without them.
+        double hLat, hLon;
+        float hHeight;
+        if (Horizon *h = horizonDue(hLat, hLon, hHeight)) {
+            uint32_t h0 = millis();
+            workOutHorizon(*h, hLat, hLon, hHeight);
+            __sync_synchronize();  // the horizon before the index to it
+            g_horizonAt = (int)(h - g_horizons);
+            static uint32_t loggedAt = 0;
+            if (millis() - loggedAt > 30000) {
+                loggedAt = millis();
+                Serial.printf("[ground] the horizon round %.3f,%.3f at %.0fm, in %lums\n", hLat, hLon, hHeight,
+                              (unsigned long)(millis() - h0));
             }
         }
         // The nearest tile wanted with something not in, a ring at a time
@@ -1380,6 +1390,7 @@ void wantHorizon(double lat, double lon, float heightM) {
     }
     xSemaphoreTake(g_lock, portMAX_DELAY);
     g_horizonWanted = true;
+    g_horizonFrame = g_frame;
     g_horizonLat = lat;
     g_horizonLon = lon;
     g_horizonHeight = heightM;
