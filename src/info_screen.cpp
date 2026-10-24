@@ -4,7 +4,9 @@
 
 #include <vector>
 
+#include "airfield_pack.h"
 #include "config.h"
+#include "ground_pack.h"
 #include "screen.h"
 
 namespace {
@@ -75,6 +77,11 @@ const char *const HELP[] = {
     "- An airport's taxiways, stands, buildings and tower come from the airfield pack, airfields.bin, in the SD "
     "card's overhead folder - as does the tower on the zoom. Without it, or at an airport it hasn't got, the view "
     "is a basic one, the runways alone, and says so under the picture.",
+    "- The land's fields, woods, moor and towns, and its hills, come from the ground pack, ground.bin, in the same "
+    "folder. The one on each release covers the UK and Ireland; for anywhere else, make one on a computer with "
+    "tools/make_ground_pack.py - the manual says how. Without it, or away from the land it covers, the land is flat "
+    "and one colour, and the line under the picture says why.",
+    "- Settings > About shows which packs the card has, and whether each can be used.",
 
     "# Alerts",
     "Settings > Alerts picks what raises one: emergencies (squawk 7700, 7600 or 7500), military aircraft, rare "
@@ -146,6 +153,75 @@ const char *const ABOUT[] = {
     "(Apache 2.0).",
     "- Airline names identify the operator, and imply no endorsement by it.",
 };
+
+// --- what the card has -------------------------------------------------------
+// For About, under its first paragraph: the airfield and ground packs on the
+// SD card, or why the 3D view goes without each - looked at afresh each time
+// it opens, a card having gone in since, or the 3D view having read the pack.
+
+// A count with its thousands marked: 2,068.
+String grouped(uint32_t n) {
+    String digits(n), out;
+    int len = digits.length();
+    for (int i = 0; i < len; i++) {
+        if (i > 0 && (len - i) % 3 == 0) {
+            out += ',';
+        }
+        out += digits[i];
+    }
+    return out;
+}
+
+String megabytes(uint32_t bytes) { return String(bytes / 1048576.0f, 1) + "MB"; }
+
+// An edge of a pack's grid, `tiles` fifths of a degree from the equator or
+// from Greenwich: "49.8N", "10.8W".
+String edge(int tiles, char plus, char minus) {
+    return String(abs(tiles) / (float)groundpack::TILES_PER_DEG, 1) + (tiles < 0 ? minus : plus);
+}
+
+String airfieldPackLine() {
+    uint16_t airfields = 0;
+    uint32_t bytes = 0;
+    airfield::Missing why;
+    if (airfield::packInfo(airfields, bytes, why)) {
+        return "- Airfield pack: airfields.bin, " + grouped(airfields) + " airfields (" + megabytes(bytes) + ").";
+    }
+    String said = why == airfield::Missing::NO_CARD   ? "no SD card in"
+                  : why == airfield::Missing::NO_PACK ? "no airfields.bin in the card's overhead folder"
+                                                      : "the card's airfields.bin is for another version";
+    return "- Airfield pack: " + said + ", so the 3D view's airports are the basic view, their runways alone.";
+}
+
+String groundPackLine() {
+    using S = groundpack::Status;
+    groundpack::PackCheck c;
+    switch (groundpack::packInfo(c)) {
+    case S::READY:
+        return "- Ground pack: ground.bin, " + grouped(c.count) + " tiles (" + megabytes(c.fileSize) + "), between " +
+               edge(c.south, 'N', 'S') + " and " + edge(c.south + c.rows, 'N', 'S') + ", " + edge(c.west, 'E', 'W') +
+               " and " + edge(c.west + c.cols, 'E', 'W') + ".";
+    case S::LOADING:
+        return "- Ground pack: ground.bin, being read in for the 3D view.";
+    case S::NO_CARD:
+        return "- Ground pack: no SD card in, so the 3D view's land is flat and one colour.";
+    case S::NO_PACK:
+        return "- Ground pack: no ground.bin in the card's overhead folder, so the 3D view's land is flat and one "
+               "colour.";
+    case S::OTHER_VERSION:
+        return "- Ground pack: the card's ground.bin is for another version, so the 3D view's land is flat. Put the "
+               "one from this version's release on the card, or make it again.";
+    case S::TOO_BIG:
+        return "- Ground pack: the card's ground.bin is too big for the Tab5 - " + String(c.why) +
+               " - so the 3D view's land is flat. Make a smaller one: the manual says how.";
+    case S::DAMAGED:
+        return "- Ground pack: the card's ground.bin is damaged, so the 3D view's land is flat. Copy it to the card "
+               "again.";
+    default:
+        return "- Ground pack: there wasn't the memory free for the card's ground.bin, so the 3D view's land is flat. "
+               "Restart the Tab5.";
+    }
+}
 
 // --- how they are laid out -----------------------------------------------------
 
@@ -286,7 +362,17 @@ void infoScreenOpen(InfoPage page) {
     if (page == InfoPage::HELP) {
         layOut(HELP, sizeof(HELP) / sizeof(HELP[0]));
     } else {
-        layOut(ABOUT, sizeof(ABOUT) / sizeof(ABOUT[0]));
+        // Its first paragraph, then what the card has, then the rest.
+        const String card[] = {
+            "# On the SD card", airfieldPackLine(), groundPackLine(),
+            "The ground pack on each release covers the UK and Ireland. One for anywhere else can be made on a "
+            "computer with tools/make_ground_pack.py - the manual says how."};
+        std::vector<const char *> blocks = {ABOUT[0]};
+        for (const String &block : card) {
+            blocks.push_back(block.c_str());
+        }
+        blocks.insert(blocks.end(), ABOUT + 1, ABOUT + sizeof(ABOUT) / sizeof(ABOUT[0]));
+        layOut(blocks.data(), blocks.size());
     }
     g_pageIdx = 0;
     infoScreenDraw();

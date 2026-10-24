@@ -586,6 +586,23 @@ const char *basicWhy() {
     return text;
 }
 
+// Why the land is flat and one colour - the card's ground pack missing, or
+// refused, or with no land of it anywhere round here - or nullptr, the land
+// drawn from it: said on the strip as the airfield pack's is, and what to do.
+const char *flatWhy() {
+    using S = groundpack::Status;
+    switch (groundpack::status()) {
+    case S::NO_CARD: return "Flat land - no SD card in for the ground pack, ground.bin";
+    case S::NO_PACK: return "Flat land - no ground.bin in the SD card's overhead folder";
+    case S::OTHER_VERSION: return "Flat land - the card's ground.bin is for another version";
+    case S::TOO_BIG: return "Flat land - the card's ground.bin is too big for the Tab5: build a smaller one";
+    case S::DAMAGED: return "Flat land - the card's ground.bin is damaged: copy it to the card again";
+    case S::NO_ROOM: return "Flat land - no room in memory for the card's ground.bin: restart the Tab5";
+    case S::READY: return groundpack::offPack() ? "Flat land - here isn't in the card's ground.bin" : nullptr;
+    default: return nullptr;  // not looked for yet, or being read
+    }
+}
+
 bool buildAirfield(const char *code) {
     int count = 0;
     const Runway *runways = runwaysAt(code, count);
@@ -2336,10 +2353,26 @@ void drawFlightStrip(const Followed &f) {
     }
     c.setTextColor(colorFaint);
     c.drawString(line, VIEW_X, STRIP_Y + 72);
-    // An airport drawn from its runways alone, and why.
-    if (g_where == Where::AIRFIELD && g_missing != airfield::Missing::NOTHING) {
+    // An airport drawn from its runways alone, or the land flat, and why.
+    // The two on the one line there is room for: one sentence where neither
+    // pack is there, or no card; else in turn, four seconds each.
+    using M = airfield::Missing;
+    using S = groundpack::Status;
+    const char *basic = g_where == Where::AIRFIELD && g_missing != M::NOTHING ? basicWhy() : nullptr;
+    const char *flat = flatWhy(), *note = basic != nullptr ? basic : flat;
+    if (basic != nullptr && flat != nullptr) {
+        S ground = groundpack::status();
+        if (g_missing == M::NO_CARD && ground == S::NO_CARD) {
+            note = "Basic view and flat land - no SD card in for airfields.bin and ground.bin";
+        } else if (g_missing == M::NO_PACK && ground == S::NO_PACK) {
+            note = "Basic view and flat land - no airfields.bin or ground.bin on the SD card";
+        } else if (millis() / 4000 % 2 == 1) {
+            note = flat;
+        }
+    }
+    if (note != nullptr) {
         c.setTextColor(colorNote);
-        c.drawString(basicWhy(), VIEW_X, STRIP_Y + 98);
+        c.drawString(note, VIEW_X, STRIP_Y + 98);
     }
     screen::markDirty(VIEW_X, STRIP_Y, VIEW_W, STRIP_H);
 }

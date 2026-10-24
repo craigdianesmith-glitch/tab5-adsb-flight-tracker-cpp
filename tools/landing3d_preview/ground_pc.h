@@ -55,7 +55,9 @@ struct PcGround {
     }
 
     // The tiles `radius` round (lat, lon), each way; levels -1 and -2 for
-    // those `finerRadius` round. False if the file isn't a version 2 pack.
+    // those `finerRadius` round. False if the file isn't a version 2 pack, or
+    // is one the Tab5 would refuse - too big for it, or damaged: checked as
+    // its ground task checks it, by the same code.
     bool load(const char *path, double lat, double lon, int radius, int finerRadius = 1) {
         FILE *f = fopen(path, "rb");
         if (f == nullptr) {
@@ -69,10 +71,21 @@ struct PcGround {
         }
         fclose(f);
         const uint8_t *h = file.data();
-        if (file.size() < 32 || memcmp(h, "OVGR", 4) != 0 || h[4] != 2) {
+        using namespace groundpack;
+        PackCheck check;
+        std::vector<int16_t> entryAt;
+        bool ok = file.size() <= UINT32_MAX && checkHead(h, (uint32_t)file.size(), check);
+        if (ok) {
+            entryAt.resize((size_t)check.rows * check.cols);
+            ok = checkIndex(h + check.indexAt, check, nullptr, entryAt.data());
+        }
+        if (!ok) {
+            fprintf(stderr, "ground: %s refused, as the Tab5 would refuse it: %s\n", path, check.why);
             return false;
         }
-        using namespace groundpack;
+        if (check.version != 2) {
+            return false;
+        }
         int south = (int16_t)(h[8] | h[9] << 8), west = (int16_t)(h[10] | h[11] << 8);
         int count = (int)u32(h + 16);
         uint32_t indexAt = u32(h + 20);
@@ -135,6 +148,12 @@ struct PcGround {
         window.detail = detail.data();
         window.finer[0] = finer1.data();
         window.finer[1] = finer2.data();
+        // No tile of the pack anywhere in it: no grid of heights - the land
+        // flat, as the Tab5's ground task leaves it.
+        grid = groundpack::TerrainGrid();
+        if (!groundpack::hasTiles(window, window.north, window.west, window.rows, window.cols)) {
+            return true;
+        }
         using G = groundpack::TerrainGrid;
         grid.north = window.north;
         grid.west = window.west;

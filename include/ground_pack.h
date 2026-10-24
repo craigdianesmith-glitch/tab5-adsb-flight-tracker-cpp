@@ -44,6 +44,77 @@ inline int cols0At(int northRow) {
     return a < 50 ? ROWS0 : a < 60 ? ROWS0 * 2 / 3 : a < 70 ? ROWS0 / 2 : a < 75 ? ROWS0 / 3 : 0;
 }
 
+// The most of a pack the Tab5 takes - and so the most tools/make_ground_pack.py
+// builds, from these same numbers. A pack past any of them is refused as it
+// opens, from its header and index alone, before its tiles take any memory,
+// and the 3D view's land is flat, as with no pack at all. Every tile's level 4 and its heights are held from
+// the moment the pack opens, inflated: 650 bytes a tile between 50 and 60
+// degrees, 970 nearer the equator - 4MB of them at most, and 6,000 tiles,
+// nearly three times the UK and Ireland's 2,068. Below 50 degrees the 4MB
+// comes first, at 4,315 tiles. And each place on the pack's grid - its rows
+// by its columns of tiles, a tile there or not - costs 22 bytes: 40,000
+// places at most, 880KB, a grid of 200 by 200 tiles - 40 degrees square.
+constexpr int MAX_TILES = 6000;
+constexpr uint32_t MAX_COARSE_BYTES = 4u << 20;
+constexpr int MAX_GRID = 40000;
+static_assert(MAX_TILES <= 32767, "a tile's place in the index is held in 16 bits");
+
+// A tile's blocks' sizes as inflated, by its columns at level 0: level 4
+// and the heights at its cells; levels 1 to 3 and the heights every 15
+// seconds; level 0.
+inline size_t coarseBytes(int cols0) { return 3 * (size_t)(ROWS0 / 16) * (cols0 / 16); }
+inline size_t midBytes(int cols0) { return midHeightsAt(cols0) + 2 * (size_t)(ROWS0 / 6) * (cols0 / 6); }
+inline size_t detailBytes(int cols0) { return (size_t)ROWS0 * cols0; }
+
+// What became of the card's pack: whether the 3D view has it, and if not,
+// why - for it to say under the picture why its land is flat, and for About.
+enum class Status : uint8_t {
+    UNKNOWN,        // not looked for yet
+    NO_CARD,        // no SD card in, or none that mounts
+    NO_PACK,        // no ground.bin in the card's overhead folder
+    LOADING,        // being read in
+    READY,          // read in, its tiles held
+    OTHER_VERSION,  // not one this firmware reads: another version's, or not a ground pack at all
+    TOO_BIG,        // more than the Tab5 holds - see the limits above
+    DAMAGED,        // cut short, or its index wrong
+    NO_ROOM,        // within the limits, but the memory wasn't free for it
+};
+
+// A tile's row of the index.
+struct Entry {
+    uint16_t row, col;  // in tiles, from the pack's south-west corner
+    uint32_t coarseAt, coarseSize, midAt, midSize, detailAt, detailSize;  // no detail block: size nought
+};
+
+// A pack's header, as checkHead() reads it, and what the checks made of it:
+// READY, the Tab5 can take it - or why not, and in words, for the log.
+struct PackCheck {
+    Status status = Status::UNKNOWN;
+    int version = 0;
+    int south = 0, west = 0;  // its south-west tile, in tiles north of the equator and east of Greenwich
+    int rows = 0, cols = 0;   // its grid of tiles
+    int count = 0;            // the tiles there are
+    int rowBytes = 0;         // an index row's: 28, or 20 in version 1
+    uint32_t fileSize = 0, indexAt = 0, coarseAt = 0, coarseSize = 0;
+    size_t coarseBytes = 0;  // every tile's level 4 and coarse heights, inflated - from checkIndex()
+    char why[96] = "";
+};
+
+// A pack's first 32 bytes, from a file `fileSize` long: whether this
+// firmware reads it, the Tab5 can hold it - its tiles and its grid - and its
+// index and coarse blocks lie inside the file. True if so, `check` filled;
+// else false, and why. Nothing is taken for the pack until this says so.
+bool checkHead(const uint8_t *head, uint32_t fileSize, PackCheck &check);
+
+// Then its index, check.count rows of check.rowBytes: each tile on the grid
+// and short of 75 degrees, there once, and its blocks inside the file - its
+// coarse one among the coarse blocks - and no bigger than their cells could
+// pack to; and every tile's level 4 within MAX_COARSE_BYTES, inflated -
+// check.coarseBytes. Each row into `entries`, and its place in the index into
+// `entryAt`, rows*cols of them north first, -1 where there is no tile - either
+// may be nullptr. True, or false and why.
+bool checkIndex(const uint8_t *rows, PackCheck &check, Entry *entries, int16_t *entryAt);
+
 // The covers, as the pack has them: WorldCover's, and four mixes of them -
 // see tools/gen_ground.py.
 enum Cover : uint8_t {
@@ -68,12 +139,39 @@ struct Window {
     const uint8_t **finer[2] = {};     // rows*cols: levels -1 and -2, in parts
 };
 
-// Opens the card's pack and reads in every tile's level 3 - false, and
-// nothing held, where there isn't one or it can't be read. Once, from the
-// view as it opens; close() gives the memory back.
+// Opens the card's pack and reads in every tile's level 4, in the background
+// - false, and nothing held, where there isn't one, or it is refused (see
+// status()). From the view each time it opens: looked for again while there
+// is no card or no pack, or the memory was short; one refused is refused
+// till the Tab5 restarts. close() gives the memory back.
 bool open();
 void close();
 bool isOpen();
+
+// What became of the pack the view asked for - UNKNOWN till open().
+Status status();
+
+// Whether the pack, held, has no tile anywhere round where the view last
+// asked (see want()) - the terrain grid's 11 by 15 tiles, some 245 by 210km:
+// the land there flat and one colour, as with no pack at all.
+bool offPack();
+
+// What ground pack the card has, for About and the log at start-up: READY,
+// `check` saying how many tiles, where and how big the file is - or why the
+// 3D view can't have it, `check.why` saying more. The pack the view holds,
+// or the verdict it came to; else the card is looked at afresh - its header
+// and index, checked as the view will - with nothing held after, and what
+// that finds kept as the view's verdict, unless the pack would pass.
+Status packInfo(PackCheck &check);
+
+// That said on the serial port, a line: "[ground] the card's ground.bin:
+// 2068 tiles, 25.7MB", or why not - beside the airfield pack's at start-up.
+void logCard();
+
+// Whether any tile of `window` is in the block `down` by `across` tiles from
+// (north, west), in tiles from the north pole and 180 west: the pack has the
+// land's heights there. Where it has none, the terrain grid isn't built.
+bool hasTiles(const Window &window, int north, int west, int down, int across);
 
 // The tiles round (lat, lon) the view will want: a window `fineKm` round
 // read in at levels 1 to 3, in the background, the tiles round it at level

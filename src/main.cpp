@@ -50,6 +50,7 @@
 #include "view3d.h"
 #include "watchlist_screen.h"
 #include "airfield_pack.h"
+#include "ground_pack.h"
 #include "bench3d.h"
 #include "bench2d.h"
 #include "wifi_screen.h"
@@ -4678,6 +4679,10 @@ void setup() {
                                                                : "the card's airfields.bin is for another version");
         }
     }
+    // And the ground pack, for the 3D view's land and hills: what there is -
+    // its header and index checked, as the view will - or why its land will
+    // be flat. Read in only once the view first opens.
+    groundpack::logCard();
 
     // What the device actually loaded, said once at boot. An empty table has
     // several innocent explanations - a filter down to the military over quiet
