@@ -2822,6 +2822,13 @@ void dumpSkyline() {
 }
 
 void benchPress(char what) {
+    if (what == '0' || what == '1') {
+        // The land in full for a still, however long the frames take - or
+        // governed again. Kept with the view shut too.
+        g_benchFullLand = what == '0';
+        Serial.printf("[3d] the land %s\n", g_benchFullLand ? "in full, not skimped" : "governed again");
+        return;
+    }
     if (!g_open) {
         return;
     }
@@ -2831,11 +2838,6 @@ void benchPress(char what) {
         g_sweepUntilMs = 0;
         press(b);
         Serial.printf("[3d] pressed %s%s\n", BTN_NAME[b], buttonGreyed(b) ? ", greyed" : "");
-    } else if (what == '0' || what == '1') {
-        // The land in full for a still, however long the frames take - or
-        // governed again.
-        g_benchFullLand = what == '0';
-        Serial.printf("[3d] the land %s\n", g_benchFullLand ? "in full, not skimped" : "governed again");
     }
 }
 
