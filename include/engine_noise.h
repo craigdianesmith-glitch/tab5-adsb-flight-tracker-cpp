@@ -3,9 +3,10 @@
 #include <stdint.h>
 
 // The 3D view's engine noise: what the aircraft followed sounds like from
-// where the camera is - made as it plays, no recordings, out of noise, tones
-// and a few filters, as a sound designer would rough one out (as
-// tools/gen_jet.py makes the splash screen's take-off ahead of time). Its
+// where the camera is - made as it plays, out of noise, tones and a few
+// filters, as a sound designer would rough one out (as tools/gen_jet.py
+// makes the splash screen's take-off ahead of time), and a fighter's roar
+// out of recordings of real ones, cut by tools/gen_roar.py. Its
 // engines' kind and how hard they are working, and its tyres on the ground;
 // and the sound's way to the ear, as the air carries it:
 //  - late: at 343m a second, what is heard is what the aircraft was doing
@@ -42,6 +43,9 @@ enum class Kind : uint8_t {
 
 struct Sound {
     Kind kind = Kind::NONE;
+    // Which aircraft: another - even of the same kind - faded in afresh, as
+    // it is, rather than this one's engines and APU carried over to it.
+    uint32_t who = 0;
     // The engines, from its type.
     uint8_t engines = 2;
     float fanHz = 3000;   // a turbofan's fan blades passing at full power
@@ -74,11 +78,32 @@ struct Sound {
     float airspeedMs = 0;
     bool gearDown = false, flapsOut = false;
     float spoilers = 0;
+    // And how big it is, its length against an A320's: the air tears past
+    // less of a small one - a fighter's a third as much.
+    float size = 1;
     // Its engines running, or shut down - at its stand - and started again,
     // heard spooling up from nothing; and its APU, an airliner's, whining
     // while it stands or taxies.
     bool running = true, apu = false;
+    // Where its engines and the ear - the camera - are, in metres in a frame
+    // of the caller's own, the same from one call to the next, and which way
+    // it points. `placed`, the synthesiser works out the sound's way from
+    // them itself - when what is heard now left it, how far it had come and
+    // how fast it was closing then, and which way it faced - and distanceM,
+    // closingMs and aspect are left aside.
+    bool placed = false;
+    float at[3] = {}, nose[3] = {1, 0, 0}, ear[3] = {};
+    // When those were so, milliseconds on the caller's clock: the frame's
+    // time, which the sound's blocks, made in their own time, aren't - by
+    // theirs, each place was one, two or three frames on from the last,
+    // its speed jumping by half, and its sound gusting with it.
+    uint32_t ms = 0;
 };
+
+// Airliners', turboprops' and light aircraft's engines from recordings -
+// each at low power and at high, by their power - rather than synthesised:
+// to compare the two, by ear, on the device. Off, as approved.
+extern bool g_recordedVoices;
 
 class Synth {
   public:
@@ -96,6 +121,7 @@ class Synth {
 
   private:
     void update();
+    void placedWay();
     void restart();
     void tyres(float *mix, int n);
     void airframe(float *mix, int n);
@@ -142,8 +168,10 @@ class Synth {
 
     Sound target_, sound_;  // what was asked for, and the kind playing - target_'s once the fade allows
     // What was asked for over the last few seconds, a snapshot each 20ms
-    // or so, each with the sample it was asked at: what is heard is the
-    // one from as long ago as the sound takes to come.
+    // or so - each block rendered, on the device each 40ms: ten seconds, a
+    // sound's way from three and a half kilometres - each with the sample
+    // it was asked at: what is heard is the one from as long ago as the
+    // sound takes to come.
     static constexpr int HEARD = 256;
     struct Asked {
         uint32_t at = 0;
@@ -159,6 +187,24 @@ class Synth {
     // Eased toward target_.
     float power_ = 0, reverse_ = 0, burner_ = 0, slap_ = 0;
     float logDistance_ = 3.9f, closing_ = 0, aspect_ = 0.5f;
+    float convection_ = 1, convectionTo_ = 1;  // placed: louder coming, quieter going
+    // A recording played a stretch at a time from places picked at random,
+    // each faded into the next, so it runs on with no beat of its own: where
+    // in it - 20.12 fixed point - and where the next stretch is from, how far
+    // into fading to it, and how long till it; where this stretch and the one
+    // before began, for the next to be from elsewhere; and, a roar's, which
+    // way each plays and how much faster or slower.
+    struct Grains {
+        uint32_t at = 0, next = 0, from = 0, was = 0;
+        int fading = -1, left = 0;
+        bool back = false, nextBack = false;
+        float rate = 1, nextRate = 1;
+    };
+    Grains roar_g_, front_g_;  // a fighter's recorded roar and front
+    Grains takeoff_g_, approach_g_;  // an airliner's recorded take-off and approach
+    Grains low_g_, high_g_;          // a turboprop's recorded approach and take-off
+    Grains piston_g_;                // a light aircraft's recorded
+    static float grain(Grains &g, const int16_t *loop, uint32_t length, uint32_t step, Rng &rng, bool vary = false);
     float fade_ = 0, duck_ = 1;
     // Worked out each few samples from those.
     float doppler_ = 1, gain_ = 0;
@@ -173,6 +219,10 @@ class Synth {
     float echoLate_ = 0, echoLateWas_ = 0, echoGain_ = 0, echoSoft_ = 0, echoLow_ = 0, echoLow2_ = 0, echoWander_ = 0;
     // The air's eddies, far off: the level wandering, smoothed noise.
     float shimmer_ = 0, shimmerWas_ = 0;
+    // A recorded roar's own surges, dB, and the one it is easing to - held
+    // that long yet, in samples.
+    float surgeDb_ = 0, surgeTo_ = 0;
+    int surgeLeft_ = 0;
     // The tyres': their screech - each main gear's in turn, its pitch
     // gliding down as the wheels spin up - their roll, and the nose wheel
     // over each centreline light.

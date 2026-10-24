@@ -50,6 +50,13 @@ has them:
        alert banner left round the view (##I looks)
     j  a U-2 circling RAF Fairford at 65,000ft and 410kt - twice the
        cruise's height, the horizon 500km off
+    k  a Typhoon at 10,000ft and 480kt circling the Cheviots - the hills
+       seen from above, laid across the land no longer; its fly past fast,
+       its sound arriving all at once as it passes
+    l  an E190 taking off from 23 at Glasgow - its nose rotated for on the
+       runway, its APU off as it lines up, the hills beyond
+    m  a 767 at FL300 circling the Southern Uplands - its trails whole and
+       grey, a widebody's fly past
     R  not a flight: the newest recording that follows an aircraft, replayed
        in 3D - played, 4x, a minute back and on, its bar, another aircraft
        picked, Back and 3D again
@@ -77,7 +84,7 @@ import serial
 
 ap = argparse.ArgumentParser()
 ap.add_argument("--minutes", type=float, default=60)
-ap.add_argument("--scenarios", default="0123456789abefghijR")
+ap.add_argument("--scenarios", default="0123456789abefghijklmnoR")
 ap.add_argument("--port", default="/dev/ttyACM0")
 ap.add_argument("--out", default=time.strftime("soak-%Y%m%d-%H%M"))
 ap.add_argument("--sun", choices=["real", "day", "dusk", "night"], default="real",
@@ -251,6 +258,8 @@ OPEN = re.compile(r"\[3d\] open, (\d+)-row bands: internal RAM (\d+)KB free, the
 TROUBLE = ("[hang]", "[screen]", "no room for the bands", "Guru", "panic", "abort", "Backtrace", "assert",
            "banner left behind", "no recording that follows", "isn't in the recording")
 TOUCHDOWN = re.compile(r"\[3d\] (\S+) down on (\S+) at (\S*), its nose ([\d.-]+) degrees up")
+LIFTOFF = re.compile(r"\[3d\] (\S+) off (\S+) at (\S*) at (\d+) kt, its nose ([\d.-]+) degrees up")
+ENGINES = re.compile(r"\[3d\] (\S+): engines (running|shut down), APU (on|off)")
 LANDING = re.compile(r"\[follow\] (\S+): [\w ]+ -> landing")
 BANNER = re.compile(r"\[soak\] banner check on (.*?): (\d+) of its pixels")
 LATE = re.compile(r"\[sound\] word \d+ of \d+ (\d+)ms late")
@@ -261,11 +270,17 @@ def summarise(n, t0, t1):
         said = [text for when, text in lines if t0 <= when < t1]
     fps, prep, gaps, ram, opens, slow, trouble, resets, taps = [], [], [], [], [], [], [], 0, []
     said_count, late, dropped = 0, [], []
-    noses, landings, banner = [], 0, None
+    noses, landings, banner, lifts, engines = [], 0, None, [], []
     for text in said:
         m = TOUCHDOWN.search(text)
         if m:
             noses.append(float(m.group(4)))
+        m = LIFTOFF.search(text)
+        if m:
+            lifts.append((int(m.group(4)), float(m.group(5))))
+        m = ENGINES.search(text)
+        if m:
+            engines.append(("off" if m.group(2) == "shut down" else "on") + "/" + m.group(3))
         if LANDING.search(text):
             landings += 1
         m = BANNER.search(text)
@@ -312,6 +327,8 @@ def summarise(n, t0, t1):
         "late": late,
         "dropped": dropped,
         "noses": noses,
+        "lifts": lifts,
+        "engines": engines,
         "landings": landings,
         "banner": banner,
     }
@@ -324,8 +341,8 @@ lines_out = [
     "",
     "| # | min | fps lowest / average | preparing, most | core 0 idle gap, most | internal RAM, least | "
     "3D opens (bands, KB free, largest) | slow frames | resets | trouble | said | words late, most | "
-    "landings begun | touchdowns, nose | banner pixels |",
-    "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|",
+    "landings begun | touchdowns, nose | lift-offs, kt and nose | engines/APU | banner pixels |",
+    "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|",
 ]
 for r in rows:
     fps = f"{r['fps'][0]:.1f} / {r['fps'][1]:.1f}" if r["fps"] else "-"
@@ -335,10 +352,12 @@ for r in rows:
     opens = ", ".join(f"{b}r {f}/{l}" for b, f, l in r["opens"]) or "-"
     late = f"{len(r['late'])}, {max(r['late'])}ms" if r["late"] else "0"
     noses = ", ".join(f"{x:.1f}" for x in r["noses"]) or "-"
+    lifts = ", ".join(f"{kt} {nose:.1f}" for kt, nose in r["lifts"]) or "-"
+    engines = " ".join(r["engines"]) or "-"
     banner = "-" if r["banner"] is None else str(r["banner"])
     lines_out.append(f"| {r['n']} | {r['minutes']:.1f} | {fps} | {prep} | {gap} | {ram} | {opens} | "
                      f"{len(r['slow'])} | {r['resets']} | {len(r['trouble'])} | {r['said']} | {late} | "
-                     f"{r['landings']} | {noses} | {banner} |")
+                     f"{r['landings']} | {noses} | {lifts} | {engines} | {banner} |")
 details = [r for r in rows if r["slow"] or r["trouble"] or r["resets"] or r["dropped"]]
 if details:
     lines_out += ["", "## What went wrong", ""]

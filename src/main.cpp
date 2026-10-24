@@ -939,6 +939,11 @@ const char *const SOAK_NAMES[] = {
     "an A320 landing on 23 at Lossiemouth on a day of high pressure, its pressure altitude under nought on short final",
     "an alert for an A320 landing at Glasgow, auto-followed into 3D: no banner left round the view",
     "a U-2 at 65,000ft circling over Fairford: the 3D view twice the cruise's height up, the horizon 500km off",
+    "a Typhoon at 10,000ft and 480kt circling the Cheviots: the hills seen from above, its fly past fast",
+    "an E190 taking off from 23 at Glasgow: its nose rotated for, its APU off as it lines up, the hills beyond",
+    "a 767 at FL300 circling the Southern Uplands: its trails, and a widebody's fly past",
+    "a Loganair ATR 72 landing on 23 at Glasgow, then taxiing in: a turboprop's approach and reverse",
+    "a Loganair ATR 72 taking off from 23 at Glasgow: a turboprop at full power",
 };
 
 MadeUp circling(const char *hex, const char *callsign, const char *type, const char *category, bool military,
@@ -1543,6 +1548,23 @@ void announceMovement(const Aircraft &a, Track &t, uint32_t now) {
         return;
     }
     soundAnnounce(a.callsign, rw.ident, takeoff, rw.airport);
+}
+
+// And each take-off and landing under way said as soon as its airport is on
+// the screen - the 3D view come to it, the zoom up - not only as a list
+// comes in, ten seconds or more on: one lined up as the 3D view opened was
+// cleared for take-off once it was rolling at 40 knots.
+void announcePending(uint32_t now) {
+    static uint32_t lastMs = 0;
+    if (now - lastMs < 1000 || (g_screen != Screen::ZOOM && g_screen != Screen::VIEW3D)) {
+        return;
+    }
+    lastMs = now;
+    for (auto &kv : g_tracks) {
+        if (kv.second.freshMs != 0) {
+            announceMovement(kv.second.last, kv.second, now);
+        }
+    }
 }
 
 bool lowSample(const FollowSample &s) { return s.ground || (s.hasAlt && s.altFt < ESTIMATE_MAX_FT); }
@@ -4889,6 +4911,28 @@ void startSoak(int n) {
         // wide circle over Fairford, where they fly from, at its 410kt.
         m = circling("aa0023", "DRAGN71", "U2", "A2", true, 51.682, -1.790, 25000, 410, 65000);
         break;
+    // The fixes of 23 October: hills no longer laid across the land seen
+    // from above them; a fast jet's sound arriving all at once as it passes,
+    // its engines working as its speed needs; a take-off rotated; an APU
+    // run only where an airliner runs it; trails continuous and grey.
+    case 20: m = circling("aa0024", "VANDL22", "EUFI", "A6", true, 55.48, -2.15, 9000, 480, 10000); break;
+    case 21:
+        m = circling("aa0025", "CFE12ZF", "E190", "A3", false, 0, 0, 0, 0, 0);
+        m.pattern = Pattern::DEPART;
+        ok = onRunwayAt(m, "GLA", "23");
+        break;
+    case 22: m = circling("aa0026", "UPS208", "B763", "A5", false, 55.4, -3.6, 20000, 410, 30000); break;
+    // A turboprop, for its engines' sound - synthesised and recorded, side
+    // by side with "##e": its approach and reverse, and its full power.
+    case 23:
+    case 24:
+        m = circling(n == 23 ? "aa0027" : "aa0028", n == 23 ? "LOG6KM" : "LOG8PW", "AT76", "A2", false, 0, 0, 0, 0, 0);
+        m.pattern = n == 23 ? Pattern::LAND : Pattern::DEPART;
+        if (n == 23) {
+            m.quietAfterS = LOST_ON_ROLLOUT_S;
+        }
+        ok = onRunwayAt(m, "GLA", "23");
+        break;
     case 17:
         m = circling("aa0021", "EZY88HP", "A320", "A3", false, 0, 0, 0, 0, 0);
         m.pattern = Pattern::LAND;
@@ -5147,6 +5191,35 @@ void loop() {
         case 'S':
             screen::dumpToSerial();
             break;
+#ifdef BENCH3D
+        case 'D':
+            // "##D" the 3D view's camera and its skyline as drawn.
+            view3d::dumpSkyline();
+            break;
+        case 'm':
+            // "##m" the land at its height, or flat with a skyline.
+            view3d::toggleTerrain();
+            break;
+        case 'i': {
+            // "##i" and a digit: the terrain's memory probe - see
+            // scene3d::terrainProbe().
+            int arg = Serial.read();
+            if (arg < 0) {
+                delay(5);
+                arg = Serial.read();
+            }
+            if (arg == 'T') {
+                // "##iT" what the terrain costs each core, on its own: see
+                // bench3d's 'T'.
+                g_loopBusyLong = true;
+                bench3dCommand('T', repaintCurrentScreen);
+                g_loopBusyLong = false;
+                break;
+            }
+            view3d::terrainProbe(arg >= '0' && arg <= '3' ? arg - '0' : 0);
+            break;
+        }
+#endif
         case 'E':
             soundAlert(ALERT_EMERGENCY, "EZY12AB", "Airbus A320neo", g_lat, g_lon);
             break;
@@ -5218,6 +5291,14 @@ void loop() {
         case 'O':
             // "##O" where the cover's time has gone since the last "##O".
             view3d::benchCoverReport();
+            break;
+        case 'e':
+            // "##e" airliners', turboprops' and light aircraft's engines from
+            // recordings or synthesised, each time the other: the two side
+            // by side, by ear.
+            engine_noise::g_recordedVoices = !engine_noise::g_recordedVoices;
+            Serial.printf("[sound] airliners, turboprops and light aircraft: %s\n",
+                          engine_noise::g_recordedVoices ? "recorded" : "synthesised");
             break;
         case '=': {
             // "##=" and a letter: the rest of the app timed, a part at a
@@ -5936,6 +6017,7 @@ void loop() {
     g_loopAt = "following";
     tickFollow();
     tickLook();
+    announcePending(millis());
 
     if (g_screen == Screen::VIEW3D) {
         if (g_view3dReplay) {

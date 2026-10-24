@@ -48,6 +48,16 @@ std::atomic<int> g_next{0};
 void (*g_repaint)() = nullptr;
 enum class Sink { NONE, CANVAS, PANEL, COMPARE };
 std::atomic<int> g_mismatched{0};
+// Where they differ: the box round them, and the first's two pixels.
+int g_misBox[4] = {1 << 30, 1 << 30, -1, -1};
+uint16_t g_misWas = 0, g_misNow = 0;
+// And the first of them, each its place and its two pixels, for the log.
+struct Mis {
+    int16_t x, y;
+    uint16_t was, now;
+};
+Mis g_mis[1024];
+std::atomic<int> g_misCount{0};
 Sink g_sink = Sink::NONE;
 TaskHandle_t g_helper = nullptr;
 SemaphoreHandle_t g_done = nullptr;
@@ -135,9 +145,25 @@ void work(int who) {
         } else if (g_sink == Sink::COMPARE) {
             // Against the frame left in the canvas: how many pixels differ.
             int n = 0;
-            const uint16_t *was = canvas + (size_t)y * W;
-            for (int i = 0; i < rows * W; i++) {
-                n += px[i] != was[i];
+            for (int r = 0; r < rows; r++) {
+                const uint16_t *was = canvas + (size_t)(g_vy + y + r) * W + g_vx, *now = px + (size_t)r * g_vw;
+                for (int i = 0; i < g_vw; i++) {
+                    if (now[i] != was[i]) {
+                        if (g_misBox[2] < 0) {
+                            g_misWas = was[i];
+                            g_misNow = now[i];
+                        }
+                        int k = g_misCount.fetch_add(1);
+                        if (k < 1024) {
+                            g_mis[k] = Mis{(int16_t)i, (int16_t)(y + r), was[i], now[i]};
+                        }
+                        g_misBox[0] = std::min(g_misBox[0], i);
+                        g_misBox[1] = std::min(g_misBox[1], y + r);
+                        g_misBox[2] = std::max(g_misBox[2], i);
+                        g_misBox[3] = std::max(g_misBox[3], y + r);
+                        n++;
+                    }
+                }
             }
             g_mismatched += n;
         } else if (g_sink == Sink::PANEL && !screen::pushBand(px, g_vx, g_vy + y, g_vw, rows, who)) {
@@ -1470,6 +1496,8 @@ namespace {
 void runCommand(char c);
 }  // namespace
 
+extern "C" void scene3d_latencies(uint32_t out[12]);
+
 void bench3dCommand(char c, void (*repaint)()) {
     g_repaint = repaint;
     runCommand(c);
@@ -1668,6 +1696,229 @@ void runCommand(char c) {
         xSemaphoreTake(s_done, pdMS_TO_TICKS(5000));
         vSemaphoreDelete(s_done);
         heap_caps_free(buf);
+        break;
+    }
+    case 'T': {
+        // What the land at its height costs (##iT): Glasgow's departure off
+        // 23 by day - lined up, rolling, the climb out - from the chase and
+        // the director's camera, at the 3D screen's size. Each frame's march
+        // four times over, the first from cold; its bands drawn on this core
+        // alone; and its march again while the other core draws the frame
+        // before, as the view has them.
+        g_departing = true;
+        g_cover = true;
+        setView(1008, 560);
+        bool ok = useAirport("GLA", "23", "05") && coverAt(g_airportLat0, g_airportLon0) && ready();
+        uint32_t since = millis();
+        while (ok && groundpack::terrainGrid() == nullptr && millis() - since < 15000) {
+            groundpack::want(g_airportLat0, g_airportLon0, 45);
+            delay(100);
+        }
+        const groundpack::TerrainGrid *grid = groundpack::terrainGrid();
+        if (!ok || grid == nullptr) {
+            Serial.println("[3d] terrain bench: no ground pack, or no heights from it");
+        }
+        {
+            // The core's latencies the terrain's loops wait on: each of 64
+            // dependent, the loop's own two each turn included.
+            uint32_t lat[12];
+            scene3d_latencies(lat);
+            // Cycles an instruction: 256 turns of each test's body - two
+            // chains' 512 instructions, four chains' 1024 - the pairs' figure
+            // the pair's.
+            auto per = [&](int i, float n) { return lat[i] / n; };
+            Serial.printf("[3d] latencies, cycles each: fadd.s %.2f, fmul.s %.2f, fmadd.s %.2f; fmadd.s 2 chains "
+                          "%.2f, 4 chains %.2f, independent %.2f; fcvt.w.s + fcvt.s.w %.2f, fcvt.w.s independent "
+                          "%.2f; fdiv.s %.2f, independent %.2f; lw chased %.2f; fmv.x.w + fmv.w.x %.2f\n",
+                          per(0, 256), per(1, 256), per(2, 256), per(3, 512), per(4, 1024), per(5, 256),
+                          per(6, 256), per(7, 256), per(8, 256), per(9, 256), per(10, 256), per(11, 256));
+        }
+        // One frame's: everything above, said.
+        auto measure = [&](float t, const Scene &scene, const Camera &cam, const char *shot) {
+            uint64_t st[8];
+            uint32_t march[4] = {}, samples = 0, rows = 0, skips = 0;
+            terrainStats(st, true);
+            for (int run = 0; run < 4; run++) {
+                prepareBegin(g_vw, g_vh, BAND_ROWS, true, scene, cam);
+                prepareAircraft(0, 1);
+                prepareEnd();
+                flip();
+                terrainStats(st, true);
+                march[run] = (uint32_t)st[0];
+                samples = (uint32_t)st[1];
+                rows = (uint32_t)st[2];
+                skips = (uint32_t)st[3];
+            }
+            terrainBandInstructions();
+            terrainBandHanded();
+            draw(false, Sink::CANVAS);
+            uint64_t bandInstructions = terrainBandInstructions(), handed = terrainBandHanded();
+            terrainStats(st, true);
+            uint32_t bandCycles = (uint32_t)st[4], bandSamples = (uint32_t)st[5];
+            // The same bands in C alone, against what the assembly drew.
+            g_mismatched = 0;
+            g_misCount = 0;
+            g_misBox[0] = g_misBox[1] = 1 << 30;
+            g_misBox[2] = g_misBox[3] = -1;
+            terrainProbe(4);
+            draw(false, Sink::COMPARE);
+            terrainProbe(0);
+            int mismatched = g_mismatched;
+            uint64_t cOnly[8];
+            terrainStats(cOnly, true);
+            if (mismatched > 0) {
+                Serial.printf("[3d]   differing in x %d-%d, y %d-%d; the first %04x in assembly, %04x in C\n",
+                              g_misBox[0], g_misBox[2], g_misBox[1], g_misBox[3], g_misWas, g_misNow);
+                // Each row's runs of them, and the pixels at each run's start.
+                int n = std::min(1024, g_misCount.load());
+                for (int k = 0; k < n;) {
+                    char line[600];
+                    int len = snprintf(line, sizeof line, "[3d]   y %d:", g_mis[k].y);
+                    int y = g_mis[k].y;
+                    while (k < n && g_mis[k].y == y && len < (int)sizeof line - 40) {
+                        int j = k;
+                        while (j + 1 < n && g_mis[j + 1].y == y && g_mis[j + 1].x == g_mis[j].x + 1) {
+                            j++;
+                        }
+                        len += snprintf(line + len, sizeof line - len, " %d-%d %04x/%04x", g_mis[k].x, g_mis[j].x,
+                                        g_mis[k].was, g_mis[k].now);
+                        k = j + 1;
+                    }
+                    while (k < n && g_mis[k].y == y) {
+                        k++;
+                    }
+                    Serial.println(line);
+                }
+            }
+            g_misCount = 0;
+            if (mismatched > 0) {
+                // And C in the assembly's order, against the assembly.
+                g_mismatched = 0;
+                terrainProbe(4 | 16);
+                draw(false, Sink::COMPARE);
+                terrainProbe(0);
+                Serial.printf("[3d]   in C, row-pair by row-pair as the assembly goes: %d pixels differ\n",
+                              (int)g_mismatched);
+                g_misCount = 0;
+                uint64_t again[8];
+                terrainStats(again, true);
+            }
+            terrainBandInstructions();
+            terrainBandHanded();
+            Serial.printf("[3d]   the bands in C alone: %d pixels differ from the assembly's; %.1fms in C, %.1fms in "
+                          "assembly\n",
+                          mismatched, cOnly[4] / 360000.0f, bandCycles / 360000.0f);
+            Serial.printf("[3d]   the bands: %u cells the long way, %u colours worked out, %u samples left for C; "
+                          "%.1f instructions a sample\n",
+                          (unsigned)st[6], (unsigned)st[7], (unsigned)handed,
+                          bandSamples ? (float)bandInstructions / bandSamples : 0.0f);
+            g_sink = Sink::CANVAS;
+            g_next = 0;
+            xTaskNotifyGive(g_helper);
+            prepareBegin(g_vw, g_vh, BAND_ROWS, true, scene, cam);
+            prepareAircraft(0, 1);
+            prepareEnd();
+            waitForHelper();
+            flip();
+            terrainStats(st, true);
+            uint32_t busy = (uint32_t)st[0];
+            // Each of the core's events over the march, a sample.
+            prepareBegin(g_vw, g_vh, BAND_ROWS, true, scene, cam);
+            uint32_t ev[6], paths[7], check[4];
+            terrainMarchCheck(check);
+            // The paths as C's march went them, the check's second.
+            terrainPaths(paths);
+            Serial.printf("[3d]   the march in C alone: %u columns' tops and %u rows differ from the "
+                          "assembly's; %.1fms in assembly, %.1fms in C\n",
+                          (unsigned)check[0], (unsigned)check[1], check[2] / 360000.0f, check[3] / 360000.0f);
+            terrainEvents(ev);
+            prepareBegin(g_vw, g_vh, BAND_ROWS, true, scene, cam);
+            Serial.printf("[3d]   the samples: %u hidden by their cell's highest, %u hidden worked out, %u seen "
+                          "with no rows, %u filling rows; %u before worked out again, %u blocks tested, %u off "
+                          "the grid\n",
+                          (unsigned)paths[0], (unsigned)paths[1], (unsigned)(paths[2] - paths[3]),
+                          (unsigned)paths[3], (unsigned)paths[4], (unsigned)paths[5], (unsigned)paths[6]);
+            prepareAircraft(0, 1);
+            prepareEnd();
+            flip();
+            terrainStats(st, true);
+            auto per = [](uint32_t n, uint32_t of) { return of ? (float)n / of : 0.0f; };
+            Serial.printf("[3d]   a sample: %.1f cycles, %.1f instructions; its heights all cached: %u samples, "
+                          "%.1f cycles, %.1f instructions\n",
+                          per(ev[0], ev[2]), per(ev[1], ev[2]), (unsigned)ev[5], per(ev[3], ev[5]),
+                          per(ev[4], ev[5]));
+            auto each = [&](uint32_t c) { return samples ? c / samples : 0; };
+            Serial.printf("[3d] terrain at %.0fs, %s: the march %u samples, %u rows, %u blocks skipped; %u, %u, %u, "
+                          "%u cycles each (%.1fms warm); the bands alone %u samples, %u cycles each (%.1fms); the "
+                          "march with the other core drawing %u cycles each (%.1fms)\n",
+                          t, shot ? shot : "?", (unsigned)samples, (unsigned)rows, (unsigned)skips,
+                          (unsigned)each(march[0]),
+                          (unsigned)each(march[1]), (unsigned)each(march[2]), (unsigned)each(march[3]),
+                          march[3] / 360000.0f, (unsigned)bandSamples,
+                          (unsigned)(bandSamples ? bandCycles / bandSamples : 0), bandCycles / 360000.0f,
+                          (unsigned)each(busy), busy / 360000.0f);
+        };
+        for (float t : {15.0f, 40.0f, 60.0f, 80.0f, 100.0f}) {
+            if (!ok || grid == nullptr) {
+                break;
+            }
+            for (View view : {View::CHASE, View::CINEMA}) {
+                Scene scene = sceneAt(t, TimeOfDay::DAY);
+                scene.terrain = true;
+                scene.terrainGrid = grid;
+                scene.groundUpM = g_airportFieldM;
+                const char *shot = "chase";
+                Camera cam = cameraAt(view, t, scene.followed.pose, &shot);
+                measure(t, scene, cam, shot);
+                if (t == 80.0f && view == View::CHASE) {
+                    // And skimping all it can, as the governor has it when
+                    // frames run long: four rows a sample.
+                    Scene skimped = scene;
+                    skimped.terrainEffort = 1;
+                    measure(t, skimped, cam, "chase, skimping");
+                }
+            }
+        }
+        // And the cruise at FL350 off Arran - the round earth's cover - its
+        // chase, wide and from below.
+        g_departing = false;
+        g_busy = false;
+        setAirfield(nullptr, 0, nullptr, 0);
+        if (ok && enrouteSetup() && coverAt(CRUISE_LAT, CRUISE_LON)) {
+            const groundpack::TerrainGrid *was = groundpack::terrainGrid();
+            uint32_t from = millis();
+            while (groundpack::terrainGrid() == was && millis() - from < 8000) {
+                groundpack::want(CRUISE_LAT, CRUISE_LON, 45, 35000 * 0.3048f);
+                delay(100);
+            }
+            const groundpack::TerrainGrid *high = groundpack::terrainGrid();
+            for (float t : {3.0f, 14.0f, 25.0f}) {
+                if (high == nullptr) {
+                    break;
+                }
+                Scene scene;
+                Camera cam;
+                const char *shot = nullptr;
+                enrouteAt(t, TimeOfDay::DAY, scene, cam, &shot);
+                scene.terrain = true;
+                scene.terrainGrid = high;
+                measure(t, scene, cam, shot);
+                if (t == 14.0f) {
+                    Scene skimped = scene;
+                    skimped.terrainEffort = 1;
+                    measure(t, skimped, cam, "wide, skimping");
+                }
+            }
+            enrouteEnd();
+        }
+        g_cover = false;
+        g_departing = false;
+        g_busy = false;
+        setAirfield(nullptr, 0, nullptr, 0);
+        snprintf(g_runwayName, sizeof g_runwayName, "09");
+        setView(W, H);
+        release();
+        g_repaint();
         break;
     }
     case 'f': {

@@ -2775,8 +2775,35 @@ void pushTraffic(bool push, bool footer) {
     }
 }
 
+// The centre's airport code drawn again over the traffic - a contact on the
+// ground there put its dot over the letters, the L of GLA - with a rim of the
+// plot's own dark round them, so it reads over a dot as it does over the
+// plot. Its box with the traffic's, to be put back and pushed with it.
+void drawCentreCodeOver(const String &code) {
+    if (code.length() == 0) {
+        return;
+    }
+    auto &canvas = screen::canvas();
+    canvas.setTextSize(2);
+    canvas.setTextDatum(TC_DATUM);
+    canvas.setTextColor(colorBg);
+    for (int dy = -1; dy <= 1; dy++) {
+        for (int dx = -1; dx <= 1; dx++) {
+            if (dx != 0 || dy != 0) {
+                canvas.drawString(code, CENTER_X + dx, CENTRE_CODE_Y + dy);
+            }
+        }
+    }
+    canvas.setTextColor(colorHome);
+    canvas.drawString(code, CENTER_X, CENTRE_CODE_Y);
+    int w = canvas.textWidth(code);
+    g_trafficBoxes.push_back({(int16_t)(CENTER_X - w / 2 - 2), (int16_t)(CENTRE_CODE_Y - 2), (int16_t)(w + 4),
+                              (int16_t)(LABEL_H + 4)});
+}
+
 // A refresh of the radar's traffic alone - see Background.
-void refreshTraffic(const RadarScene &scene, double lat, double lon, int rangeNm, int step, uint32_t t0) {
+void refreshTraffic(const RadarScene &scene, double lat, double lon, int rangeNm, int step, uint32_t t0,
+                    const String &centreCode) {
     auto &canvas = screen::canvas();
     restoreTraffic(true);
     canvas.setFont(&fonts::Font0);
@@ -2785,6 +2812,7 @@ void refreshTraffic(const RadarScene &scene, double lat, double lon, int rangeNm
     uint32_t t1 = micros();
     drawContacts(scene.aircraft, scene.isNew, scene.trails, scene.flash,
                  {lat, lon, (float)RADIUS / rangeNm, 60.0f, false, scene.followHex}, plotted, labelled);
+    drawCentreCodeOver(centreCode);
     canvas.clearClipRect();
     // The footer's readouts, the same for as long as the view is but the
     // count, drawn again over themselves - the traffic put back may have
@@ -2856,7 +2884,7 @@ void radarPlotDraw(const RadarScene &scene, bool full) {
     bool canKeep = scene.partial && !following;
     bool keptFor = g_background.valid && sameBackground(key, g_background.key);
     if (!full && canKeep && keptFor && millis() - g_background.wholeMs < NAMES_MAX_MS && trafficCheap()) {
-        refreshTraffic(scene, lat, lon, rangeNm, step, t0);
+        refreshTraffic(scene, lat, lon, rangeNm, step, t0, centreCode);
         return;
     }
 
@@ -2956,6 +2984,7 @@ void radarPlotDraw(const RadarScene &scene, bool full) {
     uint32_t t1 = micros();
     drawContacts(scene.aircraft, scene.isNew, scene.trails, scene.flash,
                  {lat, lon, (float)RADIUS / rangeNm, 60.0f, false, scene.followHex}, plotted, labelled);
+    drawCentreCodeOver(centreCode);
 
     canvas.clearClipRect();
     // Out over the plot's corner, so wiped with it: put back each time.

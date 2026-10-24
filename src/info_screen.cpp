@@ -139,6 +139,9 @@ const char *const ABOUT[] = {
     "- Voices: Piper text-to-speech. Scottish, en_GB-alba-medium, from the Alba data of the CSTR, University of "
     "Edinburgh, CC BY 4.0; English, en_GB-cori-medium, from LibriVox recordings, public domain; American, "
     "en_US-amy-medium, from Mycroft AI's Mimic 3 voices, CC BY-SA 4.0.",
+    "- Engines in the 3D view, from recordings on Freesound (freesound.org), each CC0, public domain: "
+    "Eurofighter Typhoons by johnnyguitar01 and joly1; airliners by PostProdDog and C-V; an ATR 72 by "
+    "Hoscalegeek, a King Air 350 by highflyer500 and a Cessna by MarioV360.",
     "- Built on M5Unified, M5GFX and ArduinoJson (MIT), the ESP32 Arduino core (LGPL 2.1) and ESP-IDF "
     "(Apache 2.0).",
     "- Airline names identify the operator, and imply no endorsement by it.",

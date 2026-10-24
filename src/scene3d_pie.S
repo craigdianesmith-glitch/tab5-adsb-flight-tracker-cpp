@@ -144,8 +144,9 @@ scene3d_darken8:
 //
 // The see-through - contrails, and blades' blur - eight pixels at a time,
 // every span however short: where it isn't behind what is drawn, a pixel's
-// red, green and blue each keep (8 - e)/8 of what they were and take e/8 of
-// the tint's, whole numbers rounded down - scene3d.cpp's tintC() exactly.
+// red, green and blue each keep (8 - e)/8 of what they were, rounded down,
+// and take the tint's share as Tinter rounds it - scene3d.cpp's tintC()
+// exactly.
 // `c` and `z` at the span's first chunk of eight, 16-byte aligned; `at` the
 // depth at that chunk's first pixel, in 16.16 fixed point, going on by
 // step8 a chunk; lane i's depth (at >> 16) + ramp[i], as scene3d_span8 has

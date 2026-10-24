@@ -9,11 +9,20 @@
 //   /tmp/engine_preview /tmp/engines [scene]
 //
 // The scenes: a320-takeoff, a320-landing, a320-touchdown, a320-flypast,
-// a320-approach-chase, a320-arrival-park, a320-departure-start, a320-chase, b777-takeoff, a380-takeoff, atr72-takeoff, c172-flyby,
-// h145-visit, aw139-flyby, chinook-flyby, typhoon-takeoff, hawk-flyby.
+// a320-approach-chase, a320-arrival-park, a320-departure-start, a320-chase, b777-takeoff, a380-takeoff, atr72-takeoff,
+// atr72-landing, c172-flyby, c172-takeoff,
+// h145-visit, aw139-flyby, chinook-flyby, typhoon-takeoff, hawk-flyby,
+// typhoon-cruise-flypast, b763-cruise-flypast.
+//
+// OLD=1 sets the synthesiser as the 3D view did before it placed the sound
+// - the distance, closing speed and aspect worked out here, the closing
+// speed nought past 300m/s - to hear the difference.
 #include <math.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
+
+#include <algorithm>
 
 #include <functional>
 #include <string>
@@ -233,6 +242,7 @@ std::vector<Scene> scenes() {
     atr.kind = Kind::TURBOPROP;
     atr.bladeHz = 121;
     out.push_back({"atr72-takeoff", 60, atr, [](float t) { return takeoffSeen(t, 900, 100, 58); }});
+    out.push_back({"atr72-landing", 90, atr, [](float t) { return landing(t, {0, 70, 2}); }});
     Sound c172;
     c172.kind = Kind::PISTON;
     c172.engines = 1;
@@ -245,6 +255,7 @@ std::vector<Scene> scenes() {
                        m.eye = {0, 120, 2};
                        return m;
                    }});
+    out.push_back({"c172-takeoff", 50, c172, [](float t) { return takeoffSeen(t, 350, 60, 28); }});
     Sound h145;
     h145.kind = Kind::ROTOR;
     h145.bladeHz = 26;
@@ -308,14 +319,59 @@ std::vector<Scene> scenes() {
     Sound typhoon;
     typhoon.kind = Kind::LOW_BYPASS;
     typhoon.fanHz = 4500;
+    typhoon.size = 16.0f / 37.6f;  // its length against an A320's
     out.push_back({"typhoon-takeoff", 50, typhoon, [](float t) {
                        Moment m = takeoffSeen(t, 700, 100, 80);
                        m.afterburner = t > 7 && t < 35;
                        return m;
                    }});
+    // FLY PAST high up, as view3d's placePass() has it: the camera hung where
+    // it will be in 7s, off to one side by 1.2s of its speed - four spans,
+    // if more - and a third of that below; set down again 5s after it has
+    // gone by, on the other side. VANDAL22, a Typhoon at 13,000ft and 579kt;
+    // UPS208, a 767 at FL300 and 412kt.
+    auto flypast = [](float speed, float span, float height) {
+        return [=](float t) {
+            float off = std::max(4 * span, speed * 0.8f), cycle = 12;
+            int n = (int)(t / cycle);
+            Moment m;
+            m.at = {speed * t, 0, height};
+            m.heading = 0;
+            m.pitch = 0;
+            m.power = 0.65f;
+            m.eye = {speed * (n * cycle + 7), (n % 2 ? -1 : 1) * off, height - 0.3f * off};
+            return m;
+        };
+    };
+    out.push_back({"typhoon-cruise-flypast", 36, typhoon, flypast(298, 10.95f, 3962)});
+    // And face on: the camera 40m ahead of it and a little below, going with
+    // it, as the cinema's shot from ahead has it - its intake's sound.
+    out.push_back({"typhoon-face-on", 10, typhoon, [](float t) {
+                       Moment m;
+                       m.at = {247 * t, 0, 3048};
+                       m.heading = 0;
+                       m.pitch = 0;
+                       m.power = getenv("POWER") ? (float)atof(getenv("POWER")) : 0.65f;
+                       m.eye = {m.at.x + 40, 0, m.at.z - 4};
+                       return m;
+                   }});
+    // Soak k's: a Typhoon at 480kt and 10,000ft from the chase, 21m behind
+    // and a little above - POWER= to try another.
+    out.push_back({"typhoon-fast-chase", 40, typhoon, [](float t) {
+                       Moment m;
+                       m.at = {247 * t, 0, 3048};
+                       m.heading = 0;
+                       m.pitch = 0;
+                       m.power = getenv("POWER") ? (float)atof(getenv("POWER")) : 0.74f;
+                       m.eye = {m.at.x - 21, 0, m.at.z + 3};
+                       return m;
+                   }});
+    out.push_back({"b763-cruise-flypast", 36, turbofan(1100, 2), flypast(212, 47.6f, 9144)});
+    out.push_back({"atr72-cruise-flypast", 36, atr, flypast(140, 27.2f, 5500)});
     Sound hawk;
     hawk.kind = Kind::LOW_BYPASS;
     hawk.fanHz = 4000;
+    hawk.size = 11.2f / 37.6f;
     out.push_back({"hawk-flyby", 20, hawk, [](float t) {
                        Moment m;
                        m.at = {-1500 + 150 * t, 0, 90};
@@ -359,6 +415,8 @@ int main(int argc, char **argv) {
         return 1;
     }
     std::string dir = argv[1];
+    bool old = getenv("OLD") != nullptr, device = getenv("DEVICE") != nullptr;
+    engine_noise::g_recordedVoices = getenv("RECORDED") != nullptr;
     for (const Scene &scene : scenes()) {
         if (argc > 2 && strcmp(argv[2], scene.name) != 0) {
             continue;
@@ -366,7 +424,7 @@ int main(int argc, char **argv) {
         engine_noise::Synth synth;
         std::vector<int16_t> samples;
         const int BLOCK = engine_noise::RATE / 50;  // a frame's worth
-        float lastDistance = -1, touchdownAt = -1, lastZ = -1;
+        float lastDistance = -1, touchdownAt = -1, lastZ = -1, frameMs = 0, renderedMs = 0;
         V3 lastAt = {0, 0, 0};
         double sum = 0;
         int peak = 0, counted = 0;
@@ -383,6 +441,9 @@ int main(int argc, char **argv) {
             float d = length(to);
             s.distanceM = d;
             s.closingMs = lastDistance < 0 ? 0 : (lastDistance - d) * 50;
+            if (old && fabsf(s.closingMs) >= 300) {
+                s.closingMs = 0;
+            }
             lastDistance = d;
             V3 nose = {cosf(m.heading) * cosf(m.pitch), sinf(m.heading) * cosf(m.pitch), sinf(m.pitch)};
             float c = (nose.x * to.x + nose.y * to.y + nose.z * to.z) / std::max(1.0f, d);
@@ -402,24 +463,43 @@ int main(int argc, char **argv) {
             }
             s.rollingMs = onGround ? speed : 0;
             s.touchdownS = touchdownAt >= 0 && t - touchdownAt < 3 ? t - touchdownAt : -1;
-            s.airspeedMs = speed;
+            s.airspeedMs = getenv("NOAIRFRAME") ? 0 : speed;
             s.gearDown = m.gear;
             s.flapsOut = m.flaps;
             s.spoilers = m.spoilers;
             s.running = m.running;
             s.apu = m.apu;
+            s.placed = !old;
+            s.at[0] = mid.x, s.at[1] = mid.y, s.at[2] = mid.z;
+            s.nose[0] = nose.x, s.nose[1] = nose.y, s.nose[2] = nose.z;
+            s.ear[0] = m.eye.x, s.ear[1] = m.eye.y, s.ear[2] = m.eye.z;
             lastAt = m.at;
             lastZ = m.at.z;
+            s.ms = getenv("NOMS") ? 0 : (uint32_t)lroundf(t * 1000);
             synth.set(s);
+            // As the device has it, DEVICE=1: frames 20ms apart give or take a
+            // third, the sound made in 40ms blocks whenever one is due.
+            int block = BLOCK;
+            if (device) {
+                static uint32_t jitter = 12345;
+                jitter = jitter * 1103515245u + 12345u;
+                frameMs += 20 * (0.67f + 0.66f * ((jitter >> 8) & 0xFFFF) / 65535.0f);
+                block = 0;
+                while (renderedMs + 40 <= frameMs) {
+                    block += engine_noise::RATE / 25;
+                    renderedMs += 40;
+                }
+                t = frameMs / 1000.0f - 1.0f / 50;  // the loop adds the 20ms back
+            }
             size_t from = samples.size();
-            samples.resize(from + BLOCK);
-            synth.render(samples.data() + from, BLOCK);
-            for (int i = 0; i < BLOCK; i++) {
+            samples.resize(from + block);
+            synth.render(samples.data() + from, block);
+            for (int i = 0; i < block; i++) {
                 int v = samples[from + i];
                 sum += (double)v * v;
                 peak = std::max(peak, abs(v));
             }
-            counted += BLOCK;
+            counted += block;
             if (counted >= 2 * engine_noise::RATE) {
                 double rms = sqrt(sum / counted) / 32768;
                 printf(" %.0f", rms > 0 ? 20 * log10(rms) : -99);

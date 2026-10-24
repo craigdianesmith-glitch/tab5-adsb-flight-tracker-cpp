@@ -83,6 +83,18 @@ uint32_t g_finerUs = 0;
 // The horizon: three, in PSRAM - the latest done, the one before, and one
 // being worked out - and where the view last wanted one, under g_lock.
 Horizon *g_horizons = nullptr;
+// The terrain's grids: the one published for the view - see terrainGrid() -
+// and the next, built into the other, about the eye: 11 tiles down by 15
+// across, some 245km by 210km at 55 north, past the furthest hills drawn.
+// Built afresh once the eye is two tiles from the last one's middle, or a
+// second after more mid blocks came in - never into the one a frame may be
+// reading.
+constexpr int GRID_DOWN = 11, GRID_ACROSS = 15;
+TerrainGrid g_grids[2];
+const TerrainGrid *volatile g_terrainGridNow = nullptr;
+int g_gridBuilt = -1, g_gridMids = -1;
+uint32_t g_gridAt = 0;
+volatile int g_midsIn = 0;  // mid blocks read in so far
 volatile int g_horizonAt = -1;
 bool g_horizonWanted = false;
 double g_horizonLat = 0, g_horizonLon = 0;
@@ -221,6 +233,8 @@ uint8_t *loadBlock(File &f, uint32_t at, uint32_t size, size_t n) {
     return cells;
 }
 
+
+
 // A grid of heights, `rows` by `cols` over a tile, at (fu, fv) of the way
 // across and down it: between its four nearest samples, by how near each
 // is - kept to the tile at its edges.
@@ -263,10 +277,10 @@ inline float heightAtTile(float u, float v, uint8_t &cover) {
 }
 
 // The horizon round (lat, lon), heightM above the sea, into `out`: along
-// each bearing, the land sampled every 100m out to 10km, then every 1% of
-// the way, to 100km - the distances, their reciprocals and the earth's
+// each bearing, the land sampled every 100m from 5km out to 10km, then every
+// 1% of the way, to 100km - the distances, their reciprocals and the earth's
 // fall at each worked out once for all 720 - the earth's curve taken off
-// with a seventh of it back for the light's bending. Some 230,000 samples:
+// with a seventh of it back for the light's bending. Some 200,000 samples:
 // a few hundred milliseconds, here in the background.
 void workOutHorizon(Horizon &out, double lat, double lon, float heightM) {
     constexpr int MOST = 400;
@@ -287,40 +301,54 @@ void workOutHorizon(Horizon &out, double lat, double lon, float heightM) {
     float cosLat = (float)cos(lat * M_PI / 180);
     float u0 = (float)((lon + 180) * TILES_PER_DEG - g_window.west), v0 = (float)((90 - lat) * TILES_PER_DEG - g_window.north);
     float uPerM = TILES_PER_DEG / (111320.0f * cosLat), vPerM = -TILES_PER_DEG / 110574.0f;
-    // Where each range begins, out along a bearing: the first step at or
-    // past 8km, and at or past 25km.
-    static int rangeFrom[Horizon::RANGES + 1];
-    if (rangeFrom[1] == 0) {
-        const float EDGES[Horizon::RANGES - 1] = {8000, 25000};
-        for (int r = 1; r < Horizon::RANGES; r++) {
-            int i = 0;
-            while (i < steps && far[i] < EDGES[r - 1]) {
-                i++;
-            }
-            rangeFrom[r] = i;
+    // From 5km out: a hill nearer than that, a fell close by flying low among
+    // them, stood twenty degrees up as a wall over the whole sky, one colour
+    // - a skyline is for the hills far enough off to be a strip along the
+    // horizon. Nearer, the cover's light and shade on the ground shows them.
+    static int first = -1;
+    if (first < 0) {
+        first = 0;
+        while (first < steps - 1 && far[first] < 5000) {
+            first++;
         }
-        rangeFrom[Horizon::RANGES] = steps;
     }
+    // And the land nearer than that, whether it stands above the point's
+    // level, for how far down among the hills the point is.
+    static float nearFar[50], perNearFar[50];
+    constexpr int NEAR_STEPS = 44;  // 600m to 4.9km, 100m apart
+    if (nearFar[0] == 0) {
+        for (int i = 0; i < NEAR_STEPS; i++) {
+            nearFar[i] = 600 + 100 * i;
+            perNearFar[i] = 1 / nearFar[i];
+        }
+    }
+    int above = 0;
     for (int b = 0; b < Horizon::BEARINGS; b++) {
         float a = b * (float)(2 * M_PI / Horizon::BEARINGS), du = sinf(a) * uPerM, dv = cosf(a) * vPerM;
-        for (int r = 0; r < Horizon::RANGES; r++) {
-            float best = -1e9f, bestFar = far[rangeFrom[r]];
-            for (int i = rangeFrom[r]; i < rangeFrom[r + 1]; i++) {
-                uint8_t cover;
-                float h = heightAtTile(u0 + du * far[i], v0 + dv * far[i], cover);
-                float up = (h - heightM - fall[i]) * perFar[i];
-                if (up > best) {
-                    best = up;
-                    bestFar = far[i];
-                }
+        for (int i = 0; i < NEAR_STEPS; i++) {
+            uint8_t cover;
+            if (heightAtTile(u0 + du * nearFar[i], v0 + dv * nearFar[i], cover) > heightM) {
+                above++;
+                break;
             }
-            out.tanUp[r][b] = best;
-            out.distance[r][b] = bestFar;
         }
+        float best = -1e9f, bestFar = far[first];
+        for (int i = first; i < steps; i++) {
+            uint8_t cover;
+            float h = heightAtTile(u0 + du * far[i], v0 + dv * far[i], cover);
+            float up = (h - heightM - fall[i]) * perFar[i];
+            if (up > best) {
+                best = up;
+                bestFar = far[i];
+            }
+        }
+        out.tanUp[0][b] = best;
+        out.distance[0][b] = bestFar;
         if ((b & 63) == 63) {
             vTaskDelay(1);  // the core's other tasks their turn
         }
     }
+    out.nearAbove = (float)above / Horizon::BEARINGS;
 }
 
 // Whether the horizon wanted is far enough from the last worked out to work
@@ -504,6 +532,63 @@ void task(void *) {
                               (unsigned long)(millis() - h0));
             }
         }
+        // The terrain's grid, about the eye.
+        if (g_wantRow >= 0) {
+            int wr = g_wantRow, wc = g_wantCol;
+            const TerrainGrid *now = g_gridBuilt >= 0 ? &g_grids[g_gridBuilt] : nullptr;
+            bool moved = now == nullptr || abs(wr - (now->north + GRID_DOWN / 2)) >= 2 ||
+                         abs(wc - (now->west + GRID_ACROSS / 2)) >= 2;
+            bool more = g_midsIn != g_gridMids && millis() - g_gridAt > 1000;
+            if (moved || more) {
+                int next = g_gridBuilt == 0 ? 1 : 0;
+                TerrainGrid &G = g_grids[next];
+                if (G.heights == nullptr) {
+                    constexpr int ROWS = GRID_DOWN * TerrainGrid::TILE_ROWS, COLS = GRID_ACROSS * TerrainGrid::TILE_COLS;
+                    constexpr int B = TerrainGrid::BLOCK;
+                    G.tilesDown = GRID_DOWN;
+                    G.tilesAcross = GRID_ACROSS;
+                    G.rows = ROWS;
+                    G.cols = COLS;
+                    G.blockRows = (ROWS + B - 1) / B;
+                    G.blockCols = (COLS + B - 1) / B;
+                    G.heights = (int16_t *)heap_caps_malloc(sizeof(int16_t) * ROWS * COLS, MALLOC_CAP_SPIRAM);
+                    G.cellMax = (int16_t *)heap_caps_malloc(sizeof(int16_t) * ROWS * COLS, MALLOC_CAP_SPIRAM);
+                    G.blockMax = (int16_t *)heap_caps_malloc(sizeof(int16_t) * G.blockRows * G.blockCols,
+                                                             MALLOC_CAP_SPIRAM);
+                    G.wideMax = (int16_t *)heap_caps_malloc(sizeof(int16_t) * G.blockRows * G.blockCols,
+                                                            MALLOC_CAP_SPIRAM);
+                    if (G.heights == nullptr || G.cellMax == nullptr || G.blockMax == nullptr || G.wideMax == nullptr) {
+                        heap_caps_free(G.heights);
+                        heap_caps_free(G.cellMax);
+                        heap_caps_free(G.blockMax);
+                        heap_caps_free(G.wideMax);
+                        G.heights = nullptr;
+                        G.cellMax = nullptr;
+                        G.blockMax = nullptr;
+                        G.wideMax = nullptr;
+                    }
+                }
+                if (G.heights != nullptr) {
+                    uint32_t t0 = millis();
+                    int mids = g_midsIn;
+                    G.north = wr - GRID_DOWN / 2;
+                    G.west = wc - GRID_ACROSS / 2;
+                    fillTerrainGrid(g_window, G);
+                    __sync_synchronize();  // the grid before the pointer to it
+                    g_terrainGridNow = &G;
+                    g_gridBuilt = next;
+                    g_gridMids = mids;
+                    g_gridAt = millis();
+                    static uint32_t loggedAt = 0;
+                    if (moved || millis() - loggedAt > 30000) {
+                        loggedAt = millis();
+                        Serial.printf("[ground] the terrain's heights round tile %d,%d, %d mid blocks in, in %lums; the "
+                                      "highest %dm\n",
+                                      wr, wc, mids, (unsigned long)(millis() - t0), G.highest);
+                    }
+                }
+            }
+        }
         // The nearest tile wanted with something not in, a ring at a time
         // outwards: its levels 1 to 3, then - a ring or less from the eye's -
         // its level 0, then - one of the two by two nearest the eye - its
@@ -595,6 +680,9 @@ void task(void *) {
             pool.held[at].outFrame = 0;
             __sync_synchronize();  // the cells before the pointer to them
             (*pool.table)[bestSlot] = cells;
+            if (kind == 0) {
+                g_midsIn = g_midsIn + 1;
+            }
         } else {
             heap_caps_free(cells);
         }
@@ -608,6 +696,109 @@ void task(void *) {
 #endif
 
 }  // namespace
+
+// The terrain grid's heights for one tile, from the window: its mid block's
+// every 15 seconds, spread across to 32 columns where it has another
+// number of them; else its coarse heights spread over the whole; else
+// nought - written into `out`, `stride` to a row.
+static void terrainTile(const Window &W, int northRow, int westCol, int16_t *out, int stride) {
+    constexpr int TR = TerrainGrid::TILE_ROWS, TC = TerrainGrid::TILE_COLS;
+    int r = northRow - W.north, c = westCol - W.west, c0 = cols0At(northRow);
+    const uint8_t *mid = nullptr, *coarse = nullptr;
+    if (r >= 0 && r < W.rows && c >= 0 && c < W.cols && c0 > 0) {
+        mid = W.mid[r * W.cols + c];
+        coarse = W.coarse[r * W.cols + c];
+    }
+    if (mid != nullptr) {
+        const int16_t *hs = (const int16_t *)(mid + midHeightsAt(c0));
+        int cols = c0 / 6;  // rows: ROWS0 / 6, 48, as the grid's
+        for (int y = 0; y < TR; y++) {
+            const int16_t *row = hs + y * cols;
+            int16_t *o = out + y * stride;
+            if (cols == TC) {
+                memcpy(o, row, TC * sizeof(int16_t));
+                continue;
+            }
+            for (int x = 0; x < TC; x++) {
+                float q = (x + 0.5f) * cols / TC - 0.5f;
+                int q0 = std::max(0, std::min(cols - 1, (int)floorf(q))), q1 = std::min(cols - 1, q0 + 1);
+                float t = std::max(0.0f, std::min(1.0f, q - q0));
+                o[x] = (int16_t)lroundf(row[q0] + (row[q1] - row[q0]) * t);
+            }
+        }
+        return;
+    }
+    if (coarse != nullptr) {
+        int rows = ROWS0 / 16, cols = c0 / 16;
+        const int16_t *hs = (const int16_t *)(coarse + rows * cols);
+        for (int y = 0; y < TR; y++) {
+            float p = (y + 0.5f) * rows / TR - 0.5f;
+            int p0 = std::max(0, std::min(rows - 1, (int)floorf(p))), p1 = std::min(rows - 1, p0 + 1);
+            float ty = std::max(0.0f, std::min(1.0f, p - p0));
+            int16_t *o = out + y * stride;
+            for (int x = 0; x < TC; x++) {
+                float q = (x + 0.5f) * cols / TC - 0.5f;
+                int q0 = std::max(0, std::min(cols - 1, (int)floorf(q))), q1 = std::min(cols - 1, q0 + 1);
+                float tx = std::max(0.0f, std::min(1.0f, q - q0));
+                float top = hs[p0 * cols + q0] + (hs[p0 * cols + q1] - hs[p0 * cols + q0]) * tx;
+                float bottom = hs[p1 * cols + q0] + (hs[p1 * cols + q1] - hs[p1 * cols + q0]) * tx;
+                o[x] = (int16_t)lroundf(top + (bottom - top) * ty);
+            }
+        }
+        return;
+    }
+    for (int y = 0; y < TR; y++) {
+        memset(out + y * stride, 0, TC * sizeof(int16_t));
+    }
+}
+
+void fillTerrainGrid(const Window &W, TerrainGrid &grid) {
+    constexpr int TR = TerrainGrid::TILE_ROWS, TC = TerrainGrid::TILE_COLS, B = TerrainGrid::BLOCK;
+    for (int r = 0; r < grid.tilesDown; r++) {
+        for (int c = 0; c < grid.tilesAcross; c++) {
+            terrainTile(W, grid.north + r, grid.west + c, grid.heights + (size_t)r * TR * grid.cols + c * TC, grid.cols);
+        }
+    }
+    // Each cell's highest corner.
+    for (int y = 0; y < grid.rows; y++) {
+        const int16_t *row = grid.heights + (size_t)y * grid.cols, *below = y + 1 < grid.rows ? row + grid.cols : row;
+        int16_t *out = grid.cellMax + (size_t)y * grid.cols;
+        for (int x = 0; x < grid.cols; x++) {
+            int x1 = std::min(grid.cols - 1, x + 1);
+            out[x] = std::max(std::max(row[x], row[x1]), std::max(below[x], below[x1]));
+        }
+    }
+    // Each block's highest, over its cells and the row and column after.
+    int16_t most = 0;
+    for (int br = 0; br < grid.blockRows; br++) {
+        for (int bc = 0; bc < grid.blockCols; bc++) {
+            int16_t m = -32768;
+            int y1 = std::min(grid.rows, br * B + B + 1), x1 = std::min(grid.cols, bc * B + B + 1);
+            for (int y = br * B; y < y1; y++) {
+                const int16_t *row = grid.heights + (size_t)y * grid.cols;
+                for (int x = bc * B; x < x1; x++) {
+                    m = std::max(m, row[x]);
+                }
+            }
+            grid.blockMax[br * grid.blockCols + bc] = m;
+            most = std::max(most, m);
+        }
+    }
+    grid.highest = most;
+    // And each block's with those round it: the highest a ray going by it
+    // could meet, sampled every half a block.
+    for (int br = 0; br < grid.blockRows; br++) {
+        for (int bc = 0; bc < grid.blockCols; bc++) {
+            int16_t m = -32768;
+            for (int r = std::max(0, br - 1); r <= std::min(grid.blockRows - 1, br + 1); r++) {
+                for (int c = std::max(0, bc - 1); c <= std::min(grid.blockCols - 1, bc + 1); c++) {
+                    m = std::max(m, grid.blockMax[r * grid.blockCols + c]);
+                }
+            }
+            grid.wideMax[br * grid.blockCols + bc] = m;
+        }
+    }
+}
 
 // Level `level`, -1 or -2, of a tile from its level 0, `detail` - in parts,
 // as the window has them: each of level 0's cells 2 or 4 of them each way.
@@ -845,6 +1036,8 @@ void wantHorizon(double lat, double lon, float heightM) {
     (void)heightM;
 #endif
 }
+
+const TerrainGrid *terrainGrid() { return g_terrainGridNow; }
 
 const Horizon *horizon() {
     int at = g_horizonAt;

@@ -4449,6 +4449,52 @@ struct Frame {
     Vector<int16_t> hillRows;
     Vector<uint16_t> hillColors, hillDepths;
     Vector<float> hillIz;
+    // The land at its height - see terrainMarch(): for each fourth column,
+    // 1 / how deep along the view each row meets the land, bfloat16 - the
+    // top half of a float - a column's rows together, as the march writes them
+    // and a band reads them; and the column's highest row that does: above it, sky or the land past reach. And what a row and a
+    // column each add to where on the cover's grid that depth puts the land:
+    // u = tUe + z (tRowU[y] + tColU[c]), and v likewise; the depth each
+    // level of the cover is read out to, its cells a sample or more; and how
+    // much haze a depth puts over the land, a row at a time - tRowFar[y]
+    // the distance a metre of depth comes to along its ray.
+    bool terrainOn = false;
+    int tCols = 0;
+    Vector<uint16_t> tz;
+    Vector<int16_t> tTop;
+    float tUe = 0, tVe = 0;
+    Vector<float> tRowU, tRowV, tRowFar, tColU, tColV;
+    // And for the assembly, a column's at once: cu and cv side by side, and
+    // its highest row of land with its flat top above it - top | flatTop << 16.
+    Vector<float> tColUV, tColXY;
+    Vector<uint32_t> tTopFlat;
+    // Round, high up: where on the grid a place dx east and dy north of the
+    // eye is, as u = U[0] + U[1] dx + U[2] dy + U[3] dx^2 + U[4] dx dy +
+    // U[5] dy^2, and v likewise - the meridians closing in, the earth
+    // curving - and a depth's dx and dy, z (tRowX[y] + tColX[c]) and so on.
+    bool tRound = false;
+    float tMapU[6] = {}, tMapV[6] = {};
+    Vector<float> tRowX, tRowY, tColX, tColY;
+    // At an airfield, its ground held flat round it: the rows each column
+    // sees it in - from tFlatTop[c] down - its depth there each row's alone,
+    // tFlatZ[y]; and the row from which every column does, tFlatAll - those
+    // rows drawn as the flat ground is, a straight walk along each.
+    Vector<int16_t> tFlatTop;
+    Vector<float> tFlatZ;
+    int tFlatAll = 1 << 30;
+    float tLevelZ[groundpack::LEVELS - groundpack::FINEST] = {};
+    float tLevelPer = 0;  // 1 / tLevelZ[FINEST]: a depth's share of the finest level's reach
+    // The rows a sample of the land's colours covers, from a multiple of it:
+    // 2, or 4 where the governor has the land skimping - its cells a level
+    // coarser then, so that one is four rows tall where it is four pixels
+    // wide, and the fewer samples miss none.
+    int tUnit = 2;
+    // The haze over the land at a distance, of 32: by the distance's float
+    // bits' top eleven - its exponent and two bits more, four steps an
+    // octave - all of them, a positive float's, so that nothing need be
+    // clamped to read it.
+    uint8_t tHaze[1024] = {};
+    uint32_t serial = 0;  // which frame - for the colours' caches
     // Depth is kept in 16 bits - half the memory of a float, and eight to a
     // PIE vector: 1/z scaled so that the nearest thing in the frame comes to
     // DEPTH_TOP, which spends all 16 bits' precision on what is there to draw.
@@ -5178,8 +5224,14 @@ struct Tinter {
     alignas(16) uint16_t constants[6][8];
     Tinter(int32_t step, uint16_t tint, int eighths) : step(step) {
         keep = (uint16_t)(8 - eighths);
-        share = (uint16_t)((((tint & 0xF800) * eighths >> 3) & 0xF800) | (((tint & 0x07E0) * eighths >> 3) & 0x07E0) |
-                           (((tint & 0x001F) * eighths >> 3) & 0x001F));
+        // The tint's share of each channel rounded so that, with what the
+        // pixel keeps of itself rounded down, the two come out right on
+        // average - rounded down too, they came out three quarters of a step
+        // dark, and over a night sky that took the five-bit red and blue to
+        // nothing before the six-bit green: a trail tinted it green. Never
+        // past a channel's top, so nothing carries into the next.
+        auto part = [eighths](uint32_t c) { return (2 * c * (uint32_t)eighths + 15) >> 4; };
+        share = (uint16_t)(part(tint >> 11) << 11 | part((tint >> 5) & 63) << 5 | part(tint & 31));
         for (int i = 0; i < 8; i++) {
             constants[0][i] = (uint16_t)(int16_t)((int64_t)step * i >> 16);
             constants[1][i] = keep;
@@ -5683,36 +5735,61 @@ void addAircraft(const Placed &p, Part &out) {
     // from far off, before the jet itself is.
     if (scene.trailsAbove >= 0 && dsn.exhausts > 0 && heightOf(p.pose.at) > scene.trailsAbove) {
         Vec3 back = at.turn({-1, 0, 0});
-        int segments = p.followed ? 14 : p.detail <= DETAIL_SIMPLE ? 11 : 8;
+        constexpr int MOST = 14;
+        int segments = p.followed ? MOST : p.detail <= DETAIL_SIMPLE ? 11 : 8;
         float light = pal.ambient + pal.diffuse * std::max(0.0f, g.sun.z);
         Rgb ice = scale({246, 248, 252}, std::min(1.25f, std::max(light, 0.25f)));
         float k = std::max(0.6f, p.look.scale);
+        // How far back each joint between its sections is.
+        float along[MOST + 1];
+        along[0] = 6 * k;
+        for (int i = 0; i < segments; i++) {
+            along[i + 1] = along[i] * 1.45f + 10 * k;
+        }
         for (int e = 0; e < dsn.exhausts; e++) {
             Vec3 from = at.place(dsn.exhaust[e]);
-            float s0 = 6 * k;
+            // One strip, its sections sharing their joints, each joint
+            // turned across the eye where it is. Each section turned on its
+            // own, they twisted apart looking along the trail - the sky
+            // through the gaps between them, a dark line, and their edges
+            // stepped.
+            Vec3 joint[MOST + 1], across[MOST + 1];
+            for (int i = 0; i <= segments; i++) {
+                joint[i] = from + back * along[i] + Vec3{0, 0, -along[i] * 0.004f};
+                across[i] = normalize(cross(back, g.eye - joint[i]));
+            }
+            // Each section's colour, hazed by how far off it is - and none
+            // where the eye is in it, the veil all round. Going by close, it
+            // is drawn, cut at the eye.
+            uint16_t colors[MOST];
+            bool inside[MOST];
             for (int i = 0; i < segments; i++) {
-                float s1 = s0 * 1.45f + 10 * k;
-                Vec3 a = from + back * s0 + Vec3{0, 0, -s0 * 0.004f}, b = from + back * s1 + Vec3{0, 0, -s1 * 0.004f};
-                Vec3 middle = (a + b) * 0.5f;
-                float distance = length(middle - g.eye);
-                if (distance > 15) {
-                    Vec3 across = normalize(cross(b - a, g.eye - middle));
-                    uint16_t color = pack(hazed(ice, distance));
-                    for (int layer = 0; layer < 2; layer++) {
-                        float wa = (0.25f + s0 * 0.008f) * (layer ? 2.2f : 1.0f),
-                              wb = (0.25f + s1 * 0.008f) * (layer ? 2.2f : 1.0f);
-                        uint8_t eighths = (uint8_t)std::max(1, (layer ? 1 : 4) - i * 4 / segments);
-                        Vec3 a0 = toCamera(a - across * wa), a1 = toCamera(a + across * wa),
-                             b0 = toCamera(b - across * wb), b1 = toCamera(b + across * wb);
-                        auto tint = [&](ScreenTri &t) {
-                            t.color = color;
-                            t.lit[0] = eighths;
-                        };
-                        addSeen(a0, b0, b1, out.clear, tint);
-                        addSeen(a0, b1, a1, out.clear, tint);
-                    }
+                Vec3 a = joint[i], ab = joint[i + 1] - joint[i];
+                float u = clamp01(dot(g.eye - a, ab) / std::max(1e-6f, dot(ab, ab)));
+                float wide = (0.25f + (along[i] + (along[i + 1] - along[i]) * u) * 0.008f) * 2.2f;
+                inside[i] = length(a + ab * u - g.eye) < wide * 1.5f;
+                colors[i] = pack(hazed(ice, length(a + ab * 0.5f - g.eye)));
+            }
+            for (int layer = 0; layer < 2; layer++) {
+                Vec3 left[MOST + 1], right[MOST + 1];
+                for (int i = 0; i <= segments; i++) {
+                    float w = (0.25f + along[i] * 0.008f) * (layer ? 2.2f : 1.0f);
+                    left[i] = toCamera(joint[i] - across[i] * w);
+                    right[i] = toCamera(joint[i] + across[i] * w);
                 }
-                s0 = s1;
+                for (int i = 0; i < segments; i++) {
+                    if (inside[i]) {
+                        continue;
+                    }
+                    uint16_t color = colors[i];
+                    uint8_t eighths = (uint8_t)std::max(1, (layer ? 1 : 4) - i * 4 / segments);
+                    auto tint = [&](ScreenTri &t) {
+                        t.color = color;
+                        t.lit[0] = eighths;
+                    };
+                    addSeen(left[i], left[i + 1], right[i + 1], out.clear, tint);
+                    addSeen(left[i], right[i + 1], right[i], out.clear, tint);
+                }
             }
         }
     }
@@ -6097,7 +6174,7 @@ T *align16(T *p) {
 }
 
 // The hills along the skyline, from the horizon worked out round a place
-// near the eye - see Scene::horizon - a range at a time. Each bearing's
+// near the eye - see Scene::horizon - the highest land each way. Each bearing's
 // highest point put where it is from there, at the angle and distance the
 // horizon has, and seen from where the eye is now: as the eye comes closer
 // or goes by, the hills move and grow as they would, rather than standing
@@ -6108,20 +6185,27 @@ T *align16(T *p) {
 // of the two: the dark green of wet moorland and plantations, lit as the
 // land is, in a damp haze - cooler than the sky's, and thicker than the
 // view's, as Scotland's air mostly is - as far off as that hill is, so a
-// hill comes out of the haze as it is neared. The two further ranges down
-// to their feet - below the eye's level, a thin hazy band where they hide
-// the land behind them - but the nearest down to the eye's horizon only:
-// below that, close enough for it to matter, the cover's light and shade
-// on the ground shows the hills, and a ridge falling below the level runs
-// down into the horizon rather than ending in a wall. None at all above
-// 4,000m, where the hills are seen from above.
+// hill comes out of the haze as it is neared - and as far off as the
+// bearings either side have theirs, so a near ridge's end against a far one
+// is no stripe of another haze. Down to the eye's horizon only: below it is
+// the land before the hills, or the earth's curve hiding their feet, and a
+// ridge the eye is above isn't against the sky at all - the cover's light and
+// shade on the ground shows it. Drawn down to their feet, from a few
+// thousand feet the hills lay across the land as pale arcs. None at all
+// above 4,000m, where the hills are seen from above.
 void skyline(const Scene &scene, float groundLight) {
     constexpr int R = groundpack::Horizon::RANGES, B = groundpack::Horizon::BEARINGS;
     for (Frame::HillRange &range : g.hills) {
         range.on = false;
     }
+    // None down among the hills: where land nearer than the skyline's 5km
+    // stands over the eye a sixth of the way round, the skyline - with
+    // those fells left out of it - stood as walls over them and broke off
+    // in blocks where they crossed the 5km, a telephoto making the blocks
+    // a screen high. Only real terrain can draw that; the cover's light and
+    // shade on the ground shows them meanwhile.
     const groundpack::Horizon *hz = scene.horizon;
-    if (hz == nullptr || scene.eyeHeightM > 4000) {
+    if (hz == nullptr || scene.eyeHeightM > 4000 || hz->nearAbove > 1.0f / 6) {
         return;
     }
     int w = g.w, h = g.h;
@@ -6193,7 +6277,22 @@ void skyline(const Scene &scene, float groundLight) {
         out.x = g.cx + dot(ct, g.right) * pt - 0.5f;
         out.top = g.cy + dot(ct, g.down) * pt - 0.5f;
         out.foot = g.cy + dot(cf, g.down) * pf - 0.5f;
-        float x = length(ct) * perVisibility;
+        // Its haze by how far off the ridges are four bearings either side
+        // too, the nearer the more - two degrees' worth - so a ridge at 9km
+        // here and the next at 24km shade into each other along the hills
+        // rather than standing in bands of two hazes.
+        static const float WEIGHT[5] = {5, 4, 3, 2, 1};
+        float sum = WEIGHT[0] * far, weight = WEIGHT[0];
+        for (int k = 1; k <= 4; k++) {
+            for (int side : {-k, k}) {
+                int nb = (b + side + B) % B;
+                if (hz->tanUp[r][nb] > -0.5f) {
+                    sum += WEIGHT[k] * hz->distance[r][nb];
+                    weight += WEIGHT[k];
+                }
+            }
+        }
+        float x = length(ct) * (sum / weight / far) * perVisibility;
         float clear = 1 / (1 + x * (1 + x * (0.5f + x * (1.0f / 6 + x * (1.0f / 24)))));
         Rgb color = mix(hills, damp, 1 - clear);
         // Dithered to the screen's 5, 6 and 5 bits by an ordered 2 by 2's
@@ -6227,8 +6326,16 @@ void skyline(const Scene &scene, float groundLight) {
         spread = std::min(spread, PI / 2);
     }
     float looking = lookingAt + scene.horizonTurn, step = 2 * PI / B;
-    int first = (int)floorf((looking - spread) / step) - 2, last = (int)ceilf((looking + spread) / step) + 2;
-    last = std::min(last, first + B / 2 + 2);
+    // And as many more each side as the eye's being off from where the
+    // horizon was worked out can turn a hill 5km off: a fast jet's second
+    // ahead of it, a fly past's camera set down 2km on - a hill there seen
+    // 7 to 22 degrees round from where its bearing is, its range cut off by
+    // the screen's edge, a block, or not there.
+    float offM = hypotf(eye.x - at.x, eye.y - at.y);
+    int extra = (int)ceilf(atanf(offM / 5000) / step);
+    int first = (int)floorf((looking - spread) / step) - 2 - extra,
+        last = (int)ceilf((looking + spread) / step) + 2 + extra;
+    last = std::min(last, first + std::min(B - 1, B / 2 + 2 + 2 * extra));
     // Each bearing's direction, turned on from the last's by a bearing's
     // angle - two multiplies and an add each way, where sinf and cosf were a
     // hundred cycles and more each.
@@ -6241,8 +6348,8 @@ void skyline(const Scene &scene, float groundLight) {
         memset(g.hills[r].to, 0, n * sizeof(int16_t));
         top[r] = h;
         bottom[r] = 0;
-        // The nearest down to the horizon at most - see above.
-        lowest[r] = r == 0 ? std::max(0, std::min(h, ceilInt(horizonRow))) : h;
+        // Down to the horizon at most - see above.
+        lowest[r] = std::max(0, std::min(h, ceilInt(horizonRow)));
     }
     for (int k = first; k <= last; k++) {
         int b = (k % B + B) % B;
@@ -6296,6 +6403,1030 @@ void skyline(const Scene &scene, float groundLight) {
         range.bottom = bottom[r];
         range.on = top[r] < bottom[r];
     }
+}
+
+// --- the terrain -----------------------------------------------------------------------
+
+// The terrain's colour pairs, a few of them at a time: by cell and haze -
+// a sample's mostly the last's, or one a few back - each core and parity
+// of row its own, in the chip's own memory: 1KB each, where a table of
+// them all, 33KB, had to be in the PSRAM and was read from it at random.
+struct TerrainPairs {
+    uint32_t serial = 0xFFFFFFFF;
+    uint16_t key[128];
+    uint32_t pair[128];
+};
+TerrainPairs g_terrainPairs[4];
+
+// The terrain's costs, for the log: the march's cycles, samples, rows filled
+// and tiles' heights looked up; the rows' cycles, samples, cells found the
+// long way and colours worked out - each core's, the rows being both's.
+uint64_t g_terrainStats[2][8];
+// And the caches' counts over them, on the bench: the march's and the
+// drawing's L1 and L2 data hits and misses, each core's own bus.
+uint64_t g_terrainCache[2][8];
+// On the bench, the instructions the land's bands took, each core's; and
+// the samples the assembly left for C.
+uint64_t g_bandInstret[2], g_bandHanded[2];
+#if defined(ESP_PLATFORM) && defined(BENCH3D)
+}  // namespace scene3d
+#include "soc/cache_reg.h"
+#include "soc/soc.h"
+namespace scene3d {
+struct CacheCounts {
+    uint32_t l1Hit, l1Miss, l2Hit, l2Miss;
+};
+// This core's data bus's counts - on first use the counters set going.
+CacheCounts cacheCounts(int core) {
+    static bool on = false;
+    if (!on) {
+        on = true;
+        REG_SET_BIT(CACHE_L1_CACHE_ACS_CNT_CTRL_REG, CACHE_L1_DBUS0_CNT_ENA | CACHE_L1_DBUS1_CNT_ENA);
+        REG_SET_BIT(CACHE_L2_CACHE_ACS_CNT_CTRL_REG, CACHE_L2_DBUS0_CNT_ENA | CACHE_L2_DBUS1_CNT_ENA);
+    }
+    CacheCounts c;
+    c.l1Hit = REG_READ(core ? CACHE_L1_DBUS1_ACS_HIT_CNT_REG : CACHE_L1_DBUS0_ACS_HIT_CNT_REG);
+    c.l1Miss = REG_READ(core ? CACHE_L1_DBUS1_ACS_MISS_CNT_REG : CACHE_L1_DBUS0_ACS_MISS_CNT_REG);
+    c.l2Hit = REG_READ(core ? CACHE_L2_DBUS1_ACS_HIT_CNT_REG : CACHE_L2_DBUS0_ACS_HIT_CNT_REG);
+    c.l2Miss = REG_READ(core ? CACHE_L2_DBUS1_ACS_MISS_CNT_REG : CACHE_L2_DBUS0_ACS_MISS_CNT_REG);
+    return c;
+}
+void cacheAdd(uint64_t *into, const CacheCounts &a, const CacheCounts &b) {
+    into[0] += b.l1Hit - a.l1Hit;
+    into[1] += b.l1Miss - a.l1Miss;
+    into[2] += b.l2Hit - a.l2Hit;
+    into[3] += b.l2Miss - a.l2Miss;
+}
+#define CACHE_BEGIN(name) CacheCounts name = cacheCounts(coreNow())
+#define CACHE_END(name, into) cacheAdd(into, name, cacheCounts(coreNow()))
+#else
+#define CACHE_BEGIN(name)
+#define CACHE_END(name, into)
+#endif
+HOT_INLINE uint32_t cycles() {
+#if defined(ESP_PLATFORM)
+    return esp_cpu_get_cycle_count();
+#else
+    // On the PC, nanoseconds - for the preview's TSTATS.
+    return (uint32_t)std::chrono::duration_cast<std::chrono::nanoseconds>(
+               std::chrono::steady_clock::now().time_since_epoch())
+        .count();
+#endif
+}
+HOT_INLINE int coreNow() {
+#if defined(ESP_PLATFORM)
+    return xPortGetCoreID() & 1;
+#else
+    return 0;
+#endif
+}
+
+// A float's top half - its sign, exponent and seven bits of its mantissa -
+// and back: the terrain's depths, to under 1% (at 10km, 80m: a cell there is
+// 600m), in half the memory a float would take.
+HOT_INLINE uint16_t toBf16(float v) {
+    uint32_t b;
+    memcpy(&b, &v, 4);
+    return (uint16_t)((b + 0x8000) >> 16);
+}
+HOT_INLINE float fromBf16(uint16_t v) {
+    uint32_t b = (uint32_t)v << 16;
+    float f;
+    memcpy(&f, &b, 4);
+    return f;
+}
+
+// The land's height at (u, v) on the cover's grid - tiles east and south of
+// the window's corner - metres above the sea: between the four nearest of
+// the finest heights the window has there, every 15 seconds where a tile's
+// mid block is in, else its coarse heights; nought off the tiles.
+HOT_INLINE float packHeight(const groundpack::Window &W, float u, float v) {
+    int tu = floorInt(u), tv = floorInt(v);
+    if ((unsigned)tu >= (unsigned)W.cols || (unsigned)tv >= (unsigned)W.rows) {
+        return 0;
+    }
+    int slot = tv * W.cols + tu, c0 = groundpack::cols0At(W.north + tv);
+    const int16_t *hs;
+    int rows, cols;
+    if (const uint8_t *mid = W.mid[slot]) {
+        rows = groundpack::ROWS0 / 6;
+        cols = c0 / 6;
+        hs = (const int16_t *)(mid + groundpack::midHeightsAt(c0));
+    } else if (const uint8_t *coarse = W.coarse[slot]) {
+        rows = groundpack::ROWS0 / 16;
+        cols = c0 / 16;
+        hs = (const int16_t *)(coarse + rows * cols);
+    } else {
+        return 0;
+    }
+    if (cols <= 0) {
+        return 0;
+    }
+    float y = (v - tv) * rows - 0.5f, x = (u - tu) * cols - 0.5f;
+    int r0 = floorInt(y), q0 = floorInt(x);
+    float wy = y - r0, wx = x - q0;
+    int r1 = std::min(rows - 1, r0 + 1), q1 = std::min(cols - 1, q0 + 1);
+    r0 = std::max(0, r0);
+    q0 = std::max(0, q0);
+    float top = hs[r0 * cols + q0] + (hs[r0 * cols + q1] - hs[r0 * cols + q0]) * wx;
+    float bottom = hs[r1 * cols + q0] + (hs[r1 * cols + q1] - hs[r1 * cols + q0]) * wx;
+    return top + (bottom - top) * wy;
+}
+
+// The land at its height, as the view sees it: down each fourth column of
+// the screen, from the eye outwards along the ground the column looks over,
+// the land sampled - its height from the pack - and put where it is on the
+// screen; each sample standing above all those nearer fills the column's
+// rows from theirs up to its own, with how deep along the view it is there,
+// between the depths of it and the sample before. Nearer than the last
+// filled row, a sample is hidden, and is told so by a multiply and a
+// compare, the division only for one seen. The samples a fiftieth of the
+// way further each, from a metre or so out to 100km - their heights between
+// samples 460m apart, nearer than that adds nothing - and a column given up
+// once nothing further could rise above what it has: the highest land
+// there is, 1,350m, put further off, under its filled rows. Out only as far
+// as the haze lets anything be seen - where 95% of a hill is haze - and
+// 100km at most: hills culled further out, which would be the most samples
+// for the least. The haze the view's over the first couple of kilometres,
+// as the airfield and the aircraft have it, then thinning to 30km's - the
+// skyline's - as hills stand out of the low haze: at the view's 7km all
+// through, Ben Lomond from Glasgow, 35km off, would be gone. The earth's curve taken off the
+// land with distance, a seventh back for the air's bending the light, as
+// the skyline had it. An airfield's ground held at the field's height out
+// to 2.5km, easing to the land's by 5km: its runways and buildings stand on
+// it.
+// A column's march - see terrainMarch() - what is alike for every column:
+// the steps, the grid, the eye and the screen.
+struct MarchFrame {
+    const float *far, *base;  // each step's distance; flat, what its height is set against
+    int steps;
+    const int16_t *heights, *cellMax, *blockMax;
+    int gcols, bcols, rowMask;
+    uint32_t xLim, yLim;  // a sample's place on the grid under these, 256ths of a cell, has its neighbours
+    float ez, groundUp, e2, fall;  // the earth's fall: flat, s^2 fall; round, (r^2) fall from the origin
+    float Fz, Dz, f, cy, zHigh;
+    float skipTo;  // blocks skipped only nearer than this: further, a step or two crosses one
+    uint16_t *tz;
+    int cols, bandRows;
+    struct MarchState *asmState;  // the assembly's, its frame's part filled in
+    const float *zHighAt;         // the column's highest land, from the eye, from each sixteenth step on
+};
+// And a column's own: its ray over the grid, 256ths of a cell - x = X0 +
+// s (XS + s XS2), y likewise - how deep and how far down a metre along it
+// puts the land, where it crosses the ring an airfield's flat ground eases
+// into the land's, the sample before, and where it starts.
+struct MarchRay {
+    float X0, XS, XS2, Y0, YS, YS2;
+    float A, B, eh2;
+    float easeLo, easeHi;
+    float lastS, lastH;
+    int c, first, filled;
+};
+struct MarchCounts {
+    uint32_t samples = 0, rows = 0, skips = 0;
+    // On the bench, the samples by the way they went: hidden by their
+    // cell's highest corner, hidden worked out, seen with no rows, seen
+    // filling rows, the previous sample's height worked out again, blocks
+    // tested, and samples outside the grid.
+    uint32_t paths[7] = {};
+};
+MarchCounts g_marchPaths;
+// On the bench, ##i: what the terrain's memory costs it - 1 the march's
+// heights read from four rows of the grid, 2 the drawing's cells all one -
+// for its cycles with and without; 4 the drawing in C alone, for the
+// assembly to be checked against.
+int g_terrainProbe = 0;
+
+constexpr int MARCH_MOST = 400;  // steps a column's march takes at most
+
+// The first of the steps' distances, from step `from` on, not under s - by
+// halves, where walking them one at a time took hundreds a column.
+HOT_INLINE int stepFrom(const float *far, int steps, int from, float s) {
+    int lo = from, hi = steps;
+    while (lo < hi) {
+        int mid = (lo + hi) >> 1;
+        if (far[mid] < s) {
+            lo = mid + 1;
+        } else {
+            hi = mid;
+        }
+    }
+    return lo;
+}
+
+// A column's march where scene3d_march_flat (scene3d_terrain.S) runs it:
+// what it needs of the frame and the column, and where the march is, which
+// it and marchColumn() hand back and forth. Its offsets are the assembly's.
+struct MarchState {
+    const float *far;        // 0: the steps' distances; their bases MARCH_MOST floats on
+    int steps;               // 4
+    const int16_t *heights;  // 8
+    int cellMaxBytes;        // 12: the cells' highest corners, this many bytes on from their heights
+    int rowBytes;            // 16: a row of the grid's
+    uint32_t xLim, yLim;     // 20, 24
+    int bcols;               // 28
+    float Fz, Dz, f, cyLess; // 32, 36, 40, 44: cyLess = cy - 0.5
+    float cyMore;            // 48: cy + 0.5
+    float zHigh, skipTo;     // 52, 56
+    uint16_t *tz;            // 60
+    int bandRows1, bandBack; // 64, 68: bandRows - 1; the row above a band's first, in the band before
+    float X0, XS, Y0, YS;    // 72, 76, 80, 84
+    float A, B;              // 88, 92
+    int iEaseLo, iEaseHi;    // 96, 100: the steps in the ring an airfield's ground eases over
+    float e2, eh2, groundUp; // 104, 108, 112
+    float flatIn, perRing;   // 116, 120: 2500, 1 / 2500
+    float tiny, notSloped;   // 124, 128: 1e-3, -1e-4
+    float minusInf, three;   // 132, 136
+    int i, filled, at, off;  // 140, 144, 148, 152
+    float k, gk, gkLine;     // 156, 160, 164
+    int sloped;              // 168
+    int prev, known, shown;  // 172, 176, 180
+    float knownH, shownRho, shownW;  // 184, 188, 192
+    int curBlk;              // 196
+    uint32_t samples;        // 200
+    float rXS, rYS;          // 204, 208: 1 / XS and 1 / YS, nought for none
+    float gez, fall, twoFall;  // 212, 216, 220: groundUp + ez; the earth's fall, and twice it
+    float easeLoF, easeHiF;  // 224, 228: the ring's distances
+    const int16_t *blockMax; // 232
+    int iEaseLo0;            // 236: the ring's first step, kept
+    uint32_t skips;          // 240
+    float farOff;            // 244: 1e9, a block not left
+    const float *zHighAt;    // 248: the column's highest land, from the eye, from each sixteenth step on
+    float XS2, YS2;          // 252, 256: round, the ray's curve over the grid
+    float eh2f;              // 260: round, the column's part of the earth's fall, s eh2f
+    float tinyStep;          // 264: 1e-9, a ray too near square to the grid's x or y for 1 / it
+};
+#if defined(ESP_PLATFORM)
+static_assert(offsetof(MarchState, X0) == 72 && offsetof(MarchState, iEaseLo) == 96 &&
+                  offsetof(MarchState, minusInf) == 132 && offsetof(MarchState, i) == 140 &&
+                  offsetof(MarchState, k) == 156 && offsetof(MarchState, prev) == 172 &&
+                  offsetof(MarchState, knownH) == 184 && offsetof(MarchState, samples) == 200,
+              "scene3d_terrain.S has MarchState's fields where these are");
+static_assert(offsetof(MarchState, rXS) == 204 && offsetof(MarchState, blockMax) == 232 &&
+                  offsetof(MarchState, farOff) == 244 && offsetof(MarchState, zHighAt) == 248 &&
+                  offsetof(MarchState, eh2f) == 260 && offsetof(MarchState, tinyStep) == 264,
+              "scene3d_terrain.S has MarchState's fields where these are");
+// The march of one column over flat ground from step m->i, the common ways:
+// 0 when the column is done, 1 at a step it leaves for C - see
+// scene3d_terrain.S. And over the round earth.
+extern "C" int scene3d_march_flat(MarchState *m);
+extern "C" int scene3d_march_round(MarchState *m);
+#endif
+
+// One column's march, out from its first step, everything it needs in
+// registers: its rows filled from `filled` up, and the top one returned. A
+// sample's place on the grid as an integer, 256ths of a cell - its cell and
+// where in it at once - and its cell's highest corner set against the line
+// of sight through the top filled row, a multiply-add and a compare: under
+// it, the sample is hidden, the most of them. Only one that may not be has
+// its height worked out between its cell's corners, and only one seen is
+// put on the screen, with a division - and the sample before it, for the
+// rows between. Into another block of the grid near the eye, the block
+// skipped whole where its highest can't reach the line of sight anywhere
+// across it.
+template <bool ROUND>
+int marchColumn(const MarchFrame &K, const MarchRay &R, MarchCounts &counts) {
+    constexpr float PER_Q = 1.0f / 65536, FLAT_IN = 2500, FLAT_OUT = 5000;
+    constexpr int BLOCK_BITS = 11;  // a block, 8 cells, 2048 256ths of one
+    const float *far = K.far, *base = K.base;
+    const int steps = K.steps;
+    const int16_t *heights = K.heights, *cellMax = K.cellMax, *blockMax = K.blockMax;
+    const int gcols = K.gcols, bcols = K.bcols, cols = K.cols, bandRows = K.bandRows;
+    const uint32_t xLim = K.xLim, yLim = K.yLim;
+    const float ez = K.ez, groundUp = K.groundUp, e2 = K.e2, fall = K.fall;
+    const float Fz = K.Fz, Dz = K.Dz, f = K.f, cy = K.cy, skipTo = K.skipTo;
+    const float *zHighAt = K.zHighAt;
+    // Fused as scene3d_march_flat fuses them, so that the two agree to the
+    // bit: a row from cy - 0.5, a line of sight's k from cy + 0.5.
+    const float cyLess = cy - 0.5f, cyMore = cy + 0.5f;
+    // What a sample's height is set against, the base, is base[i] + s eh2f
+    // at step i, and fma(s s, fall, gez) + s eh2f anywhere: flat, the eye's
+    // height above the sea and the earth's fall, eh2f nought; round, the
+    // fall from the origin, eh2f the column's part of it.
+    const float eh2f = ROUND ? R.eh2 * fall : 0, gez = ROUND ? fmaf(e2, fall, ez) : groundUp + ez;
+    const float X0 = R.X0, XS = R.XS, XS2 = R.XS2, Y0 = R.Y0, YS = R.YS, YS2 = R.YS2;
+    const float A = R.A, B = R.B, eh2 = R.eh2, easeLo = R.easeLo, easeHi = R.easeHi;
+    const float rXS = ROUND || fabsf(XS) < 1e-9f ? 0 : 1 / XS, rYS = ROUND || fabsf(YS) < 1e-9f ? 0 : 1 / YS;
+    uint16_t *tz = K.tz;
+    // What the sample's height is set against, but for the line of sight's
+    // slope: the eye's height above the sea and the earth's fall that far.
+    auto underOf = [&](float s) { return fmaf(s, eh2f, fmaf(s * s, fall, gez)); };
+    // An airfield's ground eased into the land's, out to FLAT_OUT from it.
+    auto eased = [&](float h, float s) {
+        if (ROUND || s >= easeHi || s < easeLo) {
+            return h;
+        }
+        float t = std::min(1.0f, std::max(0.0f, (sqrtf(fmaf(s, eh2 + s, e2)) - FLAT_IN) * (1 / (FLAT_OUT - FLAT_IN))));
+        return fmaf(h - groundUp, t * t * (3 - (t + t)), groundUp);
+    };
+    // The land's height at grid place (ix, iy), between its cell's corners.
+    auto between = [&](int ix, int iy) {
+        int fx = ix & 255, fy = iy & 255;
+#ifdef BENCH3D
+        const int16_t *p = heights + (size_t)((iy >> 8) & K.rowMask) * gcols + (ix >> 8);
+#else
+        const int16_t *p = heights + (size_t)(iy >> 8) * gcols + (ix >> 8);
+#endif
+        int a0 = p[0], b0 = p[1], c0 = p[gcols], d0 = p[gcols + 1];
+        int top = (a0 << 8) + (b0 - a0) * fx, bottom = (c0 << 8) + (d0 - c0) * fx;
+        return ((top << 8) + (bottom - top) * fy) * PER_Q;
+    };
+    // A step's height, all of it worked out: for the sample before one seen.
+    auto heightAt = [&](float s) {
+        float x = ROUND ? fmaf(s, fmaf(s, XS2, XS), X0) : fmaf(s, XS, X0);
+        float y = ROUND ? fmaf(s, fmaf(s, YS2, YS), Y0) : fmaf(s, YS, Y0);
+        int ix = (int)x, iy = (int)y;
+        return eased((uint32_t)ix < xLim && (uint32_t)iy < yLim ? between(ix, iy) : 0.0f, s);
+    };
+    int filled = R.filled;
+    float k = filled - cyMore;
+    float den = fmaf(-k, Fz, f * Dz);
+    bool sloped = den < -1e-4f;
+    float gk = sloped ? fmaf(k, A, -(f * B)) / den : 0;
+    float gkLine = sloped ? gk : -INFINITY;  // not sloped: every sample to the full test
+    // The sample before: a step, -2 the flat ground's edge, -1 none; the
+    // last whose height was worked out; and the last put on the screen,
+    // its row and 1 / depth.
+    int prev = R.lastS >= 0 ? -2 : -1, known = -3, shown = -3;
+    float knownH = 0, shownRho = 0, shownW = 0;
+    // Row filled - 1 of the column: where it is kept, and its row in its band.
+    int off = (filled - 1) % bandRows;
+    int at = (((filled - 1) / bandRows) * cols + R.c) * bandRows + off;
+    const int bandBack = bandRows - 1 - cols * bandRows;  // the row above a band's first, in the band before
+    const bool everyRow = bandRows & 1;                    // bands an odd number of rows: every row kept
+    int curBlk = -1;
+    uint32_t samples = 0, skips = 0;
+#ifdef BENCH3D
+    uint32_t path0 = 0, path1 = 0, path2 = 0, path3 = 0, path4 = 0, path5 = 0, path6 = 0;
+#endif
+    // Sample i - its next step i + 1, or where a block skipped puts it -
+    // true once the column is done.
+    auto step = [&](int &i) __attribute__((always_inline)) {
+        float s = far[i];
+        samples++;
+        float x = ROUND ? fmaf(s, fmaf(s, XS2, XS), X0) : fmaf(s, XS, X0);
+        float y = ROUND ? fmaf(s, fmaf(s, YS2, YS), Y0) : fmaf(s, YS, Y0);
+        float line = fmaf(s, gkLine + eh2f, base[i]);
+        int ix = (int)x, iy = (int)y;
+        float hgt = 0;
+        if ((uint32_t)ix < xLim && (uint32_t)iy < yLim) {
+            int blk = (iy >> BLOCK_BITS) * bcols + (ix >> BLOCK_BITS);
+            if (blk != curBlk) {
+                curBlk = blk;
+                if (sloped && s < skipTo) {
+#ifdef BENCH3D
+                    path5++;
+#endif
+                    int bx = ix >> BLOCK_BITS, by = iy >> BLOCK_BITS;
+                    float dX = ROUND ? fmaf(s + s, XS2, XS) : XS, dY = ROUND ? fmaf(s + s, YS2, YS) : YS;
+                    float rX = ROUND ? (fabsf(dX) < 1e-9f ? 0 : 1 / dX) : rXS;
+                    float rY = ROUND ? (fabsf(dY) < 1e-9f ? 0 : 1 / dY) : rYS;
+                    float outX = rX > 0 ? ((bx + 1) * 2048 - x) * rX : rX < 0 ? (bx * 2048 - x) * rX : 1e9f;
+                    float outY = rY > 0 ? ((by + 1) * 2048 - y) * rY : rY < 0 ? (by * 2048 - y) * rY : 1e9f;
+                    float sOut = s + std::max(0.0f, std::min(outX, outY));
+                    float low = std::min(line, fmaf(sOut, gk + eh2f, fmaf(sOut * sOut, fall, gez)));
+                    // Where the line, bent by the fall, is lowest.
+                    float sLow = -(gk + eh2f) / (2 * fall);
+                    if (sLow > s && sLow < sOut) {
+                        low = std::min(low, fmaf(sLow, gk + eh2f, fmaf(sLow * sLow, fall, gez)));
+                    }
+                    // Its highest - or the airfield's ground, eased over it.
+                    float most = blockMax[blk];
+                    if (!ROUND && sOut >= easeLo && s < easeHi) {
+                        most = std::max(most, groundUp);
+                    }
+                    if (most < low) {
+                        int j = i;
+                        while (j + 8 < steps && far[j + 8] < sOut) {
+                            j += 8;
+                        }
+                        while (j + 1 < steps && far[j + 1] < sOut) {
+                            j++;
+                        }
+                        if (j > i + 1) {
+                            // On from the block's last step, as the sample
+                            // before the next.
+                            skips++;
+                            i = j;
+                            return false;
+                        }
+                    }
+                }
+            }
+#ifdef BENCH3D
+            size_t cell = (size_t)((iy >> 8) & K.rowMask) * gcols + (ix >> 8);
+#else
+            size_t cell = (size_t)(iy >> 8) * gcols + (ix >> 8);
+#endif
+            float most = cellMax[cell];
+            if (!ROUND && s < easeHi && s >= easeLo) {
+                most = std::max(most, groundUp);
+            }
+            if (most < line) {
+                // Under the line of sight, all its cell.
+#ifdef BENCH3D
+                path0++;
+#endif
+                prev = i;
+                if ((i & 15) == 15) {
+                    float zh = zHighAt[i >> 4];
+                    float zcHigh = fmaf(s, A, zh * Fz), ycHigh = fmaf(s, B, zh * Dz);
+                    if (zh > 0 ? (zcHigh > 0.5f && f * ycHigh > k * zcHigh) : (A > 0 && f * B > k * A)) {
+                        return true;
+                    }
+                }
+                i++;
+                return false;
+            }
+            hgt = between(ix, iy);
+        }
+#ifdef BENCH3D
+        else {
+            path6++;
+        }
+#endif
+        hgt = eased(hgt, s);
+        if (hgt >= line) {
+            // Above the line of sight, or the line not sloped: put on the
+            // screen, and the rows between it and the sample before filled.
+            float dz = hgt - fmaf(s, eh2f, base[i]);
+            float zc = fmaf(s, A, dz * Fz), yc = fmaf(s, B, dz * Dz);
+            if (zc > 0.5f && (sloped || f * yc <= k * zc)) {
+                float w = 1 / zc, rho = fmaf(yc * w, f, cyLess);
+                int top = std::max(0, ceilInt(rho));
+                if (top < filled) {
+                    // Rows [top, filled): between the sample before and this,
+                    // 1 / depth straight between theirs - as a plane's is.
+                    float slopeW = 0, lastRho = 0, lastW = 0;
+                    bool before = false;
+                    if (prev == shown) {
+                        lastRho = shownRho;
+                        lastW = shownW;
+                        before = true;
+                    } else if (prev >= 0 || prev == -2) {
+                        float lastS = prev >= 0 ? far[prev] : R.lastS, lastH = R.lastH;
+                        float lastUnder = prev < 0 ? underOf(lastS) : fmaf(lastS, eh2f, base[prev]);
+                        if (prev >= 0) {
+#ifdef BENCH3D
+                            path4 += prev != known;
+#endif
+                            lastH = prev == known ? knownH : heightAt(lastS);
+                        }
+                        float ldz = lastH - lastUnder;
+                        float lzc = fmaf(lastS, A, ldz * Fz), lyc = fmaf(lastS, B, ldz * Dz);
+                        if (lzc > 0.5f) {
+                            lastW = 1 / lzc;
+                            lastRho = fmaf(lyc * lastW, f, cyLess);
+                            before = true;
+                        }
+                    }
+                    if (before && lastRho - rho > 1e-3f) {
+                        slopeW = (lastW - w) / (lastRho - rho);
+                    }
+                    float wr = fmaf((float)(filled - 1 - top), slopeW, std::min(fmaf((float)top - rho, slopeW, w), w));
+#ifdef BENCH3D
+                    path3++;
+#endif
+                    // The rows the drawing reads: even ones - every band's
+                    // first among them, bands being an even number of rows -
+                    // and the top; every one where bands are odd. Two rows
+                    // up at a time over the even, as scene3d_march_flat goes.
+                    auto up = [&] {
+                        if (off == 0) {
+                            off = bandRows - 1;
+                            at += bandBack;
+                        } else {
+                            off--;
+                            at--;
+                        }
+                    };
+                    int r = filled - 1;
+                    if (everyRow) {
+                        for (; r >= top; r--) {
+                            tz[at] = toBf16(wr);
+                            wr -= slopeW;
+                            up();
+                        }
+                    } else {
+                        if (r & 1) {
+                            if (r == top) {
+                                tz[at] = toBf16(wr);
+                            }
+                            wr -= slopeW;
+                            up();
+                            r--;
+                        }
+                        while (r >= top) {
+                            tz[at] = toBf16(wr);
+                            wr -= slopeW;
+                            if (r == top) {
+                                up();
+                                break;
+                            }
+                            if (r - 1 == top) {
+                                up();
+                                tz[at] = toBf16(wr);
+                                up();
+                                break;
+                            }
+                            wr -= slopeW;
+                            if (off == 0) {
+                                off = bandRows - 2;
+                                at += bandBack - 1;
+                            } else {
+                                off -= 2;
+                                at -= 2;
+                            }
+                            r -= 2;
+                        }
+                    }
+                    filled = top;
+                    if (top == 0) {
+                        return true;
+                    }
+                    k = top - cyMore;
+                    den = fmaf(-k, Fz, f * Dz);
+                    sloped = den < -1e-4f;
+                    gk = sloped ? fmaf(k, A, -(f * B)) / den : 0;
+                    gkLine = sloped ? gk : -INFINITY;
+                }
+                shown = i;
+                shownRho = rho;
+                shownW = w;
+            }
+        }
+#ifdef BENCH3D
+        path2 += hgt >= line;
+        path1 += hgt < line;
+#endif
+        prev = known = i;
+        knownH = hgt;
+        // Given up once the highest land about, this far off or further,
+        // would be under the rows filled.
+        if ((i & 15) == 15) {
+            float zh = zHighAt[i >> 4];
+            float zcHigh = fmaf(s, A, zh * Fz), ycHigh = fmaf(s, B, zh * Dz);
+            if (zh > 0 ? (zcHigh > 0.5f && f * ycHigh > k * zcHigh) : (A > 0 && f * B > k * A)) {
+                return true;
+            }
+        }
+        i++;
+        return false;
+    };
+    int i = R.first;
+#if defined(ESP_PLATFORM)
+#ifdef BENCH3D
+    bool inC = g_terrainProbe & 8;  // the bench's check: C alone, to compare
+#else
+    constexpr bool inC = false;
+#endif
+    if (!inC && i < steps) {
+        // The common ways in assembly: what it leaves at
+        // step m.i - a block to test for skipping, a sample before to be
+        // worked out again - done here a step at a time, then on in it.
+        MarchState &m = *K.asmState;
+        m.X0 = X0;
+        m.XS = XS;
+        m.Y0 = Y0;
+        m.YS = YS;
+        m.A = A;
+        m.B = B;
+        m.e2 = e2;
+        m.eh2 = eh2;
+        m.groundUp = groundUp;
+        m.rXS = rXS;
+        m.rYS = rYS;
+        m.XS2 = XS2;
+        m.YS2 = YS2;
+        m.eh2f = eh2f;
+        m.gez = gez;
+        m.fall = fall;
+        m.twoFall = 2 * fall;
+        m.easeLoF = easeLo;
+        m.easeHiF = easeHi;
+        int iLo = stepFrom(far, steps, 0, easeLo), iHi = stepFrom(far, steps, iLo, easeHi);
+        m.iEaseLo = m.iEaseLo0 = iLo < iHi ? iLo : 0x7FFFFFFF;
+        m.iEaseHi = iHi;
+        for (;;) {
+            m.i = i;
+            m.filled = filled;
+            m.at = at;
+            m.off = off;
+            m.k = k;
+            m.gk = gk;
+            m.gkLine = gkLine;
+            m.sloped = sloped;
+            m.prev = prev;
+            m.known = known;
+            m.shown = shown;
+            m.knownH = knownH;
+            m.shownRho = shownRho;
+            m.shownW = shownW;
+            m.curBlk = curBlk;
+            m.samples = samples;
+            m.skips = skips;
+            int more = ROUND ? scene3d_march_round(&m) : scene3d_march_flat(&m);
+            i = m.i;
+            filled = m.filled;
+            at = m.at;
+            off = m.off;
+            k = m.k;
+            gk = m.gk;
+            gkLine = m.gkLine;
+            sloped = m.sloped;
+            prev = m.prev;
+            known = m.known;
+            shown = m.shown;
+            knownH = m.knownH;
+            shownRho = m.shownRho;
+            shownW = m.shownW;
+            curBlk = m.curBlk;
+            samples = m.samples;
+            skips = m.skips;
+            if (!more || step(i) || i >= steps) {
+                break;
+            }
+        }
+    } else
+#endif
+    {
+        while (i < steps && !step(i)) {
+        }
+    }
+    counts.samples += samples;
+    counts.rows += R.filled - filled;
+    counts.skips += skips;
+#ifdef BENCH3D
+    counts.paths[0] += path0;
+    counts.paths[1] += path1;
+    counts.paths[2] += path2;
+    counts.paths[3] += path3;
+    counts.paths[4] += path4;
+    counts.paths[5] += path5;
+    counts.paths[6] += path6;
+#endif
+    return filled;
+}
+
+void terrainMarch() {
+    uint64_t *stats = g_terrainStats[coreNow()];
+    uint32_t marchClock = cycles();
+    CACHE_BEGIN(cacheAtStart);
+    const GroundCover &cover = g.cover;
+    const groundpack::Window &W = *cover.window;
+    const groundpack::TerrainGrid &G = *g.scene.terrainGrid;
+    int w = g.w, h = g.h, cols = (w + 3) / 4, bandRows = g.bandRows;
+    g.tCols = cols;
+    // Each band's rows of every column together - band by band - as a band
+    // reads them: column c's rows of band b from ((b cols) + c) bandRows on.
+    g.tz.resize((size_t)((h + bandRows - 1) / bandRows) * cols * bandRows);
+    g.tTop.resize(cols);
+    float ex = g.eye.x, ey = g.eye.y, ez = g.eye.z, perF = 1 / g.f;
+    const Vec3 F = g.forward, D = g.down, R = g.right;
+    bool round = cover.round;
+    float er = g.scene.earthRadius, groundUp = round ? 0 : g.scene.groundUpM;
+    // The grid's place about the eye: flat, straight lines from it; round,
+    // worked out from nine places 20km round it, to the second order.
+    float U[6] = {}, V6[6] = {};
+    if (!round) {
+        U[0] = cover.ux * ex + cover.u0;
+        U[1] = cover.ux;
+        V6[0] = cover.vy * ey + cover.v0;
+        V6[2] = cover.vy;
+    } else {
+        constexpr float H = 20000;
+        float u[3][3], v[3][3];
+        for (int i = 0; i < 3; i++) {
+            for (int j = 0; j < 3; j++) {
+                float x = ex + (i - 1) * H, y = ey + (j - 1) * H;
+                coverPoint({x, y, -(x * x + y * y) / (2 * er)}, er, u[i][j], v[i][j]);
+            }
+        }
+        float(*grid[2])[3] = {u, v};
+        float *out[2] = {U, V6};
+        for (int k = 0; k < 2; k++) {
+            float(*q)[3] = grid[k];
+            out[k][0] = q[1][1];
+            out[k][1] = (q[2][1] - q[0][1]) / (2 * H);
+            out[k][2] = (q[1][2] - q[1][0]) / (2 * H);
+            out[k][3] = (q[2][1] - 2 * q[1][1] + q[0][1]) / (2 * H * H);
+            out[k][4] = (q[2][2] - q[2][0] - q[0][2] + q[0][0]) / (4 * H * H);
+            out[k][5] = (q[1][2] - 2 * q[1][1] + q[1][0]) / (2 * H * H);
+        }
+    }
+    g.tRound = round;
+    memcpy(g.tMapU, U, sizeof U);
+    memcpy(g.tMapV, V6, sizeof V6);
+    float ue = U[0], ve = V6[0];
+    // Haze: tau = d / 30km + (2km / V)(1 - e^(-d / 2km)), its share 1 - e^-tau.
+    const float V = g.pal.visibility, NEAR_HAZE = 2000, FAR_V = std::max(30000.0f, V);
+    auto tau = [&](float dist) { return dist / FAR_V + NEAR_HAZE / V * (1 - expf(-dist / NEAR_HAZE)); };
+    // The governor's skimping: fewer samples, less far, as frames run long.
+    const float skimp = clamp01(g.scene.terrainEffort);
+    float reach = std::min(100000.0f * (1 - 0.3f * skimp), (3 - NEAR_HAZE / V) * FAR_V);
+    {
+        float one = 1;
+        uint32_t bits;
+        memcpy(&bits, &one, 4);
+        int from = (int)(bits >> 21) + 4 * 3;  // from 8m
+        uint8_t steps[64];
+        for (int i = 0; i < 64; i++) {
+            float dist = 8 * exp2f((i + 0.5f) / 4);
+            steps[i] = (uint8_t)std::min(31, (int)(32 * (1 - expf(-tau(dist)))));
+        }
+        for (int i = 0; i < 1024; i++) {
+            g.tHaze[i] = steps[std::min(63, std::max(0, i - from))];
+        }
+    }
+    // The samples' distances, alike for every column, a fortieth further each
+    // - and half a cell at least: the land's heights are straight between
+    // its cells' corners, curved only by a cell's twist, two chords a cell
+    // within a thirty-second of that - under a pixel 3km off - and its rows'
+    // depths straight between samples as a plane's are, so that nearer than
+    // that adds nothing but samples. And, flat, what a sample's height is set against at each, but
+    // for the line of sight's slope: the eye's height above the sea and the
+    // earth's fall that far, a seventh back for the light's bending.
+    // Kept together: the assembly reads a step's base 1600 bytes on from its
+    // distance.
+    static float stepTables[2][MARCH_MOST];
+    float *far = stepTables[0], *base = stepTables[1];
+    constexpr int MOST = MARCH_MOST;
+    constexpr float PER_TWO_R = 1 / (2 * 6371000.0f * 7 / 6);
+    // A cell's least width, metres.
+    float cellSize = std::min(1 / std::max(1e-9f, fabsf(U[1]) * groundpack::TerrainGrid::TILE_COLS),
+                              1 / std::max(1e-9f, fabsf(V6[2]) * groundpack::TerrainGrid::TILE_ROWS));
+    float eyeUp = std::max(1.0f, ez), leastStep = cellSize * (0.5f + 0.5f * skimp), eTwo = ex * ex + ey * ey;
+    const float growth = 0.025f * (1 + skimp);
+    int steps = 0;
+    for (float s = std::min(20.0f, 0.5f * eyeUp); s < reach && steps < MOST; s += std::max(leastStep, s * growth)) {
+        far[steps] = s;
+        base[steps] = round ? fmaf(s * s + eTwo, 1 / (2 * g.scene.earthRadius), ez) : groundUp + ez + s * s * PER_TWO_R;
+        steps++;
+    }
+    // The highest land about, from the eye; and the highest near it, for
+    // where a column's land could first be on the screen.
+    float zHigh = std::max((float)G.highest, groundUp) - groundUp - ez;
+    const float FLAT_IN = 2500, FLAT_OUT = 5000;
+    float e2 = ex * ex + ey * ey;
+    // The grid's cells: x = (u + gu) 32 - 1/2, y = (v + gv) 48 - 1/2.
+    constexpr int TC = groundpack::TerrainGrid::TILE_COLS, TR = groundpack::TerrainGrid::TILE_ROWS,
+                  BLOCK = groundpack::TerrainGrid::BLOCK;
+    float gu = (float)(W.west - G.west), gv = (float)(W.north - G.north);
+    float zNear = zHigh, nearReach = 0;
+    {
+        float eyeX = (ue + gu) * TC - 0.5f, eyeY = (ve + gv) * TR - 0.5f;
+        int bx = floorInt(eyeX / BLOCK), by = floorInt(eyeY / BLOCK), highest = -32768;
+        bool all = true;
+        for (int j = by - 2; j <= by + 2; j++) {
+            for (int i = bx - 2; i <= bx + 2; i++) {
+                if (i < 0 || j < 0 || i >= G.blockCols || j >= G.blockRows) {
+                    all = false;
+                } else {
+                    highest = std::max(highest, (int)G.blockMax[j * G.blockCols + i]);
+                }
+            }
+        }
+        // Two blocks each way of the eye's: that far round it at least.
+        if (all) {
+            zNear = std::max((float)highest, groundUp) - groundUp - ez;
+            nearReach = 2 * BLOCK * cellSize;
+        }
+    }
+    uint16_t *tz = g.tz.data();
+    // The eye over an airfield's flat ground: the rows below where each
+    // column's ray leaves it see the plane, their depth the row's alone -
+    // no march needed for them, the most of a column's samples at an
+    // airfield, nearest first.
+    bool onFlat = !round && e2 < FLAT_IN * FLAT_IN && ez > 0;
+    g.tFlatTop.assign(cols, (int16_t)h);
+    g.tFlatZ.resize(h);
+    for (int y = 0; y < h; y++) {
+        float dirZ = F.z + D.z * (y + 0.5f - g.cy) * perF;
+        g.tFlatZ[y] = onFlat && dirZ < -1e-6f ? -ez / dirZ : 0;
+    }
+    MarchFrame K;
+    K.far = far;
+    K.base = base;
+    K.steps = steps;
+    K.heights = G.heights;
+    K.cellMax = G.cellMax;
+    K.blockMax = G.blockMax;
+    K.gcols = G.cols;
+    K.bcols = G.blockCols;
+    K.rowMask = g_terrainProbe & 1 ? 3 : -1;
+    K.xLim = (uint32_t)(G.cols - 1) << 8;
+    K.yLim = (uint32_t)(G.rows - 1) << 8;
+    K.ez = ez;
+    K.groundUp = groundUp;
+    K.e2 = e2;
+    K.fall = round ? 1 / (2 * er) : PER_TWO_R;
+    K.Fz = F.z;
+    K.Dz = D.z;
+    K.f = g.f;
+    K.cy = g.cy;
+    K.zHigh = zHigh;
+    K.skipTo = 10 * BLOCK * cellSize;
+    K.tz = tz;
+    K.cols = cols;
+    K.bandRows = bandRows;
+    static float zHighAt[MARCH_MOST / 16 + 1];
+    K.zHighAt = zHighAt;
+    int profiled = 0;  // the column the profile next wanted for
+    static MarchState asmState;
+    {
+        MarchState &m = asmState;
+        m.far = far;
+        m.steps = steps;
+        m.heights = G.heights;
+        m.cellMaxBytes = (int)((const uint8_t *)G.cellMax - (const uint8_t *)G.heights);
+        m.rowBytes = G.cols * 2;
+        m.xLim = K.xLim;
+        m.yLim = K.yLim;
+        m.bcols = G.blockCols;
+        m.Fz = F.z;
+        m.Dz = D.z;
+        m.f = g.f;
+        m.cyLess = g.cy - 0.5f;
+        m.cyMore = g.cy + 0.5f;
+        m.zHigh = zHigh;
+        m.skipTo = K.skipTo;
+        m.tz = tz;
+        m.bandRows1 = bandRows - 1;
+        m.bandBack = bandRows - 1 - cols * bandRows;
+        m.flatIn = 2500;
+        m.perRing = 1.0f / 2500;
+        m.tiny = 1e-3f;
+        m.notSloped = -1e-4f;
+        m.minusInf = -INFINITY;
+        m.three = 3;
+        m.blockMax = G.blockMax;
+        m.farOff = 1e9f;
+        m.tinyStep = 1e-9f;
+        m.zHighAt = zHighAt;
+    }
+    K.asmState = &asmState;
+    MarchCounts counts;
+    // Every column: its ray, where its march starts, the flat ground under
+    // it, and its march.
+    for (int c = 0; c < cols; c++) {
+        MarchRay m;
+        m.c = c;
+        float a = (4 * c + 2 - g.cx) * perF;
+        float dx = F.x + R.x * a, dy = F.y + R.y * a, lh = sqrtf(dx * dx + dy * dy);
+        g.tTop[c] = (int16_t)h;
+        if (lh < 1e-5f) {
+            continue;
+        }
+        float hx = dx / lh, hy = dy / lh;
+        m.A = hx * F.x + hy * F.y;
+        m.B = hx * D.x + hy * D.y;
+        float u1 = U[1] * hx + U[2] * hy, u2 = U[3] * hx * hx + U[4] * hx * hy + U[5] * hy * hy;
+        float v1 = V6[1] * hx + V6[2] * hy, v2 = V6[3] * hx * hx + V6[4] * hx * hy + V6[5] * hy * hy;
+        m.X0 = ((ue + gu) * TC - 0.5f) * 256;
+        m.XS = u1 * TC * 256;
+        m.XS2 = u2 * TC * 256;
+        m.Y0 = ((ve + gv) * TR - 0.5f) * 256;
+        m.YS = v1 * TR * 256;
+        m.YS2 = v2 * TR * 256;
+        m.eh2 = 2 * (ex * hx + ey * hy);
+        m.lastS = -1;
+        m.lastH = 0;
+        // Where its ray crosses the ring the airfield's ground eases into
+        // the land's, |eye + s h| < FLAT_OUT.
+        m.easeLo = m.easeHi = -1;
+        if (!round) {
+            float disc = m.eh2 * m.eh2 - 4 * (e2 - FLAT_OUT * FLAT_OUT);
+            if (disc > 0) {
+                float root = sqrtf(disc);
+                m.easeLo = (-m.eh2 - root) * 0.5f;
+                m.easeHi = (-m.eh2 + root) * 0.5f;
+            }
+        }
+        int first = 0;
+        // From where the bottom row's ray could first meet the land: the
+        // highest near the eye out to the near reach, the highest there is
+        // beyond - nearer, all of it under the screen.
+        float b = (h - g.cy) * perF;
+        float bz = F.z + D.z * b, bx = F.x + R.x * a + D.x * b, by = F.y + R.y * a + D.y * b;
+        if (bz < -1e-4f) {
+            float along = sqrtf(bx * bx + by * by) / bz * 0.9f;
+            float sStart = zHigh < 0 ? zHigh * along : 0;
+            if (zNear < 0) {
+                sStart = std::max(sStart, std::min(nearReach, zNear * along));
+            }
+            first = stepFrom(far, steps, first, sStart);
+        }
+        int filled = h;
+        if (onFlat) {
+            // Where its ray leaves the flat ground, |eye + s h| = FLAT_IN.
+            float b2 = m.eh2 * m.eh2 - 4 * (e2 - FLAT_IN * FLAT_IN), sExit = (-m.eh2 + sqrtf(std::max(0.0f, b2))) * 0.5f;
+            float zcExit = sExit * m.A - ez * F.z, ycExit = sExit * m.B - ez * D.z;
+            if (zcExit > 0.5f) {
+                // The plane's rows: not written, the drawing has their depths
+                // from tFlatZ - a plane's own, not straight between two as
+                // the land's are.
+                filled = std::min(filled, std::max(0, ceilInt(g.cy + g.f * ycExit / zcExit - 0.5f)));
+                g.tFlatTop[c] = (int16_t)filled;
+                m.lastS = sExit;
+                m.lastH = groundUp;
+                first = stepFrom(far, steps, first, sExit);
+            }
+        }
+        m.first = first;
+        m.filled = filled;
+        if (filled > 0 && first < steps && c >= profiled) {
+            // The highest land along its ray from each sixteenth step on, from
+            // the eye: what it gives up against - the land's own along it,
+            // not the highest there is - for it and the three columns after:
+            // their rays within a block of its, 100km out. Read a block
+            // apart, from the far end in, each block with those round it:
+            // none passed by.
+            profiled = c + 4;
+            constexpr int j0 = 0;  // from the first: the three after may start nearer
+            int most = -32768;
+            float sAt = far[steps - 1], aBlock = BLOCK * cellSize;
+            for (int j = (steps - 1) >> 4; j >= j0; j--) {
+                float sTo = far[std::min(steps - 1, 16 * j + 15)];
+                for (;; sAt -= aBlock) {
+                    float sNow = std::max(sAt, sTo);
+                    float x = round ? m.X0 + sNow * (m.XS + sNow * m.XS2) : m.X0 + sNow * m.XS;
+                    float y = round ? m.Y0 + sNow * (m.YS + sNow * m.YS2) : m.Y0 + sNow * m.YS;
+                    int bx = (int)x >> 11, by = (int)y >> 11;  // just off the grid's west or north, its first: higher, if anything
+                    most = std::max(most, (unsigned)bx < (unsigned)G.blockCols && (unsigned)by < (unsigned)G.blockRows
+                                              ? (int)G.wideMax[by * G.blockCols + bx]
+                                              : 0);
+                    if (sNow <= sTo) {
+                        break;
+                    }
+                }
+                zHighAt[j] = std::max((float)most, groundUp) - groundUp - ez;
+            }
+        }
+        if (filled > 0 && first < steps) {
+            filled = round ? marchColumn<true>(K, m, counts) : marchColumn<false>(K, m, counts);
+        }
+        g.tTop[c] = (int16_t)filled;
+    }
+    stats[1] += counts.samples;
+    stats[2] += counts.rows;
+    stats[3] += counts.skips;
+    g_marchPaths = counts;
+    g.tFlatAll = h;
+    for (int c = 0; c < cols && onFlat; c++) {
+        g.tFlatAll = c == 0 ? g.tFlatTop[c] : std::max(g.tFlatAll, (int)g.tFlatTop[c]);
+    }
+    if (!onFlat) {
+        g.tFlatAll = 1 << 30;
+    }
+    // For the drawing: each row's and column's part in where a depth puts
+    // the land on the grid; how far a metre of depth goes along each row's
+    // ray; and the depth each level is read to - its cells four pixels wide
+    // or more there, a sample's.
+    g.tUe = ue;
+    g.tVe = ve;
+    g.tRowU.resize(h + 1);  // and one over: the assembly reads a pair's odd row's with its even's
+    g.tRowV.resize(h + 1);
+    g.tRowFar.resize(h + 1);
+    g.tColU.resize(cols);
+    g.tColV.resize(cols);
+    g.tRowX.resize(h + 1);
+    g.tRowY.resize(h + 1);
+    g.tColX.resize(cols);
+    g.tColY.resize(cols);
+    g.tFlatZ.resize(h + 1);
+    for (int y = 0; y <= h; y++) {
+        float b = (y + 0.5f - g.cy) * perF;
+        g.tRowU[y] = U[1] * (F.x + D.x * b);
+        g.tRowV[y] = V6[2] * (F.y + D.y * b);
+        g.tRowX[y] = F.x + D.x * b;
+        g.tRowY[y] = F.y + D.y * b;
+        g.tRowFar[y] = sqrtf(1 + b * b);
+    }
+    g.tFlatZ[h] = 0;
+    g.tColUV.resize(2 * cols);
+    g.tColXY.resize(2 * cols);
+    g.tTopFlat.resize(cols);
+    for (int c = 0; c < cols; c++) {
+        float a = (4 * c + 2 - g.cx) * perF;
+        g.tColU[c] = U[1] * R.x * a;
+        g.tColV[c] = V6[2] * R.y * a;
+        g.tColX[c] = R.x * a;
+        g.tColY[c] = R.y * a;
+        g.tColUV[2 * c] = g.tColU[c];
+        g.tColUV[2 * c + 1] = g.tColV[c];
+        g.tColXY[2 * c] = g.tColX[c];
+        g.tColXY[2 * c + 1] = g.tColY[c];
+        g.tTopFlat[c] = (uint16_t)g.tTop[c] | (uint32_t)(uint16_t)g.tFlatTop[c] << 16;
+    }
+    // A cell of level L is 2^L of level 0's, 2.5 seconds of latitude, some
+    // 77m; a sample is four pixels, z * 4 / f metres at depth z.
+    for (int L = groundpack::FINEST; L < groundpack::LEVELS; L++) {
+        g.tLevelZ[L - groundpack::FINEST] = 77.0f * ldexpf(1.0f, L) * g.f / 4;
+    }
+    g.tUnit = skimp > 0.6f ? 4 : 2;
+    g.tLevelPer = (g.tUnit == 4 ? 2.0f : 1.0f) / g.tLevelZ[0];
+    stats[0] += cycles() - marchClock;
+    CACHE_END(cacheAtStart, g_terrainCache[coreNow()]);
 }
 
 void prepareBegin(int w, int h, int bandRows, bool swapBytes, const Scene &scene, const Camera &camera) {
@@ -6415,6 +7546,7 @@ void prepareBegin(int w, int h, int bandRows, bool swapBytes, const Scene &scene
         g.coverLit[c][2] = (uint8_t)std::min(255.0f, std::max(0.0f, lit.b));
     }
     g.coverOn = coverOn;
+    g.terrainOn = coverOn && scene.terrain && scene.terrainGrid != nullptr && scene.terrainGrid->heights != nullptr;
     g.perW = 1.0f / w;
     if (coverOn && !g.cover.round) {
         Frame::CoverFlat &k = g.coverFlat;
@@ -6472,7 +7604,7 @@ void prepareBegin(int w, int h, int bandRows, bool swapBytes, const Scene &scene
         } else if (dir.z < 0 && g.eye.z > 0) {
             distance = g.eye.z / -dir.z * l;
         }
-        if (coverOn && g.cover.round && !(y & 1)) {
+        if (coverOn && g.cover.round && !g.terrainOn && !(y & 1)) {
             Frame::RowCover rc;
             rc.level = Frame::NO_LEVEL;
 #if defined(BENCH3D) && defined(ESP_PLATFORM)
@@ -6515,13 +7647,34 @@ void prepareBegin(int w, int h, int bandRows, bool swapBytes, const Scene &scene
             g.rowHaze[y] = 256;
         }
     }
+    // The land at its height where the view has it, flat at an airfield for
+    // now - and then no skyline, the hills the land's own - or the hills
+    // along the skyline.
+    // A frame's serial from the one count, not its own: the two frames
+    // flip, and each counting for itself had the drawing see 1, 1, 2, 2 -
+    // the colours' caches kept from the frame before every second frame.
+    static uint32_t s_serial = 0;
+    g.serial = ++s_serial;
+    if (g.terrainOn) {
+        for (Frame::HillRange &range : g.hills) {
+            range.on = false;
+        }
 #if defined(BENCH3D) && defined(ESP_PLATFORM)
-    uint32_t skylineClock = esp_cpu_get_cycle_count();
-    skyline(scene, groundLight);
-    g_coverStats[xPortGetCoreID() & 1][10] += esp_cpu_get_cycle_count() - skylineClock;
+        uint32_t marchClock = esp_cpu_get_cycle_count();
+        terrainMarch();
+        g_coverStats[xPortGetCoreID() & 1][10] += esp_cpu_get_cycle_count() - marchClock;
 #else
-    skyline(scene, groundLight);
+        terrainMarch();
 #endif
+    } else {
+#if defined(BENCH3D) && defined(ESP_PLATFORM)
+        uint32_t skylineClock = esp_cpu_get_cycle_count();
+        skyline(scene, groundLight);
+        g_coverStats[xPortGetCoreID() & 1][10] += esp_cpu_get_cycle_count() - skylineClock;
+#else
+        skyline(scene, groundLight);
+#endif
+    }
     lap(STEP_ROWS);
 
     // The ground, lit all alike, hazed a row at a time as it is drawn.
@@ -6909,7 +8062,12 @@ void groundAndCoasts() {
             return;
         }
         uint8_t layer = layerOf(l.kind);
-        if (layer != TOWNS) {  // a town's edge isn't drawn: it is where the town is drawn to
+        // A town's edge isn't drawn: it is where the town is drawn to. Nor,
+        // over the ground pack's cover, a shore: the cover's cells draw it -
+        // land meeting water - and this line, from other data, ran a
+        // kilometre out over the sea from it at Lossiemouth, a pale thread
+        // across the water.
+        if (layer != TOWNS && !(g.coverOn && layer == SHORES)) {
             // Pale where it is seen looking well down on it, as surf and sand
             // are; seen low along the ground - a coast twenty miles off from
             // 1,500ft - the strip of beach a hundredth of a pixel, and the
@@ -7546,6 +8704,106 @@ void flip() {
 
 Counts counts() { return d.counts; }
 
+
+void terrainCache(uint64_t out[8], bool reset) {
+    for (int i = 0; i < 8; i++) {
+        out[i] = g_terrainCache[0][i] + g_terrainCache[1][i];
+        if (reset) {
+            g_terrainCache[0][i] = g_terrainCache[1][i] = 0;
+        }
+    }
+}
+
+void terrainProbe(int which) { g_terrainProbe = which; }
+
+void terrainPaths(uint32_t out[7]) { memcpy(out, g_marchPaths.paths, sizeof g_marchPaths.paths); }
+
+uint64_t terrainBandInstructions() {
+    uint64_t n = g_bandInstret[0] + g_bandInstret[1];
+    g_bandInstret[0] = g_bandInstret[1] = 0;
+    return n;
+}
+
+uint64_t terrainBandHanded() {
+    uint64_t n = g_bandHanded[0] + g_bandHanded[1];
+    g_bandHanded[0] = g_bandHanded[1] = 0;
+    return n;
+}
+
+void terrainMarchCheck(uint32_t out[4]) {
+#if defined(ESP_PLATFORM) && defined(BENCH3D)
+    // The frame being prepared's march in assembly, then in C alone: their
+    // columns' tops and rows' depths that differ, and the cycles each took.
+    uint64_t st[8];
+    terrainStats(st, true);
+    std::vector<uint16_t> tz;
+    std::vector<int16_t> tops;
+    uint32_t c0 = cycles();
+    terrainMarch();
+    out[2] = cycles() - c0;
+    tz.assign(g.tz.begin(), g.tz.end());
+    tops.assign(g.tTop.begin(), g.tTop.end());
+    g_terrainProbe = 8;
+    c0 = cycles();
+    terrainMarch();
+    out[3] = cycles() - c0;
+    g_terrainProbe = 0;
+    uint32_t topsDiffer = 0, rowsDiffer = 0;
+    for (size_t c = 0; c < tops.size(); c++) {
+        topsDiffer += tops[c] != g.tTop[c];
+    }
+    // Only the rows filled count: the rest is left from frames before.
+    int bandRows = g.bandRows, cols = g.tCols;
+    for (int c = 0; c < cols; c++) {
+        int from = std::max((int)tops[c], (int)g.tTop[c]), to = g.tFlatTop[c];
+        for (int r = from; r < to; r++) {
+            int b = r / bandRows;
+            size_t at = ((size_t)b * cols + c) * bandRows + (r - b * bandRows);
+            rowsDiffer += tz[at] != g.tz[at];
+        }
+    }
+    out[0] = topsDiffer;
+    out[1] = rowsDiffer;
+    terrainStats(st, true);
+#else
+    memset(out, 0, 4 * sizeof(uint32_t));
+#endif
+}
+
+void terrainEvents(uint32_t out[6]) {
+#if defined(ESP_PLATFORM) && defined(BENCH3D)
+    // The march as it is, then with its heights read from four rows of the
+    // grid, all in the cache: cycles, instructions and samples of each.
+    uint64_t st[8];
+    terrainStats(st, true);
+    for (int probe = 0; probe < 2; probe++) {
+        g_terrainProbe = probe;
+        uint32_t c0, c1, i0, i1;
+        __asm__ volatile("csrr %0, mcycle" : "=r"(c0));
+        __asm__ volatile("csrr %0, minstret" : "=r"(i0));
+        terrainMarch();
+        __asm__ volatile("csrr %0, minstret" : "=r"(i1));
+        __asm__ volatile("csrr %0, mcycle" : "=r"(c1));
+        terrainStats(st, true);
+        out[3 * probe] = c1 - c0;
+        out[3 * probe + 1] = i1 - i0;
+        out[3 * probe + 2] = (uint32_t)st[1];
+    }
+    g_terrainProbe = 0;
+#else
+    memset(out, 0, 6 * sizeof(uint32_t));
+#endif
+}
+
+void terrainStats(uint64_t out[8], bool reset) {
+    for (int i = 0; i < 8; i++) {
+        out[i] = g_terrainStats[0][i] + g_terrainStats[1][i];
+        if (reset) {
+            g_terrainStats[0][i] = g_terrainStats[1][i] = 0;
+        }
+    }
+}
+
 #ifdef BENCH3D
 void spanStats(uint32_t out[6], bool reset) {
     for (int i = 0; i < 6; i++) {
@@ -7914,6 +9172,547 @@ void coverSpan(uint16_t *row, int y, int xa, int xb, uint32_t land, const int ha
     lap(2);
 }
 
+// Where a sample's cell is: the part of a tile it was last read from - its
+// level, where it lies in the walk's units, and its cells - for the next
+// sample, mostly in the same part, to be read straight from them.
+struct CellPart {
+    int level = 1 << 20;
+    float u0 = 0, v0 = 0, u1 = -1, v1 = -1;  // the part, in units of the level
+    float split = 1, ku = 0, kv = 0;         // units a tile, and cells a unit
+    const uint8_t *cells = nullptr;
+    int stride = 0, cols1 = 0, rows1 = 0;
+};
+
+// The pack's cell at (u, v) on the cover's grid, read at `level` - or, where
+// the tile hasn't that level in, the finest it has that is coarser: as
+// coverWalk() reads its cells, for one point - from `part` when it holds
+// the place, else found and kept there. -1 off the tiles.
+HOT_INLINE int cellAt(const groundpack::Window &W, float u, float v, int level, CellPart &part) {
+    if (level == part.level) {
+        float uu = u * part.split, vv = v * part.split;
+        if (uu >= part.u0 && uu < part.u1 && vv >= part.v0 && vv < part.v1) {
+            int col = std::min(part.cols1, (int)((uu - part.u0) * part.ku)),
+                row = std::min(part.rows1, (int)((vv - part.v0) * part.kv));
+            return part.cells[row * part.stride + col];
+        }
+    }
+    int sBits = level <= 0 ? 1 - level : 0;  // units, 2^sBits to a tile each way
+    float split = (float)(1 << sBits), uu = u * split, vv = v * split;
+    int tu = floorInt(uu), tv = floorInt(vv), su = tu >> sBits, sv = tv >> sBits;
+    if ((unsigned)su >= (unsigned)W.cols || (unsigned)sv >= (unsigned)W.rows) {
+        return -1;
+    }
+    int slot = sv * W.cols + su, c0 = groundpack::cols0At(W.north + sv);
+    const uint8_t *cells = nullptr;
+    int at = level;
+    for (;; at++) {
+        if (at < 0) {
+            cells = W.finer[-1 - at][slot];
+        } else if (at == 0) {
+            cells = W.detail[slot];
+        } else if (at < groundpack::LEVELS - 1) {
+            if (const uint8_t *mid = W.mid[slot]) {
+                constexpr int R1 = groundpack::ROWS0 >> 1;
+                int c1 = c0 >> 1;
+                cells = mid + (at >= 2 ? R1 * c1 : 0) + (at >= 3 ? (R1 >> 1) * (c1 >> 1) : 0);
+            }
+        } else {
+            cells = W.coarse[slot];
+        }
+        if (cells != nullptr || at >= groundpack::LEVELS - 1) {
+            break;
+        }
+    }
+    if (cells == nullptr || c0 == 0) {
+        return -1;
+    }
+    int pBits = at <= 0 ? 1 - at : 0;  // its parts, 2^pBits each way
+    int stride = at <= 0 ? c0 >> 1 : c0 >> at, rows = at <= 0 ? groundpack::ROWS0 >> 1 : groundpack::ROWS0 >> at;
+    int k = sBits - pBits;
+    int pu = (tu >> k) & ((1 << pBits) - 1), pv = (tv >> k) & ((1 << pBits) - 1);
+    cells += (size_t)((pv << pBits) + pu) * rows * stride;
+    float span = (float)(1 << k);
+    part.level = level;
+    part.split = split;
+    part.u0 = (float)((tu >> k) << k);
+    part.v0 = (float)((tv >> k) << k);
+    part.u1 = part.u0 + span;
+    part.v1 = part.v0 + span;
+    part.ku = stride / span;
+    part.kv = rows / span;
+    part.cells = cells;
+    part.stride = stride;
+    part.cols1 = stride - 1;
+    part.rows1 = rows - 1;
+    int col = std::min(stride - 1, std::max(0, (int)((uu - part.u0) * part.ku))),
+        row = std::min(rows - 1, std::max(0, (int)((vv - part.v0) * part.kv)));
+    return cells[row * stride + col];
+}
+
+// The level a sample at depth z is read at: the finest whose cells are four
+// pixels or more - a sample - wide there, from z's own exponent: level L's
+// cells reach a sample at depth tLevelZ[L].
+HOT_INLINE int levelFor(float z) {
+    float q = z * d.tLevelPer;  // 1 at the finest level's reach
+    uint32_t b;
+    memcpy(&b, &q, 4);
+    int e = (int)(b >> 23) - 127 + ((b & 0x7FFFFF) != 0);  // ceil(log2 q)
+    return std::min(groundpack::LEVELS - 1, std::max(groundpack::FINEST, groundpack::FINEST + e));
+}
+
+// Rows [y0, y1) of a band's land at its height - see terrainMarch(): column
+// by column, each column's rows from where it first meets the land, its
+// depths read in order; the cell its depth puts there read every second
+// row and kept for the row under it - a cell is two rows or more tall
+// wherever it is four pixels wide or more - lit and hazed for its
+// distance, four pixels of it a row; the row's own colours where the pack
+// has nothing. Rows an airfield's flat ground fills right across are the
+// flat ground's, drawn as it is.
+// Where a column's samples are reading the cover: a part of a tile at one
+// level, its cells as straight lines from the grid - col = u au + bu, row =
+// v av + bv, a 1024 added so that a cast is a floor - and the depths that
+// level is read over: a sample there, and inside, is a cell in two
+// multiply-adds, two casts and two compares.
+struct CellMap {
+    float zLo = INFINITY, zHi = 0;  // (zLo, zHi]: none yet
+    float au = 0, bu = 0, av = 0, bv = 0;
+    const uint8_t *cells = nullptr;
+    int cols = 0, rows = 0, stride = 0;
+};
+
+// The cell at (u, v) at depth z found the long way - cellAt() - and the map
+// made from where it was; -1 off the tiles.
+__attribute__((noinline)) int cellSlow(const groundpack::Window &W, float u, float v, float z, CellMap &map,
+                                       CellPart &part) {
+    int level = levelFor(z);
+    int cell = cellAt(W, u, v, level, part);
+    if (cell < 0 || part.level != level || part.cells == nullptr) {
+        map.zLo = INFINITY;
+        return cell;
+    }
+    // The depths levelFor() reads this level over, to the float: z
+    // tLevelPer up to 2^e, e its level's from the finest, the largest z
+    // whose product is no more - found by ulps from 2^e / tLevelPer - so
+    // that every depth the map takes is one levelFor() puts at its level.
+    // A ulp out, a bfloat16 depth shared by a patch of the far land read
+    // the map's level by one route and the next level by the other.
+    const float per = d.tLevelPer;
+    auto edge = [per](int e) {
+        float q = ldexpf(1.0f, e), z = q / per;
+        while (z * per > q) {
+            z = nextafterf(z, 0.0f);
+        }
+        while (nextafterf(z, INFINITY) * per <= q) {
+            z = nextafterf(z, INFINITY);
+        }
+        return z;
+    };
+    map.zLo = level == groundpack::FINEST ? 0 : edge(level - groundpack::FINEST - 1);
+    map.zHi = level == groundpack::LEVELS - 1 ? INFINITY : edge(level - groundpack::FINEST);
+    map.au = part.split * part.ku;
+    map.bu = 1024 - part.u0 * part.ku;
+    map.av = part.split * part.kv;
+    map.bv = 1024 - part.v0 * part.kv;
+    map.cells = part.cells;
+    map.cols = part.cols1 + 1;
+    map.rows = part.rows1 + 1;
+    map.stride = part.stride;
+    // And the cell as the map reads it, where it reads this one: the same
+    // place one cell or the other, whichever sample came to the part first.
+    int col = (int)fmaf(u, map.au, map.bu) - 1024, row = (int)fmaf(v, map.av, map.bv) - 1024;
+    if (z > map.zLo && z <= map.zHi && (unsigned)col < (unsigned)map.cols && (unsigned)row < (unsigned)map.rows) {
+        return map.cells[row * map.stride + col];
+    }
+    return cell;
+}
+
+// A column of a band's land as terrainBand() draws it, and as
+// scene3d_terrain_rows (scene3d_terrain.S) does the most of it: the column,
+// the band's rows, where on the cover's grid its depths put the land, the
+// cell map, and each parity of row's last pair of pixels and what they
+// were for. Its offsets are the assembly's.
+struct TerrainCol {
+    uint32_t *px;            // 0: row y's four pixels, two pairs
+    const uint16_t *zc;      // 4: 1 / depth by row, bfloat16 - zc[y]
+    int y, yb, flatTop;      // 8, 12, 16: the next row, the one after the last, the airfield's flat ground's first
+    int stride;              // 20: a row's bytes
+    float cu, cv, ue, ve;    // 24, 28, 32, 36: u = ue + z (rowU[y] + cu), v likewise
+    const float *rowU;       // 40
+    const float *rowV;       // 44
+    const float *rowFar;     // 48
+    const float *flatZ;      // 52
+    const uint8_t *haze;     // 56: by the distance's float bits >> 21
+    float zLo, zHi;          // 60, 64: the cell map - see CellMap
+    float au, bu, av, bv;    // 68, 72, 76, 80
+    const uint8_t *cells;    // 84
+    int cols, rows, mapStride;  // 88, 92, 96
+    uint32_t keyE, pairE, keyO, pairO;  // 100, 104, 108, 112: cell | haze << 8, and its pair, each parity's
+    uint32_t samples;        // 116
+    TerrainPairs *pairs[2];  // 120, 124: each parity's cache of pairs
+    // The band's, for the assembly to go from column to column itself.
+    int c, bandCols;         // 128, 132: the column it goes on from, and how many
+    int y0;                  // 136: the band's first row
+    const uint32_t *topFlat; // 140: each column's highest row of land | its flat top << 16
+    const float *colUV;      // 144: each column's cu and cv
+    int rowAt;               // 148: the row - a pair's even, or an odd one alone - it goes on from
+    const uint16_t *zs;      // 152: the band's 1 / depths, column by column
+    int bandBytes;           // 156: a column's of them, bandRows * 2
+    uint32_t *color;         // 160: the band's row y0, x nought
+    // A pair of pixels not in the cache, worked out as pairInt() does.
+    const uint8_t *coverRgb; // 164: each cell's colour, lit
+    const int *hazeColor;    // 168: the haze's
+    int swap;                // 172: bytes swapped for the panel
+    uint32_t misses;         // 176: pairs worked out
+    float mapU[6], mapV[6];  // 180, 204: round, where on the grid a place dx east and dy north is
+};
+#if defined(ESP_PLATFORM)
+static_assert(offsetof(TerrainCol, flatZ) == 52 && offsetof(TerrainCol, haze) == 56 &&
+                  offsetof(TerrainCol, cells) == 84 && offsetof(TerrainCol, keyE) == 100 &&
+                  offsetof(TerrainCol, samples) == 116 && offsetof(TerrainCol, pairs) == 120,
+              "scene3d_terrain.S has TerrainCol's fields where these are");
+static_assert(offsetof(TerrainPairs, key) == 4 && offsetof(TerrainPairs, pair) == 260,
+              "scene3d_terrain.S has TerrainPairs' fields where these are");
+static_assert(offsetof(TerrainCol, c) == 128 && offsetof(TerrainCol, topFlat) == 140 &&
+                  offsetof(TerrainCol, rowAt) == 148 && offsetof(TerrainCol, color) == 160 &&
+                  offsetof(TerrainCol, coverRgb) == 164 && offsetof(TerrainCol, misses) == 176 &&
+                  offsetof(TerrainCol, mapU) == 180 && offsetof(TerrainCol, mapV) == 204,
+              "scene3d_terrain.S has TerrainCol's fields where these are");
+#endif
+
+// The map's fields in t, from `map`, and back.
+HOT_INLINE void mapInto(TerrainCol &t, const CellMap &map) {
+    t.zLo = map.zLo;
+    t.zHi = map.zHi;
+    t.au = map.au;
+    t.bu = map.bu;
+    t.av = map.av;
+    t.bv = map.bv;
+    t.cells = map.cells;
+    t.cols = map.cols;
+    t.rows = map.rows;
+    t.mapStride = map.stride;
+}
+
+// Row y's pair of pixels for `key`, from the parity's cache - worked out and
+// kept there if it isn't in it - and remembered as the parity's last.
+HOT_INLINE uint32_t pairFor(TerrainCol &t, uint32_t key, int y, const int haze[3], uint32_t &misses) {
+    uint32_t &lastKey = y & 1 ? t.keyO : t.keyE, &lastPair = y & 1 ? t.pairO : t.pairE;
+    if (key != lastKey) {
+        TerrainPairs &tp = *t.pairs[y & 1];
+        int cell = key & 255, hz = key >> 8;
+        int slot = (cell ^ hz * 37) & 127;
+        if (tp.key[slot] != key) {
+            tp.key[slot] = (uint16_t)key;
+            tp.pair[slot] = pairInt(d.coverRgb[cell], haze, hz << 3, y);
+            misses++;
+        }
+        lastKey = key;
+        lastPair = tp.pair[slot];
+    }
+    return lastPair;
+}
+
+// The rows of t's column from t.y the plain way: the sample at t.y - its
+// depth, where on the cover that puts it, its cell and haze - drawn on
+// `rows` rows from t.y. What the assembly hands back where it can't go on:
+// another part of the cover.
+template <bool ROUND>
+HOT_INLINE void terrainSampleC(TerrainCol &t, int rows, CellMap &map, CellPart &part, const groundpack::Window &W,
+                               const int haze[3], uint32_t &longWay, uint32_t &misses) {
+    int y = t.y;
+    float z = y >= t.flatTop ? t.flatZ[y] : 1 / fromBf16(t.zc[y]), u, v;
+    if (!ROUND) {
+        u = t.ue + z * (t.rowU[y] + t.cu);
+        v = t.ve + z * (t.rowV[y] + t.cv);
+    } else {
+        // Fused as scene3d_terrain_band_round fuses it, to the bit.
+        float dx = z * (t.rowU[y] + t.cu), dy = z * (t.rowV[y] + t.cv);
+        const float *U = t.mapU, *V = t.mapV;
+        u = fmaf(dy, fmaf(U[5], dy, U[2]), fmaf(dx, fmaf(U[4], dy, fmaf(U[3], dx, U[1])), U[0]));
+        v = fmaf(dy, fmaf(V[5], dy, V[2]), fmaf(dx, fmaf(V[4], dy, fmaf(V[3], dx, V[1])), V[0]));
+    }
+    int col = (int)fmaf(u, t.au, t.bu) - 1024, row = (int)fmaf(v, t.av, t.bv) - 1024, cell;
+    if (z > t.zLo && z <= t.zHi && (unsigned)col < (unsigned)t.cols && (unsigned)row < (unsigned)t.rows) {
+        cell = t.cells[row * t.mapStride + col];
+    } else {
+        longWay++;
+        cell = cellSlow(W, u, v, z, map, part);
+        mapInto(t, map);
+    }
+#ifdef BENCH3D
+    if (g_terrainProbe & 2) {
+        cell = 0x35 + ((int)(u * 64) & 0x40);
+    }
+#endif
+    float dist = z * t.rowFar[y];
+    uint32_t bits;
+    memcpy(&bits, &dist, 4);
+    uint32_t key = (uint32_t)cell | (uint32_t)t.haze[bits >> 21] << 8;
+    t.samples++;
+    if (cell >= 16) {
+        uint32_t *px = t.px;
+        for (int k = 0; k < rows; k++, px = (uint32_t *)((uint8_t *)px + t.stride)) {
+            uint32_t p = pairFor(t, key, y + k, haze, misses);
+            px[0] = p;
+            px[1] = p;
+        }
+    }
+    t.px = (uint32_t *)((uint8_t *)t.px + rows * t.stride);
+    t.y += rows;
+}
+
+#if defined(ESP_PLATFORM)
+// The band's land in assembly, a pair of rows at a time across every
+// column, from row t.rowAt and column t.c: 0 once it is all done, 1 at a
+// sample it can't do - another part of the cover, a pair of pixels not in
+// the cache - with t.y, t.px and the column's own values set for
+// terrainSampleC(), and t.c the column after it. See scene3d_terrain.S.
+extern "C" int scene3d_terrain_band(TerrainCol *t);
+// The same for the round cover, its grid's place worked out to the second
+// order. And both four rows a sample.
+extern "C" int scene3d_terrain_band_round(TerrainCol *t);
+extern "C" int scene3d_terrain_quad(TerrainCol *t);
+extern "C" int scene3d_terrain_quad_round(TerrainCol *t);
+#endif
+
+// Rows [y0, y1) of a band's land at its height - see terrainMarch(): column
+// by column, each column's rows from where it first meets the land, its
+// depths read in order; the cell its depth puts there read every second
+// row and kept for the row under it - a cell is two rows or more tall
+// wherever it is four pixels wide or more - lit and hazed for its
+// distance, four pixels of it a row; the row's own colours where the pack
+// has nothing. Rows an airfield's flat ground fills right across are the
+// flat ground's, drawn as it is; above them, a column's own rows of it have
+// their depths from the plane. The pairs of rows in assembly, flat; what
+// it can't do, and round, here.
+void terrainBand(uint16_t *color, int y0, int y1, const int haze[3]) {
+    int yb = std::min(y1, d.tFlatAll);
+    if (y0 >= yb) {
+        return;
+    }
+    int core = coreNow();
+    uint64_t *stats = g_terrainStats[core];
+    uint32_t clock = cycles();
+#if defined(ESP_PLATFORM) && defined(BENCH3D)
+    uint32_t instret0;
+    __asm__ volatile("csrr %0, minstret" : "=r"(instret0));
+#endif
+    CACHE_BEGIN(cacheAtStart);
+    TerrainCol t;
+    t.pairs[0] = &g_terrainPairs[core * 2];
+    t.pairs[1] = &g_terrainPairs[core * 2 + 1];
+    for (TerrainPairs *tp : t.pairs) {
+        if (tp->serial != d.serial) {
+            tp->serial = d.serial;
+            memset(tp->key, 0xFF, sizeof tp->key);
+        }
+    }
+    const groundpack::Window &W = *d.cover.window;
+    const bool round = d.tRound;
+    int cols = d.tCols, bandRows = d.bandRows;
+    t.stride = d.w * 2;
+    t.ue = d.tUe;
+    t.ve = d.tVe;
+    t.rowU = d.tRowU.data();
+    t.rowV = d.tRowV.data();
+    t.rowFar = d.tRowFar.data();
+    t.flatZ = d.tFlatZ.data();
+    t.haze = d.tHaze;
+    t.samples = 0;
+    const int16_t *tops = d.tTop.data();
+    const uint16_t *zs = d.tz.data() + (size_t)(y0 / bandRows) * cols * bandRows;  // this band's
+    uint32_t longWay = 0, misses = 0;
+    CellPart part;
+    CellMap map;
+    mapInto(t, map);
+    // The rows a sample on row y covers: to the next unit's first row - a
+    // multiple of the unit, whatever band it is in - or the band's end. The
+    // unit 2 or 4, a mask rather than a division.
+    const int unit = d.tUnit;
+    auto rowsFrom = [&](int y) { return std::min((y & -unit) + unit, yb) - y; };
+    if (round) {
+        // Round, the rows' and columns' parts of dx and dy, and the map.
+        t.rowU = d.tRowX.data();
+        t.rowV = d.tRowY.data();
+        memcpy(t.mapU, d.tMapU, sizeof t.mapU);
+        memcpy(t.mapV, d.tMapV, sizeof t.mapV);
+    }
+#if defined(ESP_PLATFORM)
+#ifdef BENCH3D
+    bool inC = g_terrainProbe & 4;  // the bench's check: C alone, to compare
+#else
+    const bool inC = false;
+#endif
+    if (!inC) {
+        // Every column in assembly; what it can't do here, a sample at a
+        // time, and on.
+        t.c = 0;
+        t.bandCols = cols;
+        t.rowAt = y0;
+        t.y0 = y0;
+        t.yb = yb;
+        t.topFlat = d.tTopFlat.data();
+        t.colUV = round ? d.tColXY.data() : d.tColUV.data();
+        t.zs = zs;
+        t.bandBytes = bandRows * 2;
+        t.color = (uint32_t *)color;
+        t.coverRgb = &d.coverRgb[0][0];
+        t.hazeColor = haze;
+        t.swap = g.swap;
+        t.misses = 0;
+        t.keyE = t.keyO = ~0u;
+        uint32_t handed = 0;
+        int (*fn)(TerrainCol *) = unit == 4 ? (round ? scene3d_terrain_quad_round : scene3d_terrain_quad)
+                                            : (round ? scene3d_terrain_band_round : scene3d_terrain_band);
+        while (fn(&t)) {
+            if (round) {
+                terrainSampleC<true>(t, rowsFrom(t.y), map, part, W, haze, longWay, misses);
+            } else {
+                terrainSampleC<false>(t, rowsFrom(t.y), map, part, W, haze, longWay, misses);
+            }
+            handed++;
+        }
+#ifdef BENCH3D
+        g_bandHanded[core] += handed;
+#endif
+        misses += t.misses;
+        cols = 0;
+    }
+#endif
+#if defined(BENCH3D) || !defined(ESP_PLATFORM)
+    // The bench's check of the check: C in the assembly's order - row by
+    // row-pair across every column - for what the order alone changes.
+    bool rowMajor = g_terrainProbe & 16;
+#if !defined(ESP_PLATFORM)
+    rowMajor = rowMajor || getenv("ROW_MAJOR") != nullptr;
+#endif
+    if (rowMajor && unit == 2) {
+        auto at = [&](int c, int y, int rows) {
+            t.zc = zs + (size_t)c * bandRows - y0;
+            t.px = (uint32_t *)color + (size_t)(y - y0) * (d.w / 2) + 2 * c;
+            t.y = y;
+            t.yb = yb;
+            t.flatTop = d.tFlatTop[c];
+            t.cu = round ? d.tColX[c] : d.tColU[c];
+            t.cv = round ? d.tColY[c] : d.tColV[c];
+            if (round) {
+                terrainSampleC<true>(t, rows, map, part, W, haze, longWay, misses);
+            } else {
+                terrainSampleC<false>(t, rows, map, part, W, haze, longWay, misses);
+            }
+        };
+        t.keyE = t.keyO = ~0u;
+        for (int y = y0; y < yb;) {
+            if (y & 1) {
+                for (int c = 0; c < cols; c++) {
+                    if (tops[c] <= y) {
+                        at(c, y, 1);
+                    }
+                }
+                y++;
+                continue;
+            }
+            for (int c = 0; c < cols; c++) {
+                int top = tops[c];
+                if (top > y + 1) {
+                    continue;
+                }
+                if (top == y + 1) {
+                    if (y + 1 < yb) {
+                        at(c, y + 1, 1);
+                    }
+                    continue;
+                }
+                at(c, y, y + 1 < yb ? 2 : 1);
+            }
+            y += 2;
+        }
+        cols = 0;
+    }
+#endif
+    for (int c = 0; c < cols; c++) {
+        int ya = std::max(y0, (int)tops[c]);
+        if (ya >= yb) {
+            continue;
+        }
+        t.zc = zs + (size_t)c * bandRows - y0;  // this band's rows of column c, by row
+        t.px = (uint32_t *)color + (size_t)(ya - y0) * (d.w / 2) + 2 * c;
+        t.y = ya;
+        t.yb = yb;
+        t.flatTop = d.tFlatTop[c];
+        t.cu = round ? d.tColX[c] : d.tColU[c];
+        t.cv = round ? d.tColY[c] : d.tColV[c];
+        t.keyE = t.keyO = ~0u;
+        // A sample on the column's first row, then on each unit's first.
+        while (t.y < yb) {
+            if (round) {
+                terrainSampleC<true>(t, rowsFrom(t.y), map, part, W, haze, longWay, misses);
+            } else {
+                terrainSampleC<false>(t, rowsFrom(t.y), map, part, W, haze, longWay, misses);
+            }
+        }
+    }
+    stats[4] += cycles() - clock;
+    stats[5] += t.samples;
+    stats[6] += longWay;
+    stats[7] += misses;
+#if defined(ESP_PLATFORM) && defined(BENCH3D)
+    uint32_t instret1;
+    __asm__ volatile("csrr %0, minstret" : "=r"(instret1));
+    g_bandInstret[core] += instret1 - instret0;
+#endif
+    CACHE_END(cacheAtStart, g_terrainCache[core] + 4);
+}
+
+// The terrain's depth over rows [y0, y1) of a band, for what stands up from
+// it to be hidden behind it: each fourth pixel's column's, nearer the
+// larger, and nought - infinitely far - where a column has no land. A row
+// all on an airfield's flat ground one depth across.
+void terrainDepth(uint16_t *depth, int y0, int y1) {
+    int w = d.w, cols = d.tCols, stride = w / 2;
+    int yb = std::min(y1, d.tFlatAll);
+    for (int y = std::max(y0, yb); y < y1; y++) {
+        float z = d.tFlatZ[y];
+        uint16_t v = z > 0.5f ? depthOf(1 / z) : 0;
+        fill(depth + (size_t)(y - y0) * w, 0, w, v | (uint32_t)v << 16);
+    }
+    if (y0 >= yb) {
+        return;
+    }
+    fill(depth, 0, w * (yb - y0), 0);  // infinitely far
+    const int16_t *tops = d.tTop.data();
+    int bandRows = d.bandRows;
+    const uint16_t *zs = d.tz.data() + (size_t)(y0 / bandRows) * cols * bandRows;  // this band's
+    float k = d.depthK * 1.002f;
+    // The airfield's flat ground's, a row's alone.
+    uint16_t flat[64];
+    for (int y = y0; y < yb && y - y0 < 64; y++) {
+        float z = d.tFlatZ[y];
+        flat[y - y0] = z > 0.5f ? (uint16_t)std::min(65535.0f, k / z) : 0;
+    }
+    // Bands an even number of rows, the march keeps only the even rows' and
+    // each column's top's: an odd row under it has the even row above's -
+    // a row out at most, nearer by under a row's depth.
+    const bool everyRow = bandRows & 1;
+    for (int c = 0; c < cols; c++) {
+        int ya = std::max(y0, (int)tops[c]), flatTop = d.tFlatTop[c];
+        const uint16_t *zc = zs + (size_t)c * bandRows - y0;
+        uint32_t *px = (uint32_t *)depth + (size_t)(ya - y0) * stride + 2 * c;
+        uint32_t v = 0;
+        for (int y = ya; y < yb; y++, px += stride) {
+            if (y >= flatTop) {
+                v = flat[y - y0];
+                v |= v << 16;
+            } else if (everyRow || !(y & 1) || y == ya) {
+                v = (uint32_t)std::min(65535.0f, k * fromBf16(zc[y]));
+                v |= v << 16;
+            }
+            px[0] = v;
+            px[1] = v;
+        }
+    }
+}
+
 #ifdef BENCH3D
 void coverMicro(int w, int h, const Scene &scene, const Camera &camera, uint32_t out[4]) {
     for (int i = 0; i < 4; i++) {
@@ -8077,8 +9876,10 @@ void drawBandInto(int band, uint16_t *color, uint16_t *depth, uint32_t *stageUs)
 
     for (int y = y0; y < y1; y++) {
         uint16_t *row = color + (size_t)(y - y0) * w;
-        // Land in what covers it, where the view has the ground pack.
-        bool covered = d.coverOn && d.rowGround[y] && (!d.cover.round || d.rowCover[y >> 1].level != Frame::NO_LEVEL);
+        // Land in what covers it, where the view has the ground pack - and
+        // has it flat: at its height, the terrain's, over the row below.
+        bool covered = d.coverOn && (!d.terrainOn || y >= d.tFlatAll) && d.rowGround[y] &&
+                       (!d.cover.round || d.rowCover[y >> 1].level != Frame::NO_LEVEL);
         if (!d.landSea || !d.rowGround[y]) {
             if (covered && d.rowGround[y] && !d.cover.round) {
                 coverSpan(row, y, 0, w, d.rowColor[y], haze);  // an airfield inland: all of it land
@@ -8119,6 +9920,9 @@ void drawBandInto(int band, uint16_t *color, uint16_t *depth, uint32_t *stageUs)
             }
         }
         stretch(w);
+    }
+    if (d.terrainOn) {
+        terrainBand(color, y0, y1, haze);
     }
     stage(0);
 
@@ -8167,10 +9971,14 @@ void drawBandInto(int band, uint16_t *color, uint16_t *depth, uint32_t *stageUs)
                 lb.start[band] < lb.start[band + 1] || cb.start[band] < cb.start[band + 1] ||
                 db.start[band] < db.start[band + 1];
     if (deep) {
-        fill(depth, 0, w * rows, 0);  // infinitely far - eight to a PIE store, not memset's one word
+        if (d.terrainOn) {
+            terrainDepth(depth, y0, y1);  // the land's, where it has a height
+        } else {
+            fill(depth, 0, w * rows, 0);  // infinitely far - eight to a PIE store, not memset's one word
+        }
     }
-    // The hills along the skyline, over the sky and the far land - a range
-    // at a time, the furthest first - and over the ground's paint and
+    // The hills along the skyline, over the sky and the far land - and over
+    // the ground's paint and
     // shadows, which are behind a hill wherever one is drawn over them: a
     // point of the ground as far off as a hill's foot is on the foot's row,
     // and further off, above it. With their depth, so that what is drawn
@@ -8211,17 +10019,52 @@ void drawBandInto(int band, uint16_t *color, uint16_t *depth, uint32_t *stageUs)
 #endif
     // See-through: contrails, and turning blades' blur, where nothing nearer
     // is - what is behind tinted so many eighths of the way to its colour,
-    // the depth left as it was.
+    // the depth left as it was. The depth scale is set by what stands, not
+    // by these: a trail going by the eye is nearer than any of it, past the
+    // top of 16 bits - which went round to nought, behind the sky, and
+    // dropped each span's first pixel, a dark line down the trail. Nearer
+    // than the scale reaches, its depth is held at the top, in front of
+    // everything, as it is; and steep across the screen - edge on, close -
+    // held level, so no chunk of eight runs it past 16 bits either.
+    constexpr float FRONT = DEPTH_TOP, STEEP = 64;
     for (uint32_t k = cb.start[band]; k < cb.start[band + 1]; k++) {
         uint32_t at = cb.index[k];
         const ScreenTri &t = (*d.clearLists[at >> LIST_SHIFT])[at & PLACE_MASK];
-        Tinter tinter((int32_t)(t.za * fixed), d.swap ? (uint16_t)(t.color >> 8 | t.color << 8) : t.color, t.lit[0]);
+        uint16_t tc = d.swap ? (uint16_t)(t.color >> 8 | t.color << 8) : t.color;
+        float perPixel = t.za * d.depthK;
+        bool steep = fabsf(perPixel) > STEEP;
+        Tinter tinter(steep ? 0 : (int32_t)(t.za * fixed), tc, t.lit[0]), level(0, tc, t.lit[0]);
         raster(t, y0, y1, [&](int y, int xs, int xe) {
 #if defined(BENCH3D) && defined(ESP_PLATFORM)
             seeStats[1] += xe - xs;
 #endif
-            int32_t from = std::max<int32_t>(0, (int32_t)((t.za * (xs + 0.5f) + t.zb * (y + 0.5f) + t.zc) * fixed));
-            tint(color + (size_t)(y - y0) * w, depth + (size_t)(y - y0) * w, xs, xe, from, tinter);
+            uint16_t *c = color + (size_t)(y - y0) * w, *z = depth + (size_t)(y - y0) * w;
+            // Its depth at xs, and where along the span it reaches FRONT -
+            // [xs, xf) below it and [xf, xe) at it, or the other way round
+            // coming nearer leftwards. A step nearer than it is, so the
+            // chunks' sums - rounded down once and rounded down again -
+            // never come out under nought where it is right on it.
+            float d0 = (t.za * (xs + 0.5f) + t.zb * (y + 0.5f) + t.zc) * d.depthK + 1;
+            auto fixedAt = [&](float depthThere) { return (int32_t)(std::max(0.0f, depthThere) * 65536.0f); };
+            if (steep) {
+                float middle = d0 + perPixel * (xe - xs - 1) * 0.5f;
+                tint(c, z, xs, xe, fixedAt(std::min(FRONT, middle)), level);
+                return;
+            }
+            float d1 = d0 + perPixel * (xe - xs - 1);
+            if (std::max(d0, d1) < FRONT) {
+                tint(c, z, xs, xe, fixedAt(d0), tinter);
+            } else if (std::min(d0, d1) >= FRONT) {
+                tint(c, z, xs, xe, fixedAt(FRONT), level);
+            } else if (perPixel > 0) {
+                int xf = std::min(xe, xs + (int)ceilf((FRONT - d0) / perPixel));
+                tint(c, z, xs, xf, fixedAt(d0), tinter);
+                tint(c, z, xf, xe, fixedAt(FRONT), level);
+            } else {
+                int xf = std::min(xe, xs + (int)floorf((FRONT - d0) / perPixel) + 1);
+                tint(c, z, xs, xf, fixedAt(FRONT), level);
+                tint(c, z, xf, xe, fixedAt(d0 + perPixel * (xf - xs)), tinter);
+            }
         });
     }
 #if defined(BENCH3D) && defined(ESP_PLATFORM)
@@ -8403,6 +10246,22 @@ bool projectPoint(Vec3 p, float &x, float &y) {
     x = d.cx + d.f * c.x / c.z;
     y = d.cy + d.f * c.y / c.z;
     return true;
+}
+
+bool skylineDrawn(Vec3 &eye, Vec3 &right, Vec3 &down, Vec3 &forward, float &f, float &cx, float &cy,
+                  const int16_t *&top, const int16_t *&foot, int &width) {
+    eye = d.eye;
+    right = d.right;
+    down = d.down;
+    forward = d.forward;
+    f = d.f;
+    cx = d.cx;
+    cy = d.cy;
+    width = d.w;
+    const Frame::HillRange &range = d.hills[0];
+    top = range.from;
+    foot = range.to;
+    return range.on && top != nullptr && foot != nullptr;
 }
 
 // --- the landing and the traffic ---------------------------------------------------
@@ -9142,8 +11001,41 @@ constexpr float STEEPEST_GLIDE = 5.5f * DEG;
 // Its main wheels down, the nose held up this long, then lowered onto its
 // wheel over this.
 constexpr float NOSE_HELD_S = 1.5f, NOSE_LOWERED_S = 3;
+// Taking off, the nose raised no quicker than a pilot rotates, to the
+// attitude it lifts off at: an airliner's, a fast jet's.
+constexpr float ROTATE_RATE = 3 * DEG, LIFT_PITCH = 8 * DEG, FAST_LIFT_PITCH = 11 * DEG;
 
 namespace {
+// The speed it rotates at, by its kind, over the ground as the feed has it -
+// a little under the airspeed, into the wind: a light aircraft's 55 knots,
+// a narrowbody's 135, a jumbo's 155. The runway simulation lifts every one
+// off at 145, by when a narrowbody, rotating at three degrees a second, has
+// its nose up.
+float rotateKt(Family family) {
+    switch (family) {
+    case F::LIGHT_HIGH:
+    case F::LIGHT_LOW: return 55;
+    case F::TURBOPROP_LOW: return 95;
+    case F::TURBOPROP:
+    case F::TACTICAL_TWIN:
+    case F::HERCULES:
+    case F::ATLAS: return 105;
+    case F::BUSINESS_JET:
+    case F::JET_TRAINER:
+    case F::QUAD_HIGH: return 115;
+    case F::REGIONAL_JET:
+    case F::AIRLIFTER: return 125;
+    case F::FIGHTER_DELTA:
+    case F::FIGHTER:
+    case F::FIGHTER_SINGLE: return 140;
+    case F::WIDEBODY:
+    case F::WIDEBODY_4:
+    case F::SUPERJUMBO: return 145;
+    case F::JUMBO: return 155;
+    default: return 135;
+    }
+}
+
 // Coming down to land, by its descent - or, in the last few metres, by its not
 // climbing: the flare itself all but stops the descent, and a report in it -
 // 180ft a minute at 8m - would put the nose down onto the runway.
@@ -9172,8 +11064,13 @@ float landingPitch(Family family, float speedKt, float climbFpm, float heightM, 
     return pitch + (std::max(pitch, touch) - pitch) * u * u * (3 - 2 * u);
 }
 
+float liftOffPitch(Family family) {
+    bool fast = family == F::FIGHTER_DELTA || family == F::FIGHTER || family == F::FIGHTER_SINGLE;
+    return fast ? FAST_LIFT_PITCH : LIFT_PITCH;
+}
+
 void Pilot::fly(float dt, Family family, float turnRate, float speedKt, float climbFpm, bool onGround,
-                float heightM) {
+                float heightM, bool departing) {
     if (dt <= 0) {
         return;
     }
@@ -9244,6 +11141,15 @@ void Pilot::fly(float dt, Family family, float turnRate, float speedKt, float cl
     if (!onGround && !rotor) {
         pitchTarget_ = landingPitch(family, speedKt, climbFpm, heightM, pitchTarget_);
     }
+    // Taking off: rotated at its kind's speed for it, the nose raised to the
+    // attitude it lifts off at while its main wheels still roll - it stayed
+    // level till the feed had it off the ground - and held up there at
+    // least as it climbs away, till its climb as reported catches up: a
+    // climb's first reports lag it, and the nose dipped as it left.
+    bool rotating = departing && !rotor && onGround && speedKt >= rotateKt(family) && accel_ > -1;
+    if (rotating || (departing && !rotor && !onGround)) {
+        pitchTarget_ = std::max(pitchTarget_, liftOffPitch(family));
+    }
     float was = pitch;
     // Landed: its main wheels on, the nose held up, then lowered onto its
     // wheel - not dropped with the rest of its pitch.
@@ -9265,7 +11171,8 @@ void Pilot::fly(float dt, Family family, float turnRate, float speedKt, float cl
     } else {
         // Quicker in the flare: it has only a few seconds.
         bool flaring = !onGround && heightM < FLARE_M && comingIn(climbFpm, heightM);
-        pitch += (pitchTarget_ - pitch) * (1 - expf(-dt / (flaring ? 0.6f : 1.2f)));
+        float eased = pitch + (pitchTarget_ - pitch) * (1 - expf(-dt / (flaring ? 0.6f : 1.2f)));
+        pitch = rotating ? std::min(eased, pitch + ROTATE_RATE * dt) : eased;
     }
     float pitchRate = (pitch - was) / dt;
     elevator = std::max(-1.0f, std::min(1.0f, pitchRate / (4 * DEG) + (load - 1) * 1.5f));

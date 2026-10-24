@@ -143,9 +143,10 @@ class Pilot {
   public:
     // `turnRate` in radians a second, positive to the left - as a heading
     // goes - over `dt` seconds since the last; `heightM` above the ground
-    // under it, NAN when that isn't known.
+    // under it, NAN when that isn't known; `departing` on its take-off roll
+    // and climb-out, rotated for.
     void fly(float dt, Family family, float turnRate, float speedKt, float climbFpm, bool onGround,
-             float heightM = NAN);
+             float heightM = NAN, bool departing = false);
     float roll = 0, pitch = 0;  // radians, as a Pose has them
     float aileron = 0, elevator = 0, rudder = 0;
 
@@ -155,6 +156,10 @@ class Pilot {
     bool wasGround_ = true;
     float touchPitch_ = 0, sinceTouch_ = -1;  // the nose as the wheels touched, and how long since
 };
+
+// The nose as it lifts off, taking off, rotated to: an airliner's 8
+// degrees, a fast jet's 11.
+float liftOffPitch(Family family);
 
 // The nose of one coming in to land, given `pitch` along its way down and a
 // few degrees above it: higher on the approach - slow, its flaps out, its
@@ -232,6 +237,10 @@ struct Scene {
     // frame-rate governor turns up when frames run long. The one followed is
     // always drawn in full.
     float detailPx = 60, tinyPx = 12;
+    // How much the land at its height may skimp, 0 to 1, as the frame-rate
+    // governor sets it: from steps a fortieth further each, half a grid cell
+    // at least, out to 100km, to a twentieth, a whole cell, and 70km.
+    float terrainEffort = 0;
     // High up: the ground the sphere it is, `earthRadius` metres round, its
     // middle that far under the origin - 0 for an airfield's flat ground; how
     // far one can see, 0 for what the light makes it; from each aircraft
@@ -247,6 +256,13 @@ struct Scene {
     bool landAndSea = false;
     // What covers the land - see GroundCover - or none, the land one colour.
     GroundCover cover;
+    // The land at its height, from the cover's window: its hills, near and
+    // far, from any height - the view's ground at `groundUpM` above the sea,
+    // an airfield's held level round it. Off, the land flat and the hills a
+    // skyline.
+    bool terrain = false;
+    float groundUpM = 0;
+    const groundpack::TerrainGrid *terrainGrid = nullptr;  // its heights; none, no terrain
     // The skyline - the hills along the horizon - from the ground pack's
     // horizon round the eye (see groundpack::Horizon), or nullptr for none.
     // `horizonTurn` how far north at the eye is turned from the view's
@@ -410,6 +426,42 @@ void setSimd(bool on);
 // Where a point in the world is in the frame prepared, for a label to go by
 // it; false if it is behind the eye.
 bool projectPoint(Vec3 p, float &x, float &y);
+
+// The frame prepared's camera - its eye, which ways are right, down and
+// ahead, and its focal length and middle in pixels - and the rows its
+// skyline's hills are drawn from and to, each column's; false with no hills
+// in it. For checking them against the land's heights (##D).
+bool skylineDrawn(Vec3 &eye, Vec3 &right, Vec3 &down, Vec3 &forward, float &f, float &cx, float &cy,
+                  const int16_t *&top, const int16_t *&foot, int &width);
+
+// The terrain's costs since the last reset, both cores': the march's
+// cycles, samples, rows filled and blocks skipped; the drawing's cycles,
+// samples, cells found the long way and colours worked out.
+void terrainStats(uint64_t out[8], bool reset);
+// On the bench, the caches' data hits and misses over the march (L1 hits,
+// misses, L2 hits, misses) and over the drawing (likewise), both cores'.
+void terrainCache(uint64_t out[8], bool reset);
+// On the bench: 1 the march's heights read from one corner of the grid, 2
+// the drawing's cells made up, 3 both, 0 neither - what memory costs them.
+void terrainProbe(int which);
+// On the bench: the march of the frame being prepared run again - as it is,
+// then with its heights all from the cache - its cycles, instructions and
+// samples each time.
+void terrainEvents(uint32_t out[6]);
+// On the bench: the march of the frame being prepared in assembly and in C
+// alone - how many columns' tops and rows' depths differ, and the cycles of
+// each.
+void terrainMarchCheck(uint32_t out[4]);
+// On the bench: the last march's samples by the way they went - see
+// scene3d.cpp's MarchCounts.
+void terrainPaths(uint32_t out[7]);
+// On the bench: the instructions the land's bands have taken since last
+// asked.
+uint64_t terrainBandInstructions();
+// On the bench: the samples the bands' assembly has left for C since last
+// asked.
+uint64_t terrainBandHanded();
+
 
 // Where labels for the traffic go in the frame drawn: a point over each
 // aircraft in view and not hidden behind a nearer one, nearest first - its

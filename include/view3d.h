@@ -128,6 +128,15 @@ void sweep(uint32_t seconds);
 // As though a camera button were pressed: 'c' CINEMA, 'h' CHASE, 'o' ORBIT,
 // 't' TOWER, '+' ZOOM IN, '-' ZOOM OUT.
 void benchPress(char what);
+// The camera and the skyline's hills as drawn, column by column, on the
+// serial port - for checking them against the land's heights.
+void dumpSkyline();
+// The land at its height, or flat with the hills a skyline - each time the
+// other (##m).
+void toggleTerrain();
+// On the bench (##i and a digit): what the terrain's memory costs it - see
+// scene3d::terrainProbe().
+void terrainProbe(int which);
 // The aircraft a tap on the picture would open the details of - another than
 // the one followed, if any is labelled - false if there is none.
 bool benchTap(String &hex);

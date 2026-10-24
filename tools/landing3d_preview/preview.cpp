@@ -4,7 +4,7 @@
 // aircraft and the beacon in the device's own font. Build (once the firmware
 // has been, for the font it fetches) and run, from the repo's root:
 //
-//   g++ -std=c++17 -O2 -Iinclude -I.pio/libdeps/tab5/M5GFX/src/lgfx/Fonts tools/landing3d_preview/preview.cpp src/scene3d.cpp src/airfield_pack.cpp src/labels3d.cpp src/coast.cpp src/scenery.cpp -o /tmp/landing3d
+//   g++ -std=c++17 -O2 -Iinclude -I.pio/libdeps/tab5/M5GFX/src/lgfx/Fonts tools/landing3d_preview/preview.cpp src/scene3d.cpp src/airfield_pack.cpp src/labels3d.cpp src/coast.cpp src/scenery.cpp src/ground_pack.cpp -lz -o /tmp/landing3d
 //   /tmp/landing3d chase /tmp/frames 15
 //   ffmpeg -framerate 15 -i /tmp/frames/%04d.ppm -pix_fmt yuv420p /tmp/landing.mp4
 //
@@ -14,7 +14,8 @@
 // just that one frame ("-" for them all), day, dusk or night, and an airport
 // by its IATA code with the runway landed on and the one departed from -
 // "LHR 27L 27R" - built from the firmware's own runway and navaid tables,
-// and its real taxiways, stands and buildings with AIRFIELDS=airfields.bin.
+// and its real taxiways, stands and buildings with AIRFIELDS=airfields.bin;
+// what covers the land round it, and its hills, with GROUND=ground.bin.
 #include <cctype>
 #include <chrono>
 #include <ctime>
@@ -28,6 +29,7 @@
 
 #include "airfield_pack.h"
 #include "coast.h"
+#include "ground_pc.h"
 #include "scene3d.h"
 #include "scenery.h"
 
@@ -130,6 +132,20 @@ void trafficLabels(const labels3d::Candidate *candidates, int count, labels3d::R
     labels3d::stamp(image.data(), 0, H, W, placed, n, 0xFFFF, 0x3F4F);  // white, and the radar's blip green
 }
 
+// TSTATS=1: each frame's terrain - the march's time, samples, rows filled
+// and blocks skipped; the drawing's time, samples and cells found the long
+// way - on this PC.
+void terrainLine(int frame) {
+    if (!getenv("TSTATS")) {
+        return;
+    }
+    uint64_t t[8];
+    terrainStats(t, true);
+    printf("tstats %04d: march %.0fus %llu samples %llu rows %llu skips; band %.0fus %llu samples %llu long\n", frame,
+           t[0] / 1000.0, (unsigned long long)t[1], (unsigned long long)t[2], (unsigned long long)t[3], t[4] / 1000.0,
+           (unsigned long long)t[5], (unsigned long long)t[6]);
+}
+
 void save(const std::string &path) {
     FILE *f = fopen(path.c_str(), "wb");
     if (!f) {
@@ -214,6 +230,7 @@ void sinkScenery(void *context, SceneryKind kind, const double *latLon, int n) {
 // ones only, and its VOR/DMEs within 3km of that; the runway ends named set
 // for the landing and the departures. False if it has no runways.
 double g_lat = 55.8719, g_lon = -4.4331;  // the made-up airfield's: Glasgow's
+float g_fieldM = 8;  // and its height above the sea
 int g_landRunway = 0, g_landEnd = 0, g_departRunway = -1, g_departEnd = 0;
 std::vector<scene3d::Vec3> g_beaconsAt;
 std::vector<std::string> g_beaconNames;
@@ -239,6 +256,7 @@ bool useAirport(const std::string &code, const std::string &land, const std::str
     }
     g_lat = lat0;
     g_lon = lon0;
+    g_fieldM = found[0]->elevationFt * 0.3048f;
     auto local = [&](double lat, double lon) {
         return scene3d::Vec3{(float)((lon - lon0) * 111320.0 * cos(lat0 * M_PI / 180)), (float)((lat - lat0) * 110574.0),
                              0};
@@ -530,7 +548,15 @@ void enroute(const std::string &dir, float fps, float from, float to, const std:
     Pilot pilot;
     // The flight: 450 knots at FL350 on 205, turning right from 20s to 50s
     // at a degree a second, onto 235.
-    const float SPEED = 450 * 0.5144f, FEET = 35000;
+    // FEET=: how high it flies; GROUND=ground.bin and TERRAIN=1 the land
+    // under it, at its height.
+    const float SPEED = 450 * 0.5144f, FEET = getenv("FEET") ? (float)atof(getenv("FEET")) : 35000;
+    static PcGround ground;
+    bool covered = false;
+    if (const char *path = getenv("GROUND")) {
+        covered = ground.load(path, LAT0, LON0, 7);
+        printf(covered ? "ground: %s round %.4f %.4f\n" : "ground: %s didn't load\n", path, LAT0, LON0);
+    }
     auto courseAt = [](float t) { return 205 + std::max(0.0f, std::min(30.0f, t - 20)); };
     // Its track - where it is at t - stepped along from 0.
     auto positionAt = [&](float t, float &e, float &n) {
@@ -581,6 +607,13 @@ void enroute(const std::string &dir, float fps, float from, float to, const std:
         scene.seconds = t;
         scene.earthRadius = 6371000;
         scene.visibility = 140000;
+        if (covered) {
+            scene.cover = roundCover(ground.window, LAT0, LON0);
+            scene.terrain = getenv("TERRAIN") != nullptr;
+            // TERRAIN_EFFORT=: the governor's skimping, 0 to 1, as the device's.
+            scene.terrainEffort = getenv("TERRAIN_EFFORT") ? (float)atof(getenv("TERRAIN_EFFORT")) : 0;
+            scene.terrainGrid = &ground.grid;
+        }
         scene.stemsAbove = 0;
         scene.trailsAbove = 8000;
         scene.landAndSea = getenv("NO_LANDSEA") == nullptr;
@@ -603,6 +636,13 @@ void enroute(const std::string &dir, float fps, float from, float to, const std:
         if (getenv("TOPDOWN")) {
             shot = "top down";
             cam = {{pose.at.x, pose.at.y - 1, pose.at.z + (float)atof(getenv("TOPDOWN"))}, pose.at, 70};
+        } else if (getenv("ORBIT")) {
+            // ORBIT="yaw pitch spans fov": one shot held, as a finger would
+            // leave the orbit camera.
+            float yaw = 0, up = 10, spans = 70, fov = 48;
+            sscanf(getenv("ORBIT"), "%f %f %f %f", &yaw, &up, &spans, &fov);
+            shot = "orbit";
+            cam = orbitCamera(pose, yaw, up, spans * size, fov);
         } else if (phase < 10) {
             shot = "chase";
             cam = orbitCamera(pose, 18 + phase * 2, 9, 70 * size, 48);
@@ -639,6 +679,7 @@ void enroute(const std::string &dir, float fps, float from, float to, const std:
             memcpy(&image[(size_t)y * W], rows, sizeof(uint16_t) * W * std::min(BAND, H - y));
         }
         totalMs += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
+        terrainLine(frame);
         char line[96];
         snprintf(line, sizeof line, "EZY64RT  A320  FL350  450kt  %03.0f  bank %2.0f", courseAt(t),
                  fabsf(pilot.roll) * 180 / (float)M_PI);
@@ -716,6 +757,13 @@ int main(int argc, char **argv) {
     if (argc <= 4 || strcmp(argv[4], "-") == 0) {
         to = departureView ? 95 : landingSeconds();
     }
+    // The ground pack round the airport, all of it read at once.
+    static PcGround ground;
+    bool covered = false;
+    if (const char *path = getenv("GROUND")) {
+        covered = ground.load(path, g_lat, g_lon, 7);
+        printf(covered ? "ground: %s round %.4f %.4f\n" : "ground: %s didn't load\n", path, g_lat, g_lon);
+    }
     static Aircraft parked[400];
     int stands = parkedAtStands(parked, 400), parkedCount = parkedAtStands(parked, 22);
     // The one followed: a BA-blue A320 - or, with a type after the runways,
@@ -770,6 +818,15 @@ int main(int argc, char **argv) {
         scene.trafficCount = parkedCount;
         scene.seconds = t;
         scene.landAndSea = getenv("NO_LANDSEA") == nullptr;  // where there are shores, as view3d
+        if (covered) {
+            scene.cover = flatCover(ground.window, g_lat, g_lon);
+            // TERRAIN=1: the land at its height.
+            scene.terrain = getenv("TERRAIN") != nullptr;
+            // TERRAIN_EFFORT=: the governor's skimping, 0 to 1, as the device's.
+            scene.terrainEffort = getenv("TERRAIN_EFFORT") ? (float)atof(getenv("TERRAIN_EFFORT")) : 0;
+            scene.groundUpM = g_fieldM;
+            scene.terrainGrid = &ground.grid;
+        }
         // "now" is the real sun over the airport at this moment; a number, the
         // sun that many hours after midnight UTC today.
         if (time == "now" || isdigit((unsigned char)time[0])) {
@@ -848,6 +905,7 @@ int main(int argc, char **argv) {
             memcpy(&image[(size_t)y * W], rows, sizeof(uint16_t) * W * std::min(BAND, H - y));
         }
         totalMs += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
+        terrainLine(frame);
 
         char height[32];
         snprintf(height, sizeof height, "%.0fft", pose.at.z * 3.28f);
