@@ -5208,11 +5208,11 @@ void loop() {
                 delay(5);
                 arg = Serial.read();
             }
-            if (arg == 'T') {
+            if (arg == 'T' || arg == 'M') {
                 // "##iT" what the terrain costs each core, on its own: see
-                // bench3d's 'T'.
+                // bench3d's 'T'; "##iM" what the P4's loads do on a miss.
                 g_loopBusyLong = true;
-                bench3dCommand('T', repaintCurrentScreen);
+                bench3dCommand((char)arg, repaintCurrentScreen);
                 g_loopBusyLong = false;
                 break;
             }

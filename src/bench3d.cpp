@@ -1497,6 +1497,12 @@ void runCommand(char c);
 }  // namespace
 
 extern "C" void scene3d_latencies(uint32_t out[12]);
+// bench_mem.S: chains of loads timed, for 'M'.
+extern "C" uint32_t bench_mem_chase(void **p, int n);
+extern "C" uint32_t bench_mem_chase2(void **p, void **q, int n);
+extern "C" uint32_t bench_mem_chase4(void **p[4], int n);
+extern "C" uint32_t bench_mem_shadow(void **p, int n);
+extern "C" uint32_t bench_mem_work(int n);
 
 void bench3dCommand(char c, void (*repaint)()) {
     g_repaint = repaint;
@@ -1647,6 +1653,101 @@ void runCommand(char c) {
         enrouteEnd();
         release();
         g_repaint();
+        break;
+    }
+    case 'M': {
+        // What the P4's loads do on a miss (##iM) - see bench_mem.S: a line's
+        // time from PSRAM past both caches, from the L2 and from the L1;
+        // whether the core goes on under a miss until the value is wanted;
+        // two and four misses at once; and a miss with the other core copying
+        // PSRAM, as the drawing does while the march runs.
+        constexpr size_t BIG = 4 << 20, LINE = 64;
+        uint8_t *big = (uint8_t *)heap_caps_aligned_alloc(LINE, BIG, MALLOC_CAP_SPIRAM);
+        uint32_t *order = (uint32_t *)heap_caps_malloc(BIG / LINE * sizeof(uint32_t), MALLOC_CAP_SPIRAM);
+        if (big == nullptr || order == nullptr) {
+            Serial.println("[3d] memory bench: no PSRAM for it");
+            heap_caps_free(big);
+            heap_caps_free(order);
+            break;
+        }
+        // The first `lines` lines of `big` chained in an order made up: each
+        // line's first word the next one's address, round in one ring.
+        uint32_t seed = 12345;
+        auto chain = [&](size_t lines) {
+            for (size_t i = 0; i < lines; i++) {
+                order[i] = (uint32_t)i;
+            }
+            for (size_t i = lines - 1; i > 0; i--) {
+                seed = seed * 1664525u + 1013904223u;
+                std::swap(order[i], order[(seed >> 8) % (i + 1)]);
+            }
+            for (size_t i = 0; i < lines; i++) {
+                *(void **)(big + (size_t)order[i] * LINE) = big + (size_t)order[(i + 1) % lines] * LINE;
+            }
+            return (void **)(big + (size_t)order[0] * LINE);
+        };
+        // A place `k` quarters of the way round the ring from p, for chains
+        // that don't meet.
+        auto along = [](void **p, size_t steps) {
+            for (size_t i = 0; i < steps; i++) {
+                p = (void **)*p;
+            }
+            return p;
+        };
+        constexpr int N = 4096;
+        auto per = [](uint32_t cycles, int n) { return cycles / (float)n; };
+        size_t lines = BIG / LINE;
+        void **p = chain(lines);
+        bench_mem_chase(p, N);  // the TLB's and the first touches' cost out of the way
+        float psram = per(bench_mem_chase(along(p, 7777), N), N);
+        float two = per(bench_mem_chase2(along(p, lines / 4), along(p, lines / 2), N), N);
+        void **four[4] = {along(p, 1000), along(p, lines / 4), along(p, lines / 2), along(p, 3 * lines / 4)};
+        float fourTurn = per(bench_mem_chase4(four, N), N);
+        float shadow = per(bench_mem_shadow(along(p, 3333), N / 4), N / 4);
+        float work = per(bench_mem_work(N / 4), N / 4);
+        // The other core copying PSRAM all the while, as the drawing reads
+        // and writes it.
+        static std::atomic<bool> s_copying;
+        static uint8_t *s_from, *s_to;
+        s_from = big + BIG / 2;
+        s_to = big + BIG / 2 + (1 << 20);
+        s_copying = true;
+        TaskHandle_t copier = nullptr;
+        xTaskCreatePinnedToCore(
+            [](void *) {
+                while (s_copying.load()) {
+                    memcpy(s_to, s_from, 512 << 10);
+                }
+                vTaskDelete(nullptr);
+            },
+            "memcopy", 3072, nullptr, 1, &copier, 1 - xPortGetCoreID());
+        delay(20);
+        // On the first half's lines only, away from those being copied.
+        void **q = chain(lines / 2);
+        bench_mem_chase(q, N);
+        float contended = per(bench_mem_chase(along(q, 5555), N), N);
+        s_copying = false;
+        delay(50);
+        // A ring that fits the L2 but not the L1, and one that fits the L1.
+        void **l2 = chain(96 * 1024 / LINE);
+        bench_mem_chase(l2, 3 * 96 * 1024 / LINE);
+        float fromL2 = per(bench_mem_chase(l2, N), N);
+        void **l1 = chain(16 * 1024 / LINE);
+        bench_mem_chase(l1, 3 * 16 * 1024 / LINE);
+        float fromL1 = per(bench_mem_chase(l1, N), N);
+        Serial.printf("[3d] memory, cycles a load and its loop's two more: from PSRAM past both caches %.1f, from the "
+                      "L2 %.1f, from the L1 %.1f; two chains at once %.1f a turn, four %.1f a turn\n",
+                      psram, fromL2, fromL1, two, fourTurn);
+        Serial.printf("[3d] memory: a miss then 128 instructions not wanting it %.1f a turn, the 128 alone %.1f - %s; "
+                      "a miss with the other core copying PSRAM %.1f\n",
+                      shadow, work,
+                      shadow > psram + work * 0.75f ? "the core waits at the load"
+                      : shadow < psram + work * 0.25f ? "the core goes on until the value is wanted"
+                                                      : "in between",
+                      contended);
+        heap_caps_free(order);
+        heap_caps_free(big);
+        Serial.println("[3d] done");
         break;
     }
     case 'q': {
