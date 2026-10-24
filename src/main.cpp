@@ -945,6 +945,7 @@ const char *const SOAK_NAMES[] = {
     "a 767 at FL300 circling the Southern Uplands: its trails, and a widebody's fly past",
     "a Loganair ATR 72 landing on 23 at Glasgow, then taxiing in: a turboprop's approach and reverse",
     "a Loganair ATR 72 taking off from 23 at Glasgow: a turboprop at full power",
+    "a Cessna cruising at 12,500ft round Zermatt, the Matterhorn above it: the title shot, with the Alps in the pack",
 };
 
 MadeUp circling(const char *hex, const char *callsign, const char *type, const char *category, bool military,
@@ -4938,6 +4939,11 @@ void startSoak(int n) {
         }
         ok = onRunwayAt(m, "GLA", "23");
         break;
+    // The title shot of 24 October: the land at its height where it is
+    // highest - a ground pack with the Alps in it, made by
+    // tools/make_ground_pack.py - a light aircraft 700m above the valley's
+    // ridges and 650m under the Matterhorn's top, 5km off.
+    case 25: m = circling("aa0029", "OVRHD", "C172", "A1", false, 46.020, 7.749, 2500, 100, 12500); break;
     case 17:
         m = circling("aa0021", "EZY88HP", "A320", "A3", false, 0, 0, 0, 0, 0);
         m.pattern = Pattern::LAND;
@@ -5096,6 +5102,14 @@ void uploadToCard() {
     }
     if (!recorder::mount()) {
         Serial.println("UPLOAD REFUSED no card");
+        return;
+    }
+    // Not the ground pack the 3D view is reading tiles from: hidden first
+    // ("##s1"), before the view has opened since the restart.
+    groundpack::Status ground = groundpack::status();
+    if (strcmp(name, "ground.bin") == 0 &&
+        (ground == groundpack::Status::LOADING || ground == groundpack::Status::READY)) {
+        Serial.println("UPLOAD REFUSED the 3D view has ground.bin open - restart, then ##s1, then upload");
         return;
     }
     recorder::CardLock lock;
@@ -5585,6 +5599,23 @@ void loop() {
             if (arg == '0' || arg == '1') {
                 airfield::benchHidePack(arg == '1');
                 Serial.printf("[soak] airfield pack %s\n", arg == '1' ? "hidden" : "back");
+            }
+            break;
+        }
+        case 's': {
+            // "##s" and 1 or 0: the card's ground pack taken as not there, or
+            // there again - the 3D view's flat land with the card as it is.
+            // Only before the pack is read in: after a restart, before the
+            // 3D view first opens.
+            int arg = Serial.read();
+            if (arg < 0) {
+                delay(5);
+                arg = Serial.read();
+            }
+            if (arg == '0' || arg == '1') {
+                bool done = groundpack::benchHidePack(arg == '1');
+                Serial.printf("[soak] ground pack %s\n", !done ? "already read in - restart first"
+                                                       : arg == '1' ? "hidden" : "back");
             }
             break;
         }

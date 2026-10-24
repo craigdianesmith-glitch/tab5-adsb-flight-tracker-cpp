@@ -164,6 +164,13 @@ bool offPack();
 // that finds kept as the view's verdict, unless the pack would pass.
 Status packInfo(PackCheck &check);
 
+#ifdef BENCH3D
+// The pack taken as not there, or there again - for the flat land to be
+// seen with the card as it is. False if it has been read in already: held
+// for the session, so hidden only after a restart, before the 3D view opens.
+bool benchHidePack(bool hide);
+#endif
+
 // That said on the serial port, a line: "[ground] the card's ground.bin:
 // 2068 tiles, 25.7MB", or why not - beside the airfield pack's at start-up.
 void logCard();

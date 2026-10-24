@@ -1224,6 +1224,18 @@ bool hasTiles(const Window &window, int north, int west, int down, int across) {
     return false;
 }
 
+#ifdef BENCH3D
+bool g_benchHidden = false;
+
+bool benchHidePack(bool hide) {
+    if (hide && (g_status == Status::LOADING || g_status == Status::READY)) {
+        return false;
+    }
+    g_benchHidden = hide;
+    return true;
+}
+#endif
+
 bool open() {
 #ifdef ESP_PLATFORM
     Status was = g_status;
@@ -1242,6 +1254,9 @@ bool open() {
         recorder::CardLock lock;
         there = SD.exists(PATH);
     }
+#ifdef BENCH3D
+    there = there && !g_benchHidden;
+#endif
     if (!there) {
         setStatus(Status::NO_PACK);
         return false;
@@ -1291,7 +1306,11 @@ Status packInfo(PackCheck &check) {
         } else {
             recorder::CardLock lock;
             File f;
-            if (SD.exists(PATH)) {
+            bool there = SD.exists(PATH);
+#ifdef BENCH3D
+            there = there && !g_benchHidden;
+#endif
+            if (there) {
                 f = SD.open(PATH, FILE_READ);
             }
             was = f ? readIndex(f, check, false) : Status::NO_PACK;
