@@ -1344,10 +1344,9 @@ void logCard() {
 }
 
 bool want(double lat, double lon, float fineKm, float upM) {
-    if (!g_coarseReady) {
-        return false;
-    }
-    g_frame++;
+    // Where the eye is, kept even while the pack is still being read: the
+    // task's first look once it is ready finds it, and builds the hills'
+    // grid before it works out a skyline asked for in the same frame.
     double v = (90.0 - lat) * TILES_PER_DEG, u = (lon + 180.0) * TILES_PER_DEG;
     int row = (int)floor(v), col = (int)floor(u);
     float tileKm = 111.32f / TILES_PER_DEG;
@@ -1368,6 +1367,10 @@ bool want(double lat, double lon, float fineKm, float upM) {
     g_wantRadius = radius;
     g_wantCol = col;
     g_wantRow = row;
+    if (!g_coarseReady) {
+        return false;
+    }
+    g_frame++;
     return true;
 }
 
