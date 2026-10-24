@@ -1852,8 +1852,10 @@ void runCommand(char c) {
             }
             terrainBandInstructions();
             terrainBandHanded();
+            terrainBandSwitched();
             draw(false, Sink::CANVAS);
-            uint64_t bandInstructions = terrainBandInstructions(), handed = terrainBandHanded();
+            uint64_t bandInstructions = terrainBandInstructions(), handed = terrainBandHanded(),
+                     switched = terrainBandSwitched();
             terrainStats(st, true);
             uint32_t bandCycles = (uint32_t)st[4], bandSamples = (uint32_t)st[5];
             // The same bands in C alone, against what the assembly drew.
@@ -1906,12 +1908,13 @@ void runCommand(char c) {
             }
             terrainBandInstructions();
             terrainBandHanded();
+            terrainBandSwitched();
             Serial.printf("[3d]   the bands in C alone: %d pixels differ from the assembly's; %.1fms in C, %.1fms in "
                           "assembly\n",
                           mismatched, cOnly[4] / 360000.0f, bandCycles / 360000.0f);
-            Serial.printf("[3d]   the bands: %u cells the long way, %u colours worked out, %u samples left for C; "
-                          "%.1f instructions a sample\n",
-                          (unsigned)st[6], (unsigned)st[7], (unsigned)handed,
+            Serial.printf("[3d]   the bands: %u cells the long way, %u maps taken up again in assembly, %u colours "
+                          "worked out, %u samples left for C; %.1f instructions a sample\n",
+                          (unsigned)st[6], (unsigned)switched, (unsigned)st[7], (unsigned)handed,
                           bandSamples ? (float)bandInstructions / bandSamples : 0.0f);
             g_sink = Sink::CANVAS;
             g_next = 0;

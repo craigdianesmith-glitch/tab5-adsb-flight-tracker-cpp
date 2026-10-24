@@ -465,6 +465,9 @@ uint64_t terrainBandInstructions();
 // On the bench: the samples the bands' assembly has left for C since last
 // asked.
 uint64_t terrainBandHanded();
+// On the bench: the maps the bands' assembly has taken up again from those
+// it keeps, where the part of the cover changed, since last asked.
+uint64_t terrainBandSwitched();
 
 
 // Where labels for the traffic go in the frame drawn: a point over each

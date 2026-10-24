@@ -6425,15 +6425,17 @@ void skyline(const Scene &scene, float groundLight) {
 // --- the terrain -----------------------------------------------------------------------
 
 // The terrain's colour pairs, a few of them at a time: by cell and haze -
-// a sample's mostly the last's, or one a few back - each core and parity
-// of row its own, in the chip's own memory: 1KB each, where a table of
-// them all, 33KB, had to be in the PSRAM and was read from it at random.
+// a sample's mostly the last's, or one a few back - each core its own, in
+// the chip's own memory, 1.3KB, where a table of them all, 33KB, had to be
+// in the PSRAM and was read from it at random. Each cell and haze's pairs
+// for even rows and odd together: a sample covers a row of each, so one
+// look finds both.
 struct TerrainPairs {
     uint32_t serial = 0xFFFFFFFF;
     uint16_t key[128];
-    uint32_t pair[128];
+    uint32_t pair[128][2];  // even rows', odd rows'
 };
-TerrainPairs g_terrainPairs[4];
+TerrainPairs g_terrainPairs[2];
 
 // The terrain's costs, for the log: the march's cycles, samples, rows filled
 // and tiles' heights looked up; the rows' cycles, samples, cells found the
@@ -6442,9 +6444,9 @@ uint64_t g_terrainStats[2][8];
 // And the caches' counts over them, on the bench: the march's and the
 // drawing's L1 and L2 data hits and misses, each core's own bus.
 uint64_t g_terrainCache[2][8];
-// On the bench, the instructions the land's bands took, each core's; and
-// the samples the assembly left for C.
-uint64_t g_bandInstret[2], g_bandHanded[2];
+// On the bench, the instructions the land's bands took, each core's; the
+// samples the assembly left for C; and the maps it took up again itself.
+uint64_t g_bandInstret[2], g_bandHanded[2], g_bandSwitched[2];
 #if defined(ESP_PLATFORM) && defined(BENCH3D)
 }  // namespace scene3d
 #include "soc/cache_reg.h"
@@ -8646,6 +8648,12 @@ uint64_t terrainBandHanded() {
     return n;
 }
 
+uint64_t terrainBandSwitched() {
+    uint64_t n = g_bandSwitched[0] + g_bandSwitched[1];
+    g_bandSwitched[0] = g_bandSwitched[1] = 0;
+    return n;
+}
+
 void terrainMarchCheck(uint32_t out[4]) {
 #if defined(ESP_PLATFORM) && defined(BENCH3D)
     // The frame being prepared's march in assembly, then in C alone: their
@@ -9269,8 +9277,50 @@ __attribute__((noinline)) int cellSlow(const groundpack::Window &W, float u, flo
     return cell;
 }
 
+// The parts of the cover the assembly has read this frame - see cellSlow()
+// - each core's, the latest sixteen: a sample off the part being read put
+// in one of them as cellAt() would put it, its level's depths and the
+// part's own place, read as cellSlow() reads it; only one in none of them
+// is handed to C. Each map, then the part it was made from: where it lies
+// in its level's units and its cells' scale, as CellPart has them. And the
+// level's depths as the bfloat16 1 / depths whose depths are in it - wLo
+// and the wRange after it - for the assembly to tell from the 1 / depth
+// itself, before the division is done: the depth, 1 / w as the drawing
+// works it out, never rises as w does. Kept in the chip's own memory, 3KB:
+// the assembly reads them where the part changes, some thousand times a
+// frame high up, where the map before was made again by C each time.
+struct TerrainMap {
+    float zLo, zHi, au, bu, av, bv;       // 0-20: as CellMap's
+    const uint8_t *cells;                 // 24
+    int cols, rows, stride;               // 28, 32, 36
+    uint32_t wLo, wRange;                 // 40, 44
+    float split, u0, v0, u1, v1, ku, kv;  // 48-72: the part, as CellPart's
+    int cols1, rows1;                     // 76, 80
+    uint32_t spare[3];                    // to 96 bytes
+};
+struct TerrainMaps {
+    uint32_t serial = 0xFFFFFFFF;
+    int count = 0, next = 0;  // 4, 8: the maps kept, and the one to go next
+    uint32_t spare = 0;
+    TerrainMap map[16];       // 16
+};
+TerrainMaps g_terrainMaps[2];
+
+// Each eight columns' land, for the assembly to pass over what has none:
+// the least and the most of their highest rows of land and the least of
+// their flat tops - rows at and under the most, and above the least flat
+// top, are land in every one of them, a sample each the common way; rows
+// above the least, none - and the frame's highest land, the least of all.
+// Each core's, worked out on its first band of the frame.
+struct TerrainStrips {
+    uint32_t serial = 0xFFFFFFFF;
+    int top = 0;
+    int16_t strip[64][4];  // the least top, the most, the least flat top, nought
+};
+TerrainStrips g_terrainStrips[2];
+
 // A column of a band's land as terrainBand() draws it, and as
-// scene3d_terrain_rows (scene3d_terrain.S) does the most of it: the column,
+// scene3d_terrain_band (scene3d_terrain.S) does the most of it: the column,
 // the band's rows, where on the cover's grid its depths put the land, the
 // cell map, and each parity of row's last pair of pixels and what they
 // were for. Its offsets are the assembly's.
@@ -9291,7 +9341,8 @@ struct TerrainCol {
     int cols, rows, mapStride;  // 88, 92, 96
     uint32_t keyE, pairE, keyO, pairO;  // 100, 104, 108, 112: cell | haze << 8, and its pair, each parity's
     uint32_t samples;        // 116
-    TerrainPairs *pairs[2];  // 120, 124: each parity's cache of pairs
+    TerrainPairs *pairs;     // 120: the core's cache of pairs
+    int top;                 // 124: the frame's highest land - see TerrainStrips
     // The band's, for the assembly to go from column to column itself.
     int c, bandCols;         // 128, 132: the column it goes on from, and how many
     int y0;                  // 136: the band's first row
@@ -9307,11 +9358,16 @@ struct TerrainCol {
     int swap;                // 172: bytes swapped for the panel
     uint32_t misses;         // 176: pairs worked out
     float mapU[6], mapV[6];  // 180, 204: round, where on the grid a place dx east and dy north is
+    uint32_t wLo, wRange;    // 228, 232: the map's level as 1 / depths - see TerrainMap; none, wRange nought
+    TerrainMaps *maps;       // 236: the core's parts read this frame
+    const int16_t (*strips)[4];  // 240: each eight columns' land - see TerrainStrips
+    uint32_t switches;       // 244: maps the assembly took up from those kept
 };
 #if TERRAIN_IN_ASM
 static_assert(offsetof(TerrainCol, flatZ) == 52 && offsetof(TerrainCol, haze) == 56 &&
                   offsetof(TerrainCol, cells) == 84 && offsetof(TerrainCol, keyE) == 100 &&
-                  offsetof(TerrainCol, samples) == 116 && offsetof(TerrainCol, pairs) == 120,
+                  offsetof(TerrainCol, samples) == 116 && offsetof(TerrainCol, pairs) == 120 &&
+                  offsetof(TerrainCol, top) == 124,
               "scene3d_terrain.S has TerrainCol's fields where these are");
 static_assert(offsetof(TerrainPairs, key) == 4 && offsetof(TerrainPairs, pair) == 260,
               "scene3d_terrain.S has TerrainPairs' fields where these are");
@@ -9320,6 +9376,13 @@ static_assert(offsetof(TerrainCol, c) == 128 && offsetof(TerrainCol, topFlat) ==
                   offsetof(TerrainCol, coverRgb) == 164 && offsetof(TerrainCol, misses) == 176 &&
                   offsetof(TerrainCol, mapU) == 180 && offsetof(TerrainCol, mapV) == 204,
               "scene3d_terrain.S has TerrainCol's fields where these are");
+static_assert(offsetof(TerrainCol, wLo) == 228 && offsetof(TerrainCol, maps) == 236 &&
+                  offsetof(TerrainCol, strips) == 240 && offsetof(TerrainCol, switches) == 244,
+              "scene3d_terrain.S has TerrainCol's fields where these are");
+static_assert(sizeof(TerrainMap) == 96 && offsetof(TerrainMap, cells) == 24 && offsetof(TerrainMap, wLo) == 40 &&
+                  offsetof(TerrainMap, split) == 48 && offsetof(TerrainMap, cols1) == 76 &&
+                  offsetof(TerrainMaps, count) == 4 && offsetof(TerrainMaps, map) == 16,
+              "scene3d_terrain.S has TerrainMap's fields where these are");
 #endif
 
 // The map's fields in t, from `map`, and back.
@@ -9336,21 +9399,23 @@ HOT_INLINE void mapInto(TerrainCol &t, const CellMap &map) {
     t.mapStride = map.stride;
 }
 
-// Row y's pair of pixels for `key`, from the parity's cache - worked out and
-// kept there if it isn't in it - and remembered as the parity's last.
+// Row y's pair of pixels for `key`, from the core's cache - worked out, for
+// even rows and odd, and kept there if it isn't in it - and remembered as
+// the parity's last.
 HOT_INLINE uint32_t pairFor(TerrainCol &t, uint32_t key, int y, const int haze[3], uint32_t &misses) {
     uint32_t &lastKey = y & 1 ? t.keyO : t.keyE, &lastPair = y & 1 ? t.pairO : t.pairE;
     if (key != lastKey) {
-        TerrainPairs &tp = *t.pairs[y & 1];
+        TerrainPairs &tp = *t.pairs;
         int cell = key & 255, hz = key >> 8;
         int slot = (cell ^ hz * 37) & 127;
         if (tp.key[slot] != key) {
             tp.key[slot] = (uint16_t)key;
-            tp.pair[slot] = pairInt(d.coverRgb[cell], haze, hz << 3, y);
+            tp.pair[slot][0] = pairInt(d.coverRgb[cell], haze, hz << 3, 0);
+            tp.pair[slot][1] = pairInt(d.coverRgb[cell], haze, hz << 3, 1);
             misses++;
         }
         lastKey = key;
-        lastPair = tp.pair[slot];
+        lastPair = tp.pair[slot][y & 1];
     }
     return lastPair;
 }
@@ -9406,16 +9471,95 @@ HOT_INLINE void terrainSampleC(TerrainCol &t, int rows, CellMap &map, CellPart &
 
 #if TERRAIN_IN_ASM
 // The band's land in assembly, a pair of rows at a time across every
-// column, from row t.rowAt and column t.c: 0 once it is all done, 1 at a
-// sample it can't do - another part of the cover, a pair of pixels not in
-// the cache - with t.y, t.px and the column's own values set for
-// terrainSampleC(), and t.c the column after it. See scene3d_terrain.S.
+// column with land in them, from row t.rowAt and column t.c: 0 once it is
+// all done, 1 at a sample it can't do - a part of the cover none of the
+// maps kept has - with t.y, t.px, the map and the column's own values set
+// for terrainSampleC(), and t.c the column after it. See scene3d_terrain.S.
 extern "C" int scene3d_terrain_band(TerrainCol *t);
 // The same for the round cover, its grid's place worked out to the second
 // order. And both four rows a sample.
 extern "C" int scene3d_terrain_band_round(TerrainCol *t);
 extern "C" int scene3d_terrain_quad(TerrainCol *t);
 extern "C" int scene3d_terrain_quad_round(TerrainCol *t);
+
+// The first bfloat16 1 / depth, of the positive ones in order, whose depth -
+// 1 / it, as the drawing works it out - is z or less: by halves, the
+// depths never rising as the 1 / depths do. Nought for an endless z; the
+// endless 1 / depth for nought.
+uint32_t firstAtMost(float z) {
+    uint32_t lo = 0, hi = 0x7F80;
+    while (lo < hi) {
+        uint32_t mid = (lo + hi) >> 1;
+        if (1 / fromBf16((uint16_t)mid) <= z) {
+            hi = mid;
+        } else {
+            lo = mid + 1;
+        }
+    }
+    return lo;
+}
+
+// This frame's strips of columns - see TerrainStrips - the core's own,
+// worked out on its first band of the frame.
+const TerrainStrips &terrainStrips(int core) {
+    TerrainStrips &s = g_terrainStrips[core];
+    if (s.serial != d.serial) {
+        s.serial = d.serial;
+        int cols = d.tCols, top = d.h;
+        for (int i = 0; i * 8 < cols; i++) {
+            int lo = d.h, hi = 0, flat = d.h;
+            for (int c = i * 8; c < std::min(cols, i * 8 + 8); c++) {
+                lo = std::min(lo, (int)d.tTop[c]);
+                hi = std::max(hi, (int)d.tTop[c]);
+                flat = std::min(flat, (int)d.tFlatTop[c]);
+            }
+            s.strip[i][0] = (int16_t)lo;
+            s.strip[i][1] = (int16_t)hi;
+            s.strip[i][2] = (int16_t)flat;
+            s.strip[i][3] = 0;
+            top = std::min(top, lo);
+        }
+        s.top = top;
+    }
+    return s;
+}
+
+// The map C has just made on the long way, from `part`: its level's 1 /
+// depths in t, for the assembly to go on reading it, and the map kept for
+// it among the core's - the oldest going, once there are sixteen. None,
+// off the tiles, kept as none.
+void terrainKeep(TerrainMaps &maps, TerrainCol &t, const CellPart &part) {
+    if (!(t.zLo < INFINITY)) {
+        t.wLo = t.wRange = 0;
+        return;
+    }
+    t.wLo = firstAtMost(t.zHi);
+    t.wRange = firstAtMost(t.zLo) - t.wLo;
+    TerrainMap &m = maps.map[maps.next];
+    maps.next = (maps.next + 1) & 15;
+    maps.count = std::min(16, maps.count + 1);
+    m.zLo = t.zLo;
+    m.zHi = t.zHi;
+    m.au = t.au;
+    m.bu = t.bu;
+    m.av = t.av;
+    m.bv = t.bv;
+    m.cells = t.cells;
+    m.cols = t.cols;
+    m.rows = t.rows;
+    m.stride = t.mapStride;
+    m.wLo = t.wLo;
+    m.wRange = t.wRange;
+    m.split = part.split;
+    m.u0 = part.u0;
+    m.v0 = part.v0;
+    m.u1 = part.u1;
+    m.v1 = part.v1;
+    m.ku = part.ku;
+    m.kv = part.kv;
+    m.cols1 = part.cols1;
+    m.rows1 = part.rows1;
+}
 #endif
 
 // Rows [y0, y1) of a band's land at its height - see terrainMarch(): column
@@ -9442,13 +9586,10 @@ void terrainBand(uint16_t *color, int y0, int y1, const int haze[3]) {
 #endif
     CACHE_BEGIN(cacheAtStart);
     TerrainCol t;
-    t.pairs[0] = &g_terrainPairs[core * 2];
-    t.pairs[1] = &g_terrainPairs[core * 2 + 1];
-    for (TerrainPairs *tp : t.pairs) {
-        if (tp->serial != d.serial) {
-            tp->serial = d.serial;
-            memset(tp->key, 0xFF, sizeof tp->key);
-        }
+    t.pairs = &g_terrainPairs[core];
+    if (t.pairs->serial != d.serial) {
+        t.pairs->serial = d.serial;
+        memset(t.pairs->key, 0xFF, sizeof t.pairs->key);
     }
     const groundpack::Window &W = *d.cover.window;
     const bool round = d.tRound;
@@ -9487,8 +9628,15 @@ void terrainBand(uint16_t *color, int y0, int y1, const int haze[3]) {
     const bool inC = false;
 #endif
     if (!inC) {
-        // Every column in assembly; what it can't do here, a sample at a
-        // time, and on.
+        // Every column with land in assembly - nothing at all where the band
+        // has none; what it can't do here, a sample at a time, and on: the
+        // map C makes for it kept for the assembly.
+        const TerrainStrips &strips = terrainStrips(core);
+        TerrainMaps &maps = g_terrainMaps[core];
+        if (maps.serial != d.serial) {
+            maps.serial = d.serial;
+            maps.count = maps.next = 0;
+        }
         t.c = 0;
         t.bandCols = cols;
         t.rowAt = y0;
@@ -9504,19 +9652,29 @@ void terrainBand(uint16_t *color, int y0, int y1, const int haze[3]) {
         t.swap = g.swap;
         t.misses = 0;
         t.keyE = t.keyO = ~0u;
+        t.top = strips.top;
+        t.strips = strips.strip;
+        t.maps = &maps;
+        t.wLo = t.wRange = 0;  // no map yet, as `map` has none
+        t.switches = 0;
         uint32_t handed = 0;
         int (*fn)(TerrainCol *) = unit == 4 ? (round ? scene3d_terrain_quad_round : scene3d_terrain_quad)
                                             : (round ? scene3d_terrain_band_round : scene3d_terrain_band);
-        while (fn(&t)) {
+        while (strips.top < yb && fn(&t)) {
+            uint32_t was = longWay;
             if (round) {
                 terrainSampleC<true>(t, rowsFrom(t.y), map, part, W, haze, longWay, misses);
             } else {
                 terrainSampleC<false>(t, rowsFrom(t.y), map, part, W, haze, longWay, misses);
             }
+            if (longWay != was) {
+                terrainKeep(maps, t, part);
+            }
             handed++;
         }
 #ifdef BENCH3D
         g_bandHanded[core] += handed;
+        g_bandSwitched[core] += t.switches;
 #endif
         misses += t.misses;
         cols = 0;
