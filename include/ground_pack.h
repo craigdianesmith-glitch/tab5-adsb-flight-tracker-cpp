@@ -6,7 +6,8 @@
 // The ground pack - the card's /overhead/ground.bin, made by
 // tools/gen_ground.py: what covers the land, the hills' light and shade, and
 // their heights, for the 3D view to stamp onto the ground it draws and to
-// draw its skyline from. From ESA WorldCover (land cover) and Copernicus
+// draw the land at its height - its skyline standing in while the heights
+// are built. From ESA WorldCover (land cover) and Copernicus
 // DEM GLO-90 (heights) - see that tool for what each is and its credit.
 //
 // The pack is tiles of 0.2 degrees. A tile's cells are 2.5 seconds of
@@ -16,7 +17,7 @@
 // bottom four. Each tile has levels 0 to 4, each a quarter of the one
 // before, and heights. Level 4 of every tile, and its heights, are held
 // from the moment the pack is opened - a megabyte or so for a country, the
-// far country and the skyline; levels 1 to 3 and the finer heights are read
+// far country and its heights; levels 1 to 3 and the finer heights are read
 // in, a tile at a time, round wherever the view asks; and level 0, the
 // finest, for the tiles round the eye only, where its cells are big enough
 // to be seen. A pack of version 1 has no level 0. Finer still, levels -1

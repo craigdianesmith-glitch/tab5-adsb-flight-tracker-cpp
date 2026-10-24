@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Builds ground.bin, the 3D view's ground pack: what covers the land - trees,
 fields, moor, towns, water - and the hills' light and shade, for the 3D view
-to stamp onto the ground it draws, and their heights for its skyline.
+to stamp onto the ground it draws, and their heights for the land it draws
+at its height.
 
     tools/gen_ground.py OUT.bin [--south 49.8 --north 61 --west -10.8 --east 2] [--jobs 8]
 
@@ -52,7 +53,7 @@ for the tiles round the eye. Its mid block is levels 1, 2 and 3, and its
 heights every 15 seconds (48 rows of 48/k, i16 metres, from the GLO-90),
 read for the tiles within some 45km. Its coarse block is level 4, 18 rows of
 18/k, and the heights at the same cells - small enough for the 3D view to
-hold every tile's, for the country far off and its skyline.
+hold every tile's, for the country far off and its heights.
 
 Version 1 was version 2 without the detail blocks - its levels 0 to 3 are
 version 2's 1 to 4 - the index's rows 20 bytes, without the detail block's

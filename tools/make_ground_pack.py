@@ -6,8 +6,8 @@ region, or the country round your town.
 The pack each release carries is the United Kingdom and Ireland's. With one
 of your own on the Tab5's card instead, the 3D view draws your land in what
 covers it - woods, fields, towns, water, bare rock and snow - lit and shaded
-as its hills lie, with the hills standing along the skyline. Without a pack
-the land is flat and one colour.
+as its hills lie, and at its height - its hills and mountains. Without a
+pack the land is flat and one colour.
 
 Run it with nothing after it, and it asks where, shows what that will take,
 and asks before it starts:
@@ -94,7 +94,7 @@ parts far from the rest - France's overseas regions, say - are left out, and
 said so: name one on its own to make a pack of it.
 
 The Tab5 holds every tile's coarsest level in its memory while the 3D view
-is open - for the far country and the skyline - so a pack can have at most
+is open - for the far country and its heights - so a pack can have at most
 6,000 tiles (MAX_TILES), those coarse levels can come to at most 4MB
 (MAX_COARSE_BYTES), and the rectangle of tiles round it all at most 40,000
 places (MAX_GRID): the firmware's own numbers, in include/ground_pack.h,
@@ -157,6 +157,8 @@ import json
 import math
 import os
 import re
+import shlex
+import shutil
 import signal
 import ssl
 import struct
@@ -180,9 +182,11 @@ try:
     from rasterio.transform import from_origin
     from PIL import Image, ImageDraw, ImageFont
 except ImportError as missing:
+    # Into this very Python - a venv's, say - not whichever "python" is first.
+    pip = ("py" if os.name == "nt" else shlex.quote(sys.executable)) + " -m pip install -r requirements.txt"
     sys.exit(f"make_ground_pack.py needs {missing.name}, which isn't installed yet.\n"
-             "In this folder, run:  python -m pip install -r requirements.txt\n"
-             "(on Windows: py -m pip install -r requirements.txt) - then try again.")
+             f"In this folder, run:  {pip}\n"
+             "- then try again.")
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import gen_ground as gg  # noqa: E402 - the tiles, made as the release's pack's are
@@ -1402,8 +1406,8 @@ def write_notice(plan, made, out):
     text = f"""{out.name} - a ground pack for Overhead's 3D view
 
 {fill(f"{out.name} holds what covers the land of {areas} - woods, fields, towns, water, bare rock and snow - and "
-      f"its hills' light and shade and heights, for Overhead's 3D view to cover the land with and to set the hills "
-      f"along its skyline: {grouped(len(made.tiles))} tiles of 0.2 degrees.")}
+      f"its hills' light and shade and heights, for Overhead's 3D view to cover the land with and to draw it at its "
+      f"height: {grouped(len(made.tiles))} tiles of 0.2 degrees.")}
 
 It contains modified data from:
 
@@ -1420,7 +1424,7 @@ provided under COPERNICUS by the European Union and ESA; all rights reserved.
 
 {fill(f"What was changed: the land cover was sampled into cells of 2.5 seconds of latitude, some 75m, at five "
       f"levels of detail, with {mixes}. The heights were made into a hillshade, lit from the north-west at 45 "
-      f"degrees, and sampled every 15 seconds for the skyline.{glo90}")}
+      f"degrees, and sampled every 15 seconds for the land's heights.{glo90}")}
 {chosen}
 It was made by tools/make_ground_pack.py, in
 {PROJECT}
@@ -1822,7 +1826,7 @@ def main(argv=None):
         except (AttributeError, ValueError):
             pass
     argv = sys.argv[1:] if argv is None else argv
-    program = "py make_ground_pack.py" if os.name == "nt" else "python3 make_ground_pack.py"
+    program = how_to_run()
     args = parse(argv)
     # Nowhere said: it asks - as when it is run with nothing after it, or
     # opened with a double click.
@@ -1848,6 +1852,19 @@ def main(argv=None):
         except (EOFError, KeyboardInterrupt):
             pass
     return status
+
+
+def how_to_run():
+    """How to run the tool again, as it was run: with Windows's py; else by
+    the name that finds this very Python on the PATH - a venv's, once it is
+    activated - or else its whole path."""
+    if os.name == "nt":
+        return "py make_ground_pack.py"
+    for name in ("python3", "python"):
+        found = shutil.which(name)
+        if found and os.path.abspath(found) == os.path.abspath(sys.executable):
+            return f"{name} make_ground_pack.py"
+    return f"{shlex.quote(sys.executable)} make_ground_pack.py"
 
 
 def make(args, interactive, program):
