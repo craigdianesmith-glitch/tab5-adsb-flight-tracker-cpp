@@ -1,5 +1,6 @@
 #include "scene3d.h"
 
+#include <climits>
 #include <cstdio>
 #include <cstdlib>
 
@@ -22,6 +23,15 @@
 #endif
 
 #include "psram_alloc.h"
+#endif
+
+// The terrain's assembly (scene3d_terrain.S): on the Tab5, and on the PC built
+// for the P4's instruction set and run under qemu-riscv32 (TERRAIN_ASM), where
+// it is checked against the C without the Tab5.
+#if defined(ESP_PLATFORM) || defined(TERRAIN_ASM)
+#define TERRAIN_IN_ASM 1
+#else
+#define TERRAIN_IN_ASM 0
 #endif
 
 namespace scene3d {
@@ -4611,14 +4621,21 @@ Vec3 groundUnder(Vec3 p) {
 
 // (int)ceilf(v) and (int)floorf(v). The library's are calls of thirty-odd
 // instructions on the P4, and drawing takes two a row of every triangle -
-// where the P4 converts a float to an int rounding either way in one.
+// where the P4 converts a float to an int rounding either way in one. Out of
+// an int's range, the nearest end of it, and NaN the top, as the P4's
+// conversion has them - the PC's, left to itself, wraps.
+#if !defined(ESP_PLATFORM)
+HOT_INLINE int saturated(float v) {
+    return v != v || v >= 2147483648.0f ? INT_MAX : v < -2147483648.0f ? INT_MIN : (int)v;
+}
+#endif
 HOT_INLINE int ceilInt(float v) {
 #if defined(ESP_PLATFORM)
     int i;
     asm("fcvt.w.s %0, %1, rup" : "=r"(i) : "f"(v));
     return i;
 #else
-    return (int)ceilf(v);
+    return saturated(ceilf(v));
 #endif
 }
 HOT_INLINE int floorInt(float v) {
@@ -4627,7 +4644,7 @@ HOT_INLINE int floorInt(float v) {
     asm("fcvt.w.s %0, %1, rdn" : "=r"(i) : "f"(v));
     return i;
 #else
-    return (int)floorf(v);
+    return saturated(floorf(v));
 #endif
 }
 
@@ -6656,7 +6673,7 @@ struct MarchState {
     float eh2f;              // 260: round, the column's part of the earth's fall, s eh2f
     float tinyStep;          // 264: 1e-9, a ray too near square to the grid's x or y for 1 / it
 };
-#if defined(ESP_PLATFORM)
+#if TERRAIN_IN_ASM
 static_assert(offsetof(MarchState, X0) == 72 && offsetof(MarchState, iEaseLo) == 96 &&
                   offsetof(MarchState, minusInf) == 132 && offsetof(MarchState, i) == 140 &&
                   offsetof(MarchState, k) == 156 && offsetof(MarchState, prev) == 172 &&
@@ -6673,21 +6690,28 @@ extern "C" int scene3d_march_flat(MarchState *m);
 extern "C" int scene3d_march_round(MarchState *m);
 #endif
 
-// One column's march, out from its first step, everything it needs in
-// registers: its rows filled from `filled` up, and the top one returned. A
-// sample's place on the grid as an integer, 256ths of a cell - its cell and
+// One column's march, out from its first step: its rows filled from
+// `filled` up, and the top one returned - sixteen steps a go, in two passes.
+// First each step's sample on its own, none of it waiting on the sample
+// before, so that the core goes on with one while another's sums are under
+// way: its place on the grid as an integer, 256ths of a cell - its cell and
 // where in it at once - and its cell's highest corner set against the line
-// of sight through the top filled row, a multiply-add and a compare: under
-// it, the sample is hidden, the most of them. Only one that may not be has
-// its height worked out between its cell's corners, and only one seen is
-// put on the screen, with a division - and the sample before it, for the
-// rows between. Into another block of the grid near the eye, the block
-// skipped whole where its highest can't reach the line of sight anywhere
-// across it.
+// of sight through the top filled row as the go starts, the lowest it will
+// be across it: under it, the sample is hidden. Otherwise its height between
+// its cell's corners, its depth, 1 / it, and the first whole row it reaches.
+// Then the go's samples in order: one whose row is above the top filled row
+// is seen, and the rows between filled with 1 / depth straight between it
+// and the sample before - the rows the drawing reads: the even ones, each
+// band's first, and the top. Into another block of the grid near the eye,
+// the block skipped whole where its highest can't reach the line of sight
+// anywhere across it; and after each sixteenth step the column given up,
+// once the highest land along it from there couldn't rise above the rows
+// filled.
 template <bool ROUND>
 int marchColumn(const MarchFrame &K, const MarchRay &R, MarchCounts &counts) {
     constexpr float PER_Q = 1.0f / 65536, FLAT_IN = 2500, FLAT_OUT = 5000;
     constexpr int BLOCK_BITS = 11;  // a block, 8 cells, 2048 256ths of one
+    constexpr int GO = 16;          // steps a go: to each sixteenth, the give-up's
     const float *far = K.far, *base = K.base;
     const int steps = K.steps;
     const int16_t *heights = K.heights, *cellMax = K.cellMax, *blockMax = K.blockMax;
@@ -6696,8 +6720,8 @@ int marchColumn(const MarchFrame &K, const MarchRay &R, MarchCounts &counts) {
     const float ez = K.ez, groundUp = K.groundUp, e2 = K.e2, fall = K.fall;
     const float Fz = K.Fz, Dz = K.Dz, f = K.f, cy = K.cy, skipTo = K.skipTo;
     const float *zHighAt = K.zHighAt;
-    // Fused as scene3d_march_flat fuses them, so that the two agree to the
-    // bit: a row from cy - 0.5, a line of sight's k from cy + 0.5.
+    // Fused as the assembly fuses them, so that the two agree to the bit: a
+    // row from cy - 0.5, a line of sight's k from cy + 0.5.
     const float cyLess = cy - 0.5f, cyMore = cy + 0.5f;
     // What a sample's height is set against, the base, is base[i] + s eh2f
     // at step i, and fma(s s, fall, gez) + s eh2f anywhere: flat, the eye's
@@ -6731,7 +6755,8 @@ int marchColumn(const MarchFrame &K, const MarchRay &R, MarchCounts &counts) {
         int top = (a0 << 8) + (b0 - a0) * fx, bottom = (c0 << 8) + (d0 - c0) * fx;
         return ((top << 8) + (bottom - top) * fy) * PER_Q;
     };
-    // A step's height, all of it worked out: for the sample before one seen.
+    // A step's height, all of it worked out: for a sample before one seen,
+    // hidden by its cell.
     auto heightAt = [&](float s) {
         float x = ROUND ? fmaf(s, fmaf(s, XS2, XS), X0) : fmaf(s, XS, X0);
         float y = ROUND ? fmaf(s, fmaf(s, YS2, YS), Y0) : fmaf(s, YS, Y0);
@@ -6739,319 +6764,211 @@ int marchColumn(const MarchFrame &K, const MarchRay &R, MarchCounts &counts) {
         return eased((uint32_t)ix < xLim && (uint32_t)iy < yLim ? between(ix, iy) : 0.0f, s);
     };
     int filled = R.filled;
-    float k = filled - cyMore;
-    float den = fmaf(-k, Fz, f * Dz);
-    bool sloped = den < -1e-4f;
-    float gk = sloped ? fmaf(k, A, -(f * B)) / den : 0;
-    float gkLine = sloped ? gk : -INFINITY;  // not sloped: every sample to the full test
-    // The sample before: a step, -2 the flat ground's edge, -1 none; the
-    // last whose height was worked out; and the last put on the screen,
-    // its row and 1 / depth.
-    int prev = R.lastS >= 0 ? -2 : -1, known = -3, shown = -3;
-    float knownH = 0, shownRho = 0, shownW = 0;
     // Row filled - 1 of the column: where it is kept, and its row in its band.
     int off = (filled - 1) % bandRows;
     int at = (((filled - 1) / bandRows) * cols + R.c) * bandRows + off;
     const int bandBack = bandRows - 1 - cols * bandRows;  // the row above a band's first, in the band before
-    const bool everyRow = bandRows & 1;                    // bands an odd number of rows: every row kept
+    // The sample before, for the rows between it and one seen: its w and its
+    // row - w nought, none to go by; -1, hidden by its cell, its height
+    // worked out if it is wanted. The first's: the flat ground's edge, or
+    // none.
+    float lastW = 0, lastRho = 0;
+    if (R.lastS >= 0) {
+        float lastS = R.lastS, ldz = R.lastH - underOf(lastS);
+        float lzc = fmaf(lastS, A, ldz * Fz), lyc = fmaf(lastS, B, ldz * Dz);
+        if (lzc > 0.5f) {
+            lastW = 1 / lzc;
+            lastRho = fmaf(lyc * lastW, f, cyLess);
+        }
+    }
     int curBlk = -1;
+    int skipped = -1;  // a block's last step, skipped to: on into the next go
     uint32_t samples = 0, skips = 0;
 #ifdef BENCH3D
-    uint32_t path0 = 0, path1 = 0, path2 = 0, path3 = 0, path4 = 0, path5 = 0, path6 = 0;
+    uint32_t path0 = 0, path1 = 0, path3 = 0, path4 = 0, path5 = 0, path6 = 0;
 #endif
-    // Sample i - its next step i + 1, or where a block skipped puts it -
-    // true once the column is done.
-    auto step = [&](int &i) __attribute__((always_inline)) {
-        float s = far[i];
-        samples++;
-        float x = ROUND ? fmaf(s, fmaf(s, XS2, XS), X0) : fmaf(s, XS, X0);
-        float y = ROUND ? fmaf(s, fmaf(s, YS2, YS), Y0) : fmaf(s, YS, Y0);
-        float line = fmaf(s, gkLine + eh2f, base[i]);
-        int ix = (int)x, iy = (int)y;
-        float hgt = 0;
-        if ((uint32_t)ix < xLim && (uint32_t)iy < yLim) {
-            int blk = (iy >> BLOCK_BITS) * bcols + (ix >> BLOCK_BITS);
-            if (blk != curBlk) {
-                curBlk = blk;
-                if (sloped && s < skipTo) {
+    // A go's samples: the first whole row each reaches - an int's most where
+    // it reaches none - its w and its row.
+    int topOf[GO];
+    float wOf[GO], rhoOf[GO];
+    for (int i = R.first; i < steps;) {
+        const int end = std::min(steps, (i | (GO - 1)) + 1);
+        // The line of sight through the top filled row as the go starts -
+        // or, not sloped, none to hide a sample by its cell.
+        float k = filled - cyMore;
+        float den = fmaf(-k, Fz, f * Dz);
+        const bool sloped = den < -1e-4f;
+        const float gk = sloped ? fmaf(k, A, -(f * B)) / den : 0;
+        const float slope = (sloped ? gk : -INFINITY) + eh2f;  // the line's, from each step's base
+        for (int j = i; j < end; j++) {
+            const int q = j - i;
+            topOf[q] = INT_MAX;
+            wOf[q] = -1;
+            rhoOf[q] = 0;
+            if (j <= skipped) {
+                continue;
+            }
+            const float s = far[j];
+            samples++;
+            float x = ROUND ? fmaf(s, fmaf(s, XS2, XS), X0) : fmaf(s, XS, X0);
+            float y = ROUND ? fmaf(s, fmaf(s, YS2, YS), Y0) : fmaf(s, YS, Y0);
+            float line = fmaf(s, slope, base[j]);
+            int ix = (int)x, iy = (int)y;
+            float hgt = 0;
+            if ((uint32_t)ix < xLim && (uint32_t)iy < yLim) {
+                int blk = (iy >> BLOCK_BITS) * bcols + (ix >> BLOCK_BITS);
+                if (blk != curBlk) {
+                    curBlk = blk;
+                    if (sloped && s < skipTo) {
 #ifdef BENCH3D
-                    path5++;
+                        path5++;
 #endif
-                    int bx = ix >> BLOCK_BITS, by = iy >> BLOCK_BITS;
-                    float dX = ROUND ? fmaf(s + s, XS2, XS) : XS, dY = ROUND ? fmaf(s + s, YS2, YS) : YS;
-                    float rX = ROUND ? (fabsf(dX) < 1e-9f ? 0 : 1 / dX) : rXS;
-                    float rY = ROUND ? (fabsf(dY) < 1e-9f ? 0 : 1 / dY) : rYS;
-                    float outX = rX > 0 ? ((bx + 1) * 2048 - x) * rX : rX < 0 ? (bx * 2048 - x) * rX : 1e9f;
-                    float outY = rY > 0 ? ((by + 1) * 2048 - y) * rY : rY < 0 ? (by * 2048 - y) * rY : 1e9f;
-                    float sOut = s + std::max(0.0f, std::min(outX, outY));
-                    float low = std::min(line, fmaf(sOut, gk + eh2f, fmaf(sOut * sOut, fall, gez)));
-                    // Where the line, bent by the fall, is lowest.
-                    float sLow = -(gk + eh2f) / (2 * fall);
-                    if (sLow > s && sLow < sOut) {
-                        low = std::min(low, fmaf(sLow, gk + eh2f, fmaf(sLow * sLow, fall, gez)));
-                    }
-                    // Its highest - or the airfield's ground, eased over it.
-                    float most = blockMax[blk];
-                    if (!ROUND && sOut >= easeLo && s < easeHi) {
-                        most = std::max(most, groundUp);
-                    }
-                    if (most < low) {
-                        int j = i;
-                        while (j + 8 < steps && far[j + 8] < sOut) {
-                            j += 8;
+                        int bx = ix >> BLOCK_BITS, by = iy >> BLOCK_BITS;
+                        float dX = ROUND ? fmaf(s + s, XS2, XS) : XS, dY = ROUND ? fmaf(s + s, YS2, YS) : YS;
+                        float rX = ROUND ? (fabsf(dX) < 1e-9f ? 0 : 1 / dX) : rXS;
+                        float rY = ROUND ? (fabsf(dY) < 1e-9f ? 0 : 1 / dY) : rYS;
+                        float outX = rX > 0 ? ((bx + 1) * 2048 - x) * rX : rX < 0 ? (bx * 2048 - x) * rX : 1e9f;
+                        float outY = rY > 0 ? ((by + 1) * 2048 - y) * rY : rY < 0 ? (by * 2048 - y) * rY : 1e9f;
+                        float sOut = s + std::max(0.0f, std::min(outX, outY));
+                        float low = std::min(line, fmaf(sOut, slope, fmaf(sOut * sOut, fall, gez)));
+                        // Where the line, bent by the fall, is lowest.
+                        float sLow = -slope / (2 * fall);
+                        if (sLow > s && sLow < sOut) {
+                            low = std::min(low, fmaf(sLow, slope, fmaf(sLow * sLow, fall, gez)));
                         }
-                        while (j + 1 < steps && far[j + 1] < sOut) {
-                            j++;
+                        // Its highest - or the airfield's ground, eased over it.
+                        float most = blockMax[blk];
+                        if (!ROUND && sOut >= easeLo && s < easeHi) {
+                            most = std::max(most, groundUp);
                         }
-                        if (j > i + 1) {
-                            // On from the block's last step, as the sample
-                            // before the next.
-                            skips++;
-                            i = j;
-                            return false;
+                        if (most < low) {
+                            int last = j;
+                            while (last + 8 < steps && far[last + 8] < sOut) {
+                                last += 8;
+                            }
+                            while (last + 1 < steps && far[last + 1] < sOut) {
+                                last++;
+                            }
+                            if (last > j + 1) {
+                                // Hidden, all its steps: on from the next block.
+                                skips++;
+                                skipped = last;
+                                continue;
+                            }
                         }
                     }
                 }
-            }
 #ifdef BENCH3D
-            size_t cell = (size_t)((iy >> 8) & K.rowMask) * gcols + (ix >> 8);
+                size_t cell = (size_t)((iy >> 8) & K.rowMask) * gcols + (ix >> 8);
 #else
-            size_t cell = (size_t)(iy >> 8) * gcols + (ix >> 8);
+                size_t cell = (size_t)(iy >> 8) * gcols + (ix >> 8);
 #endif
-            float most = cellMax[cell];
-            if (!ROUND && s < easeHi && s >= easeLo) {
-                most = std::max(most, groundUp);
-            }
-            if (most < line) {
-                // Under the line of sight, all its cell.
-#ifdef BENCH3D
-                path0++;
-#endif
-                prev = i;
-                if ((i & 15) == 15) {
-                    float zh = zHighAt[i >> 4];
-                    float zcHigh = fmaf(s, A, zh * Fz), ycHigh = fmaf(s, B, zh * Dz);
-                    if (zh > 0 ? (zcHigh > 0.5f && f * ycHigh > k * zcHigh) : (A > 0 && f * B > k * A)) {
-                        return true;
-                    }
+                float most = cellMax[cell];
+                if (!ROUND && s < easeHi && s >= easeLo) {
+                    most = std::max(most, groundUp);
                 }
-                i++;
-                return false;
-            }
-            hgt = between(ix, iy);
-        }
+                if (most < line) {
+                    // Under the line of sight, all its cell.
 #ifdef BENCH3D
-        else {
-            path6++;
-        }
+                    path0++;
 #endif
-        hgt = eased(hgt, s);
-        if (hgt >= line) {
-            // Above the line of sight, or the line not sloped: put on the
-            // screen, and the rows between it and the sample before filled.
-            float dz = hgt - fmaf(s, eh2f, base[i]);
+                    continue;
+                }
+                hgt = between(ix, iy);
+            }
+#ifdef BENCH3D
+            else {
+                path6++;
+            }
+#endif
+            hgt = eased(hgt, s);
+            float dz = hgt - fmaf(s, eh2f, base[j]);
             float zc = fmaf(s, A, dz * Fz), yc = fmaf(s, B, dz * Dz);
-            if (zc > 0.5f && (sloped || f * yc <= k * zc)) {
+            wOf[q] = 0;  // behind the eye: no row, and none to go by
+            if (zc > 0.5f) {
                 float w = 1 / zc, rho = fmaf(yc * w, f, cyLess);
-                int top = std::max(0, ceilInt(rho));
-                if (top < filled) {
-                    // Rows [top, filled): between the sample before and this,
-                    // 1 / depth straight between theirs - as a plane's is.
-                    float slopeW = 0, lastRho = 0, lastW = 0;
-                    bool before = false;
-                    if (prev == shown) {
-                        lastRho = shownRho;
-                        lastW = shownW;
-                        before = true;
-                    } else if (prev >= 0 || prev == -2) {
-                        float lastS = prev >= 0 ? far[prev] : R.lastS, lastH = R.lastH;
-                        float lastUnder = prev < 0 ? underOf(lastS) : fmaf(lastS, eh2f, base[prev]);
-                        if (prev >= 0) {
-#ifdef BENCH3D
-                            path4 += prev != known;
-#endif
-                            lastH = prev == known ? knownH : heightAt(lastS);
-                        }
-                        float ldz = lastH - lastUnder;
-                        float lzc = fmaf(lastS, A, ldz * Fz), lyc = fmaf(lastS, B, ldz * Dz);
-                        if (lzc > 0.5f) {
-                            lastW = 1 / lzc;
-                            lastRho = fmaf(lyc * lastW, f, cyLess);
-                            before = true;
-                        }
-                    }
-                    if (before && lastRho - rho > 1e-3f) {
-                        slopeW = (lastW - w) / (lastRho - rho);
-                    }
-                    float wr = fmaf((float)(filled - 1 - top), slopeW, std::min(fmaf((float)top - rho, slopeW, w), w));
-#ifdef BENCH3D
-                    path3++;
-#endif
-                    // The rows the drawing reads: even ones - every band's
-                    // first among them, bands being an even number of rows -
-                    // and the top; every one where bands are odd. Two rows
-                    // up at a time over the even, as scene3d_march_flat goes.
-                    auto up = [&] {
-                        if (off == 0) {
-                            off = bandRows - 1;
-                            at += bandBack;
-                        } else {
-                            off--;
-                            at--;
-                        }
-                    };
-                    int r = filled - 1;
-                    if (everyRow) {
-                        for (; r >= top; r--) {
-                            tz[at] = toBf16(wr);
-                            wr -= slopeW;
-                            up();
-                        }
-                    } else {
-                        if (r & 1) {
-                            if (r == top) {
-                                tz[at] = toBf16(wr);
-                            }
-                            wr -= slopeW;
-                            up();
-                            r--;
-                        }
-                        while (r >= top) {
-                            tz[at] = toBf16(wr);
-                            wr -= slopeW;
-                            if (r == top) {
-                                up();
-                                break;
-                            }
-                            if (r - 1 == top) {
-                                up();
-                                tz[at] = toBf16(wr);
-                                up();
-                                break;
-                            }
-                            wr -= slopeW;
-                            if (off == 0) {
-                                off = bandRows - 2;
-                                at += bandBack - 1;
-                            } else {
-                                off -= 2;
-                                at -= 2;
-                            }
-                            r -= 2;
-                        }
-                    }
-                    filled = top;
-                    if (top == 0) {
-                        return true;
-                    }
-                    k = top - cyMore;
-                    den = fmaf(-k, Fz, f * Dz);
-                    sloped = den < -1e-4f;
-                    gk = sloped ? fmaf(k, A, -(f * B)) / den : 0;
-                    gkLine = sloped ? gk : -INFINITY;
-                }
-                shown = i;
-                shownRho = rho;
-                shownW = w;
+                wOf[q] = w;
+                rhoOf[q] = rho;
+                topOf[q] = std::max(0, ceilInt(rho));
             }
         }
+        // The go's samples in order: each whose row is above the top filled
+        // one seen, and the rows between it and the sample before filled.
+        bool done = false;
+        for (int j = i; j < end; j++) {
+            const int q = j - i, top = topOf[q];
+            if (top < filled) {
+                const float w = wOf[q], rho = rhoOf[q];
+                if (lastW < 0) {
+                    // The sample before, hidden by its cell: its height now.
 #ifdef BENCH3D
-        path2 += hgt >= line;
-        path1 += hgt < line;
+                    path4++;
 #endif
-        prev = known = i;
-        knownH = hgt;
+                    float lastS = far[j - 1], ldz = heightAt(lastS) - fmaf(lastS, eh2f, base[j - 1]);
+                    float lzc = fmaf(lastS, A, ldz * Fz), lyc = fmaf(lastS, B, ldz * Dz);
+                    lastW = 0;
+                    if (lzc > 0.5f) {
+                        lastW = 1 / lzc;
+                        lastRho = fmaf(lyc * lastW, f, cyLess);
+                    }
+                }
+                // 1 / depth straight between them, as a plane's is - no
+                // nearer than this sample's at its own row.
+                float slopeW = 0;
+                if (lastW > 0 && lastRho - rho > 1e-3f) {
+                    slopeW = (lastW - w) / (lastRho - rho);
+                }
+                const float wTop = std::min(fmaf((float)top - rho, slopeW, w), w);
+                // Rows [top, filled), from filled - 1 up: those the drawing
+                // reads - the even ones, each band's first, and the top -
+                // each from the top's, on its own.
+                for (int r = filled - 1;; r--) {
+                    if (!(r & 1) || r == top || off == 0) {
+                        tz[at] = toBf16(fmaf((float)(r - top), slopeW, wTop));
+                    }
+                    if (off == 0) {
+                        off = bandRows - 1;
+                        at += bandBack;
+                    } else {
+                        off--;
+                        at--;
+                    }
+                    if (r == top) {
+                        break;
+                    }
+                }
+#ifdef BENCH3D
+                path3++;
+#endif
+                filled = top;
+                if (top == 0) {
+                    done = true;
+                    break;
+                }
+            }
+#ifdef BENCH3D
+            else if (wOf[q] >= 0) {
+                path1++;
+            }
+#endif
+            lastW = wOf[q];
+            lastRho = rhoOf[q];
+        }
+        if (done) {
+            break;
+        }
         // Given up once the highest land about, this far off or further,
         // would be under the rows filled.
-        if ((i & 15) == 15) {
-            float zh = zHighAt[i >> 4];
+        const int last = end - 1;
+        if ((last & 15) == 15) {
+            float s = far[last], zh = zHighAt[last >> 4];
+            k = filled - cyMore;
             float zcHigh = fmaf(s, A, zh * Fz), ycHigh = fmaf(s, B, zh * Dz);
             if (zh > 0 ? (zcHigh > 0.5f && f * ycHigh > k * zcHigh) : (A > 0 && f * B > k * A)) {
-                return true;
-            }
-        }
-        i++;
-        return false;
-    };
-    int i = R.first;
-#if defined(ESP_PLATFORM)
-#ifdef BENCH3D
-    bool inC = g_terrainProbe & 8;  // the bench's check: C alone, to compare
-#else
-    constexpr bool inC = false;
-#endif
-    if (!inC && i < steps) {
-        // The common ways in assembly: what it leaves at
-        // step m.i - a block to test for skipping, a sample before to be
-        // worked out again - done here a step at a time, then on in it.
-        MarchState &m = *K.asmState;
-        m.X0 = X0;
-        m.XS = XS;
-        m.Y0 = Y0;
-        m.YS = YS;
-        m.A = A;
-        m.B = B;
-        m.e2 = e2;
-        m.eh2 = eh2;
-        m.groundUp = groundUp;
-        m.rXS = rXS;
-        m.rYS = rYS;
-        m.XS2 = XS2;
-        m.YS2 = YS2;
-        m.eh2f = eh2f;
-        m.gez = gez;
-        m.fall = fall;
-        m.twoFall = 2 * fall;
-        m.easeLoF = easeLo;
-        m.easeHiF = easeHi;
-        int iLo = stepFrom(far, steps, 0, easeLo), iHi = stepFrom(far, steps, iLo, easeHi);
-        m.iEaseLo = m.iEaseLo0 = iLo < iHi ? iLo : 0x7FFFFFFF;
-        m.iEaseHi = iHi;
-        for (;;) {
-            m.i = i;
-            m.filled = filled;
-            m.at = at;
-            m.off = off;
-            m.k = k;
-            m.gk = gk;
-            m.gkLine = gkLine;
-            m.sloped = sloped;
-            m.prev = prev;
-            m.known = known;
-            m.shown = shown;
-            m.knownH = knownH;
-            m.shownRho = shownRho;
-            m.shownW = shownW;
-            m.curBlk = curBlk;
-            m.samples = samples;
-            m.skips = skips;
-            int more = ROUND ? scene3d_march_round(&m) : scene3d_march_flat(&m);
-            i = m.i;
-            filled = m.filled;
-            at = m.at;
-            off = m.off;
-            k = m.k;
-            gk = m.gk;
-            gkLine = m.gkLine;
-            sloped = m.sloped;
-            prev = m.prev;
-            known = m.known;
-            shown = m.shown;
-            knownH = m.knownH;
-            shownRho = m.shownRho;
-            shownW = m.shownW;
-            curBlk = m.curBlk;
-            samples = m.samples;
-            skips = m.skips;
-            if (!more || step(i) || i >= steps) {
                 break;
             }
         }
-    } else
-#endif
-    {
-        while (i < steps && !step(i)) {
-        }
+        i = end;
     }
     counts.samples += samples;
     counts.rows += R.filled - filled;
@@ -7059,7 +6976,6 @@ int marchColumn(const MarchFrame &K, const MarchRay &R, MarchCounts &counts) {
 #ifdef BENCH3D
     counts.paths[0] += path0;
     counts.paths[1] += path1;
-    counts.paths[2] += path2;
     counts.paths[3] += path3;
     counts.paths[4] += path4;
     counts.paths[5] += path5;
@@ -8804,6 +8720,33 @@ void terrainStats(uint64_t out[8], bool reset) {
     }
 }
 
+uint32_t terrainDigest() {
+    // The frame drawn, d - prepare() has flipped it there: FNV-1a over each
+    // column's top and flat top, and the 1 / depths the drawing reads of it -
+    // its even rows, each band's first and its top.
+    uint32_t h = 2166136261u;
+    auto mix = [&](uint32_t v) {
+        for (int i = 0; i < 4; i++, v >>= 8) {
+            h = (h ^ (v & 255)) * 16777619u;
+        }
+    };
+    if (!d.terrainOn) {
+        return 0;
+    }
+    int bandRows = d.bandRows, cols = d.tCols;
+    for (int c = 0; c < cols; c++) {
+        int top = d.tTop[c], flatTop = d.tFlatTop[c];
+        mix((uint32_t)top | (uint32_t)flatTop << 16);
+        for (int r = top; r < flatTop; r++) {
+            if (!(r & 1) || r == top || r % bandRows == 0) {
+                int b = r / bandRows;
+                mix(d.tz[((size_t)b * cols + c) * bandRows + (r - b * bandRows)]);
+            }
+        }
+    }
+    return h;
+}
+
 #ifdef BENCH3D
 void spanStats(uint32_t out[6], bool reset) {
     for (int i = 0; i < 6; i++) {
@@ -9365,7 +9308,7 @@ struct TerrainCol {
     uint32_t misses;         // 176: pairs worked out
     float mapU[6], mapV[6];  // 180, 204: round, where on the grid a place dx east and dy north is
 };
-#if defined(ESP_PLATFORM)
+#if TERRAIN_IN_ASM
 static_assert(offsetof(TerrainCol, flatZ) == 52 && offsetof(TerrainCol, haze) == 56 &&
                   offsetof(TerrainCol, cells) == 84 && offsetof(TerrainCol, keyE) == 100 &&
                   offsetof(TerrainCol, samples) == 116 && offsetof(TerrainCol, pairs) == 120,
@@ -9461,7 +9404,7 @@ HOT_INLINE void terrainSampleC(TerrainCol &t, int rows, CellMap &map, CellPart &
     t.y += rows;
 }
 
-#if defined(ESP_PLATFORM)
+#if TERRAIN_IN_ASM
 // The band's land in assembly, a pair of rows at a time across every
 // column, from row t.rowAt and column t.c: 0 once it is all done, 1 at a
 // sample it can't do - another part of the cover, a pair of pixels not in
@@ -9537,7 +9480,7 @@ void terrainBand(uint16_t *color, int y0, int y1, const int haze[3]) {
         memcpy(t.mapU, d.tMapU, sizeof t.mapU);
         memcpy(t.mapV, d.tMapV, sizeof t.mapV);
     }
-#if defined(ESP_PLATFORM)
+#if TERRAIN_IN_ASM
 #ifdef BENCH3D
     bool inC = g_terrainProbe & 4;  // the bench's check: C alone, to compare
 #else
@@ -9690,10 +9633,10 @@ void terrainDepth(uint16_t *depth, int y0, int y1) {
         float z = d.tFlatZ[y];
         flat[y - y0] = z > 0.5f ? (uint16_t)std::min(65535.0f, k / z) : 0;
     }
-    // Bands an even number of rows, the march keeps only the even rows' and
-    // each column's top's: an odd row under it has the even row above's -
-    // a row out at most, nearer by under a row's depth.
-    const bool everyRow = bandRows & 1;
+    // The march keeps only the even rows', each band's first's and each
+    // column's top's: an odd row under them has the even row above's - a row
+    // out at most, nearer by under a row's depth. The column's first in the
+    // band is its top or the band's first.
     for (int c = 0; c < cols; c++) {
         int ya = std::max(y0, (int)tops[c]), flatTop = d.tFlatTop[c];
         const uint16_t *zc = zs + (size_t)c * bandRows - y0;
@@ -9703,7 +9646,7 @@ void terrainDepth(uint16_t *depth, int y0, int y1) {
             if (y >= flatTop) {
                 v = flat[y - y0];
                 v |= v << 16;
-            } else if (everyRow || !(y & 1) || y == ya) {
+            } else if (!(y & 1) || y == ya) {
                 v = (uint32_t)std::min(65535.0f, k * fromBf16(zc[y]));
                 v |= v << 16;
             }

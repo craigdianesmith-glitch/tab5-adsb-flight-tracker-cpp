@@ -68,7 +68,10 @@ const Navaid NAVAIDS[] = {
 
 using namespace scene3d;
 
-constexpr int W = 1280, H = 720, BAND = 16;
+constexpr int W = 1280, H = 720;
+// The bands' rows: 16, as the Tab5 has them with room - or BAND_ROWS, 15
+// say, as it has them without.
+const int BAND = getenv("BAND_ROWS") ? atoi(getenv("BAND_ROWS")) : 16;
 std::vector<uint16_t> image(W *H);
 
 void text(const char *s, int x, int y, int size, uint16_t color) {
@@ -141,12 +144,23 @@ void terrainLine(int frame) {
     }
     uint64_t t[8];
     terrainStats(t, true);
-    printf("tstats %04d: march %.0fus %llu samples %llu rows %llu skips; band %.0fus %llu samples %llu long\n", frame,
-           t[0] / 1000.0, (unsigned long long)t[1], (unsigned long long)t[2], (unsigned long long)t[3], t[4] / 1000.0,
-           (unsigned long long)t[5], (unsigned long long)t[6]);
+    printf("tstats %04d: march %.0fus %llu samples %llu rows %llu skips; band %.0fus %llu samples %llu long; digest %08x\n",
+           frame, t[0] / 1000.0, (unsigned long long)t[1], (unsigned long long)t[2], (unsigned long long)t[3],
+           t[4] / 1000.0, (unsigned long long)t[5], (unsigned long long)t[6], (unsigned)terrainDigest());
 }
 
 void save(const std::string &path) {
+    if (getenv("NOSAVE")) {
+        // NOSAVE=1: the frame's FNV-1a in the log instead of its file - to
+        // set one build's frames against another's without the gigabytes.
+        uint32_t h = 2166136261u;
+        for (uint16_t v : image) {
+            h = (h ^ (v & 255)) * 16777619u;
+            h = (h ^ (v >> 8)) * 16777619u;
+        }
+        printf("image %s %08x\n", path.substr(path.find_last_of('/') + 1).c_str(), (unsigned)h);
+        return;
+    }
     FILE *f = fopen(path.c_str(), "wb");
     if (!f) {
         perror(path.c_str());

@@ -438,6 +438,10 @@ bool skylineDrawn(Vec3 &eye, Vec3 &right, Vec3 &down, Vec3 &forward, float &f, f
 // cycles, samples, rows filled and blocks skipped; the drawing's cycles,
 // samples, cells found the long way and colours worked out.
 void terrainStats(uint64_t out[8], bool reset);
+// A digest of the last march's output as the drawing reads it - each
+// column's top and flat top and its rows' 1 / depths - to set one build's
+// march against another's.
+uint32_t terrainDigest();
 // On the bench, the caches' data hits and misses over the march (L1 hits,
 // misses, L2 hits, misses) and over the drawing (likewise), both cores'.
 void terrainCache(uint64_t out[8], bool reset);
