@@ -71,6 +71,8 @@ const char *const HELP[] = {
     "it - drag the picture to turn it - and TOWER watches from the airfield's tower.",
     "- FLY PAST sets a camera down ahead of it, beside its way, for it to go by - then ahead again for the next "
     "pass, the other side. ZOOM IN and ZOOM OUT bring the camera nearer or further off.",
+    "- HILLS: the land at its height, its hills and mountains, from the ground pack. Off, the land is flat with its "
+    "hills along the skyline, and the pictures come quicker. Greyed with no pack, or away from the land it covers.",
     "- SOUND: its engines, as they sound from the camera - loud close by, muffled far off, the pitch dropping as it "
     "passes one standing still. The speaker's mute silences them too.",
     "- Tap another aircraft for its details. Back goes to the radar.",

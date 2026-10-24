@@ -4629,6 +4629,7 @@ void setup() {
     soundSetMuted(g_muted);
     radarScreenSetMuted(g_muted, false);
     view3d::setEngineSound(s.engineSound);
+    view3d::setHills(s.hills);
     soundSetReadAloud(g_readAloud);
     soundSetElsewhereAccent(g_elsewhereAccent);
     displaySetSort(s.tableSortCol, s.tableSortDesc);

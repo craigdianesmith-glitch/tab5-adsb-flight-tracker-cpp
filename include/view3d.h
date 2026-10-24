@@ -63,6 +63,10 @@ void close();
 // Whether the one followed's engines are heard - the SOUND button's, which
 // saves it; this from the settings at boot.
 void setEngineSound(bool on);
+// Whether the land is drawn at its height, where the card's ground pack has
+// it - the HILLS button's, which saves it; this from the settings at boot.
+// Off, or with no pack, the land is flat, its hills a skyline.
+void setHills(bool on);
 bool isOpen();
 // Showing the one followed parked at a stand, or making for one - landed,
 // its signal lost on the ground, taxied in by itself: following is kept on
@@ -126,7 +130,8 @@ Action lift(String &hex);
 // try - each half second of it said in the log.
 void sweep(uint32_t seconds);
 // As though a camera button were pressed: 'c' CINEMA, 'h' CHASE, 'o' ORBIT,
-// 't' TOWER, '+' ZOOM IN, '-' ZOOM OUT.
+// 't' TOWER, '+' ZOOM IN, '-' ZOOM OUT. And '0' the land never skimped, for
+// a still however long the frames take; '1' governed again.
 void benchPress(char what);
 // The camera and the skyline's hills as drawn, column by column, on the
 // serial port - for checking them against the land's heights.

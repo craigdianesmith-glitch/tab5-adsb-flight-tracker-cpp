@@ -73,6 +73,7 @@ AppSettings loadSettings() {
     }
     s.autoZoom = prefs.getBool("autozoom", false);
     s.engineSound = prefs.getBool("engsound", true);
+    s.hills = prefs.getBool("hills", true);
     s.replayTracks = prefs.getBool("rtracks", true);
     uint8_t sort = prefs.getUChar("tsort", 4);  // DIST, nearest first
     s.tableSortCol = sort & 7;
@@ -225,6 +226,13 @@ void saveEngineSound(bool on) {
     Preferences prefs;
     prefs.begin(NAMESPACE, false);
     prefs.putBool("engsound", on);
+    prefs.end();
+}
+
+void saveHills(bool on) {
+    Preferences prefs;
+    prefs.begin(NAMESPACE, false);
+    prefs.putBool("hills", on);
     prefs.end();
 }
 

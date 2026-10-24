@@ -53,11 +53,14 @@ float length(Vec3 a) { return sqrtf(a.x * a.x + a.y * a.y + a.z * a.z); }
 // where it always is; and the flight's details under the picture.
 constexpr int VIEW_X = 40, VIEW_Y = 16, VIEW_W = 1008, VIEW_H = 560;
 constexpr int BTN_W = 150, BTN_H = 50, BTN_X = 1280 - 16 - BTN_W;
-enum Button : uint8_t { B_BACK, B_CINEMA, B_CHASE, B_ORBIT, B_TOWER, B_PAST, B_ZOOM_IN, B_ZOOM_OUT, B_SOUND, BUTTONS };
-// Back; the cameras; how close - grouped as the radar groups its own.
-constexpr int BTN_Y[BUTTONS] = {8, 84, 144, 204, 264, 324, 400, 460, 536};
-const char *const BTN_NAME[BUTTONS] = {"Back",     "CINEMA",  "CHASE",    "ORBIT", "TOWER",
-                                       "FLY PAST", "ZOOM IN", "ZOOM OUT", "SOUND"};
+enum Button : uint8_t {
+    B_BACK, B_CINEMA, B_CHASE, B_ORBIT, B_TOWER, B_PAST, B_ZOOM_IN, B_ZOOM_OUT, B_HILLS, B_SOUND, BUTTONS
+};
+// Back; the cameras; how close; the view's own, its hills and its sound -
+// grouped as the radar groups its own.
+constexpr int BTN_Y[BUTTONS] = {8, 84, 144, 204, 264, 324, 400, 460, 536, 596};
+const char *const BTN_NAME[BUTTONS] = {"Back",    "CINEMA",   "CHASE", "ORBIT", "TOWER", "FLY PAST",
+                                       "ZOOM IN", "ZOOM OUT", "HILLS", "SOUND"};
 constexpr int STRIP_Y = VIEW_Y + VIEW_H + 16, STRIP_H = 720 - 8 - STRIP_Y;
 
 // The radar's colours.
@@ -1838,6 +1841,9 @@ String g_followedHex;
 // at its height skimping, its samples fewer and less far, likewise - see
 // scene3d's Scene::terrainEffort.
 float g_detailPx = 60, g_tinyPx = 12, g_terrainEffort = 0;
+#ifdef BENCH3D
+bool g_benchFullLand = false;  // the bench's "##K0": the land never skimped, for a still
+#endif
 uint32_t g_frameMs = 0;
 // For the log, every ten seconds: frames, and the time preparing them and
 // waiting for the drawing.
@@ -1880,8 +1886,16 @@ void setCover(double lat, double lon, bool high, float upM) {
 // Where the eye was last, for ##D.
 double g_eyeLat = 0, g_eyeLon = 0;
 // The land at its height - the hills from any height - rather than flat
-// with a skyline: ##m switches it, to set the two side by side.
+// with a skyline: the HILLS button's, saved, and the settings' at boot; on
+// the bench ##m switches it too, unsaved, to set the two side by side.
 bool g_terrain = true;
+
+// The land can be drawn at its height here: the card's pack read in, with
+// land of it round the eye. Else it is flat whatever HILLS says - the strip
+// saying why - and the button greyed.
+bool hillsHere() {
+    return groundpack::status() == groundpack::Status::READY && !groundpack::offPack();
+}
 
 // The skyline: the horizon round the camera's eye, from the ground pack -
 // see groundpack::Horizon - wanted afresh as the eye moves, the last worked
@@ -2245,13 +2259,13 @@ void placeLabels() {
 
 bool buttonGreyed(int i) {
     return (i == B_TOWER && g_where != Where::AIRFIELD) || ((i == B_ZOOM_IN || i == B_ZOOM_OUT) && g_cam == Cam::CINEMA) ||
-           (i == B_SOUND && soundMuted());
+           (i == B_HILLS && !hillsHere()) || (i == B_SOUND && soundMuted());
 }
 
 bool buttonLit(int i) {
     return (i == B_CINEMA && g_cam == Cam::CINEMA) || (i == B_CHASE && g_cam == Cam::CHASE) ||
            (i == B_ORBIT && g_cam == Cam::ORBIT) || (i == B_TOWER && g_cam == Cam::TOWER) ||
-           (i == B_PAST && g_cam == Cam::PAST) || (i == B_SOUND && g_engineSound);
+           (i == B_PAST && g_cam == Cam::PAST) || (i == B_HILLS && g_terrain) || (i == B_SOUND && g_engineSound);
 }
 
 // As the radar draws its own.
@@ -2282,6 +2296,7 @@ void drawButtons() {
 // Pushed through the canvas between frames, every half second.
 uint32_t g_stripMs = 0;
 Where g_stripWhere = Where::NOWHERE;
+bool g_stripHills = false;
 
 // Its height as the radar's label has it: a pressure altitude, a flight level
 // from 18,000ft.
@@ -2461,9 +2476,12 @@ void drawStrip(const Followed &f) {
     } else {
         drawFlightStrip(f);
     }
-    // TOWER greys and lights with where it is.
-    if (g_stripWhere != g_where) {
+    // TOWER greys and lights with where it is, HILLS with whether the pack
+    // has land here.
+    bool hills = hillsHere();
+    if (g_stripWhere != g_where || g_stripHills != hills) {
         g_stripWhere = g_where;
+        g_stripHills = hills;
         if (g_cam == Cam::TOWER && g_where != Where::AIRFIELD) {
             g_cam = Cam::CINEMA;
         }
@@ -2503,6 +2521,11 @@ Action press(int b) {
             g_passSet = false;
             g_passKeepSide = true;
         }
+        break;
+    case B_HILLS:
+        g_terrain = !g_terrain;
+        saveHills(g_terrain);
+        Serial.printf("[3d] hills %s\n", g_terrain ? "on" : "off");
         break;
     case B_SOUND:
         g_engineSound = !g_engineSound;
@@ -2708,6 +2731,8 @@ bool isOpen() { return g_open; }
 
 void setEngineSound(bool on) { g_engineSound = on; }
 
+void setHills(bool on) { g_terrain = on; }
+
 bool parkingLost() { return g_open && g_follower.active() && g_follower.parking(); }
 
 const char *airport() { return g_open && g_where == Where::AIRFIELD ? g_airport : ""; }
@@ -2782,6 +2807,11 @@ void frame(const Followed &flight, const std::vector<Aircraft> &traffic, uint32_
         // The land skimps from 27ms a frame - under 37 a second - and has its
         // detail back, slowly, under 23: its far hills' outlines changing
         // little from one frame to the next.
+#ifdef BENCH3D
+        if (g_benchFullLand) {
+            g_terrainEffort = 0;  // the bench's stills: the land in full, however long the frames
+        } else
+#endif
         if (took > 27) {
             g_terrainEffort = std::min(1.0f, g_terrainEffort + 0.04f);
         } else if (took < 23) {
@@ -3035,6 +3065,10 @@ void sweep(uint32_t seconds) {
 void toggleTerrain() {
     g_terrain = !g_terrain;
     Serial.printf("[3d] the land %s\n", g_terrain ? "at its height, its hills its own" : "flat, the hills a skyline");
+    if (g_open) {
+        drawButtons();
+        screen::flush();
+    }
 }
 
 void terrainProbe(int which) {
@@ -3077,6 +3111,11 @@ void benchPress(char what) {
         g_sweepUntilMs = 0;
         press(b);
         Serial.printf("[3d] pressed %s%s\n", BTN_NAME[b], buttonGreyed(b) ? ", greyed" : "");
+    } else if (what == '0' || what == '1') {
+        // The land in full for a still, however long the frames take - or
+        // governed again.
+        g_benchFullLand = what == '0';
+        Serial.printf("[3d] the land %s\n", g_benchFullLand ? "in full, not skimped" : "governed again");
     }
 }
 
