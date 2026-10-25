@@ -68,6 +68,9 @@ int g_rectCount = 0;
 Rect g_changed[MAX_RECTS];
 int g_changedCount = 0;
 
+// Set by keepApart(), until the next flush.
+bool g_apart = false;
+
 OverlayFn g_overlay = nullptr;
 Rect g_overlayRect = {0, 0, 0, 0};
 
@@ -612,9 +615,31 @@ void markDirty(int x, int y, int w, int h) {
     if (w <= 0 || h <= 0) {
         return;
     }
-    addRect(g_rects, g_rectCount, x, y, w, h, true);
     addRect(g_changed, g_changedCount, x, y, w, h, false);
+    if (g_apart) {
+        // What one already marked takes in from top to bottom cut off, where
+        // what is left is a box: a card over the edge of the plot's column,
+        // the column marked, its part outside the column.
+        for (int i = 0; i < g_rectCount; i++) {
+            const Rect &r = g_rects[i];
+            if (y < r.y || y + h > r.y + r.h || x >= r.x + r.w || x + w <= r.x) {
+                continue;
+            }
+            if (x >= r.x && x + w <= r.x + r.w) {
+                return;  // all of it
+            }
+            if (x < r.x && x + w <= r.x + r.w) {
+                w = r.x - x;
+            } else if (x >= r.x) {
+                w = x + w - (r.x + r.w);
+                x = r.x + r.w;
+            }
+        }
+    }
+    addRect(g_rects, g_rectCount, x, y, w, h, !g_apart);
 }
+
+void keepApart() { g_apart = true; }
 
 int takeChanged(Region *out, int max) {
     int n = std::min(g_changedCount, max);
@@ -632,6 +657,7 @@ void setOverlay(OverlayFn draw, int x, int y, int w, int h) {
 
 void flush() {
     if (g_rectCount == 0 || g_buffer == nullptr) {
+        g_apart = false;
         return;
     }
     // Repainted only when something underneath has been drawn over it, so a
@@ -656,6 +682,8 @@ void flush() {
             }
         }
     }
+    bool apart = g_apart;
+    g_apart = false;
 #ifdef RENDER_PROFILE
     uint32_t t0 = micros();
     int rects = g_rectCount;
@@ -687,7 +715,7 @@ void flush() {
     }
     uint32_t boxArea = (uint32_t)(rgt - l) * (bot - t);
 
-    if (g_rectCount > 1 && sum * 10 >= boxArea * 6) {
+    if (!apart && g_rectCount > 1 && sum * 10 >= boxArea * 6) {
         Rect box = {(int16_t)l, (int16_t)t, (int16_t)(rgt - l), (int16_t)(bot - t)};
         blitRect(box);
     } else {

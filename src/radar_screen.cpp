@@ -2312,6 +2312,14 @@ void radarScreenDraw(const std::vector<Aircraft> &aircraft, const std::vector<ui
         moveDragLine((float)shownNm);
         return;
     }
+    // With a card or a list up, the plot is drawn whole under it and pushed
+    // with it, in pieces - the column, the footer, the readout in the left
+    // margin and the card's part outside the column, each on its own: run
+    // together they were the whole screen, 42ms of the PPA's for 28 or so.
+    // All of it drawn before any is pushed, nothing shows half drawn.
+    if (!full && overlayUp()) {
+        screen::keepApart();
+    }
     g_livePlot = true;  // the filter's funnel, over the plot's corner - a replay has none
     radarPlotDraw(scene, full);
     g_livePlot = false;
@@ -3949,6 +3957,9 @@ void radarZoomDraw(const std::vector<Aircraft> &aircraft, bool full) {
         return;
     }
     static const std::vector<Aircraft> noAircraft;
+    if (!full && overlayUp()) {
+        screen::keepApart();  // as the radar's, with its INFO card up
+    }
     g_zoomMapOnly = mapOnly;
     g_zoomOnFollowed = zoomPlot(view, mapOnly ? noAircraft : aircraft, nullptr, true, g_zoomFollowHex, full,
                                 !overlayUp() && !dragged, !overlayUp() && !dragged && !mapOnly, millis(),
