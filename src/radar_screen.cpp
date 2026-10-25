@@ -3143,10 +3143,16 @@ struct Vec {
     float x, y;
 };
 
-Vec toLocal(const ZoomFrame &f, float lat, float lon) {
-    double nmPerDegLon = 60.0 * cos(f.lat * M_PI / 180.0);
+// The frame's nm to a degree of longitude - in double, a cos the P4's FPU,
+// single precision, hasn't got: some 4,000 instructions, so worked out once
+// for a frame's many points rather than for each.
+double nmPerDegLonOf(const ZoomFrame &f) { return 60.0 * cos(f.lat * M_PI / 180.0); }
+
+Vec toLocal(const ZoomFrame &f, double nmPerDegLon, float lat, float lon) {
     return {(float)((lon - f.lon) * nmPerDegLon), (float)((lat - f.lat) * 60.0)};
 }
+
+Vec toLocal(const ZoomFrame &f, float lat, float lon) { return toLocal(f, nmPerDegLonOf(f), lat, lon); }
 
 // The zoom on the airport with `code`, framed - false where the airport table
 // hasn't got it.
@@ -3194,38 +3200,59 @@ bool frameZoom(const String &code, ZoomFrame &f) {
 // nearest - so a pair of close parallels doesn't light up together for the
 // one aircraft.
 void runwaysInUse(const ZoomFrame &f, const std::vector<Aircraft> &aircraft, bool inUse[][2]) {
+    // Each runway's ends, and from each the way along it and its heading,
+    // worked out once a frame rather than for every contact - every zoom
+    // frame, the partial ones too. The same sums, so the same flags, which
+    // the background is kept by.
+    struct Way {
+        Vec from;
+        float ux, uy, heading;
+    };
+    Way ways[MAX_ZOOM_RUNWAYS][2];
+    float lens[MAX_ZOOM_RUNWAYS];
+    double nmPerDegLon = nmPerDegLonOf(f);
     for (int r = 0; r < f.runwayCount; r++) {
         inUse[r][0] = inUse[r][1] = false;
+        const Runway &rw = f.runways[r];
+        Vec ends[2] = {toLocal(f, nmPerDegLon, rw.end[0].lat, rw.end[0].lon),
+                       toLocal(f, nmPerDegLon, rw.end[1].lat, rw.end[1].lon)};
+        float len = hypotf(ends[1].x - ends[0].x, ends[1].y - ends[0].y);
+        lens[r] = len;
+        if (len <= 0) {
+            continue;
+        }
+        for (int k = 0; k < 2; k++) {
+            // From this end towards the other: the way an aircraft using it goes.
+            const Vec &from = ends[k], &to = ends[1 - k];
+            Way &w = ways[r][k];
+            w.from = from;
+            w.ux = (to.x - from.x) / len;
+            w.uy = (to.y - from.y) / len;
+            w.heading = atan2f(w.ux, w.uy) * 180.0f / (float)M_PI;
+        }
     }
     for (const Aircraft &ac : aircraft) {
         if (!ac.hasPos || !ac.hasTrack || ac.altStr == "?" || ac.altStr == "GND" || ac.status == "GROUND" ||
             ac.status == "TAXI") {
             continue;
         }
-        Vec p = toLocal(f, ac.lat, ac.lon);
+        Vec p = toLocal(f, nmPerDegLon, ac.lat, ac.lon);
+        int altFt = ac.altStr.toInt();
         int bestR = -1, bestK = 0;
         float bestOffset = 1e9f;
         for (int r = 0; r < f.runwayCount; r++) {
             const Runway &rw = f.runways[r];
-            if (rw.closed || ac.altStr.toInt() - rw.elevationFt > IN_USE_MAX_AGL_FT) {
-                continue;
-            }
-            Vec ends[2] = {toLocal(f, rw.end[0].lat, rw.end[0].lon), toLocal(f, rw.end[1].lat, rw.end[1].lon)};
-            float len = hypotf(ends[1].x - ends[0].x, ends[1].y - ends[0].y);
-            if (len <= 0) {
+            if (rw.closed || altFt - rw.elevationFt > IN_USE_MAX_AGL_FT || lens[r] <= 0) {
                 continue;
             }
             for (int k = 0; k < 2; k++) {
-                // From this end towards the other: the way an aircraft using it goes.
-                const Vec &from = ends[k], &to = ends[1 - k];
-                float ux = (to.x - from.x) / len, uy = (to.y - from.y) / len;
-                float heading = atan2f(ux, uy) * 180.0f / (float)M_PI;
-                float off = fabsf(fmodf(ac.track - heading + 540.0f, 360.0f) - 180.0f);
+                const Way &w = ways[r][k];
+                float off = fabsf(fmodf(ac.track - w.heading + 540.0f, 360.0f) - 180.0f);
                 if (off > IN_USE_ALIGN_DEG) {
                     continue;
                 }
-                float rx = p.x - from.x, ry = p.y - from.y;
-                float offset = fabsf(rx * uy - ry * ux);
+                float rx = p.x - w.from.x, ry = p.y - w.from.y;
+                float offset = fabsf(rx * w.uy - ry * w.ux);
                 if (offset <= IN_USE_AIR_OFFSET_NM && offset < bestOffset) {
                     bestOffset = offset;
                     bestR = r;
@@ -3295,9 +3322,11 @@ void drawRunways(const ZoomFrame &f, const bool inUse[][2], const bool recent[][
     bool drawn[MAX_ZOOM_RUNWAYS];
     LabelBox placed[MAX_ZOOM_RUNWAYS * 2];
     int placedCount = 0;
+    double nmPerDegLon = nmPerDegLonOf(f);
     for (int r = 0; r < f.runwayCount; r++) {
         const Runway &rw = f.runways[r];
-        Vec a = toLocal(f, rw.end[0].lat, rw.end[0].lon), b = toLocal(f, rw.end[1].lat, rw.end[1].lon);
+        Vec a = toLocal(f, nmPerDegLon, rw.end[0].lat, rw.end[0].lon),
+            b = toLocal(f, nmPerDegLon, rw.end[1].lat, rw.end[1].lon);
         float ax = CENTER_X + a.x * pxPerNm, ay = CENTER_Y - a.y * pxPerNm;
         float bx = CENTER_X + b.x * pxPerNm, by = CENTER_Y - b.y * pxPerNm;
         float len = hypotf(bx - ax, by - ay);
