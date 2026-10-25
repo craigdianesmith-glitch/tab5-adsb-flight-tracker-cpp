@@ -760,15 +760,15 @@ struct Raster {
     static int textWidth(const String &s) { return (int)s.length() * 12; }
 };
 
-// A box drawn through the raster as the canvas draws it - drawRect's four
-// lines, and the text in Font0 at size 2 - in a fifth of the time; the
-// canvas's text settings left as they were, for whatever is drawn next.
 // Where footerBox() puts a box, without drawing it.
 LabelBox footerBoxAt(const String &text, int edgeX, int textY, bool rightAligned) {
     int w = Raster::textWidth(text) + 2 * BOX_PAD_X;
     return {(int16_t)(rightAligned ? edgeX - w : edgeX), (int16_t)(textY - BOX_PAD_Y), (int16_t)w, (int16_t)BOX_H};
 }
 
+// A box drawn through the raster as the canvas draws it - drawRect's four
+// lines, and the text in Font0 at size 2 - in a fifth of the time; the
+// canvas's text settings left as they were, for whatever is drawn next.
 LabelBox footerBox(const String &text, int edgeX, int textY, bool rightAligned) {
     auto &canvas = screen::canvas();
     canvas.setFont(&fonts::Font0);
