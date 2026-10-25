@@ -75,6 +75,17 @@ bool intersects(const Rect &a, const Rect &b) {
     return a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h;
 }
 
+// What watch() is watching, and whether anything has been drawn over it -
+// touched until something is watched.
+Rect g_watch = {0, 0, 0, 0};
+bool g_touched = true;
+
+void noteDrawn(const Rect &r) {
+    if (intersects(r, g_watch)) {
+        g_touched = true;
+    }
+}
+
 // Cells in the same row share a y/h, so merging those into one wide rect keeps
 // the rect count at one per row instead of one per cell.
 constexpr int MERGE_GAP = 96;
@@ -621,6 +632,7 @@ void markAllDirty() {
     g_rects[0] = {0, 0, CANVAS_W, CANVAS_H};
     g_changedCount = 1;
     g_changed[0] = g_rects[0];
+    g_touched = true;
 }
 
 void markDirty(int x, int y, int w, int h) {
@@ -636,7 +648,15 @@ void markDirty(int x, int y, int w, int h) {
     }
     addRect(g_rects, g_rectCount, x, y, w, h, true);
     addRect(g_changed, g_changedCount, x, y, w, h, false);
+    noteDrawn({(int16_t)x, (int16_t)y, (int16_t)w, (int16_t)h});
 }
+
+void watch(int x, int y, int w, int h) {
+    g_watch = {(int16_t)x, (int16_t)y, (int16_t)w, (int16_t)h};
+    g_touched = false;
+}
+
+bool touched() { return g_touched; }
 
 int takeChanged(Region *out, int max) {
     int n = std::min(g_changedCount, max);
@@ -773,6 +793,7 @@ void pushRects(const Region *rects, int n) {
         }
         blitRect({(int16_t)x, (int16_t)y, (int16_t)(r - x), (int16_t)(b - y)});
         addRect(g_changed, g_changedCount, x, y, r - x, b - y, false);
+        noteDrawn({(int16_t)x, (int16_t)y, (int16_t)(r - x), (int16_t)(b - y)});
     }
 }
 

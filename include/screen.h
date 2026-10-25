@@ -38,6 +38,15 @@ void fillRect(int x, int y, int w, int h, uint16_t color);
 void markDirty(int x, int y, int w, int h);
 void markAllDirty();
 
+// A part of the canvas that a screen keeps from one frame to the next and
+// draws again only when what it shows changes - the follow telemetry - and
+// that has to be drawn again too once anything else has been drawn over it:
+// a full redraw, a card. watch() starts watching (x, y, w, h), once it has
+// been drawn; touched() says whether anything has been marked dirty over it
+// since, or pushed by pushRects(), which every canvas write is.
+void watch(int x, int y, int w, int h);
+bool touched();
+
 // Push everything marked dirty to the panel, then start a fresh dirty list.
 void flush();
 

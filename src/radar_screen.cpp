@@ -4256,6 +4256,30 @@ constexpr int TEL_CHART_H = 166;
 // would claim a climb or descent nobody saw.
 constexpr uint32_t TEL_GAP_MS = 180000;
 
+// What the panel was last drawn from, for it to be drawn again only when
+// that changes - or once anything else has been drawn over it - rather than
+// every frame, where it was 4-6ms of a following frame on the radar: where
+// it is, the field's height and how long the aircraft has been lost; the
+// chart's left edge, on its own grid of pixels; which reports are in the
+// chart and up to now; and what those say.
+struct TelemetryKey {
+    int x, y;
+    int32_t fieldFt;
+    uint32_t lostS;
+    int64_t edge;
+    uint32_t first, count, sum;
+    bool operator==(const TelemetryKey &o) const {
+        return x == o.x && y == o.y && fieldFt == o.fieldFt && lostS == o.lostS && edge == o.edge &&
+               first == o.first && count == o.count && sum == o.sum;
+    }
+};
+TelemetryKey g_telemetryKey;
+bool g_telemetryKept = false;
+// How often it was drawn and how often left as it was, and the time the
+// drawing took, for the [perf] line.
+uint32_t g_telemetryDrawn = 0, g_telemetryLeft = 0;
+uint64_t g_telemetryUs = 0;
+
 }  // namespace
 
 void radarSetHeights(const std::vector<FollowSample> &samples, uint32_t lostS) {
@@ -4265,25 +4289,61 @@ void radarSetHeights(const std::vector<FollowSample> &samples, uint32_t lostS) {
 
 void radarTelemetryDraw(int x, int y, const std::vector<FollowSample> &samples, uint32_t nowMs, int32_t fieldFt,
                         uint32_t lostS) {
+    uint32_t t0 = micros();
     ensureColors();
     auto &canvas = screen::canvas();
-    canvas.fillRect(x, y, TELEMETRY_W, TELEMETRY_H, colorBg);
-    screen::markDirty(x, y, TELEMETRY_W, TELEMETRY_H);
-    canvas.setFont(&fonts::Font0);
 
-    // The latest report by now, and the window of them the chart covers.
+    // The latest report by now, and the window of them the chart covers -
+    // whose left edge is taken on the chart's own grid, a pixel to every
+    // TELEMETRY_WINDOW_MS / (TELEMETRY_W - 3), 2.2s: the points then step
+    // left together, a pixel at a time, rather than each at its own moment,
+    // and the chart stays as it is in between. A point is at most a pixel
+    // right of where the window's own edge would put it.
     uint32_t from = nowMs > TELEMETRY_WINDOW_MS ? nowMs - TELEMETRY_WINDOW_MS : 0;
+    int64_t edge = (int64_t)(TELEMETRY_W - 3) * from / TELEMETRY_WINDOW_MS;
     const FollowSample *latest = nullptr;
     int32_t highest = fieldFt == INT32_MIN ? 0 : fieldFt;
+    uint32_t count = 0, first = UINT32_MAX;
     for (const FollowSample &s : samples) {
         if (s.ms > nowMs) {
             break;
         }
         latest = &s;
+        if (s.ms >= from && first == UINT32_MAX) {
+            first = count;
+        }
+        count++;
         if (s.ms >= from && s.hasAlt) {
             highest = std::max(highest, s.altFt);
         }
     }
+    // What those reports say - the chart's, and the latest's if it is older
+    // than the chart - summed, FNV-1a, for the key.
+    uint32_t sum = 2166136261u;
+    for (uint32_t i = std::min(first, count ? count - 1 : 0); i < count; i++) {
+        const FollowSample &s = samples[i];
+        for (uint32_t v : {s.ms, (uint32_t)s.altFt, (uint32_t)s.vsFpm, (uint32_t)s.gsKt,
+                           (uint32_t)(s.hasAlt | s.ground << 1 | s.hasVs << 2 | s.hasGs << 3)}) {
+            sum = (sum ^ v) * 16777619u;
+        }
+    }
+    TelemetryKey key = {x, y, fieldFt, lostS, edge, first, count, sum};
+    if (g_telemetryKept && key == g_telemetryKey && !screen::touched()) {
+        // Left as a redraw leaves it, for whatever is drawn next.
+        canvas.clearClipRect();
+        canvas.setFont(&fonts::Font0);
+        canvas.setTextSize(2);
+        canvas.setTextColor(colorFaint);
+        canvas.setTextDatum(TR_DATUM);
+        g_telemetryLeft++;
+        return;
+    }
+    g_telemetryKey = key;
+    g_telemetryKept = true;
+    // By the PPA, which fills at 355MB/s where the CPU writes 67 - marked
+    // dirty as it goes.
+    screen::fillRect(x, y, TELEMETRY_W, TELEMETRY_H, colorBg);
+    canvas.setFont(&fonts::Font0);
 
     // --- readouts ---
     canvas.setTextDatum(TL_DATUM);
@@ -4337,7 +4397,7 @@ void radarTelemetryDraw(int x, int y, const std::vector<FollowSample> &samples, 
     int cx = x, cy = y + TEL_CHART_Y, cw = TELEMETRY_W, ch = TEL_CHART_H;
     canvas.drawRect(cx, cy, cw, ch, colorRing);
     int32_t top = chartTop(highest);
-    auto px = [&](uint32_t ms) { return cx + 1 + (int)((int64_t)(cw - 3) * (int64_t)(ms - from) / TELEMETRY_WINDOW_MS); };
+    auto px = [&](uint32_t ms) { return cx + 1 + (int)((int64_t)(cw - 3) * ms / TELEMETRY_WINDOW_MS - edge); };
     auto py = [&](int32_t ft) {
         int32_t clamped = std::min(std::max(ft, (int32_t)0), top);
         return cy + ch - 2 - (int)((int64_t)(ch - 4) * clamped / top);
@@ -4405,6 +4465,24 @@ void radarTelemetryDraw(int x, int y, const std::vector<FollowSample> &samples, 
     canvas.drawString("-" + String(TELEMETRY_WINDOW_MS / 60000) + "m", cx, cy + ch + 6);
     canvas.setTextDatum(TR_DATUM);
     canvas.drawString("now", cx + cw, cy + ch + 6);
+    // Watched from here, now its own drawing is marked.
+    screen::watch(x, y, TELEMETRY_W, TELEMETRY_H);
+    g_telemetryDrawn++;
+    g_telemetryUs += micros() - t0;
+}
+
+String radarTakeTelemetry() {
+    String s = "-";
+    if (g_telemetryDrawn + g_telemetryLeft != 0) {
+        s = String(g_telemetryDrawn) + "x drawn";
+        if (g_telemetryDrawn != 0) {
+            s += " avg " + String(g_telemetryUs / 1000.0f / g_telemetryDrawn, 1) + "ms";
+        }
+        s += ", " + String(g_telemetryLeft) + "x left";
+    }
+    g_telemetryDrawn = g_telemetryLeft = 0;
+    g_telemetryUs = 0;
+    return s;
 }
 
 

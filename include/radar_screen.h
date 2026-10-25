@@ -319,14 +319,19 @@ ZoomAction radarZoomHandleTouch(int x, int y, String &outHex);
 // airport being zoomed on, drawn as a line across the chart with the height
 // above it among the readouts, or INT32_MIN for none. Samples after `nowMs`
 // are left out, for a replay partway through. Drawn into the TELEMETRY_W by
-// TELEMETRY_H box at (x, y) and marked for the caller to push. `lostS`, when
-// not 0, is how long the feed has had no position for it - the plot showing
-// where it is estimated to be - and is said beside the readouts, which stay
-// as it last reported them.
+// TELEMETRY_H box at (x, y) and marked for the caller to push - but only when
+// what it shows has changed since it was last drawn there, or something else
+// has been drawn over it (screen::touched()); otherwise it is left as it is,
+// and nothing marked. `lostS`, when not 0, is how long the feed has had no
+// position for it - the plot showing where it is estimated to be - and is
+// said beside the readouts, which stay as it last reported them.
 constexpr int TELEMETRY_W = 274, TELEMETRY_H = 330;
 constexpr uint32_t TELEMETRY_WINDOW_MS = 10UL * 60 * 1000;
 void radarTelemetryDraw(int x, int y, const std::vector<FollowSample> &samples, uint32_t nowMs, int32_t fieldFt,
                         uint32_t lostS);
+// How many times since last asked it was drawn, and the time that took, and
+// how many it was left as it was, for the [perf] line; "-" for neither.
+String radarTakeTelemetry();
 
 // The followed aircraft's samples, for the live radar and zoom to draw beside
 // the plot while following, and how long it has been lost, if it has.

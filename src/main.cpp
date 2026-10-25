@@ -4824,17 +4824,18 @@ void reportPerf() {
     // reading it - where the rest of the 2D screens' time goes: their
     // preparation step by step, in us a frame; the PPA's blits and fills, how
     // many and the ms waited on them in the minute, and the cache written back
-    // for them; a whole plot's layers; a replay's frames; the table's renders
-    // and its shading lapsing; the full draws, and whether the longest pass
-    // held one.
+    // for them; a whole plot's layers; the follow telemetry, drawn and left
+    // as it was; a replay's frames; the table's renders and its shading
+    // lapsing; the full draws, and whether the longest pass held one.
     screen::PpaPerf ppa = screen::takePpaPerf();
     String more = "; prep us radar " + g_perfPrepRadar.text(true) + ", zoom " + g_perfPrepZoom.text(false) +
                   "; PPA blits " + String(ppa.blits) + "x " + String((uint32_t)(ppa.blitUs / 1000)) + "ms " +
                   String((uint32_t)(ppa.blitPixels / 1000)) + "kpx, fills " + String(ppa.fills) + "x " +
                   String((uint32_t)(ppa.fillUs / 1000)) + "ms, syncs " + String((uint32_t)(ppa.syncUs / 1000)) +
-                  "ms; layers " + radarTakeLayers() + "; replay " + g_perfReplay.text() + "; table " +
-                  g_perfTable.text() + ", lapses " + g_perfLapse.text() + "; full draws " + g_perfFull.text() +
-                  ", the longest pass " + (g_perfLoop.count && g_longestPassFull ? "held one" : "held none");
+                  "ms; layers " + radarTakeLayers() + "; telemetry " + radarTakeTelemetry() + "; replay " +
+                  g_perfReplay.text() + "; table " + g_perfTable.text() + ", lapses " + g_perfLapse.text() +
+                  "; full draws " + g_perfFull.text() + ", the longest pass " +
+                  (g_perfLoop.count && g_longestPassFull ? "held one" : "held none");
     // And the stacks' high-water marks - the least each has had spare - for
     // them to be sized by what they use.
     Serial.printf("[perf] radar %s, zoom %s (plots: %s), tracks %s (%u), loop max %ums; internal RAM %uKB free, "
