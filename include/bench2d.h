@@ -6,7 +6,7 @@
 // tools/bench2d.py):
 //
 //   m  the map's first draw, at Glasgow, Heathrow and Kennedy, from 5 to
-//      2000nm
+//      2000nm, each onto the plot filled first - cold, as the live screen's
 //   n  the names placed on it, the first time and again
 //   r  the radar's plot at Glasgow, 10 to 60nm, with 0 to 120 made-up
 //      aircraft: whole, and refreshed with the traffic moved
@@ -17,6 +17,8 @@
 //      poll parses one (main.cpp's "##u" puts one there)
 //   k  the tracks taking in a poll's list, a step at a time (main.cpp)
 //   s  the voices' words turned back into sound, and the engines' noise made
+//   c  the instruction caches' misses, L1 and L2, round one frame of the
+//      radar's plot - whole, a refresh and following - and the frame's time
 #ifdef BENCH3D
 #include <vector>
 

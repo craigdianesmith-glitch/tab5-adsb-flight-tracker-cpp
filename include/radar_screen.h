@@ -342,3 +342,8 @@ const RadarPalette &radarPalette();
 // line - the parts that don't move, the contacts, the push - or "-" for no
 // plots drawn.
 String radarTakeTimings();
+// And of the parts that don't move, layer by layer - the fill, the map, the
+// scope, the centre, the airports, the navaids, the names, the zoom's runways
+// and tower - the CPU's cycles a frame, over the frames that drew each rather
+// than every frame, and how many those were; "-" for none.
+String radarTakeLayers();

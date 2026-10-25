@@ -136,6 +136,9 @@ void writeBackCanvas() {
 size_t g_syncedBytes = 0;
 #endif
 
+// The canvas's work at the PPA, for takePpaPerf().
+PpaPerf g_perf;
+
 // Writes back only the rows the dirty rects cover, rather than all 1.8MB of
 // the canvas. A refresh that repaints one cell touches 48 rows - 123KB - so
 // the full-canvas sync that used to precede every flush was doing fifteen
@@ -158,6 +161,7 @@ void writeBackDirty() {
     // Merge overlapping bands - cells in the same table row share their rows,
     // and syncing those once each rather than once per cell is the whole point.
     std::sort(spans, spans + n, [](const Span &a, const Span &b) { return a.top < b.top; });
+    int64_t t0 = esp_timer_get_time();
     int i = 0;
     while (i < n) {
         int top = spans[i].top, bot = spans[i].bot;
@@ -170,6 +174,7 @@ void writeBackDirty() {
         g_syncedBytes += (size_t)(bot - top) * ROW_BYTES;
 #endif
     }
+    g_perf.syncUs += (uint64_t)(esp_timer_get_time() - t0);
 }
 
 // The ends of transfers, given from the PPA's interrupt - and how long the
@@ -363,12 +368,16 @@ void blitRect(const Rect &given) {
         blitRectFallback(r);
         return;
     }
-    g_pushStartUs = esp_timer_get_time();
+    int64_t t0 = esp_timer_get_time();
+    g_pushStartUs = t0;
     noteSent('b', r.x, r.y, r.w, r.h);
     esp_err_t err = ppa_do_scale_rotate_mirror(g_srm, &op);
     bool finished = err == ESP_OK && xSemaphoreTake(g_pushDone, pdMS_TO_TICKS(PPA_WAIT_MS)) == pdTRUE;
     if (finished) {
         noteDone();
+        g_perf.blits++;
+        g_perf.blitUs += (uint64_t)(esp_timer_get_time() - t0);
+        g_perf.blitPixels += (uint32_t)r.w * r.h;
     }
     xSemaphoreGive(g_pushTurn);
     if (err != ESP_OK) {
@@ -450,6 +459,12 @@ void pushStats(uint32_t &busyUs, uint32_t &count) {
     count = g_pushCount;
     g_pushBusyUs = 0;
     g_pushCount = 0;
+}
+
+PpaPerf takePpaPerf() {
+    PpaPerf was = g_perf;
+    g_perf = PpaPerf();
+    return was;
 }
 
 // The band given up on, if it doesn't come in time: the PPA with it, and the
@@ -566,7 +581,10 @@ void fillRect(int x, int y, int w, int h, uint16_t color) {
     // drop safe for the parts of those rows outside the block.
     uint8_t *rows = (uint8_t *)g_buffer + (size_t)y * ROW_BYTES;
     size_t rowsBytes = (size_t)h * ROW_BYTES;
+    int64_t t0 = esp_timer_get_time();
     esp_cache_msync(rows, rowsBytes, ESP_CACHE_MSYNC_FLAG_DIR_C2M);
+    int64_t t1 = esp_timer_get_time();
+    g_perf.syncUs += (uint64_t)(t1 - t0);
     bool filled = false;
     if (xSemaphoreTake(g_pushTurn, pdMS_TO_TICKS(PPA_TURN_MS)) == pdTRUE) {
         noteSent('f', x, y, w, h);
@@ -584,7 +602,11 @@ void fillRect(int x, int y, int w, int h, uint16_t color) {
     if (!filled) {
         g_canvas.fillRect(x, y, w, h, color);
     } else {
+        int64_t t2 = esp_timer_get_time();
+        g_perf.fills++;
+        g_perf.fillUs += (uint64_t)(t2 - t1);
         esp_cache_msync(rows, rowsBytes, ESP_CACHE_MSYNC_FLAG_DIR_M2C);
+        g_perf.syncUs += (uint64_t)(esp_timer_get_time() - t2);
     }
     markDirty(x, y, w, h);
 }
@@ -738,8 +760,10 @@ void pushRects(const Region *rects, int n) {
     // that costs is the lines that are dirty, which are the ones that have to
     // go anyway, and some 10us besides - where a call a row, a box at a time,
     // comes to about 3us a row.
+    int64_t t0 = esp_timer_get_time();
     esp_cache_msync((uint8_t *)g_buffer + (size_t)top * ROW_BYTES, (size_t)(bottom - top) * ROW_BYTES,
                     ESP_CACHE_MSYNC_FLAG_DIR_C2M);
+    g_perf.syncUs += (uint64_t)(esp_timer_get_time() - t0);
     for (int i = 0; i < n; i++) {
         int x = std::max<int>(0, rects[i].x), y = std::max<int>(0, rects[i].y);
         int r = std::min<int>(CANVAS_W, rects[i].x + rects[i].w), b = std::min<int>(CANVAS_H, rects[i].y + rects[i].h);

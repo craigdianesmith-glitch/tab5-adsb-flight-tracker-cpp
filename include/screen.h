@@ -93,6 +93,15 @@ const char *pushTurnHolder();
 // The time the pushes since the last call took, start to finish, and how
 // many there were.
 void pushStats(uint32_t &busyUs, uint32_t &count);
+// The canvas's own work at the PPA since the last call, for the [perf] line -
+// apart from pushStats(), which the 3D bench reads and resets: its blits to
+// the panel and its fills, how many and how long the CPU waited on them, the
+// pixels the blits came to, and the cache written back for them.
+struct PpaPerf {
+    uint32_t blits = 0, fills = 0;
+    uint64_t blitUs = 0, fillUs = 0, blitPixels = 0, syncUs = 0;
+};
+PpaPerf takePpaPerf();
 #ifdef BENCH3D
 // The PPA given up, as though a transfer had never finished - for the bench
 // to try the CPU's pushes in its place.

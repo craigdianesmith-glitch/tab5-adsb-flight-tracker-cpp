@@ -7,6 +7,9 @@
 #include <esp_heap_caps.h>
 #include <algorithm>
 #include <math.h>
+#if defined(ESP_PLATFORM)
+#include <esp_cpu.h>
+#endif
 
 #include "airport_info.h"
 #include "airports.h"
@@ -346,6 +349,36 @@ RadarPalette g_palette;
 // of a millisecond most places and several over the lakes of Finland.
 uint64_t g_backgroundUs = 0, g_contactsUs = 0, g_pushUs = 0, g_coastUs = 0;
 uint32_t g_plotFrames = 0;
+
+// And a whole plot's background - all a refresh of the traffic alone keeps -
+// a layer at a time, in the CPU's cycles summed in 64 bits over the frames
+// that drew each, so that a minute's refreshes don't water it down, nor the
+// zoom's frames the radar's map: see radarTakeLayers().
+enum Layer { LAYER_FILL, LAYER_COAST, LAYER_SCOPE, LAYER_CENTRE, LAYER_AIRPORTS, LAYER_NAVAIDS, LAYER_NAMES,
+             LAYER_RUNWAYS, LAYER_TOWER, LAYER_COUNT };
+const char *const LAYER_LABELS[LAYER_COUNT] = {"fill",    "coast", "scope",   "centre", "airports",
+                                              "navaids", "names", "runways", "tower"};
+uint64_t g_layerCycles[LAYER_COUNT] = {};
+uint32_t g_layerFrames[LAYER_COUNT] = {};
+
+// The CPU's cycle counter - none on the PC, which render2d_check builds this
+// for, and where nothing reads the sums.
+inline uint32_t cycleCount() {
+#if defined(ESP_PLATFORM)
+    return esp_cpu_get_cycle_count();
+#else
+    return 0;
+#endif
+}
+
+// The cycles from `since` to now added to `layer`'s, a frame more of it; now,
+// for the next one's.
+uint32_t layerDone(Layer layer, uint32_t since) {
+    uint32_t now = cycleCount();
+    g_layerCycles[layer] += now - since;
+    g_layerFrames[layer]++;
+    return now;
+}
 
 RecButton g_recState = RecButton::IDLE;
 uint32_t g_recElapsedS = 0;
@@ -2391,6 +2424,20 @@ String radarTakeTimings() {
     return s;
 }
 
+String radarTakeLayers() {
+    String s;
+    for (int i = 0; i < LAYER_COUNT; i++) {
+        if (g_layerFrames[i] != 0) {
+            s += String(s.length() ? ", " : "") + LAYER_LABELS[i] + " " +
+                 String((uint32_t)(g_layerCycles[i] / g_layerFrames[i] / 1000)) + " (" + String(g_layerFrames[i]) +
+                 "x)";
+        }
+        g_layerCycles[i] = 0;
+        g_layerFrames[i] = 0;
+    }
+    return s.length() ? "kcycles a frame: " + s : String("-");
+}
+
 namespace {
 
 // How drawContacts() places and draws what it is given: the radar's and the
@@ -2888,15 +2935,19 @@ void radarPlotDraw(const RadarScene &scene, bool full) {
         return;
     }
 
+    uint32_t layerAt = cycleCount();
     if (!full) {
         screen::fillRect(PLOT_L, PLOT_T, PLOT_R - PLOT_L, PLOT_B - PLOT_T, colorBg);
         canvas.fillRect(FOOT_L, FOOT_T, FOOT_R - FOOT_L, FOOT_B - FOOT_T, colorBg);
+        layerAt = layerDone(LAYER_FILL, layerAt);
     }
     canvas.setFont(&fonts::Font0);
 
     // --- the map, then rings and bearings over it --------------------------
     drawCoast(lat, lon, (float)rangeNm);
+    layerAt = layerDone(LAYER_COAST, layerAt);
     drawScope((float)rangeNm, (float)step);
+    layerAt = layerDone(LAYER_SCOPE, layerAt);
 
     g_airportHitCount = 0;
     g_navaidHitCount = 0;
@@ -2948,9 +2999,11 @@ void radarPlotDraw(const RadarScene &scene, bool full) {
     } else {
         g_followLabel.reserved = false;
     }
+    layerAt = layerDone(LAYER_CENTRE, layerAt);
     if (drawsAirports) {
         drawAirports(lat, lon, rangeNm, centreCode, following ? scene.originCode : String());
     }
+    layerAt = layerDone(LAYER_AIRPORTS, layerAt);
     // A free look's middle, a small dim cross - but not over an airport's
     // symbol there, as one opened from its zoom is centred on: the airport
     // says where the middle is, and a cross is home's.
@@ -2966,6 +3019,7 @@ void radarPlotDraw(const RadarScene &scene, bool full) {
     } else {
         g_navaidHitCount = 0;
     }
+    layerDone(LAYER_NAVAIDS, layerAt);
 
     // The background kept before the names go on, as they move with the
     // traffic - see drawNames().
@@ -2978,7 +3032,9 @@ void radarPlotDraw(const RadarScene &scene, bool full) {
         g_background.key = key;
     }  // else a crowd, a list or the names' minute drawn whole over a background still kept
     g_background.wholeMs = millis();
+    layerAt = cycleCount();
     drawNames(lat, lon, (float)rangeNm);
+    layerDone(LAYER_NAMES, layerAt);
 
     int plotted = 0, labelled = 0;
     uint32_t t1 = micros();
@@ -3683,22 +3739,28 @@ bool zoomPlot(const ZoomFrame &framed, const std::vector<Aircraft> &aircraft,
         return onFollowed;
     }
 
+    uint32_t layerAt = cycleCount();
     if (!full) {
         screen::fillRect(PLOT_L, PLOT_T, PLOT_R - PLOT_L, PLOT_B - PLOT_T, colorBg);
         canvas.fillRect(FOOT_L, FOOT_T, FOOT_R - FOOT_L, FOOT_B - FOOT_T, colorBg);
+        layerAt = layerDone(LAYER_FILL, layerAt);
     }
     canvas.setFont(&fonts::Font0);
     drawScope(range, step);
+    layerAt = layerDone(LAYER_SCOPE, layerAt);
     g_mapLabelCount = 0;
 
     canvas.setClipRect(PLOT_L, PLOT_T, PLOT_R - PLOT_L, PLOT_B - PLOT_T);
     drawRunways(f, inUse, recent);
+    layerAt = layerDone(LAYER_RUNWAYS, layerAt);
     drawTower(f);
+    layerAt = layerDone(LAYER_TOWER, layerAt);
     // Over the runways, which an airport's own often sits beside.
     g_navaidHitCount = 0;
     if (g_navaidsOn) {
         drawNavaids(f.lat, f.lon, range);
     }
+    layerDone(LAYER_NAVAIDS, layerAt);
     if (canKeep && g_background.pending && sameBackground(key, g_background.key)) {
         keepBackground();
         g_background.pending = false;
