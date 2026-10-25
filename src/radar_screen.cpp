@@ -523,6 +523,22 @@ void noteLine(int x0, int y0, int x1, int y1) {
 // the footer has changed.
 String g_countShown;
 
+// The readouts outside the plot's column as the live radar's last frame left
+// them - the range readout's text, whose start is in the left margin, and the
+// footer's count, under the legend: empty where the footer was left empty, out
+// on the map - for a whole frame to leave them as they are where they haven't
+// changed: see radarPlotDraw(). Not `kept` where something else - a replay,
+// the zoom - may have drawn there since.
+struct Footings {
+    String range, count;
+    bool kept = false;
+};
+Footings g_footings;
+
+// Whether a box takes in any of the plot's column - which a whole frame fills
+// afresh, and the traffic is put back and drawn in.
+bool inColumn(const LabelBox &b) { return b.x < PLOT_R && b.x + b.w > PLOT_L; }
+
 // The count drawn, in the footer. Long, its box reaches into the plot's
 // column, which the footer's own erasing stops short of: noted with the
 // traffic, so a refresh of the traffic alone puts back what is under it and
@@ -714,14 +730,21 @@ struct Raster {
 // A box drawn through the raster as the canvas draws it - drawRect's four
 // lines, and the text in Font0 at size 2 - in a fifth of the time; the
 // canvas's text settings left as they were, for whatever is drawn next.
+// Where footerBox() puts a box, without drawing it.
+LabelBox footerBoxAt(const String &text, int edgeX, int textY, bool rightAligned) {
+    int w = Raster::textWidth(text) + 2 * BOX_PAD_X;
+    return {(int16_t)(rightAligned ? edgeX - w : edgeX), (int16_t)(textY - BOX_PAD_Y), (int16_t)w, (int16_t)BOX_H};
+}
+
 LabelBox footerBox(const String &text, int edgeX, int textY, bool rightAligned) {
     auto &canvas = screen::canvas();
     canvas.setFont(&fonts::Font0);
     canvas.setTextSize(2);
     canvas.setTextColor(colorFaint);
     canvas.setTextDatum(rightAligned ? TR_DATUM : TL_DATUM);
-    int w = Raster::textWidth(text) + 2 * BOX_PAD_X;
-    int x = rightAligned ? edgeX - w : edgeX, y = textY - BOX_PAD_Y;
+    LabelBox at = footerBoxAt(text, edgeX, textY, rightAligned);
+    int w = at.w;
+    int x = at.x, y = at.y;
     Raster out = {(uint16_t *)canvas.getBuffer(), canvas.width(), 0, 0, canvas.width() - 1, canvas.height() - 1, 0, 0};
     out.use(colorRing);
     out.hline(x, y, w);
@@ -2292,6 +2315,9 @@ void radarScreenDraw(const std::vector<Aircraft> &aircraft, const std::vector<ui
     g_livePlot = true;  // the filter's funnel, over the plot's corner - a replay has none
     radarPlotDraw(scene, full);
     g_livePlot = false;
+    if (overlayUp() || dragged) {
+        g_footings.kept = false;  // drawn over, it may be, outside the column
+    }
     if (following) {
         radarTelemetryDraw(LIVE_TEL_X, LIVE_TEL_Y, g_heights, millis(), INT32_MIN, g_lostS);
     }
@@ -2698,7 +2724,9 @@ void drawContacts(const std::vector<Aircraft> &aircraft, const std::vector<uint8
 // Pushes a plot redrawn on a refresh: the plot's column, marked by its fill,
 // the footer readouts to the bottom right, and the readouts from `leftTop`
 // down in the bottom left - the range, and over it the zoom's runways in use.
-void pushPlot(bool push, int leftTop) {
+// Without `footer` or `left`, those are as they were - only their parts in
+// the column drawn again, which go with it.
+void pushPlot(bool push, int leftTop, bool footer = true, bool left = true) {
     int leftH = RANGE_BOX_T + BOX_H - leftTop;
     if (!push) {
         // Marked rather than pushed: the plot was by its fill, the footer
@@ -2713,8 +2741,12 @@ void pushPlot(bool push, int leftTop) {
     // readout's end in the left margin goes with the footer, a strip too thin
     // beside it to be merged into a box with it.
     screen::flush();
-    screen::markDirty(FOOT_L, FOOT_T, FOOT_R - FOOT_L, FOOT_B - FOOT_T);
-    screen::markDirty(0, leftTop, PLOT_L, leftH);
+    if (footer) {
+        screen::markDirty(FOOT_L, FOOT_T, FOOT_R - FOOT_L, FOOT_B - FOOT_T);
+    }
+    if (left) {
+        screen::markDirty(0, leftTop, PLOT_L, leftH);
+    }
     screen::flush();
 }
 
@@ -2778,6 +2810,19 @@ void pushTraffic(bool push, bool footer) {
     if (push) {
         screen::flush();
     }
+}
+
+// Whether the traffic drawn this frame, or the last frame's put back from the
+// background, meets box `b`: both inside the plot's column, which is all of
+// either there is.
+bool trafficMeets(const LabelBox &b) {
+    int x0 = std::max<int>(b.x, PLOT_L), x1 = std::min<int>(b.x + b.w, PLOT_R);
+    int y0 = std::max<int>(b.y, PLOT_T), y1 = std::min<int>(b.y + b.h, PLOT_B);
+    if (x1 <= x0 || y1 <= y0) {
+        return false;
+    }
+    return overlapsAny(g_trafficWas.data(), (int)g_trafficWas.size(), x0, y0, x1 - x0, y1 - y0, 0) ||
+           overlapsAny(g_trafficBoxes.data(), (int)g_trafficBoxes.size(), x0, y0, x1 - x0, y1 - y0, 0);
 }
 
 // The centre's airport code drawn over the traffic - a contact on the ground
@@ -2859,9 +2904,8 @@ bool centreCodeMet(const String &code) {
         return false;
     }
     int w = Raster::textWidth(code);
-    int x = CENTER_X - w / 2 - 2, y = CENTRE_CODE_Y - 2;
-    return overlapsAny(g_trafficWas.data(), (int)g_trafficWas.size(), x, y, w + 4, LABEL_H + 4, 0) ||
-           overlapsAny(g_trafficBoxes.data(), (int)g_trafficBoxes.size(), x, y, w + 4, LABEL_H + 4, 0);
+    return trafficMeets({(int16_t)(CENTER_X - w / 2 - 2), (int16_t)(CENTRE_CODE_Y - 2), (int16_t)(w + 4),
+                         (int16_t)(LABEL_H + 4)});
 }
 
 // A refresh of the radar's traffic alone - see Background.
@@ -2880,18 +2924,30 @@ void refreshTraffic(const RadarScene &scene, double lat, double lon, int rangeNm
     }
     canvas.clearClipRect();
     // The footer's readouts, the same for as long as the view is but the
-    // count, drawn again over themselves - the traffic put back may have
-    // taken a piece out of one where it reaches into the plot's column - and
-    // the count erased and drawn afresh, and pushed, only when it changes.
+    // count: each drawn again over itself only where the traffic put back or
+    // drawn meets it - the range readout reaches into the plot's column, and
+    // a long count does - and the count and the legend over it erased and
+    // drawn afresh, and pushed, when the count changes. Elsewhere they are
+    // left as they are: drawn over themselves, some 70 letters a frame, they
+    // changed nothing.
     String count = contactsText(plotted, labelled);
     bool recount = !scene.mapOnly && count != g_countShown;
     if (recount) {
         canvas.fillRect(FOOT_L, FOOT_T, FOOT_R - FOOT_L, FOOT_B - FOOT_T, colorBg);
+        g_footings.count = count;
     }
-    footerBox(rangeText(rangeNm, step, scene.autoRange), 16, FOOTER_Y, false);
+    String range = rangeText(rangeNm, step, scene.autoRange);
+    if (trafficMeets(footerBoxAt(range, 16, FOOTER_Y, false))) {
+        footerBox(range, 16, FOOTER_Y, false);
+    }
     if (!scene.mapOnly) {
-        footerBox("^ climb   v descent", 1264, FOOTER_Y - LEGEND_OFFSET, true);
-        drawCount(count);
+        static const String legend = "^ climb   v descent";
+        if (recount || trafficMeets(footerBoxAt(legend, 1264, FOOTER_Y - LEGEND_OFFSET, true))) {
+            footerBox(legend, 1264, FOOTER_Y - LEGEND_OFFSET, true);
+        }
+        if (recount || trafficMeets(footerBoxAt(count, 1264, FOOTER_Y, true))) {
+            drawCount(count);
+        }
     }
     uint32_t t2 = micros();
     g_backgroundUs += t1 - t0;
@@ -2955,7 +3011,6 @@ void radarPlotDraw(const RadarScene &scene, bool full) {
 
     if (!full) {
         screen::fillRect(PLOT_L, PLOT_T, PLOT_R - PLOT_L, PLOT_B - PLOT_T, colorBg);
-        canvas.fillRect(FOOT_L, FOOT_T, FOOT_R - FOOT_L, FOOT_B - FOOT_T, colorBg);
     }
     canvas.setFont(&fonts::Font0);
 
@@ -3065,17 +3120,36 @@ void radarPlotDraw(const RadarScene &scene, bool full) {
     // to the range line reached x=664, well inside it. Boxed from the right
     // edge, every one of them starts beyond the widest part of the circle at
     // the height it sits at.
-    // The range readout reaches from the margin into the plot square. Following
-    // changes the range as it goes, so a refresh redraws all of it - the part
-    // in the margin erased first, and pushed with the footer.
-    if (!full) {
+    // The range readout reaches from the margin into the plot square, and a
+    // long count does too: their parts in the column, filled afresh, drawn
+    // again whatever. Outside it, on a refresh of the live radar with nothing
+    // over it, each is left as it was unless its text has changed - following
+    // changes the range as it goes, and the count - and only then erased,
+    // drawn afresh and pushed: the footer and the range's start in the
+    // margin, two pushes and some 70 letters a frame, mostly the same.
+    String range = rangeText(rangeNm, step, scene.autoRange);
+    String count = scene.mapOnly ? String() : contactsText(plotted, labelled);
+    bool kept = !full && scene.push && g_livePlot && g_footings.kept;
+    bool newRange = !kept || range != g_footings.range, newCount = !kept || count != g_footings.count;
+    if (!full && newCount) {
+        canvas.fillRect(FOOT_L, FOOT_T, FOOT_R - FOOT_L, FOOT_B - FOOT_T, colorBg);
+    }
+    if (!full && newRange) {
         canvas.fillRect(0, RANGE_BOX_T, PLOT_L, BOX_H, colorBg);
     }
-    footerBox(rangeText(rangeNm, step, scene.autoRange), 16, FOOTER_Y, false);
-    if (!scene.mapOnly) {
-        footerBox("^ climb   v descent", 1264, FOOTER_Y - LEGEND_OFFSET, true);
-        drawCount(contactsText(plotted, labelled));
+    if (newRange || inColumn(footerBoxAt(range, 16, FOOTER_Y, false))) {
+        footerBox(range, 16, FOOTER_Y, false);
     }
+    if (!scene.mapOnly) {
+        static const String legend = "^ climb   v descent";
+        if (newCount || inColumn(footerBoxAt(legend, 1264, FOOTER_Y - LEGEND_OFFSET, true))) {
+            footerBox(legend, 1264, FOOTER_Y - LEGEND_OFFSET, true);
+        }
+        if (newCount || inColumn(footerBoxAt(count, 1264, FOOTER_Y, true))) {
+            drawCount(count);
+        }
+    }
+    g_footings = {range, count, g_livePlot};
 
     uint32_t t2 = micros();
     g_backgroundUs += t1 - t0;
@@ -3084,7 +3158,7 @@ void radarPlotDraw(const RadarScene &scene, bool full) {
     if (full) {
         return;  // the caller flushes, once it has drawn the rest of the screen
     }
-    pushPlot(scene.push, RANGE_BOX_T);
+    pushPlot(scene.push, RANGE_BOX_T, newCount, newRange);
     g_pushUs += micros() - t2;
 }
 
@@ -3683,6 +3757,7 @@ bool zoomPlot(const ZoomFrame &framed, const std::vector<Aircraft> &aircraft,
               bool push, bool partial, uint32_t nowMs, InUseMemory &memory) {
     auto &canvas = screen::canvas();
     uint32_t t0 = micros();
+    g_footings.kept = false;  // its own readouts where the radar's go
     ZoomFrame f = framed;
     bool onFollowed = false;
     if (followHex.length() && f.rangeNm < f.framedNm - 0.01f) {
