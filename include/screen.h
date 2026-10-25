@@ -40,6 +40,12 @@ void markAllDirty();
 
 // Push everything marked dirty to the panel, then start a fresh dirty list.
 void flush();
+// Until the next flush(), regions marked are kept as they are - absorbed only
+// by one they lie inside, and cut back where one already marked takes in all
+// of their height - rather than run together, and that flush sends each on
+// its own: for a plot drawn whole under a card or a list, whose column,
+// footer and readout in the left margin, run together, are the whole screen.
+void keepApart();
 
 // Something drawn over whichever screen is up - the alert banner. `draw`
 // paints it into the canvas and returns true, or returns false when it isn't
