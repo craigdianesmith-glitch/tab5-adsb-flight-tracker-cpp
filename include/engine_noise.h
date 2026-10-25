@@ -35,12 +35,15 @@
 // the air tearing past the gear and flaps, the reversers - is noise through
 // a fixed bank of eight bands, 250Hz to 6.3kHz, each band as loud as the
 // sources in it make it. Each source surges as it does - the jet's roar
-// swelling in all its bands together, the fan's hiss out of its intake
-// barely - and the air's flicker moves the treble together, the more the
-// faster the aircraft crosses the way the sound comes; so a band's churn,
-// and how far it moves with the others, comes from which sources fill it
-// and where it is heard from: a take-off coming, bands churning apart; as
-// it passes and goes, together - as the recordings' octaves do.
+// swelling in all its bands together, the fan's hiss and the buzz-saw each
+// their own way - and the air's flicker moves the treble together, the
+// quicker the faster the aircraft crosses the way the sound comes; so a
+// band's churn, and how far it moves with the others, comes from which
+// sources fill it and where it is heard from: a take-off coming, bands
+// churning apart; as it passes and goes, together - as the recordings'
+// octaves do. On the approach its autothrust hunts, the fans' whine
+// wandering a percent or two in pitch every few seconds, as a recorded
+// approach's does.
 //
 // And the sound's way to the ear, as the air carries it:
 //  - late: at 343m a second, what is heard is what the aircraft was doing
@@ -174,6 +177,9 @@ bool a320Fopp(Engine engine, uint32_t who);
 // pitch and its swell as the aircraft passes depend on it. Off: all as late
 // as the sound takes.
 extern bool g_transientsOnPicture;
+#ifdef ENGINE_NOISE_DEBUG
+extern uint64_t g_limited, g_samples;
+#endif
 
 class Synth {
   public:
@@ -194,7 +200,7 @@ class Synth {
 
     static constexpr int BANDS = 8;    // the broadband's bands
     static constexpr int TONES = 15;   // the resonances' places - see tonesStep()
-    static constexpr int SOURCES = 8;  // the broadband's sources, each surging its own way
+    static constexpr int SOURCES = 9;  // the broadband's sources and the buzz-saws, each surging its own way
 
   private:
     void update();
@@ -206,6 +212,7 @@ class Synth {
     void bandsStep();
     void tonesStep();
     void combsStep();
+    void huntStep();
     void tyresStep();
 
     // The noise as a step's samples have it: the seed in a register, copied
@@ -302,6 +309,9 @@ class Synth {
     // the airframe's gear, flaps and spoilers, the air past it.
     float n1_[2] = {0.25f, 0.25f}, n1Rate_[2] = {}, split_ = 0, drift_ = 0;
     float steadyS_ = 2;  // held at 50% N1 before take-off power this long, s; less than nought, not there yet
+    // The autothrust's hunting on the approach: N1's wander as a share of
+    // it, its process's last two values, and how much it is hunting.
+    float hunt_ = 0, huntX1_ = 0, huntX2_ = 0, huntWeight_ = 0;
     float reverse_ = 0, gear_ = 0, flaps_ = 0, spoilers_ = 0, airspeed_ = 0;
     // The engines' spool, 0 stopped to 1 at idle or above, and how much their
     // fire is heard; the APU's spool.
@@ -313,12 +323,16 @@ class Synth {
     // each a quick one and a slow one together; and each band's own shimmer;
     // and the air's flicker.
     float surgeQuick_[SOURCES] = {}, surgeSlow_[SOURCES] = {}, shimmer_[BANDS] = {}, flicker_ = 0, flickerA_ = 0;
+    float surge_[SOURCES] = {}, flickerN_ = 0;  // as they are now: each source's surge as a power, the flicker in its spreads
     float shimmerQuick_[BANDS] = {}, shimmerSlow_[BANDS] = {};
     // How much of each is kept from one slow step to the next, and how much
     // new noise comes in: worked out once.
     float surgeKeep_[SOURCES][5] = {}, shimmerKeep_[4] = {};
     // Each band's centre, as octaves from 1kHz.
     float bandLog_[BANDS] = {};
+    // And its tangent of pi x its centre over the rate - for the muffling's
+    // loss there - and the air's loss there, dB a kilometre.
+    float bandTan_[BANDS] = {}, bandAirDbKm_[BANDS] = {};
     // The bank: eight bands on two noises, fixed - each noise's last two
     // samples shared - each a band-pass and then a resonance on the same poles, so
     // its skirt above falls 18dB an octave, not 6, and a band's surges stay
@@ -336,9 +350,11 @@ class Synth {
     bool combOn_[2] = {};
     float heldDb_ = 0;  // held back low over the ground - Doc 29's lateral attenuation
     // The air's muffling of the broadband and the buzz-saws, as a low-pass -
-    // the tones have theirs worked out exactly - and what goes in under 180Hz.
+    // the tones have theirs worked out exactly - and the speaker's
+    // high-pass, taking out what goes in under 180Hz: its two states and its
+    // coefficients.
     Svf air_;
-    float dcLow_ = 0;
+    float hp1_ = 0, hp2_ = 0, hpB0_ = 0, hpA1_ = 0, hpA2_ = 0;
     // The sound off the ground: the last 32ms, the echo's lateness in
     // samples - stepped across each STEP from the last's - its strength, its
     // low-pass's coefficient and two stages, and its lateness's wander.
@@ -356,7 +372,7 @@ class Synth {
     // The tyres: their squeal, each main gear's in turn; the nose wheel over
     // each centreline light.
     float touchdownWas_ = -1, touchdownNowWas_ = -1, squealS_ = 10, squealAt_[2] = {}, squealLoud_ = 0;
-    float squealDueS_ = -1;
+    float squealDueS_ = -1, squealSinkMs_ = 1, squealRollingMs_ = 0;  // due in, and as the frame that showed it had it
     float lightPhase_ = 0, thump_ = 0;
     Svf thumpBand_;
 };

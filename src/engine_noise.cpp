@@ -11,6 +11,9 @@
 namespace engine_noise {
 
 bool g_transientsOnPicture = false;
+#ifdef ENGINE_NOISE_DEBUG
+uint64_t g_limited = 0, g_samples = 0;  // samples the limiter rounded off, of all
+#endif
 
 namespace {
 
@@ -40,9 +43,12 @@ constexpr float HEARD_AHEAD_S = 0;
 // another.
 constexpr float TOP_HZ = 7600, TOP_FADE_HZ = 1200;
 // The mix's level, as samples go: an airliner taking off past a camera
-// beside the runway some -20dBFS at its loudest, its approach overhead about
-// the same; under the words, which are near full scale.
-constexpr float LEVEL = 0.44f;
+// beside the runway some -20dBFS at its loudest, as loud in the speaker's
+// band as the old synthesiser's, which was set by ear on a Tab5 - and its
+// approach overhead 4dB under a climb-out over the same microphone (the
+// noise data has 4.5-6.5), its chase at cruise -20dBFS; under the words,
+// which are near full scale.
+constexpr float LEVEL = 0.59f;
 
 float clamp01(float x) { return x < 0 ? 0 : x > 1 ? 1 : x; }
 float clampf(float x, float lo, float hi) { return x < lo ? lo : x > hi ? hi : x; }
@@ -154,16 +160,20 @@ float lobe(const Lobe &t, float aspect) {
 // degrees and stronger, through the jet's shear layer and wake.
 constexpr Lobe FAN_TONE = {-4.0f, -1.0f, 0.0f, -2.5f, -6.0f, -8.5f, -8.0f, -9.0f, -12.0f, -18.0f};
 constexpr Lobe FAN_IN = {-4.0f, -2.0f, -2.0f, -4.5f, -9.0f, -15.0f, -21.0f, -27.0f, -33.0f, -39.0f};
-constexpr Lobe FAN_AFT = {-38.0f, -32.0f, -24.0f, -16.0f, -8.0f, -2.7f, 0.0f, -2.0f, -10.0f, -20.0f};
+constexpr Lobe FAN_AFT = {-38.0f, -32.0f, -24.0f, -16.0f, -8.0f, -2.7f, 0.0f, -1.0f, -4.0f, -10.0f};
 // The buzz-saw: out of the intake only, most at 40 to 60 degrees and 8dB
 // down by 90 - NASA's combination tones' shape - and gone behind, as every
 // recording of one has it.
 constexpr Lobe BUZZ = {-3.0f, -0.5f, 0.0f, -1.5f, -8.0f, -11.0f, -17.0f, -23.0f, -27.0f, -29.0f};
-// The jet's roar: most 30 to 40 degrees off its tail; less right behind it,
-// in the cone of silence along the jet; and ahead, its fine turbulence's
-// hiss, some 15dB under, carrying the low end of a take-off coming at the
-// camera [M: the recordings' 300-600Hz the loudest and the most surging].
-constexpr Lobe JET = {-17.0f, -15.0f, -13.0f, -11.0f, -9.0f, -7.0f, -3.5f, -0.5f, -0.5f, -4.0f};
+// The jet's roar: most 50 to 70 degrees off its tail; falling away behind
+// it, into the cone of silence along the jet; broad to the side, where its
+// fine turbulence is heard; and ahead, some 15dB under, carrying the low
+// end of a take-off coming at the camera [M: the recordings' 300-600Hz the
+// loudest and the most surging; Zellmann's A320 directivity, its 250Hz
+// most at 130 degrees, its 500Hz at 100-110 and 6-8dB down by 40 and by
+// 150-170]. (Most at 140, it stood 4-5dB too loud behind against 90, and a
+// climb-out going away stood 7dB nearer its pass than the recordings'.)
+constexpr Lobe JET = {-17.0f, -15.0f, -13.0f, -9.5f, -6.0f, -4.5f, -2.5f, -4.0f, -7.0f, -10.0f};
 // The core's rumble, behind a little; the airframe's rush, all round; the
 // flaps' edges, more behind; the reversers' efflux, thrown forward; the
 // APU's exhaust, out of the tail cone, most 60 degrees off its axis; a
@@ -195,13 +205,19 @@ const EngineData ENGINES[5] = {
     {24, 125.0f, 0.22f, 0.27f, 0.51f, 0.82f, 0.85f, 0.90f, 0.70f, 0.67f, 0, 300, 0, 0, {0, 0}, 15},
     // CFM56-5B: idle 20-22%; final 49-55% (Zurich); take-off 85-94%; reverse 68%.
     {36, 83.3333f, 0.22f, 0.27f, 0.51f, 0.82f, 0.84f, 0.90f, 0.70f, 0.67f, 0, 300, 0, 0, {0, 0}, 15},
-    // V2500-A5: the BPF of a 1,768-2,067Hz take-off measured; its buzz-saw
-    // the strongest of the four in the recorded climb-outs [M: 2.6-6.7dB
-    // clear]; LPT tones at engine orders 85 and 89, behind it.
-    {22, 94.1667f, 0.25f, 0.29f, 0.50f, 0.82f, 0.82f, 0.90f, 0.68f, 0.64f, 3.5f, 310, -1, 2, {85, 89}, 15},
-    // LEAP-1A: TOGA ~83%, FLEX ~75%; its tips barely past the speed of sound;
-    // 3.5dB quieter departing (Luton); motoring longer before light-off.
-    {18, 64.2667f, 0.21f, 0.24f, 0.47f, 0.80f, 0.77f, 0.81f, 0.62f, 0.76f, -9, 255, -3.5f, -2, {0, 0}, 24},
+    // V2500-A5: idling at 30% on the ground, its fan's line at 622Hz [M: DLR,
+    // D-ATRA], 29% in the air; the BPF of a 1,768-2,067Hz take-off measured;
+    // its buzz-saw the strongest of the four in the recorded climb-outs [M:
+    // 2.6-6.7dB clear]; LPT tones at engine orders 85 and 89, behind it.
+    {22, 94.1667f, 0.30f, 0.29f, 0.50f, 0.82f, 0.82f, 0.90f, 0.68f, 0.64f, 2.0f, 310, -1, 2, {85, 89}, 15},
+    // LEAP-1A: TOGA ~83%, FLEX ~75%; level at height at its take-off's 91%,
+    // as a CFM56-5B's 82 is of its 90 [I: no neo's is published] - at 80%,
+    // all but its take-off's, the chase at cruise stood 1.6dB over the
+    // CFM56's; its tips barely past the speed of sound at take-off - its
+    // buzz-saw from 73%, weak; its jet slower; 3.5dB quieter departing and
+    // as loud arriving [M: Luton's monitors]; motoring longer before
+    // light-off.
+    {18, 64.2667f, 0.21f, 0.24f, 0.47f, 0.74f, 0.77f, 0.81f, 0.62f, 0.73f, 0, 270, -3, -2, {0, 0}, 24},
     // PW1100G: the fan's speed as a share of its 3,281rpm most; its turbine's
     // tones over 8kHz, the air's.
     {20, 54.6833f, 0.19f, 0.25f, 0.55f, 0.82f, 0.83f, 0.88f, 0.65f, 0.84f, -12, 250, -3, -1, {0, 0}, 30},
@@ -217,6 +233,15 @@ uint32_t mix(uint32_t x) {
     return x;
 }
 float unit(uint32_t h) { return (h >> 8) * (1.0f / 16777216.0f); }  // 0 to 1
+// A float's bits, for a hash of where something is.
+uint32_t bitsOf(float f) {
+    union {
+        float f;
+        uint32_t u;
+    } v;
+    v.f = f;
+    return v.u;
+}
 
 // The bank's bands: their centres, 250Hz to 6.3kHz two thirds of an octave
 // apart, and how sharp each stage is - with the resonance after it, enough
@@ -236,30 +261,47 @@ constexpr float BAND_Q = 0.8f;
 // apart, as much as the recordings' do [M: the 500Hz, 1, 2 and 4kHz octaves'
 // levels correlated 0.07 on a take-off roll still coming, 0.24-0.41 as it
 // passes and goes, the treble's three the most].
-enum Source { OF_JET, OF_FAN, OF_FAN_AFT, OF_CORE, OF_AIRFRAME, OF_REVERSER, OF_BUFFET, OF_APU };
+enum Source { OF_JET, OF_FAN, OF_FAN_AFT, OF_CORE, OF_AIRFRAME, OF_REVERSER, OF_BUFFET, OF_APU, OF_BUZZ };
 // How far each surges, in nepers of its loudness, and how quickly - its
-// quick part's and its slow part's time constants, s. The fan's hiss out
-// of its intake barely - the air it swallows smooth, aloft - and out of its
-// bypass duct, through the jet's shear layer and wake, much more; the
-// air torn off the gear and flaps, the reversers' efflux and the spoilers'
-// buffet the most.
-// The jet's surges the slowest - its big eddies' roar, most of it under a
-// hertz going away, as recorded [M] - `SURGE_QUICK_W` how much of each is
-// its quick part.
-constexpr float SURGE_NP[Synth::SOURCES] = {0.19f, 0.10f, 0.18f, 0.08f, 0.18f, 0.22f, 0.25f, 0.05f};
-constexpr float SURGE_QUICK_S[Synth::SOURCES] = {0.25f, 0.20f, 0.15f, 0.23f, 0.18f, 0.12f, 0.07f, 0.31f};
-constexpr float SURGE_SLOW_S[Synth::SOURCES] = {1.20f, 1.00f, 0.70f, 1.30f, 0.80f, 0.50f, 0.40f, 1.70f};
-constexpr float SURGE_QUICK_W[Synth::SOURCES] = {0.6f, 0.8f, 0.8f, 0.8f, 0.8f, 0.8f, 0.8f, 0.8f};
-// Each band's own shimmer: a decibel or so; more where the turbulent sources fill
-// it, the further the sound has come through the air's eddies, and the
-// faster the aircraft crosses the way the sound comes - the eddies swept
-// across it the quicker, the echo off the ground sweeping by: most as it
-// passes, as the recordings' bands each churn by a decibel or more of their
-// own then [M].
-// Quick, and more of it slower - each band wandering by itself over a third
-// of a second too, as the recordings' do at 0.5 to 2Hz [M].
-constexpr float SHIMMER_NP = 0.15f, SHIMMER_TURBULENT_NP = 0.04f, SHIMMER_FAR_NP = 0.04f, SHIMMER_PASS_NP = 0.10f,
-                SHIMMER_S = 0.08f, SHIMMER_SLOW_S = 0.3f;
+// quick part's and its slow part's time constants, s, and how much of it is
+// the quick part. Slowly, most of it: over a second, a little over a third
+// of one - the recordings' octaves wander most at 0.25-2Hz, their 1-4Hz a
+// quarter or less of it as an aircraft passes [M] - each source alone, so
+// a band's surges are its sources' mix. The jet, the fan's hiss out of its
+// intake and out of its bypass duct, the airframe's rush, by a fifth to a
+// quarter of their loudness; the core's barely; the reversers' efflux and
+// the spoilers' buffet the most and the quickest; the APU's steady; and the
+// buzz-saws', all their lines together, their own (with the intake's, a
+// take-off still coming had its octaves moving together, which the
+// recordings' don't: r 0.31 against 0.05-0.16).
+constexpr float SURGE_NP[Synth::SOURCES] = {0.18f, 0.26f, 0.21f, 0.08f, 0.24f, 0.22f, 0.25f, 0.05f, 0.20f};
+constexpr float SURGE_QUICK_S[Synth::SOURCES] = {0.40f, 0.40f, 0.40f, 0.23f, 0.40f, 0.12f, 0.07f, 0.31f, 0.30f};
+constexpr float SURGE_SLOW_S[Synth::SOURCES] = {1.15f, 1.15f, 1.15f, 1.30f, 1.15f, 0.50f, 0.40f, 1.70f, 1.15f};
+constexpr float SURGE_QUICK_W[Synth::SOURCES] = {0.4f, 0.4f, 0.4f, 0.8f, 0.4f, 0.8f, 0.8f, 0.8f, 0.4f};
+// Each band's own shimmer: a decibel and a half; more where the turbulent
+// sources fill it, the further the sound has come through the air's eddies,
+// a little more as the aircraft crosses the way the sound comes fast, and
+// close behind it - each band wandering by itself at about a hertz, quicker
+// and slower, as the recordings' bands each churn by a decibel or more of
+// their own [M]. (More of it as it passes, 0.1Np, made the passes flutter:
+// 1-4Hz half the level's wander, against the recordings' quarter.)
+constexpr float SHIMMER_NP = 0.18f, SHIMMER_TURBULENT_NP = 0.04f, SHIMMER_FAR_NP = 0.07f, SHIMMER_PASS_NP = 0.06f,
+                SHIMMER_S = 0.15f, SHIMMER_SLOW_S = 0.23f, SHIMMER_QW = 0.8f, SHIMMER_WAKE_NP = 0.13f;
+
+// The air's flicker as quick as the eddies cross the way the sound comes:
+// its rate in hertz (this much of the aircraft's speed across it, plus a
+// breeze's few m/s) over 5m - a pass's flicker quicker, but not so quick as
+// to flutter - and its spread, dB at a kilometre: a decibel from 650m [M:
+// Empa's calm air, 0.8-1.5dB].
+constexpr float FLICKER_ACROSS = 0.15f, FLICKER_BASE = 3.7f, FLICKER_DB = 1.25f;
+
+// The autothrust's hunting, as a noise-driven resonance stepped each slow
+// step: its poles' radius and turn - 0.42Hz, damped by 0.35 - and the push
+// that gives it a unit spread (an AR(2)'s variance worked out).
+constexpr float HUNT_W = 2 * PI * 0.42f * SLOW_S, HUNT_Z = 0.35f;
+const float HUNT_R = expf(-HUNT_Z * HUNT_W), HUNT_A1 = 2 * HUNT_R * cosf(HUNT_W * sqrtf(1 - HUNT_Z * HUNT_Z)),
+            HUNT_A2 = -HUNT_R * HUNT_R,
+            HUNT_B = sqrtf((1 + HUNT_A2) * ((1 - HUNT_A2) * (1 - HUNT_A2) - HUNT_A1 * HUNT_A1) / (1 - HUNT_A2));
 
 // The tones' places.
 enum ToneSlot {
@@ -337,8 +379,22 @@ Synth::Synth() {
     }
     for (int b = 0; b < BANDS; b++) {
         bandLog_[b] = log2f(BAND_HZ[b] * 0.001f);
+        float sn, cs;
+        sinCosTurns(0.5f * BAND_HZ[b] / RATE, sn, cs);
+        bandTan_[b] = sn / cs;
+        bandAirDbKm_[b] = absorptionDbKm(BAND_HZ[b]);
     }
     air_.tune(7000, 0.6f);
+    // The speaker's high-pass, Butterworth at 180Hz: its two zeros at
+    // nought, so b1 = -2 b0 and b2 = b0.
+    {
+        float s, c;
+        sinCosTurns(180.0f / RATE, s, c);
+        float alpha = s * 0.70710678f, a0 = 1 + alpha;  // s / (2Q), Q the root of a half
+        hpB0_ = (1 + c) * 0.5f / a0;
+        hpA1_ = -2 * c / a0;
+        hpA2_ = (1 - alpha) / a0;
+    }
     for (int c = 0; c < SOURCES; c++) {
         float kq = expf(-SLOW_S / SURGE_QUICK_S[c]), ks = expf(-SLOW_S / SURGE_SLOW_S[c]);
         surgeKeep_[c][0] = kq;
@@ -400,6 +456,15 @@ void Synth::duck(bool under) { under_ = under; }
 void Synth::restart() {
     const Sound &s = heard_;
     traits_ = mix(s.who * 2654435761u + (uint32_t)s.engine * 97u + 12345u);
+    // Its surges, the air's flicker and its noise its own each time it is
+    // heard - from who it is, and where it and the camera are and when it
+    // starts - so no two hearings share a realisation: not this aircraft's
+    // last, not another scene's. (From a fixed seed every render had the
+    // same surges, a 7dB dip at the same second in two scenes.)
+    uint32_t where = mix(bitsOf(s.at[0]) ^ mix(bitsOf(s.at[1]) ^ mix(bitsOf(s.at[2]) ^ mix(bitsOf(s.ear[0]) ^
+                                                                                        mix(bitsOf(s.ear[1]) ^ s.ms)))));
+    slow_ = mix(traits_ ^ where) | 1;
+    seed_ = mix(slow_ + 0x632be5abu);
     uint32_t h = traits_;
     auto next = [&]() {
         h = mix(h + 0x9e3779b9u);
@@ -443,6 +508,8 @@ void Synth::restart() {
     n1Rate_[0] = n1Rate_[1] = 0;
     steadyS_ = n1 < 0.4f ? -1 : 2;
     reverse_ = s.reverse ? 1.0f : 0.0f;
+    hunt_ = huntX1_ = huntX2_ = 0;
+    huntWeight_ = s.flapsOut && !s.reverse && s.rollingMs < 0.5f ? 1.0f : 0.0f;
     gear_ = s.gearDown ? 1.0f : 0.0f;
     flaps_ = s.flapsOut ? 1.0f : 0.0f;
     spoilers_ = clamp01(s.spoilers);
@@ -873,9 +940,36 @@ void Synth::slowStep() {
         gain_ *= std::max(0.6f, std::min(2.0f, powFast(convection_, 0.65f)));
     }
     air_.tune(mufflingHz(d * 0.001f), 0.6f);
+    huntStep();
     bandsStep();
     tonesStep();
     combsStep();
+}
+
+// The autothrust hunting on the approach: holding the approach speed
+// through the gusts, its N1 wanders by a percent and a half, to and fro
+// every two to three seconds and never regularly [M: the fan tone of three
+// A319 approaches wandering 1.0-2.4% about its trend, most at 2.1-2.9s,
+// where a take-off's holds within 0.2-0.5%] - a gust-driven loop, so a
+// resonance of its own driven by noise, as the tones are: two poles at
+// 0.42Hz, damped by a third. Only in the air with the flaps out and the
+// thrust off its idle stop - not on the ground, not at take-off or climb
+// thrust, which hold their N1, not idling down an intermediate approach.
+void Synth::huntStep() {
+    const Sound &s = sound_;
+    const EngineData &e = ENGINES[(int)s.engine];
+    bool onGround = s.rollingMs > 0.5f || (s.sourceUpM < 12 && s.airspeedMs < 35);
+    float n1 = 0.5f * (n1_[0] + n1_[1]);
+    float hunting = onGround || reverse_ > 0.01f ? 0.0f
+                                                 : flaps_ * smoothstep(e.flightIdle + 0.03f, e.flightIdle + 0.15f, n1) *
+                                                       (1 - smoothstep(e.climb - 0.06f, e.climb, n1));
+    Rng rng{slow_};
+    float x = HUNT_A1 * huntX1_ + HUNT_A2 * huntX2_ + HUNT_B * rng.gauss();  // unit variance
+    huntX2_ = huntX1_;
+    huntX1_ = x;
+    slow_ = rng.s;
+    huntWeight_ = ease(huntWeight_, hunting, 1 - expFast(-SLOW_S / 2.0f));
+    hunt_ = 0.015f * huntWeight_ * x;
 }
 
 // The broadband: each band as loud as the sources in it - each source's own
@@ -893,7 +987,7 @@ void Synth::bandsStep() {
     // The slow processes, each a quick part and a slow part - noise smoothed
     // over a tenth of a second or so and over most of one - in units of
     // their own spread, so each source's surges are its own and have no beat.
-    float surge[SOURCES];
+    float *surge = surge_;  // kept: the buzz-saws' is theirs
     for (int c = 0; c < SOURCES; c++) {
         const float *k = surgeKeep_[c];
         surgeQuick_[c] = surgeQuick_[c] * k[0] + k[1] * rng.gauss();
@@ -904,10 +998,10 @@ void Synth::bandsStep() {
     for (int b = 0; b < BANDS; b++) {
         shimmerQuick_[b] = shimmerQuick_[b] * shimmerKeep_[0] + shimmerKeep_[1] * rng.gauss();
         shimmerSlow_[b] = shimmerSlow_[b] * shimmerKeep_[2] + shimmerKeep_[3] * rng.gauss();
-        shimmer_[b] = 0.6f * shimmerQuick_[b] + 0.8f * shimmerSlow_[b];
+        shimmer_[b] = SHIMMER_QW * shimmerQuick_[b] + sqrtf(1 - SHIMMER_QW * SHIMMER_QW) * shimmerSlow_[b];
     }
     // The air's flicker: the turbulence along the way focusing and
-    // scattering the sound, its level wandering by 1.5dB a kilometre off,
+    // scattering the sound, its level wandering by 1.25dB a kilometre off,
     // more further - the root of the distance - as much as 6dB, saturating;
     // above a frequency that falls with the distance, 9kHz over its root,
     // 350Hz from 650m - every band above it together; as fast as the
@@ -918,49 +1012,72 @@ void Synth::bandsStep() {
     // spectrum falling steeply above its rate - so seen head on, crossing
     // slowly, it wanders over seconds and moves the bands together only
     // slowly [M: bands correlated 0.07 on a take-off roll still coming].
-    float kf = expFast(-SLOW_S * (across_ * 0.5f + 3) * (1.0f / 5));
+    float kf = expFast(-SLOW_S * (across_ * FLICKER_ACROSS + FLICKER_BASE) * (1.0f / 5));
     flickerA_ = flickerA_ * kf + sqrtf(1 - kf * kf) * rng.gauss();
     flicker_ = flicker_ * kf + (1 - kf) * flickerA_;
-    float flickerN = flicker_ * (1 + kf) * (1 / sqrtf(1 + kf * kf));
-    float flickerNp = std::min(6.0f, 1.5f * sqrtf(km)) * (1 / 8.686f);
+    float flickerN = flickerN_ = flicker_ * (1 + kf) * (1 / sqrtf(1 + kf * kf));
+    float flickerNp = std::min(6.0f, FLICKER_DB * sqrtf(km)) * (1 / 8.686f);
     float cornerLog = log2Fast(9 / sqrtf(d));  // octaves from 1kHz
-    float shimmerFar = SHIMMER_FAR_NP * std::min(1.0f, sqrtf(km)) + SHIMMER_PASS_NP * smoothstep(10, 80, across_);
+    float airSin, airCos;  // the muffling's tuning, prewarped, as its cotangent
+    sinCosTurns(0.5f * air_.hz / RATE, airSin, airCos);
+    float airCot = airCos / std::max(1e-6f, airSin);
+    // ...and close behind it, through its jet's and its wake's turbulence - as
+    // the chase hears it - each band scattered its own way [P: the jet's
+    // shear layer scattering what crosses it, haystacking its tones].
+    float shimmerFar = SHIMMER_FAR_NP * std::min(1.0f, sqrtf(km)) + SHIMMER_PASS_NP * smoothstep(10, 80, across_) +
+                       SHIMMER_WAKE_NP * smoothstep(0.85f, 0.97f, aspect_) * (1 - smoothstep(80, 250, d));
     slow_ = rng.s;
     // Each source's loudness, dB.
-    float n1 = std::max(0.0f, 0.5f * (n1_[0] + n1_[1])) * (spool_ < 1 ? powFast(spool_, 1.6f) : 1.0f);
-    float n1r = std::max(0.02f, n1 / 0.9f);
+    float n1 = std::max(0.0f, 0.5f * (n1_[0] + n1_[1])) * (spool_ < 1 ? powFast(spool_, 1.6f) : 1.0f) * (1 + hunt_);
+    // ...and as a share of its own take-off's: the jet's and the fan's hiss
+    // reckoned from that - a LEAP's take-off at 81%, its fan bigger and
+    // slower, is as hard as a CFM56's at 90%, its own level by levelDb.
+    float n1r = std::max(0.02f, n1 / e.takeoff);
     float v = airspeed_, vr = std::max(0.05f, v / 70);
     float th = aspect_;
     // The jet: its roar as the eighth power of its speed relative to the air
     // [P: Lighthill], its speed as the fan's; its peak frequency with it; and
     // quieter as it flies, the jet's speed against the air the less - by no
     // more than 10dB [P: the flight effect, Stone]. In reverse only its
-    // core's is still thrown aft.
+    // core's is still thrown aft. At take-off the strongest thing behind the
+    // engines, a climb-out over the microphone 4-6dB over an approach's [P:
+    // the noise data's departures and arrivals, with the distances squeezed
+    // as here].
     float jetMs = e.jetMs * n1r;
     float flight = std::max(-10.0f, 50 * lg10(std::max(0.01f, 1 - v / std::max(60.0f, jetMs))));
-    float jetDb = e.levelDb + 75 * lg10(n1r) + flight + lobe(JET, th) +
+    float jetDb = e.levelDb + 3 + 80 * lg10(n1r) + flight + lobe(JET, th) +
                   10 * lg10(std::max(1e-6f, lit_ * lit_ + 0.02f * spool_)) + 20 * lg10(1 - 0.7f * reverse_);
-    // Its peak low behind it, where its big eddies' roar beams; higher ahead
-    // and to the side, where its fine turbulence's hiss is heard.
-    float jetPeak = log2Fast(0.17f * jetMs / 300) + 2 * (1 - smoothstep(0.5f, 0.83f, th));
-    float coneCut = 3 * smoothstep(0.80f, 1.0f, th);  // the cone of silence, right behind: dB an octave over 500Hz
-    // The fan's broadband hiss: flat in third octaves from 300Hz up to a
-    // corner that follows its tips' speed - 1.6kHz at take-off power, 700Hz
-    // idling - its ducts' liners taking the rest, 7dB an octave; and
-    // Heidmann's broad hump at two and a half times its blade passing - 4kHz
-    // on an approach, as Zellmann found it on CFM56s; the louder as its tips
-    // go faster - more slowly idling, its core's own compressor and turbine
-    // hiss in it [M: Gatwick's taxiing A320s]. Out of its intake and out of
-    // its bypass duct alike, each by its own lobe.
+    // Its peak low behind it, where its big eddies' roar beams, and falling
+    // the quicker above it; higher ahead and to the side, where its fine
+    // turbulence's hiss is heard - two octaves up abeam, one and a half ahead.
+    float jetPeak = log2Fast(0.17f * jetMs / 300) + 1.5f + 0.5f * smoothstep(0.25f, 0.5f, th) - 2 * smoothstep(0.5f, 0.83f, th);
+    float coneCut = 3 * smoothstep(0.86f, 1.0f, th);  // the cone of silence, right behind: dB an octave over 500Hz
+    float jetFall = 4 + smoothstep(0.6f, 0.85f, th);  // dB an octave over its peak: steeper behind, its big eddies' roar
+    // The fan's broadband hiss: rising gently in third octaves from 300Hz to
+    // a corner that follows its tips' speed - 1.6kHz at take-off power, 700Hz
+    // idling - its ducts' liners taking the rest; and Heidmann's broad hump at
+    // two and a half times its blade passing - 4kHz on an approach, as
+    // Zellmann found it on CFM56s. The louder as its tips go faster - as
+    // their speed to the fifth and the air through it, 14dB from take-off to
+    // the approach [P: Heidmann], so the approach's engines are as loud as
+    // its airframe [M: Zurich] and 9dB under a take-off's in the speaker's
+    // band (they were 7: the approach overhead stood 2dB under a climb-out
+    // over the microphone, where the noise data has 4.5-6.5); more slowly
+    // idling, its core's own compressor and turbine hiss in it [M: Gatwick's
+    // taxiing A320s]. Most of it out of its bypass duct, behind - an
+    // intake's liners take more of it - each part by its own lobe: as loud
+    // ahead as the intake's made it, a take-off coming stood 7-9dB too loud
+    // against its pass, 10dB at 500Hz ahead [M: Zellmann's directivity].
     float shaft = (s.engine == Engine::GENERIC ? s.fanHz / e.blades : e.shaft100);
-    float fanDb = e.levelDb - 6 + (n1 > 0.5f ? 40 * lg10(n1r) : -10.2f + 20 * lg10(std::max(0.05f, n1 / 0.5f)));
-    float fanInDb = fanDb - 2 + lobe(FAN_IN, th), fanAftDb = fanDb - 6 + lobe(FAN_AFT, th);
+    float fanDb = e.levelDb - 6 + (n1r > 0.5556f ? 55 * lg10(n1r) : -14.0f + 12 * lg10(std::max(0.05f, n1r / 0.5556f)));
+    float fanInDb = fanDb - 7 + lobe(FAN_IN, th), fanAftDb = fanDb - 3 + lobe(FAN_AFT, th);
     float fanHump = log2Fast(std::max(0.15f, 0.0025f * e.blades * shaft * n1));
-    // The hump 3dB over the flat part on the approach - the Zurich CFM56s'
-    // local peak at 4.2kHz at 55% N1 - and under it at take-off power, where the
-    // jet's and the fan's other hiss are the more, and idling, its tips too
-    // slow for much of it, the core's rumble the more.
-    float humpDb = 3 - 17 * smoothstep(0.55f, 0.9f, n1) - 8 * (1 - smoothstep(0.25f, 0.45f, n1));
+    // The hump 6dB over the rest on the approach - the Zurich CFM56s' local
+    // peak at 4.2kHz at 55% N1, the approach's spectrum rising again from 2
+    // to 5kHz [M: Zellmann] - and under it at take-off power, where the jet's
+    // and the fan's other hiss are the more, and idling, its tips too slow for
+    // much of it, the core's rumble the more.
+    float humpDb = 6 - 20 * smoothstep(0.55f, 0.9f, n1) - 11 * (1 - smoothstep(0.25f, 0.45f, n1));
     float fanCorner = 0.678072f + 0.6f * log2Fast(std::max(0.1f, n1r));  // octaves from 1kHz: 1.6kHz at take-off
     // The core's combustion rumble: most at 450Hz, near enough as loud
     // idling as on the approach, behind it a little; lit only.
@@ -971,7 +1088,8 @@ void Synth::bandsStep() {
     // flat in third octaves to 5kHz (the approach's source flat to 6kHz once
     // the air's absorption is taken out), down more than up; and the flaps'
     // side edges at 1 to 1.6kHz; the spoilers on the roll-out, a low buffet
-    // as the square of the speed.
+    // as the square of the speed. At 70m/s on the approach a shade under its
+    // engines, as Zurich's A320s have them [M: "a very similar contribution"].
     // Its air the thinner the higher - the rush as the square of its density
     // [P: Curle] - and no faster than an approach's 1.6 times counted: the
     // clean wing at cruise, from the chase, a hiss under the engines, not a
@@ -979,15 +1097,21 @@ void Synth::bandsStep() {
     float thin = -0.00102f * std::max(0.0f, s.sourceUpM);  // e^(-h/8.5km), squared, in dB
     float rush = 60 * lg10(std::min(vr, 1.6f)) + thin;
     float airframe = lobe(AIRFRAME, th);
-    float gearDb = gear_ > 0.001f ? -26 + rush + 10 * lg10(gear_) + airframe + 1.5f * below_ -
+    float gearDb = gear_ > 0.001f ? -29.5f + rush + 10 * lg10(gear_) + airframe + 1.5f * below_ -
                                         5 * std::max(0.0f, -below_)
                                   : -200;
-    float flapDb = flaps_ > 0.001f ? -30 + rush + 10 * lg10(flaps_) + lobe(FLAPS, th) : -200;
+    float flapDb = flaps_ > 0.001f ? -32 + rush + 10 * lg10(flaps_) + lobe(FLAPS, th) : -200;
     float cleanDb = -36 + rush + airframe;
-    float buffetDb = spoilers_ > 0.001f ? -14 + 40 * lg10(vr) + 20 * lg10(spoilers_) : -200;
+    float buffetDb = spoilers_ > 0.001f ? -16.5f + 40 * lg10(vr) + 20 * lg10(spoilers_) : -200;
     // The reversers: the fan's stream thrown forward, mixing against the air
-    // - more noise than as much thrust forward, Doc 29's 5dB [P].
-    float revDb = reverse_ > 0.001f ? e.levelDb - 1 + 70 * lg10(std::max(0.05f, n1 / 0.7f)) + lobe(REVERSE, th) +
+    // - more noise than as much thrust forward, Doc 29's 5dB [P] - under a
+    // take-off's roll from as far, 1.5dB abeam in the speaker's band and 4dB
+    // at 120 degrees [P: ANP and Doc 29 put it 4-6dB under, at the A320's
+    // mean 68% N1]. They and the spoilers' buffet stayed where the old
+    // synth's level, set by ear, had the chase's reverse (-15.6dBFS over its
+    // nine seconds) when the rest came up 2.5dB: with them up too, one sample
+    // in a hundred there went into the limiter, seven times as many as before.
+    float revDb = reverse_ > 0.001f ? e.levelDb - 6.5f + 70 * lg10(std::max(0.05f, n1 / 0.7f)) + lobe(REVERSE, th) +
                                           20 * lg10(reverse_)
                                     : -200;
     // The tyres rolling: a low roar of rubber on concrete, under the engines.
@@ -1012,17 +1136,23 @@ void Synth::bandsStep() {
 #endif
     for (int b = 0; b < BANDS; b++) {
         float lf = bandLog_[b] - logDoppler;  // the band's frequency where it left the source, octaves from 1kHz
-        // The jet: rising to its peak, then falling 2.5dB an octave in band
-        // level, 6.5 above 2kHz; less of the treble right behind.
+        // The jet: rising to its peak, then falling 4dB an octave in band
+        // level - 5 behind - and 3 more above 2kHz; less of the treble right
+        // behind.
         float xj = lf - jetPeak;
-        float jet = jetDb - (xj < 0 ? -3 * xj : 4 * xj) - 3 * std::max(0.0f, lf - 1.0f) -
+        float jet = jetDb - (xj < 0 ? -3 * xj : jetFall * xj) - 3 * std::max(0.0f, lf - 1.0f) -
                     coneCut * std::max(0.0f, lf + 1.0f);
         // Out of the bypass duct the corner lower - its liners and the
-        // nozzle taking more of the treble - so a climb-out overhead falls
-        // 6dB an octave over 1kHz, as recorded [M].
+        // nozzle taking more of the treble - and gentler above it, 4.5dB an
+        // octave: so a climb-out overhead falls 6dB an octave over 1kHz, as
+        // recorded, and one going away, 1.5km off, keeps the 2 and 4kHz the
+        // recordings have, 3-4dB more than at 7dB an octave [M].
         float xh = lf - fanHump, hump = dbPower(humpDb - std::min(20.0f, 1.7f * xh * xh)), low = L300 - lf;
-        float fanShape = dbPower(-7 * std::max(0.0f, lf - fanCorner) - 3 * std::max(0.0f, low)) + hump;
-        float aftShape = dbPower(-7 * std::max(0.0f, lf - fanCorner + 0.678f) - 3 * std::max(0.0f, low)) + hump;
+        float fanShape =
+            dbPower(-7 * std::max(0.0f, lf - fanCorner) - 2 * std::max(0.0f, fanCorner - lf) - 3 * std::max(0.0f, low)) + hump;
+        float aftShape = dbPower(-4.5f * std::max(0.0f, lf - fanCorner + 0.678f) - 3 * std::max(0.0f, fanCorner - 0.678f - lf) -
+                                 3 * std::max(0.0f, low)) +
+                         hump;
         float xc = lf - L450;
         float pJet = dbPower(jet), pFanAft = aftShape * dbPower(fanAftDb);
         float p = pJet * surge[OF_JET] + fanShape * dbPower(fanInDb) * surge[OF_FAN] + pFanAft * surge[OF_FAN_AFT] +
@@ -1057,12 +1187,21 @@ void Synth::bandsStep() {
             p += dbPower(apuDb - (xa < 0 ? -6 * xa : 3 * xa)) * surge[OF_APU];
         }
         // The band's own shimmer and its flicker, a shelf over the corner
-        // frequency - one power of two. (The air's absorption on the way is
-        // the muffling's, after the bank: a band-pass's skirts, 6dB an
-        // octave, would fill the treble the air takes 20 or 40dB of.)
+        // frequency; and the air's absorption on the way made exact at the
+        // band's centre - one power of two for the three. (The absorption
+        // is mostly the muffling's, after the bank: a band-pass's skirts
+        // would fill the treble the air takes 20 or 40dB of. But a low-pass
+        // isn't the air: from a kilometre and a half it took 4-6dB too much
+        // at 1.6-2.5kHz against 400Hz, and 1-2dB too little under 630Hz - a
+        // climb-out going away darker and quieter than it is. So each band
+        // is given the difference, the air's loss at its centre less the
+        // low-pass's there.)
         float fl = flickerNp * smoothstep(cornerLog - 0.5f, cornerLog + 0.5f, bandLog_[b]);
         float sh = SHIMMER_NP + SHIMMER_TURBULENT_NP * clamp01(turbulent / std::max(1e-12f, p)) + shimmerFar;
-        float ln = 2 * sh * (shimmer_[b] - sh) + 2 * fl * (flickerN - fl);
+        float w = bandTan_[b] * airCot, w2 = w * w;
+        float lowPassDb = 4.34294482f * 0.693147181f * log2Fast((1 - w2) * (1 - w2) + w2 * (1 / (0.6f * 0.6f)));
+        float airDb = clampf(lowPassDb - bandAirDbKm_[b] * km, -30, 15);
+        float ln = 2 * sh * (shimmer_[b] - sh) + 2 * fl * (flickerN - fl) + 0.230258509f * airDb;
         p *= exp2Fast(1.44269504f * ln);
 #ifdef ENGINE_NOISE_DEBUG
         if (debug) {
@@ -1087,20 +1226,23 @@ void Synth::tonesStep() {
     const EngineData &e = ENGINES[(int)s.engine];
     float d = expFast(logDistance_), km = d * 0.001f;
     float th = aspect_;
-    float flickerNp = std::min(6.0f, 1.5f * sqrtf(km)) * (1 / 8.686f), cornerLog = log2Fast(9000 / sqrtf(d));
-    float kf = expFast(-SLOW_S * (across_ * 0.5f + 3) * (1.0f / 5)), flickerN = flicker_ * (1 + kf) / sqrtf(1 + kf * kf);
+    float flickerNp = std::min(6.0f, FLICKER_DB * sqrtf(km)) * (1 / 8.686f), cornerLog = log2Fast(9000 / sqrtf(d));
+    float flickerN = flickerN_;
     // The ground's echo, straight from its strength and lateness: its sum
     // with the straight sound at each pitch, the coherent part and the
     // scattered part - the scattered more, the higher and further - held to
-    // 3dB either way of their powers' sum, so a tone swells and fades a
+    // 2dB either way of their powers' sum, so a tone swells and fades a
     // little as the echo's notches sweep by, but never throbs - its swells
-    // as deep as narrow-band noise's, no deeper [M: 4.7-5.3dB].
+    // as deep as narrow-band noise's, no deeper [M: 4.7-5.3dB]. (Held to 3,
+    // a fan's whine past a tower over a runway, its echo's notches sweeping
+    // it four times a second, left its octave's envelope as peaky as a
+    // klaxon's - kurtosis 6.8 where the recordings stay under 5.5.)
     float gamma = echoGamma_, mean = 1 + gamma * gamma;
     float lateOf[3] = {echoLate_[0] / RATE, echoLate_[1] / RATE, 0.5f * (echoLate_[0] + echoLate_[1]) / RATE};
     float coherent = 1 / clampf(std::min(2000 * sqrtf(150 / std::max(10.0f, d)),
                                          SOUND_MS * d / (16 * std::max(1.0f, sound_.earUpM))),
                                 400, 3000);
-    float n1Spool = spool_ < 1 ? powFast(spool_, 1.6f) : 1.0f;
+    float n1Spool = (spool_ < 1 ? powFast(spool_, 1.6f) : 1.0f) * (1 + hunt_);
     float shaft = (s.engine == Engine::GENERIC ? s.fanHz / e.blades : e.shaft100);
     // Its width: 1.2Hz near - its swells and fades as slow as a real fan
     // tone's, half their power under 1 to 5Hz [M] - wider far off as the
@@ -1137,7 +1279,7 @@ void Synth::tonesStep() {
             turns -= (float)(int)turns;
             float cs = sinTurn(turns > 0.5f ? turns - 1 : turns);
             float p = 1 + gc * gc + 2 * gc * cs + gamma * gamma * (1 - coh * coh);
-            amp *= sqrtf(clampf(p / mean, 0.5f, 2.0f) * mean);
+            amp *= sqrtf(clampf(p / mean, 0.63f, 1.58f) * mean);
         }
         // Shrinking by pi x width / rate each sample - as exp would have it,
         // the width small - and turning by its pitch; pushed hard enough for
@@ -1166,27 +1308,38 @@ void Synth::tonesStep() {
     // The fan's blade-passing tone and its harmonics, each engine's: rising
     // steeply with its tips' speed to the approach's, 16dB from idle, and
     // little more above, where the buzz-saw takes over; its second harmonic
-    // 6dB under, its third 12. Standing or creeping on the ground, louder by
-    // 6dB: a vortex off the ground swallowed by its intake, stirring the fan
-    // [M: DLR's V2500 ground runs], gone by 30m/s. Each engine's own line at
-    // its blade passing, the two a shade apart; their harmonics, the two
-    // engines' lines as near as their beat, one resonance each as wide as
-    // both - as they fade, the quicker, as real harmonics do [M: 2x a CFM56's
-    // tone, half its swells' power under 5Hz, the tone's under 1.2].
+    // 6dB under, its third 12. Standing on the ground, louder: a vortex off
+    // the ground swallowed by its intake, stirring the fan [M: DLR's V2500
+    // ground runs, "much higher than in flight"] - which forms only while
+    // the intake draws its air some seven times faster than the engine
+    // moves through it: blown away by 4-7m/s idling, so an idling fan's
+    // line stands out at the stand [M: 15dB at an apron] and not taxiing
+    // [M: none over 6dB], and by 15-30m/s at take-off power. Each engine's
+    // own line at its blade passing, the two a shade apart; their harmonics,
+    // the two engines' lines as near as their beat, one resonance each as
+    // wide as both - as they fade, the quicker, as real harmonics do [M: 2x a
+    // CFM56's tone, half its swells' power under 5Hz, the tone's under 1.2].
     bool onGround = s.rollingMs > 0.5f || (s.sourceUpM < 12 && s.airspeedMs < 35);
-    float fanTone = lobe(FAN_TONE, th) + e.toneDb + (onGround ? 6 * (1 - smoothstep(10, 30, airspeed_)) : 0);
+    float blown = 25 * std::max(0.1f, 0.5f * (n1_[0] + n1_[1]) * n1Spool / 0.9f);  // m/s
+    float vortex = onGround ? 1 - smoothstep(0.5f * blown, blown, airspeed_) : 0;
+    float fanTone = lobe(FAN_TONE, th) + e.toneDb + 12 * vortex;
     float bpfs[2], dbs[2], width = 0;
     for (int g = 0; g < 2; g++) {
         float n1 = n1_[g] * n1Spool;
         bpfs[g] = e.blades * shaft * n1;
-        float law = n1 < 0.55f ? 30 * lg10(std::max(0.02f, n1 / 0.55f)) : 25 * lg10(n1 / 0.55f);
-        dbs[g] = n1 > 0.01f ? -20 + e.levelDb + law + fanTone : -200;
+        float law = n1 < 0.55f ? 40 * lg10(std::max(0.02f, n1 / 0.55f)) : 18 * lg10(n1 / 0.55f);
+        dbs[g] = n1 > 0.01f ? -23.5f + e.levelDb + law + fanTone : -200;
         width = widen + 3.0f * aft * n1;
         set(FAN_1 + g, bpfs[g], dbs[g], width, g, g);
     }
+    // A fan whose blades pass under 300-450Hz - a neo's idling, 190-290Hz -
+    // heard by its harmonics: its stator's interaction with the fundamental
+    // cut off in the duct at so low a speed, the second's not, and the
+    // speaker plays nothing so low anyway [P: the research's k = 2-4].
     float bpf = 0.5f * (bpfs[0] + bpfs[1]), apart = fabsf(bpfs[1] - bpfs[0]), db = 0.5f * (dbs[0] + dbs[1]) + 3;
-    set(FAN_H2, 2 * bpf, db - 6, width * 1.4f + 2 * apart, 0, 2);
-    set(FAN_H2 + 1, 3 * bpf, db - 12, width * 1.8f + 3 * apart, 1, 2);
+    float low = 1 - smoothstep(300, 450, bpf);
+    set(FAN_H2, 2 * bpf, db - 6 + 4 * low, width * 1.4f + 2 * apart, 0, 2);
+    set(FAN_H2 + 1, 3 * bpf, db - 12 + 6 * low, width * 1.8f + 3 * apart, 1, 2);
     // A V2500's turbine tones, its last two stages', behind it, smeared broad
     // by the jet - a haystack - the most on the approach.
     float n1 = 0.5f * (n1_[0] + n1_[1]) * n1Spool;
@@ -1198,13 +1351,17 @@ void Synth::tonesStep() {
     }
     // The nose gear's cavity tone at 1.7kHz, on every A320 [M: TU Delft]: its
     // pitch the cavity's, its loudness strongly with the speed - as the
-    // eighth power [I] - more than 10dB over the rush about it, from under
-    // the aircraft; with the gear down.
+    // eighth power [I] - more than 10dB over the rush about it [M], from
+    // under the aircraft; with the gear down. A cavity's resonance, as
+    // narrow as the fuel vents' [P: Empa's 2Hz]: 11-14dB over its
+    // neighbourhood in a hertz-fine spectrum with the Doppler taken out, as
+    // a real approach's steady line stands [M: 13.6dB at 2.05-2.09kHz
+    // heard, an A319 coming at 70m/s].
     float v = airspeed_, vr = std::max(0.05f, v / 70);
-    float nlg = gear_ > 0.01f && v > 20 ? -40 + 80 * lg10(vr) + 10 * lg10(gear_) + lobe(AIRFRAME, th) + 2 * below_ -
+    float nlg = gear_ > 0.01f && v > 20 ? -30.5f + 80 * lg10(vr) + 10 * lg10(gear_) + lobe(AIRFRAME, th) + 2 * below_ -
                                               8 * std::max(0.0f, -below_)
                                         : -200;
-    set(NOSE_GEAR, nlgHz_, nlg, 3.0f + 0.5f * widen, 0, 2);
+    set(NOSE_GEAR, nlgHz_, nlg, 2.0f + 0.5f * widen, 0, 2);
     // The fuel vents' whistle, an unmodified ceo's: two cavities on the
     // wings' undersides ringing near 540 and 585Hz, a couple of hertz wide
     // [P: Empa], as the 10.3th power of the speed - 10dB from 80 to 100m/s -
@@ -1229,7 +1386,7 @@ void Synth::tonesStep() {
     // Out of the intake, ahead.
     float n2 = spool_ < 1 ? 0.585f * powFast(std::max(spool_, 1e-3f), 0.7f)
                           : 0.585f + 0.415f * clamp01((n1 - e.groundIdle) / (e.takeoff - e.groundIdle));
-    float coreTone = lobe(FAN_TONE, th) + (onGround ? 4 * (1 - smoothstep(10, 30, airspeed_)) : 0);
+    float coreTone = lobe(FAN_TONE, th) + 4 * vortex;
     float whine = n2 > 0.05f && n2 < 0.72f && spool_ > 0.02f
                       ? -36 + 10 * lg10(n2 / 0.585f) - 20 * smoothstep(0.62f, 0.72f, n2) + coreTone
                       : -200;
@@ -1260,16 +1417,23 @@ void Synth::combsStep() {
     const EngineData &e = ENGINES[(int)s.engine];
     float d = expFast(logDistance_), km = d * 0.001f;
     float th = aspect_;
-    float n1Spool = spool_ < 1 ? powFast(spool_, 1.6f) : 1.0f;
+    float n1Spool = (spool_ < 1 ? powFast(spool_, 1.6f) : 1.0f) * (1 + hunt_);
     float shaft = (s.engine == Engine::GENERIC ? s.fanHz / e.blades : e.shaft100);
-    float flickerNp = std::min(6.0f, 1.5f * sqrtf(km)) * (1 / 8.686f);
-    float kf = expFast(-SLOW_S * (across_ * 0.5f + 3) * (1.0f / 5)), flickerN = flicker_ * (1 + kf) / sqrtf(1 + kf * kf);
+    float flickerNp = std::min(6.0f, FLICKER_DB * sqrtf(km)) * (1 / 8.686f);
+    float flickerN = flickerN_;
+    // The shocks as strong as the air the fan swallows lets them be: they
+    // surge with the turbulence it takes in, all the lines together, on
+    // their own - each line's own fading is its own too (a dozen lines
+    // fading apart add up to a steady rasp, which no recorded take-off has;
+    // surging with the intake's hiss, the bands of a roll still coming
+    // moved together, where the recordings' move apart).
+    float surged = sqrtf(surge_[OF_BUZZ]);
     for (int g = 0; g < 2; g++) {
         Comb &c = comb_[g];
         float n1 = n1_[g] * n1Spool, hz = shaft * n1 * doppler_;
         float on = smoothstep(e.buzzOn - 0.02f, e.buzzOn + 0.02f, n1);
-        float db = -7.0f + e.levelDb + e.buzzDb - 15 * (1 - smoothstep(e.buzzOn, e.buzzOn + 0.12f, n1)) + lobe(BUZZ, th);
-        float amp = on * dbAmp(db) * expFast(flickerNp * flickerN - flickerNp * flickerNp);
+        float db = -11.0f + e.levelDb + e.buzzDb - 15 * (1 - smoothstep(e.buzzOn, e.buzzOn + 0.12f, n1)) + lobe(BUZZ, th);
+        float amp = on * dbAmp(db) * surged * expFast(flickerNp * flickerN - flickerNp * flickerNp);
         if (amp < 1e-6f || hz < RATE / (float)(COMB - 8)) {
             c.in = 0;
             c.lateBy = 0;
@@ -1297,13 +1461,16 @@ void Synth::combsStep() {
         // Each line 2.5Hz wide near, wider far off - as the tones are.
         float width = 2.0f + 2.0f * km;
         c.g = expFast(-PI * width / hz);
-        // The band: the difference of two one-pole low-passes, at the sixth
-        // harmonic and at its blades' - the lines strong from 400Hz up to the
-        // blade passing, as recorded take-offs have them [M: orders 6-7 and
-        // 12-14 static (DLR), 18-22 among the strongest on a CFM56 in
-        // flight, a V2527's on past its blade passing] - and what power of
-        // white noise each lets through and the two share.
-        float loHz = 6 * hz, hiHz = std::min(e.blades * hz, 6000.0f);
+        // The band: the difference of two one-pole low-passes, at the fourth
+        // harmonic and at the eighteenth (or its blades', if fewer) - the
+        // lines strongest from 300Hz to a kilohertz and a half, and on less
+        // strongly to the blade passing, as recorded take-offs have them [M:
+        // orders 6-7 and 12-14 static (DLR), 18-22 among the strongest on a
+        // CFM56 in flight; P: a broad peak at orders 8-16, falling toward the
+        // blade passing] - and what power of white noise each lets through
+        // and the two share. (Flat to a CFM56's 36th, its upper lines made the
+        // take-off's 2.5-5kHz 5-12dB too strong ahead of it.)
+        float loHz = 4 * hz, hiHz = std::min(std::min(18.0f, e.blades) * hz, 6000.0f);
         float kl = 1 - expFast(-2 * PI * loHz / RATE), kh = 1 - expFast(-2 * PI * hiHz / RATE);
         c.kLo = kl;
         c.kHi = kh;
@@ -1317,35 +1484,46 @@ void Synth::combsStep() {
 // The tyres. Touching down, each main gear's in turn a squeal - its tyres
 // dragged along the runway till they spin up, a band a tenth of a kilohertz
 // wide falling from 2.3kHz to 1.3 as the slip does, a tenth of a second -
-// the louder the harder it came down; heard as late as its distance makes it
-// or, with transients on the picture, as the picture shows it, a tenth of a
-// second late at most. Rolling, the nose wheel over each centreline light,
-// one every 15 metres, a thump each.
+// the louder the harder it came down: the loudest short thing heard from
+// within a hundred metres [I: the research], 15dB over the approach's roar
+// in its band from 45m, still 10 from 250m, where the choice of when to hear
+// it is made. Heard as late as its distance makes it or, with transients on
+// the picture, as the picture shows it, a tenth of a second late at most.
+// Rolling, the nose wheel over each centreline light, one every 15 metres, a
+// thump each.
 void Synth::tyresStep() {
     const Sound &s = sound_;
     float d = expFast(logDistance_);
-    auto start = [&](const Sound &from) {
+    auto start = [&](float sinkMs, float rollingMs) {
         squealS_ = 0;
-        squealLoud_ = std::min(1.6f, std::max(0.5f, from.sinkMs / 1.5f)) * std::min(1.0f, from.rollingMs / 50);
+        squealLoud_ = std::min(1.6f, std::max(0.5f, sinkMs / 1.5f)) * std::min(1.0f, rollingMs / 50);
         squealAt_[0] = 0;
         Rng rng{slow_};
         squealAt_[1] = 0.03f + 0.06f * rng.uniform();
         slow_ = rng.s;
     };
     if (g_transientsOnPicture) {
+        // As the picture shows it: how hard it came down and how fast it
+        // rolled taken from the frame that showed it touch - a frame or
+        // two on, a caller may have the sink back at its default, and the
+        // squeal came out 6dB quiet - and heard as late as the sound would
+        // be, at most 75ms on: within a tenth of a second of the picture,
+        // give or take the frame it fell between.
         const Sound &now = target_;
         if (now.touchdownS >= 0 && (touchdownNowWas_ < 0 || now.touchdownS + 0.05f < touchdownNowWas_)) {
-            squealDueS_ = std::max(0.0f, std::min(d / SOUND_MS, 0.1f) - HEARD_AHEAD_S);
+            squealDueS_ = std::max(0.0f, std::min(d / SOUND_MS, 0.075f) - HEARD_AHEAD_S);
+            squealSinkMs_ = now.sinkMs;
+            squealRollingMs_ = now.rollingMs;
         }
         touchdownNowWas_ = now.touchdownS;
         if (squealDueS_ >= 0) {
             squealDueS_ -= STEP_S;
             if (squealDueS_ < 0) {
-                start(now);
+                start(squealSinkMs_, squealRollingMs_);
             }
         }
     } else if (s.touchdownS >= 0 && (touchdownWas_ < 0 || s.touchdownS + 0.05f < touchdownWas_)) {
-        start(s);
+        start(s.sinkMs, s.rollingMs);
     }
     touchdownWas_ = s.touchdownS;
     squealS_ += STEP_S;
@@ -1360,7 +1538,7 @@ void Synth::tyresStep() {
         }
         float hz = (1300 + 1000 * expFast(-at / 0.07f)) * doppler_;
         float envelope = (1 - expFast(-at / 0.003f)) * expFast(-at / 0.09f);
-        float amp = 0.30f * squealLoud_ * envelope * dbAmp(-absorptionDbKm(hz) * km);
+        float amp = 0.65f * squealLoud_ * envelope * dbAmp(-absorptionDbKm(hz) * km);
         float width = 110, x = PI * width / RATE, r = 1 - x * (1 - x * (0.5f - x * (1.0f / 6)));
         float sn, cs;
         sinCosTurns(hz / RATE, sn, cs);
@@ -1377,7 +1555,6 @@ void Synth::tyresStep() {
 
 bool Synth::render(int16_t *out, int count) {
     float mix[STEP], lateA[STEP], lateB[STEP], noiseA[STEP], noiseB[STEP];
-    const float dc = 1 - expf(-2 * PI * 180 / RATE);
     float level = gain_ * fade_ * duck_ * LEVEL;
     for (int done = 0; done < count; done += STEP) {
         int n = std::min(STEP, count - done);
@@ -1654,17 +1831,24 @@ bool Synth::render(int16_t *out, int count) {
         }
         seed_ = rng.s;
         // The level carried smoothly across the step from the last; nothing
-        // under 180Hz, which the speaker can't play; and a peak rounded off
-        // rather than cut.
+        // under 180Hz, which the speaker can't play - two poles, 12dB an
+        // octave: with one, the reversers' roar under 300Hz, unheard, still
+        // carried peaks into the limiter - and a peak rounded off rather
+        // than cut.
         float to = gain_ * fade_ * duck_ * LEVEL, by = (to - level) / n;
-        float dcLow = dcLow_;
+        float h1 = hp1_, h2 = hp2_, hb0 = hpB0_, ha1 = hpA1_, ha2 = hpA2_;
         int16_t *o = out + done;
         for (int i = 0; i < n; i++) {
             level += by;
-            float y = mix[i] * level;
-            dcLow += dc * (y - dcLow);
-            y -= dcLow;
+            float x = mix[i] * level;
+            float y = hb0 * x + h1;
+            h1 = h2 - 2 * hb0 * x - ha1 * y;
+            h2 = hb0 * x - ha2 * y;
             float a = fabsf(y);
+#ifdef ENGINE_NOISE_DEBUG
+            g_limited += a > 0.6f;
+            g_samples++;
+#endif
             if (a > 0.6f) {
                 // 0.6 + 0.4 tanh((a - 0.6) / 0.4), tanh as a ratio near enough
                 float t = (a - 0.6f) * 2.5f, t2 = t * t;
@@ -1673,7 +1857,8 @@ bool Synth::render(int16_t *out, int count) {
             }
             o[i] = (int16_t)(y * 32000 + (y < 0 ? -0.5f : 0.5f));
         }
-        dcLow_ = fabsf(dcLow) < 1e-20f ? 0 : dcLow;
+        hp1_ = fabsf(h1) < 1e-20f ? 0 : h1;
+        hp2_ = fabsf(h2) < 1e-20f ? 0 : h2;
         level = to;
         clock_ += n;
     }

@@ -426,7 +426,7 @@ int main(int argc, char **argv) {
         engine_noise::Synth synth;
         std::vector<int16_t> samples;
         const int BLOCK = engine_noise::RATE / 50;  // a frame's worth
-        float touchdownAt = -1, lastZ = -1, frameMs = 0, renderedMs = 0;
+        float touchdownAt = -1, touchdownSink = 1, lastZ = -1, frameMs = 0, renderedMs = 0;
         V3 lastAt = {0, 0, 0};
         double sum = 0;
         int peak = 0, counted = 0;
@@ -451,7 +451,8 @@ int main(int argc, char **argv) {
             s.aspect = acosf(std::max(-1.0f, std::min(1.0f, c))) / (float)M_PI;
             // Off the ground: its engines' height and the camera's. Its
             // tyres: rolling at its speed on the ground; touched down, how
-            // long ago and how fast it was coming down.
+            // long ago and how fast it was coming down - held from then on,
+            // as the 3D view holds it.
             s.sourceUpM = mid.z;
             s.earUpM = m.eye.z;
             s.hardGround = m.hardGround;
@@ -460,8 +461,9 @@ int main(int argc, char **argv) {
             float speed = t > 0 ? length(moved) * 50 : 0;
             if (onGround && lastZ > 0.01f) {
                 touchdownAt = t;
-                s.sinkMs = (lastZ - m.at.z) * 50;
+                touchdownSink = (lastZ - m.at.z) * 50;
             }
+            s.sinkMs = touchdownSink;
             s.rollingMs = onGround ? speed : 0;
             s.touchdownS = touchdownAt >= 0 && t - touchdownAt < 3 ? t - touchdownAt : -1;
             s.airspeedMs = speed;
@@ -509,6 +511,12 @@ int main(int argc, char **argv) {
             }
         }
         printf("  (dBFS every 2s; peak %.0f dBFS)\n", peak > 0 ? 20 * log10(peak / 32768.0) : -99);
+#ifdef ENGINE_NOISE_DEBUG
+        fprintf(stderr, "%s: the limiter rounded off %llu of %llu samples (%.4f%%)\n", scene.name,
+                (unsigned long long)engine_noise::g_limited, (unsigned long long)engine_noise::g_samples,
+                100.0 * engine_noise::g_limited / std::max<uint64_t>(1, engine_noise::g_samples));
+        engine_noise::g_limited = engine_noise::g_samples = 0;
+#endif
         writeWav(dir + "/" + scene.name + suffix + ".wav", samples);
         writeWav(dir + "/" + scene.name + suffix + "-tab5.wav", tab5(samples));
     }
