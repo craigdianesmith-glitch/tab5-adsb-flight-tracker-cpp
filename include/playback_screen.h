@@ -29,8 +29,8 @@ void playbackScreenSetTracks(bool on);
 void playbackScreenDraw();
 
 // Advances playback and redraws when there is something new to show. Call
-// every loop while this screen is up.
-void playbackScreenTick();
+// every loop while this screen is up. True when it drew a frame.
+bool playbackScreenTick();
 
 PlaybackAction playbackScreenHandleTouch(int x, int y, Aircraft &outAircraft);
 

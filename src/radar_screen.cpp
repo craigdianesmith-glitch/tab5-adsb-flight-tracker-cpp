@@ -7,6 +7,9 @@
 #include <esp_heap_caps.h>
 #include <algorithm>
 #include <math.h>
+#if defined(ESP_PLATFORM)
+#include <esp_cpu.h>
+#endif
 
 #include "airport_info.h"
 #include "airports.h"
@@ -346,6 +349,36 @@ RadarPalette g_palette;
 // of a millisecond most places and several over the lakes of Finland.
 uint64_t g_backgroundUs = 0, g_contactsUs = 0, g_pushUs = 0, g_coastUs = 0;
 uint32_t g_plotFrames = 0;
+
+// And a whole plot's background - all a refresh of the traffic alone keeps -
+// a layer at a time, in the CPU's cycles summed in 64 bits over the frames
+// that drew each, so that a minute's refreshes don't water it down, nor the
+// zoom's frames the radar's map: see radarTakeLayers().
+enum Layer { LAYER_FILL, LAYER_COAST, LAYER_SCOPE, LAYER_CENTRE, LAYER_AIRPORTS, LAYER_NAVAIDS, LAYER_NAMES,
+             LAYER_RUNWAYS, LAYER_TOWER, LAYER_COUNT };
+const char *const LAYER_LABELS[LAYER_COUNT] = {"fill",    "coast", "scope",   "centre", "airports",
+                                              "navaids", "names", "runways", "tower"};
+uint64_t g_layerCycles[LAYER_COUNT] = {};
+uint32_t g_layerFrames[LAYER_COUNT] = {};
+
+// The CPU's cycle counter - none on the PC, which render2d_check builds this
+// for, and where nothing reads the sums.
+inline uint32_t cycleCount() {
+#if defined(ESP_PLATFORM)
+    return esp_cpu_get_cycle_count();
+#else
+    return 0;
+#endif
+}
+
+// The cycles from `since` to now added to `layer`'s, a frame more of it; now,
+// for the next one's.
+uint32_t layerDone(Layer layer, uint32_t since) {
+    uint32_t now = cycleCount();
+    g_layerCycles[layer] += now - since;
+    g_layerFrames[layer]++;
+    return now;
+}
 
 RecButton g_recState = RecButton::IDLE;
 uint32_t g_recElapsedS = 0;
@@ -2430,6 +2463,20 @@ String radarTakeTimings() {
     return s;
 }
 
+String radarTakeLayers() {
+    String s;
+    for (int i = 0; i < LAYER_COUNT; i++) {
+        if (g_layerFrames[i] != 0) {
+            s += String(s.length() ? ", " : "") + LAYER_LABELS[i] + " " +
+                 String((uint32_t)(g_layerCycles[i] / g_layerFrames[i] / 1000)) + " (" + String(g_layerFrames[i]) +
+                 "x)";
+        }
+        g_layerCycles[i] = 0;
+        g_layerFrames[i] = 0;
+    }
+    return s.length() ? "kcycles a frame: " + s : String("-");
+}
+
 namespace {
 
 // How drawContacts() places and draws what it is given: the radar's and the
@@ -3017,14 +3064,18 @@ void radarPlotDraw(const RadarScene &scene, bool full) {
         return;
     }
 
+    uint32_t layerAt = cycleCount();
     if (!full) {
         screen::fillRect(PLOT_L, PLOT_T, PLOT_R - PLOT_L, PLOT_B - PLOT_T, colorBg);
+        layerAt = layerDone(LAYER_FILL, layerAt);
     }
     canvas.setFont(&fonts::Font0);
 
     // --- the map, then rings and bearings over it --------------------------
     drawCoast(lat, lon, (float)rangeNm);
+    layerAt = layerDone(LAYER_COAST, layerAt);
     drawScope((float)rangeNm, (float)step);
+    layerAt = layerDone(LAYER_SCOPE, layerAt);
 
     g_airportHitCount = 0;
     g_navaidHitCount = 0;
@@ -3076,9 +3127,11 @@ void radarPlotDraw(const RadarScene &scene, bool full) {
     } else {
         g_followLabel.reserved = false;
     }
+    layerAt = layerDone(LAYER_CENTRE, layerAt);
     if (drawsAirports) {
         drawAirports(lat, lon, rangeNm, centreCode, following ? scene.originCode : String());
     }
+    layerAt = layerDone(LAYER_AIRPORTS, layerAt);
     // A free look's middle, a small dim cross - but not over an airport's
     // symbol there, as one opened from its zoom is centred on: the airport
     // says where the middle is, and a cross is home's.
@@ -3094,6 +3147,7 @@ void radarPlotDraw(const RadarScene &scene, bool full) {
     } else {
         g_navaidHitCount = 0;
     }
+    layerDone(LAYER_NAVAIDS, layerAt);
 
     // The background kept before the names go on, as they move with the
     // traffic - see drawNames() - and with the centre's code on it as it is
@@ -3108,7 +3162,9 @@ void radarPlotDraw(const RadarScene &scene, bool full) {
         g_background.key = key;
     }  // else a crowd, a list or the names' minute drawn whole over a background still kept
     g_background.wholeMs = millis();
+    layerAt = cycleCount();
     drawNames(lat, lon, (float)rangeNm);
+    layerDone(LAYER_NAMES, layerAt);
 
     int plotted = 0, labelled = 0;
     uint32_t t1 = micros();
@@ -3862,22 +3918,28 @@ bool zoomPlot(const ZoomFrame &framed, const std::vector<Aircraft> &aircraft,
         return onFollowed;
     }
 
+    uint32_t layerAt = cycleCount();
     if (!full) {
         screen::fillRect(PLOT_L, PLOT_T, PLOT_R - PLOT_L, PLOT_B - PLOT_T, colorBg);
         canvas.fillRect(FOOT_L, FOOT_T, FOOT_R - FOOT_L, FOOT_B - FOOT_T, colorBg);
+        layerAt = layerDone(LAYER_FILL, layerAt);
     }
     canvas.setFont(&fonts::Font0);
     drawScope(range, step);
+    layerAt = layerDone(LAYER_SCOPE, layerAt);
     g_mapLabelCount = 0;
 
     canvas.setClipRect(PLOT_L, PLOT_T, PLOT_R - PLOT_L, PLOT_B - PLOT_T);
     drawRunways(f, inUse, recent);
+    layerAt = layerDone(LAYER_RUNWAYS, layerAt);
     drawTower(f);
+    layerAt = layerDone(LAYER_TOWER, layerAt);
     // Over the runways, which an airport's own often sits beside.
     g_navaidHitCount = 0;
     if (g_navaidsOn) {
         drawNavaids(f.lat, f.lon, range);
     }
+    layerDone(LAYER_NAVAIDS, layerAt);
     if (canKeep && g_background.pending && sameBackground(key, g_background.key)) {
         keepBackground();
         g_background.pending = false;
@@ -4376,6 +4438,30 @@ constexpr int TEL_CHART_H = 166;
 // would claim a climb or descent nobody saw.
 constexpr uint32_t TEL_GAP_MS = 180000;
 
+// What the panel was last drawn from, for it to be drawn again only when
+// that changes - or once anything else has been drawn over it - rather than
+// every frame, where it was 4-6ms of a following frame on the radar: where
+// it is, the field's height and how long the aircraft has been lost; the
+// chart's left edge, on its own grid of pixels; which reports are in the
+// chart and up to now; and what those say.
+struct TelemetryKey {
+    int x, y;
+    int32_t fieldFt;
+    uint32_t lostS;
+    int64_t edge;
+    uint32_t first, count, sum;
+    bool operator==(const TelemetryKey &o) const {
+        return x == o.x && y == o.y && fieldFt == o.fieldFt && lostS == o.lostS && edge == o.edge &&
+               first == o.first && count == o.count && sum == o.sum;
+    }
+};
+TelemetryKey g_telemetryKey;
+bool g_telemetryKept = false;
+// How often it was drawn and how often left as it was, and the time the
+// drawing took, for the [perf] line.
+uint32_t g_telemetryDrawn = 0, g_telemetryLeft = 0;
+uint64_t g_telemetryUs = 0;
+
 }  // namespace
 
 void radarSetHeights(const std::vector<FollowSample> &samples, uint32_t lostS) {
@@ -4385,25 +4471,61 @@ void radarSetHeights(const std::vector<FollowSample> &samples, uint32_t lostS) {
 
 void radarTelemetryDraw(int x, int y, const std::vector<FollowSample> &samples, uint32_t nowMs, int32_t fieldFt,
                         uint32_t lostS) {
+    uint32_t t0 = micros();
     ensureColors();
     auto &canvas = screen::canvas();
-    canvas.fillRect(x, y, TELEMETRY_W, TELEMETRY_H, colorBg);
-    screen::markDirty(x, y, TELEMETRY_W, TELEMETRY_H);
-    canvas.setFont(&fonts::Font0);
 
-    // The latest report by now, and the window of them the chart covers.
+    // The latest report by now, and the window of them the chart covers -
+    // whose left edge is taken on the chart's own grid, a pixel to every
+    // TELEMETRY_WINDOW_MS / (TELEMETRY_W - 3), 2.2s: the points then step
+    // left together, a pixel at a time, rather than each at its own moment,
+    // and the chart stays as it is in between. A point is at most a pixel
+    // right of where the window's own edge would put it.
     uint32_t from = nowMs > TELEMETRY_WINDOW_MS ? nowMs - TELEMETRY_WINDOW_MS : 0;
+    int64_t edge = (int64_t)(TELEMETRY_W - 3) * from / TELEMETRY_WINDOW_MS;
     const FollowSample *latest = nullptr;
     int32_t highest = fieldFt == INT32_MIN ? 0 : fieldFt;
+    uint32_t count = 0, first = UINT32_MAX;
     for (const FollowSample &s : samples) {
         if (s.ms > nowMs) {
             break;
         }
         latest = &s;
+        if (s.ms >= from && first == UINT32_MAX) {
+            first = count;
+        }
+        count++;
         if (s.ms >= from && s.hasAlt) {
             highest = std::max(highest, s.altFt);
         }
     }
+    // What those reports say - the chart's, and the latest's if it is older
+    // than the chart - summed, FNV-1a, for the key.
+    uint32_t sum = 2166136261u;
+    for (uint32_t i = std::min(first, count ? count - 1 : 0); i < count; i++) {
+        const FollowSample &s = samples[i];
+        for (uint32_t v : {s.ms, (uint32_t)s.altFt, (uint32_t)s.vsFpm, (uint32_t)s.gsKt,
+                           (uint32_t)(s.hasAlt | s.ground << 1 | s.hasVs << 2 | s.hasGs << 3)}) {
+            sum = (sum ^ v) * 16777619u;
+        }
+    }
+    TelemetryKey key = {x, y, fieldFt, lostS, edge, first, count, sum};
+    if (g_telemetryKept && key == g_telemetryKey && !screen::touched()) {
+        // Left as a redraw leaves it, for whatever is drawn next.
+        canvas.clearClipRect();
+        canvas.setFont(&fonts::Font0);
+        canvas.setTextSize(2);
+        canvas.setTextColor(colorFaint);
+        canvas.setTextDatum(TR_DATUM);
+        g_telemetryLeft++;
+        return;
+    }
+    g_telemetryKey = key;
+    g_telemetryKept = true;
+    // By the PPA, which fills at 355MB/s where the CPU writes 67 - marked
+    // dirty as it goes.
+    screen::fillRect(x, y, TELEMETRY_W, TELEMETRY_H, colorBg);
+    canvas.setFont(&fonts::Font0);
 
     // --- readouts ---
     canvas.setTextDatum(TL_DATUM);
@@ -4457,7 +4579,7 @@ void radarTelemetryDraw(int x, int y, const std::vector<FollowSample> &samples, 
     int cx = x, cy = y + TEL_CHART_Y, cw = TELEMETRY_W, ch = TEL_CHART_H;
     canvas.drawRect(cx, cy, cw, ch, colorRing);
     int32_t top = chartTop(highest);
-    auto px = [&](uint32_t ms) { return cx + 1 + (int)((int64_t)(cw - 3) * (int64_t)(ms - from) / TELEMETRY_WINDOW_MS); };
+    auto px = [&](uint32_t ms) { return cx + 1 + (int)((int64_t)(cw - 3) * ms / TELEMETRY_WINDOW_MS - edge); };
     auto py = [&](int32_t ft) {
         int32_t clamped = std::min(std::max(ft, (int32_t)0), top);
         return cy + ch - 2 - (int)((int64_t)(ch - 4) * clamped / top);
@@ -4525,6 +4647,24 @@ void radarTelemetryDraw(int x, int y, const std::vector<FollowSample> &samples, 
     canvas.drawString("-" + String(TELEMETRY_WINDOW_MS / 60000) + "m", cx, cy + ch + 6);
     canvas.setTextDatum(TR_DATUM);
     canvas.drawString("now", cx + cw, cy + ch + 6);
+    // Watched from here, now its own drawing is marked.
+    screen::watch(x, y, TELEMETRY_W, TELEMETRY_H);
+    g_telemetryDrawn++;
+    g_telemetryUs += micros() - t0;
+}
+
+String radarTakeTelemetry() {
+    String s = "-";
+    if (g_telemetryDrawn + g_telemetryLeft != 0) {
+        s = String(g_telemetryDrawn) + "x drawn";
+        if (g_telemetryDrawn != 0) {
+            s += " avg " + String(g_telemetryUs / 1000.0f / g_telemetryDrawn, 1) + "ms";
+        }
+        s += ", " + String(g_telemetryLeft) + "x left";
+    }
+    g_telemetryDrawn = g_telemetryLeft = 0;
+    g_telemetryUs = 0;
+    return s;
 }
 
 

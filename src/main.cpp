@@ -293,6 +293,34 @@ struct PerfStat {
     }
 };
 PerfStat g_perfRadar, g_perfZoom, g_perfTracks, g_perfLoop;
+// And where else the 2D screens' time goes: a replay's frames, the table's
+// renders and its shading lapsing, the full draws - and whether the longest
+// pass of loop() held one.
+PerfStat g_perfReplay, g_perfTable, g_perfLapse, g_perfFull;
+bool g_passFull = false, g_longestPassFull = false;
+// drawRadar's and drawZoom's preparation before the plot, a step at a time:
+// the list copied under the lock, the lost filled in, everything moved on to
+// now, and the filter - the radar's alone - in us summed over the frames.
+struct PrepStat {
+    uint32_t count = 0;
+    uint64_t copyUs = 0, lostUs = 0, nowUs = 0, filterUs = 0;
+    void add(uint32_t copy, uint32_t lost, uint32_t now, uint32_t filter) {
+        count++;
+        copyUs += copy;
+        lostUs += lost;
+        nowUs += now;
+        filterUs += filter;
+    }
+    String text(bool filter) const {
+        if (count == 0) {
+            return String("-");
+        }
+        String s = "copy " + String((uint32_t)(copyUs / count)) + ", lost " + String((uint32_t)(lostUs / count)) +
+                   ", now " + String((uint32_t)(nowUs / count));
+        return filter ? s + ", filter " + String((uint32_t)(filterUs / count)) : s;
+    }
+};
+PrepStat g_perfPrepRadar, g_perfPrepZoom;
 
 // A touch the radar or the zoom has already acted on, as it landed. The rest
 // of it - its release, or its turning into a hold - is ignored, so a tap that
@@ -1893,6 +1921,7 @@ void drawRadar(bool full, bool title = false) {
     double lat = 0, lon = 0;
     int radius = DEFAULT_RADIUS_NM;
     String provider;
+    uint32_t copyAt = micros();
     if (xSemaphoreTake(g_dataMutex, portMAX_DELAY) == pdTRUE) {
         provider = radarOnExtraList() ? g_zoomProvider : g_activeProvider;
         // Following, the plot is the list fetched around the aircraft,
@@ -1916,6 +1945,7 @@ void drawRadar(bool full, bool title = false) {
         radius = g_radiusNm;
         xSemaphoreGive(g_dataMutex);
     }
+    uint32_t copyUs = micros() - copyAt, lostUs = 0, nowUs = 0;
     if (g_follow.active) {
         followCentre(lat, lon);
         radius = g_follow.rangeNm;
@@ -1928,14 +1958,20 @@ void drawRadar(bool full, bool title = false) {
         aircraft.clear();
         isNew.clear();
     } else {
+        uint32_t at = micros();
         fillLost(aircraft, radarOnExtraList(), provider);
+        lostUs = micros() - at;
+        at = micros();
         // Following, the list is the extra poll's, which on the radar goes at
         // the main poll's interval too.
         moveOnToNow(aircraft, radarOnExtraList() ? g_zoomDataMs : g_latestDataMs, g_pollIntervalS);
+        nowUs = micros() - at;
     }
     // What the filter screen has left out - lost ones too, or they would come
     // back as their estimates - but never the aircraft followed.
+    uint32_t filterAt = micros();
     applyTrafficFilter(aircraft, &isNew, g_follow.active ? g_follow.hex : String());
+    g_perfPrepRadar.add(copyUs, lostUs, nowUs, micros() - filterAt);
     radarScreenSetFiltered(trafficFilter().active());
     if (title && !full) {
         radarScreenRedrawTitle();
@@ -1946,6 +1982,10 @@ void drawRadar(bool full, bool title = false) {
     g_radarFastestKt = radarFastestKt();
     g_radarFrameUs = micros() - t0;
     g_perfRadar.add(g_radarFrameUs);
+    if (full) {
+        g_perfFull.add(g_radarFrameUs);
+        g_passFull = true;
+    }
 }
 
 // The radar's buttons, from the state here.
@@ -2152,23 +2192,33 @@ void drawZoom(bool full) {
     }
     std::vector<Aircraft> aircraft;
     String provider;
+    uint32_t copyAt = micros();
     if (xSemaphoreTake(g_dataMutex, portMAX_DELAY) == pdTRUE) {
         aircraft = g_zoomAircraft;
         provider = g_zoomProvider;
         g_zoomReady = false;  // drawn now - as drawRadar() has it
         xSemaphoreGive(g_dataMutex);
     }
+    uint32_t copyUs = micros() - copyAt;
     if (g_follow.active) {
         keepFollowedOnPlot(aircraft);
     }
+    uint32_t at = micros();
     fillLost(aircraft, true, provider);
+    uint32_t lostUs = micros() - at;
+    at = micros();
     moveOnToNow(aircraft, g_zoomDataMs, ZOOM_POLL_INTERVAL_S);
+    g_perfPrepZoom.add(copyUs, lostUs, micros() - at, 0);
     autoZoomInZoom(aircraft);
     g_zoomDrawnMs = millis();
     radarZoomDraw(aircraft, full);
     g_zoomFastestKt = radarFastestKt();
     g_zoomFrameUs = micros() - t0;
     g_perfZoom.add(g_zoomFrameUs);
+    if (full) {
+        g_perfFull.add(g_zoomFrameUs);
+        g_passFull = true;
+    }
 }
 
 // Zooms in on an airport tapped on the radar, or one the followed aircraft
@@ -4779,10 +4829,26 @@ void reportPerf() {
         return;
     }
     lastMs = millis();
+    // Then, after what the line has always said - the same, for anything
+    // reading it - where the rest of the 2D screens' time goes: their
+    // preparation step by step, in us a frame; the PPA's blits and fills, how
+    // many and the ms waited on them in the minute, and the cache written back
+    // for them; a whole plot's layers; the follow telemetry, drawn and left
+    // as it was; a replay's frames; the table's renders and its shading
+    // lapsing; the full draws, and whether the longest pass held one.
+    screen::PpaPerf ppa = screen::takePpaPerf();
+    String more = "; prep us radar " + g_perfPrepRadar.text(true) + ", zoom " + g_perfPrepZoom.text(false) +
+                  "; PPA blits " + String(ppa.blits) + "x " + String((uint32_t)(ppa.blitUs / 1000)) + "ms " +
+                  String((uint32_t)(ppa.blitPixels / 1000)) + "kpx, fills " + String(ppa.fills) + "x " +
+                  String((uint32_t)(ppa.fillUs / 1000)) + "ms, syncs " + String((uint32_t)(ppa.syncUs / 1000)) +
+                  "ms; layers " + radarTakeLayers() + "; telemetry " + radarTakeTelemetry() + "; replay " +
+                  g_perfReplay.text() + "; table " + g_perfTable.text() + ", lapses " + g_perfLapse.text() +
+                  "; full draws " + g_perfFull.text() + ", the longest pass " +
+                  (g_perfLoop.count && g_longestPassFull ? "held one" : "held none");
     // And the stacks' high-water marks - the least each has had spare - for
     // them to be sized by what they use.
     Serial.printf("[perf] radar %s, zoom %s (plots: %s), tracks %s (%u), loop max %ums; internal RAM %uKB free, "
-                  "%uKB lowest, %uKB largest block; PSRAM %uKB free; stacks spare: loop %u, poll %u, sound %u\n",
+                  "%uKB lowest, %uKB largest block; PSRAM %uKB free; stacks spare: loop %u, poll %u, sound %u%s\n",
                   g_perfRadar.text().c_str(), g_perfZoom.text().c_str(), radarTakeTimings().c_str(),
                   g_perfTracks.text().c_str(),
                   (unsigned)g_tracks.size(), (unsigned)(g_perfLoop.maxUs / 1000),
@@ -4791,8 +4857,12 @@ void reportPerf() {
                   (unsigned)(heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL) / 1024),
                   (unsigned)(heap_caps_get_free_size(MALLOC_CAP_SPIRAM) / 1024),
                   (unsigned)uxTaskGetStackHighWaterMark(nullptr),
-                  g_pollTask ? (unsigned)uxTaskGetStackHighWaterMark(g_pollTask) : 0u, soundStackSpare());
+                  g_pollTask ? (unsigned)uxTaskGetStackHighWaterMark(g_pollTask) : 0u, soundStackSpare(),
+                  more.c_str());
     g_perfRadar = g_perfZoom = g_perfTracks = g_perfLoop = PerfStat();
+    g_perfReplay = g_perfTable = g_perfLapse = g_perfFull = PerfStat();
+    g_perfPrepRadar = g_perfPrepZoom = PrepStat();
+    g_longestPassFull = false;
 }
 
 // For the serial tests: the airport last said everything at.
@@ -6014,7 +6084,10 @@ void loop() {
         updateRecButton(true);
     }
     if (g_screen == Screen::PLAYBACK) {
-        playbackScreenTick();
+        uint32_t t0 = micros();
+        if (playbackScreenTick()) {
+            g_perfReplay.add(micros() - t0);
+        }
     }
     if (g_screen == Screen::SHARE) {
         shareScreenTick();
@@ -6162,9 +6235,14 @@ void loop() {
             int unfiltered = (int)aircraft.size();
             applyTrafficFilter(aircraft, &isNew, g_follow.active ? g_follow.hex : String());
             displaySetFiltered(trafficFilter().active(), unfiltered);
+            uint32_t t0 = micros();
             displayRenderAircraft(aircraft, isNew);
+            g_perfTable.add(micros() - t0);
         }
-        displayTickHighlights();
+        uint32_t lapseAt = micros();
+        if (displayTickHighlights()) {
+            g_perfLapse.add(micros() - lapseAt);
+        }
 
         bool linkUp = false, pollOk = false, everSucceeded = false;
         uint32_t lastSuccess = 0;
@@ -6210,7 +6288,12 @@ void loop() {
         detailScreenDraw();
     }
 
-    g_perfLoop.add(micros() - loopStart);
+    uint32_t passUs = micros() - loopStart;
+    if (passUs > g_perfLoop.maxUs) {
+        g_longestPassFull = g_passFull;
+    }
+    g_passFull = false;
+    g_perfLoop.add(passUs);
     reportPerf();
     if (g_screen == Screen::VIEW3D) {
         vTaskDelay(1);  // its frames pace the loop; the idle task and the watchdog their turn

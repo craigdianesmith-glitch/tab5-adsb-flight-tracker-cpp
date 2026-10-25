@@ -637,7 +637,7 @@ void displaySetMuted(bool muted) {
     screen::flush();
 }
 
-void displayTickHighlights() {
+bool displayTickHighlights() {
     uint32_t now = millis();
     bool any = false;
     for (int r = 0; r < MAX_CACHE_ROWS; r++) {
@@ -655,6 +655,7 @@ void displayTickHighlights() {
     if (any) {
         screen::flush();
     }
+    return any;
 }
 
 void displayRenderAircraft(const std::vector<Aircraft> &aircraft, const std::vector<uint8_t> &isNew) {

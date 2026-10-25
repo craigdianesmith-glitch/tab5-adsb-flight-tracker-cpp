@@ -38,6 +38,15 @@ void fillRect(int x, int y, int w, int h, uint16_t color);
 void markDirty(int x, int y, int w, int h);
 void markAllDirty();
 
+// A part of the canvas that a screen keeps from one frame to the next and
+// draws again only when what it shows changes - the follow telemetry - and
+// that has to be drawn again too once anything else has been drawn over it:
+// a full redraw, a card. watch() starts watching (x, y, w, h), once it has
+// been drawn; touched() says whether anything has been marked dirty over it
+// since, or pushed by pushRects(), which every canvas write is.
+void watch(int x, int y, int w, int h);
+bool touched();
+
 // Push everything marked dirty to the panel, then start a fresh dirty list.
 void flush();
 // Until the next flush(), regions marked are kept as they are - absorbed only
@@ -99,12 +108,54 @@ const char *pushTurnHolder();
 // The time the pushes since the last call took, start to finish, and how
 // many there were.
 void pushStats(uint32_t &busyUs, uint32_t &count);
+// The canvas's own work at the PPA since the last call, for the [perf] line -
+// apart from pushStats(), which the 3D bench reads and resets: its blits to
+// the panel and its fills, how many and how long the CPU waited on them, the
+// pixels the blits came to, and the cache written back for them.
+struct PpaPerf {
+    uint32_t blits = 0, fills = 0;
+    uint64_t blitUs = 0, fillUs = 0, blitPixels = 0, syncUs = 0;
+};
+PpaPerf takePpaPerf();
+
+// A big rect of the canvas - the plot's column, the whole screen - pushed
+// through the chip's own memory rather than read by the PPA from the PSRAM:
+// copied 16 rows at a time into one of two strips there, and each pushed as
+// the 3D view's bands are (pushBandStart()) while the next is copied. The PPA
+// then reads 36-byte pieces from internal RAM, and only its writes go to
+// the PSRAM - about 20ns a pixel where blitRect()'s is 46, measured on the
+// 3D view's bands. A height that isn't a whole number of strips has its last
+// strip 16 rows up from the bottom, a few rows pushed twice.
+//
+// The strips are taken for the push and given back after it, and only with
+// enough of that memory left for the WiFi: two 40KB blocks for the whole
+// width, or failing that two halves 640 pixels wide; `widest` caps them, 0
+// for as wide as the rect. False - nothing pushed - when they can't be had,
+// the rect is under 16 rows or a half strip under 200 pixels, the PPA isn't
+// there or has been given up, or the 3D view is open; or should the PPA
+// refuse a strip partway, the rest left unpushed. For the caller to push it
+// with blitRect()'s way then. The canvas's cache is left as it was: its
+// rows still to be written back by the next flush, as ever.
+//
+// For the bench to measure, for now - "##=X" - before flush() takes it up.
+struct StripPerf {
+    int strips = 0, stripW = 0;  // how many pushed, and the widest
+    uint32_t allocUs = 0, copyUs = 0, waitUs = 0, totalUs = 0;
+    size_t freeBefore = 0, largestBefore = 0;  // internal RAM's, as they were
+};
+bool pushStrips(int x, int y, int w, int h, StripPerf *perf = nullptr, int widest = 0);
+
 #ifdef BENCH3D
 // The PPA given up, as though a transfer had never finished - for the bench
 // to try the CPU's pushes in its place.
 void benchGiveUpPpa();
 // Both halves in one, for the bench: `client` 0 or 1, by the core.
 bool pushBand(const uint16_t *pixels, int x, int y, int w, int rows, int client);
+// The panel's pixels for (x, y, w, h), read back from its framebuffer and
+// turned to the canvas's way up and byte order, as dumpToSerial() reads them:
+// into `out`, w * h of them, a row after another. For the bench to set one
+// way of pushing against another.
+void benchReadPanel(int x, int y, int w, int h, uint16_t *out);
 #endif
 
 // A part of the screen - x, y, w, h - whose pixels the panel holds rather

@@ -78,6 +78,17 @@ bool intersects(const Rect &a, const Rect &b) {
     return a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h;
 }
 
+// What watch() is watching, and whether anything has been drawn over it -
+// touched until something is watched.
+Rect g_watch = {0, 0, 0, 0};
+bool g_touched = true;
+
+void noteDrawn(const Rect &r) {
+    if (intersects(r, g_watch)) {
+        g_touched = true;
+    }
+}
+
 // Cells in the same row share a y/h, so merging those into one wide rect keeps
 // the rect count at one per row instead of one per cell.
 constexpr int MERGE_GAP = 96;
@@ -139,6 +150,9 @@ void writeBackCanvas() {
 size_t g_syncedBytes = 0;
 #endif
 
+// The canvas's work at the PPA, for takePpaPerf().
+PpaPerf g_perf;
+
 // Writes back only the rows the dirty rects cover, rather than all 1.8MB of
 // the canvas. A refresh that repaints one cell touches 48 rows - 123KB - so
 // the full-canvas sync that used to precede every flush was doing fifteen
@@ -161,6 +175,7 @@ void writeBackDirty() {
     // Merge overlapping bands - cells in the same table row share their rows,
     // and syncing those once each rather than once per cell is the whole point.
     std::sort(spans, spans + n, [](const Span &a, const Span &b) { return a.top < b.top; });
+    int64_t t0 = esp_timer_get_time();
     int i = 0;
     while (i < n) {
         int top = spans[i].top, bot = spans[i].bot;
@@ -173,6 +188,7 @@ void writeBackDirty() {
         g_syncedBytes += (size_t)(bot - top) * ROW_BYTES;
 #endif
     }
+    g_perf.syncUs += (uint64_t)(esp_timer_get_time() - t0);
 }
 
 // The ends of transfers, given from the PPA's interrupt - and how long the
@@ -366,12 +382,16 @@ void blitRect(const Rect &given) {
         blitRectFallback(r);
         return;
     }
-    g_pushStartUs = esp_timer_get_time();
+    int64_t t0 = esp_timer_get_time();
+    g_pushStartUs = t0;
     noteSent('b', r.x, r.y, r.w, r.h);
     esp_err_t err = ppa_do_scale_rotate_mirror(g_srm, &op);
     bool finished = err == ESP_OK && xSemaphoreTake(g_pushDone, pdMS_TO_TICKS(PPA_WAIT_MS)) == pdTRUE;
     if (finished) {
         noteDone();
+        g_perf.blits++;
+        g_perf.blitUs += (uint64_t)(esp_timer_get_time() - t0);
+        g_perf.blitPixels += (uint32_t)r.w * r.h;
     }
     xSemaphoreGive(g_pushTurn);
     if (err != ESP_OK) {
@@ -455,6 +475,12 @@ void pushStats(uint32_t &busyUs, uint32_t &count) {
     g_pushCount = 0;
 }
 
+PpaPerf takePpaPerf() {
+    PpaPerf was = g_perf;
+    g_perf = PpaPerf();
+    return was;
+}
+
 // The band given up on, if it doesn't come in time: the PPA with it, and the
 // next frame's bands pushed by the CPU.
 bool pushBandWait() {
@@ -473,6 +499,104 @@ bool pushBandWait() {
     return finished;
 }
 
+namespace {
+
+// See pushStrips(): the strips' height - the 3D view's deepest band - and
+// the narrowest half worth pushing that way, where the transfers' own 85us
+// each begin to eat what the internal RAM saves. And the internal RAM left
+// free with both strips taken, for the WiFi's buffers meanwhile: TLS's go to
+// the PSRAM (main.cpp's tlsCalloc()).
+constexpr int STRIP_ROWS = 16, STRIP_MIN_W = 200;
+constexpr size_t STRIP_KEEP_FREE = 64 * 1024;
+
+size_t stripBytes(int w) { return ((size_t)w * STRIP_ROWS * 2 + 63) & ~(size_t)63; }
+
+}  // namespace
+
+bool pushStrips(int x, int y, int w, int h, StripPerf *perf, int widest) {
+    int64_t t0 = esp_timer_get_time();
+    if (x < 0) { w += x; x = 0; }
+    if (y < 0) { h += y; y = 0; }
+    w = std::min(w, CANVAS_W - x);
+    h = std::min(h, CANVAS_H - y);
+    if (!g_ppaOk || g_ppaStuck || g_liveW > 0 || g_buffer == nullptr || w < STRIP_MIN_W || h < STRIP_ROWS) {
+        return false;
+    }
+    StripPerf p;
+    p.freeBefore = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
+    p.largestBefore = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA);
+    if (perf != nullptr) {
+        *perf = p;  // what there was, should they not be had
+    }
+    // As wide as the rect if two strips that wide can be had with enough
+    // left; else halves; else not at all.
+    int stripW = widest > 0 ? std::min(w, widest) : w;
+    uint16_t *strip[2] = {nullptr, nullptr};
+    while (true) {
+        size_t bytes = stripBytes(stripW);
+        if (heap_caps_get_free_size(MALLOC_CAP_INTERNAL) >= 2 * bytes + STRIP_KEEP_FREE &&
+            heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA) >= bytes) {
+            for (uint16_t *&s : strip) {
+                s = (uint16_t *)heap_caps_aligned_alloc(64, bytes, MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA);
+            }
+            if (strip[0] != nullptr && strip[1] != nullptr) {
+                break;
+            }
+            for (uint16_t *&s : strip) {
+                heap_caps_free(s);
+                s = nullptr;
+            }
+        }
+        int half = (w + 1) / 2;
+        if (stripW <= half || half < STRIP_MIN_W) {
+            return false;
+        }
+        stripW = half;
+    }
+    int64_t t1 = esp_timer_get_time();
+    p.allocUs = (uint32_t)(t1 - t0);
+    p.stripW = stripW;
+
+    // Strip i into one buffer while strip i - 1 goes from the other; i + 1
+    // into that one only once its push is done.
+    int across = (w + stripW - 1) / stripW, slabs = (h + STRIP_ROWS - 1) / STRIP_ROWS;
+    bool ok = true, pushing = false;
+    for (int i = 0; i < slabs * across && ok; i++) {
+        int sy = std::min(y + i / across * STRIP_ROWS, y + h - STRIP_ROWS);
+        int sx = x + i % across * stripW, sw = std::min(stripW, x + w - sx);
+        uint16_t *to = strip[i & 1];
+        int64_t c0 = esp_timer_get_time();
+        for (int r = 0; r < STRIP_ROWS; r++) {
+            memcpy(to + (size_t)r * sw, g_buffer + (size_t)(sy + r) * CANVAS_W + sx, (size_t)sw * 2);
+        }
+        int64_t c1 = esp_timer_get_time();
+        p.copyUs += (uint32_t)(c1 - c0);
+        if (pushing) {
+            ok = pushBandWait();
+            pushing = false;
+            p.waitUs += (uint32_t)(esp_timer_get_time() - c1);
+        }
+        if (ok) {
+            ok = pushBandStart(to, sx, sy, sw, STRIP_ROWS);
+            pushing = ok;
+            p.strips += ok;
+        }
+    }
+    if (pushing) {
+        int64_t w0 = esp_timer_get_time();
+        ok = pushBandWait();
+        p.waitUs += (uint32_t)(esp_timer_get_time() - w0);
+    }
+    for (uint16_t *s : strip) {
+        heap_caps_free(s);
+    }
+    p.totalUs = (uint32_t)(esp_timer_get_time() - t0);
+    if (perf != nullptr) {
+        *perf = p;
+    }
+    return ok;
+}
+
 #ifdef BENCH3D
 void benchGiveUpPpa() {
     Serial.println("[screen] the PPA given up, for the bench");
@@ -482,6 +606,20 @@ void benchGiveUpPpa() {
 bool pushBand(const uint16_t *pixels, int x, int y, int w, int rows, int client) {
     (void)client;
     return pushBandStart(pixels, x, y, w, rows) && pushBandWait();
+}
+
+void benchReadPanel(int x, int y, int w, int h, uint16_t *out) {
+    // What the PPA wrote, not what the cache last held of it.
+    esp_cache_msync(g_fb, g_fbBytes, ESP_CACHE_MSYNC_FLAG_DIR_M2C);
+    const uint16_t *fb = (const uint16_t *)g_fb;
+    bool ninety = g_angle == PPA_SRM_ROTATION_ANGLE_90;
+    for (int cy = y; cy < y + h; cy++) {
+        int fx = ninety ? cy : CANVAS_H - 1 - cy;
+        for (int cx = x; cx < x + w; cx++) {
+            int fy = ninety ? CANVAS_W - 1 - cx : cx;
+            out[(size_t)(cy - y) * w + (cx - x)] = __builtin_bswap16(fb[(size_t)fy * g_panelW + fx]);
+        }
+    }
 }
 #endif
 
@@ -569,7 +707,10 @@ void fillRect(int x, int y, int w, int h, uint16_t color) {
     // drop safe for the parts of those rows outside the block.
     uint8_t *rows = (uint8_t *)g_buffer + (size_t)y * ROW_BYTES;
     size_t rowsBytes = (size_t)h * ROW_BYTES;
+    int64_t t0 = esp_timer_get_time();
     esp_cache_msync(rows, rowsBytes, ESP_CACHE_MSYNC_FLAG_DIR_C2M);
+    int64_t t1 = esp_timer_get_time();
+    g_perf.syncUs += (uint64_t)(t1 - t0);
     bool filled = false;
     if (xSemaphoreTake(g_pushTurn, pdMS_TO_TICKS(PPA_TURN_MS)) == pdTRUE) {
         noteSent('f', x, y, w, h);
@@ -587,7 +728,11 @@ void fillRect(int x, int y, int w, int h, uint16_t color) {
     if (!filled) {
         g_canvas.fillRect(x, y, w, h, color);
     } else {
+        int64_t t2 = esp_timer_get_time();
+        g_perf.fills++;
+        g_perf.fillUs += (uint64_t)(t2 - t1);
         esp_cache_msync(rows, rowsBytes, ESP_CACHE_MSYNC_FLAG_DIR_M2C);
+        g_perf.syncUs += (uint64_t)(esp_timer_get_time() - t2);
     }
     markDirty(x, y, w, h);
 }
@@ -602,6 +747,7 @@ void markAllDirty() {
     g_rects[0] = {0, 0, CANVAS_W, CANVAS_H};
     g_changedCount = 1;
     g_changed[0] = g_rects[0];
+    g_touched = true;
 }
 
 void markDirty(int x, int y, int w, int h) {
@@ -616,6 +762,9 @@ void markDirty(int x, int y, int w, int h) {
         return;
     }
     addRect(g_changed, g_changedCount, x, y, w, h, false);
+    // All of it, before any is cut back or found already marked: it was drawn
+    // over what is watched all the same.
+    noteDrawn({(int16_t)x, (int16_t)y, (int16_t)w, (int16_t)h});
     if (g_apart) {
         // What one already marked takes in from top to bottom cut off, where
         // what is left is a box: a card over the edge of the plot's column,
@@ -640,6 +789,13 @@ void markDirty(int x, int y, int w, int h) {
 }
 
 void keepApart() { g_apart = true; }
+
+void watch(int x, int y, int w, int h) {
+    g_watch = {(int16_t)x, (int16_t)y, (int16_t)w, (int16_t)h};
+    g_touched = false;
+}
+
+bool touched() { return g_touched; }
 
 int takeChanged(Region *out, int max) {
     int n = std::min(g_changedCount, max);
@@ -766,8 +922,10 @@ void pushRects(const Region *rects, int n) {
     // that costs is the lines that are dirty, which are the ones that have to
     // go anyway, and some 10us besides - where a call a row, a box at a time,
     // comes to about 3us a row.
+    int64_t t0 = esp_timer_get_time();
     esp_cache_msync((uint8_t *)g_buffer + (size_t)top * ROW_BYTES, (size_t)(bottom - top) * ROW_BYTES,
                     ESP_CACHE_MSYNC_FLAG_DIR_C2M);
+    g_perf.syncUs += (uint64_t)(esp_timer_get_time() - t0);
     for (int i = 0; i < n; i++) {
         int x = std::max<int>(0, rects[i].x), y = std::max<int>(0, rects[i].y);
         int r = std::min<int>(CANVAS_W, rects[i].x + rects[i].w), b = std::min<int>(CANVAS_H, rects[i].y + rects[i].h);
@@ -777,6 +935,7 @@ void pushRects(const Region *rects, int n) {
         }
         blitRect({(int16_t)x, (int16_t)y, (int16_t)(r - x), (int16_t)(b - y)});
         addRect(g_changed, g_changedCount, x, y, r - x, b - y, false);
+        noteDrawn({(int16_t)x, (int16_t)y, (int16_t)(r - x), (int16_t)(b - y)});
     }
 }
 

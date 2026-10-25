@@ -12,6 +12,8 @@
 #include <esp_cpu.h>
 #include <esp_heap_caps.h>
 #include <math.h>
+#include <soc/cache_reg.h>
+#include <soc/soc.h>
 
 #include <algorithm>
 #include <vector>
@@ -22,6 +24,7 @@
 #include "names.h"
 #include "radar_screen.h"
 #include "screen.h"
+#include "view3d.h"
 
 // Kept beside what they time - see each.
 void adsbBenchParse();  // adsb_client.cpp
@@ -102,13 +105,19 @@ void benchMap() {
     auto &canvas = screen::canvas();
     uint16_t *pixels = (uint16_t *)canvas.getBuffer();
     const float RANGES[] = {5, 10, 25, 60, 150, 250, 500, 1000, 2000};
-    Serial.printf("[bench] the map's first draw, %d thinned levels built\n", coastLevels());
+    Serial.printf("[bench] the map's first draw, %d thinned levels built, each onto the plot filled first\n",
+                  coastLevels());
     for (const Place &p : PLACES) {
         for (float r : RANGES) {
             CoastPlot plot = {pixels, canvas.width(), 640, 362, 342, p.lat, p.lon, r, 0xFFFF};
             Times t;
             int strokes = 0;
             for (int i = 0; i < 3; i++) {
+                // The plot's square filled by the PPA, which leaves the CPU's
+                // cache holding none of it - as the live screen's fill does
+                // before the map goes on - rather than drawn over the last
+                // run's, still in the cache.
+                screen::fillRect(640 - 342, 362 - 342, 2 * 342 + 1, 2 * 342 + 1, 0);
                 uint32_t t0 = micros();
                 strokes = coastDraw(plot);
                 t.add(micros() - t0);
@@ -260,6 +269,231 @@ void benchTable() {
     }
     Serial.printf("[bench] table %d rows  whole %.2fms, a third of the heights changed %.2fms, unchanged %.2fms\n",
                   displayMaxRows(), whole.mean(), cells.mean(), same.mean());
+}
+
+// --- the code's misses -----------------------------------------------------------
+// The instruction caches' counters around one frame of the radar's plot: each
+// core's L1 misses, and the L2's misses for each L1 - code fetched from flash,
+// some 666 cycles a line - with the frame's cycles on this core, the loop's.
+// A frame whole and pushed, a refresh of the traffic alone and a following
+// frame, each after one of its own kind; then again after the canvas has been
+// read through the caches, as a frame's pixels go through the L2 live and
+// leave it holding none of the code.
+
+struct CodeMisses {
+    uint32_t l1[2], l2[2], cycles;
+};
+
+uint32_t g_sink;
+
+template <typename F>
+CodeMisses codeMisses(F frame) {
+    REG_WRITE(CACHE_L1_CACHE_ACS_CNT_CTRL_REG, REG_READ(CACHE_L1_CACHE_ACS_CNT_CTRL_REG) | CACHE_L1_IBUS0_CNT_ENA |
+                                                   CACHE_L1_IBUS1_CNT_ENA | CACHE_L1_IBUS0_CNT_CLR |
+                                                   CACHE_L1_IBUS1_CNT_CLR);
+    REG_WRITE(CACHE_L2_CACHE_ACS_CNT_CTRL_REG, REG_READ(CACHE_L2_CACHE_ACS_CNT_CTRL_REG) | CACHE_L2_IBUS0_CNT_ENA |
+                                                   CACHE_L2_IBUS1_CNT_ENA | CACHE_L2_IBUS0_CNT_CLR |
+                                                   CACHE_L2_IBUS1_CNT_CLR);
+    uint32_t t0 = esp_cpu_get_cycle_count();
+    frame();
+    CodeMisses m;
+    m.cycles = esp_cpu_get_cycle_count() - t0;
+    m.l1[0] = REG_READ(CACHE_L1_IBUS0_ACS_MISS_CNT_REG);
+    m.l1[1] = REG_READ(CACHE_L1_IBUS1_ACS_MISS_CNT_REG);
+    m.l2[0] = REG_READ(CACHE_L2_IBUS0_ACS_MISS_CNT_REG);
+    m.l2[1] = REG_READ(CACHE_L2_IBUS1_ACS_MISS_CNT_REG);
+    return m;
+}
+
+void readCanvasThrough() {
+    const volatile uint32_t *p = (const volatile uint32_t *)screen::canvas().getBuffer();
+    uint32_t sum = 0;
+    for (size_t i = 0; i < (size_t)1280 * 720 / 2; i += 16) {  // a word a 64-byte line
+        sum += p[i];
+    }
+    g_sink = sum;
+}
+
+void benchCodeMisses() {
+    const Place &home = PLACES[0];
+    constexpr int RANGE = 40, N = 60;
+    float moved = 0;
+    std::vector<Aircraft> aircraft = benchMadeUp(N, home.lat, home.lon, RANGE * 0.9f, moved);
+    std::vector<uint8_t> isNew(aircraft.size(), 0);
+    RadarScene scene{aircraft, isNew, nullptr, home.lat, home.lon, RANGE, RadarCentre::AIRPORT, true};
+    scene.nowMs = millis();
+    int core = xPortGetCoreID();
+    auto report = [&](const char *what, const CodeMisses &m) {
+        Serial.printf("[bench] code %-28s core %d: L1 %6u, L2 %5u (~%.2fms at 666 cycles); core %d: L1 %6u, L2 %5u;"
+                      "  the frame %.2fms\n",
+                      what, core, (unsigned)m.l1[core], (unsigned)m.l2[core], m.l2[core] * 666.0f / 360000.0f,
+                      1 - core, (unsigned)m.l1[1 - core], (unsigned)m.l2[1 - core], m.cycles / 360000.0f);
+    };
+    auto next = [&] {  // the traffic moved on, outside the count
+        moved += 2;
+        aircraft = benchMadeUp(N, home.lat, home.lon, RANGE * 0.9f, moved);
+        scene.nowMs = millis();
+    };
+    auto draw = [&] { radarPlotDraw(scene, false); };
+    Serial.printf("[bench] the instruction caches' misses round a frame, radar %dnm, %d aircraft, on core %d\n",
+                  RANGE, N, core);
+    scene.partial = false;
+    draw();
+    next();
+    report("whole, pushed", codeMisses(draw));
+    next();
+    readCanvasThrough();
+    report("whole, after the canvas read", codeMisses(draw));
+    // A refresh: the background kept by the second whole draw of the view.
+    scene.partial = true;
+    draw();
+    draw();
+    next();
+    draw();
+    next();
+    report("refresh", codeMisses(draw));
+    next();
+    readCanvasThrough();
+    report("refresh, after the canvas read", codeMisses(draw));
+    // Following one: centred on it, ringed, never a refresh.
+    scene.partial = false;
+    scene.centre = RadarCentre::HOME;
+    scene.followHex = aircraft[N / 2].hex;
+    auto onFollowed = [&] {
+        for (const Aircraft &a : aircraft) {
+            if (a.hex == scene.followHex) {
+                scene.lat = a.lat;
+                scene.lon = a.lon;
+            }
+        }
+    };
+    onFollowed();
+    draw();
+    next();
+    onFollowed();
+    report("following", codeMisses(draw));
+    next();
+    onFollowed();
+    readCanvasThrough();
+    report("following, after the canvas read", codeMisses(draw));
+}
+
+// --- big pushes through internal RAM -----------------------------------------------
+// screen::pushStrips() against the push flush() makes today - the PPA reading
+// the canvas from the PSRAM - for the plot's column and the whole screen, the
+// latter in half strips too: five of each, timed, and the panel read back
+// after each way and set against the other's, pixel for pixel, and the PPA's
+// own against the canvas. Each run's pattern differs from its neighbours'
+// pixels and from the last run's, and the panel is given another before the
+// strips go, so that a strip left unpushed or misplaced shows.
+
+uint16_t patternAt(int x, int y, uint32_t seed) {
+    uint32_t v = (uint32_t)x * 2654435761u ^ (uint32_t)y * 40503u ^ seed * 97u;
+    v ^= v >> 15;
+    v *= 2246822519u;
+    v ^= v >> 13;
+    return (uint16_t)v;
+}
+
+void fillPattern(int x, int y, int w, int h, uint32_t seed) {
+    uint16_t *canvas = (uint16_t *)screen::canvas().getBuffer();
+    for (int cy = y; cy < y + h; cy++) {
+        for (int cx = x; cx < x + w; cx++) {
+            canvas[(size_t)cy * 1280 + cx] = patternAt(cx, cy, seed);
+        }
+    }
+    screen::markDirty(x, y, w, h);
+}
+
+void benchStrips() {
+    struct Case {
+        const char *name;
+        int x, y, w, h, widest;
+    };
+    const Case CASES[] = {{"the plot's column", 292, 0, 696, 720, 0},
+                          {"the whole screen", 0, 0, 1280, 720, 0},
+                          {"the whole screen, half strips", 0, 0, 1280, 720, 640}};
+    if (view3d::isOpen()) {
+        Serial.println("[bench] strips: not with the 3D view open, which the strips never are");
+        return;
+    }
+    constexpr size_t MOST = (size_t)1280 * 720;
+    uint16_t *bySrm = (uint16_t *)heap_caps_malloc(MOST * 2, MALLOC_CAP_SPIRAM);
+    uint16_t *byStrips = (uint16_t *)heap_caps_malloc(MOST * 2, MALLOC_CAP_SPIRAM);
+    if (bySrm == nullptr || byStrips == nullptr) {
+        Serial.println("[bench] strips: no room in the PSRAM to read the panel back into");
+        heap_caps_free(bySrm);
+        heap_caps_free(byStrips);
+        return;
+    }
+    const uint16_t *canvas = (const uint16_t *)screen::canvas().getBuffer();
+    for (const Case &k : CASES) {
+        Times srm, blit, sync, strips;
+        screen::StripPerf perf, each;
+        uint32_t apart = 0, srmWrong = 0, pushed = 0;
+        size_t n = (size_t)k.w * k.h;
+        for (int run = 0; run < 5; run++) {
+            // As flush() pushes it today: the cache written back, then the PPA.
+            fillPattern(k.x, k.y, k.w, k.h, 1 + run);
+            screen::takePpaPerf();
+            uint32_t t0 = micros();
+            screen::flush();
+            srm.add(micros() - t0);
+            screen::PpaPerf ppa = screen::takePpaPerf();
+            blit.add((uint32_t)ppa.blitUs);
+            sync.add((uint32_t)ppa.syncUs);
+            screen::benchReadPanel(k.x, k.y, k.w, k.h, bySrm);
+            for (size_t i = 0; i < n; i++) {
+                srmWrong += bySrm[i] != canvas[(size_t)(k.y + i / k.w) * 1280 + k.x + i % k.w];
+            }
+            // Something else on the panel, then the same by strips.
+            fillPattern(k.x, k.y, k.w, k.h, 101 + run);
+            screen::flush();
+            fillPattern(k.x, k.y, k.w, k.h, 1 + run);
+            t0 = micros();
+            bool ok = screen::pushStrips(k.x, k.y, k.w, k.h, &each, k.widest);
+            uint32_t took = micros() - t0;
+            if (!ok) {
+                Serial.printf("[bench] strips: %s not pushed by strips - internal RAM %uKB free, the largest block "
+                              "%uKB\n",
+                              k.name, (unsigned)(each.freeBefore / 1024), (unsigned)(each.largestBefore / 1024));
+                screen::flush();
+                continue;
+            }
+            strips.add(took);
+            pushed++;
+            perf.strips += each.strips;
+            perf.stripW = each.stripW;
+            perf.allocUs += each.allocUs;
+            perf.copyUs += each.copyUs;
+            perf.waitUs += each.waitUs;
+            perf.freeBefore = each.freeBefore;
+            perf.largestBefore = each.largestBefore;
+            screen::benchReadPanel(k.x, k.y, k.w, k.h, byStrips);
+            for (size_t i = 0; i < n; i++) {
+                apart += byStrips[i] != bySrm[i];
+            }
+            screen::flush();  // the rect still marked, as a flush would leave the canvas
+        }
+        Serial.printf("[bench] strips: %s %dx%d  flush() %.2fms (least %.2f, most %.2f) - the PPA from the PSRAM "
+                      "%.2f of it, the cache written back %.2f", k.name, k.w, k.h, srm.mean(), srm.min(), srm.max(),
+                      blit.mean(), sync.mean());
+        if (pushed == 0) {
+            Serial.println("; strips none");
+            continue;
+        }
+        int a = std::max(1, perf.strips);
+        Serial.printf("; strips %.2fms (least %.2f, most %.2f), the cache not written back: %d a push, %d wide, "
+                      "copying %uus and waiting %uus a strip, %uus taking them; internal RAM %uKB free, the largest "
+                      "block %uKB; the panel %u of %u pixels apart from the PPA's own push, which was %u apart from "
+                      "the canvas\n",
+                      strips.mean(), strips.min(), strips.max(), perf.strips / (int)pushed, perf.stripW,
+                      (unsigned)(perf.copyUs / a), (unsigned)(perf.waitUs / a), (unsigned)(perf.allocUs / pushed),
+                      (unsigned)(perf.freeBefore / 1024), (unsigned)(perf.largestBefore / 1024), (unsigned)apart,
+                      (unsigned)(n * pushed), (unsigned)srmWrong);
+    }
+    heap_caps_free(bySrm);
+    heap_caps_free(byStrips);
 }
 
 void benchPush() {
@@ -581,6 +815,8 @@ void bench2dCommand(char c, void (*repaint)()) {
     case 's': soundBench(); break;
     case 'i': benchCycles(); break;
     case 'a': airportsBench(); break;
+    case 'c': benchCodeMisses(); break;
+    case 'X': benchStrips(); break;
     default: Serial.printf("[bench] no bench '%c'\n", c); break;
     }
     if (repaint != nullptr) {
