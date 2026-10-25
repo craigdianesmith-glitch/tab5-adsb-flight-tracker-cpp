@@ -7,6 +7,9 @@
 #include <esp_heap_caps.h>
 #include <algorithm>
 #include <math.h>
+#if defined(ESP_PLATFORM)
+#include <esp_cpu.h>
+#endif
 
 #include "airport_info.h"
 #include "airports.h"
@@ -347,6 +350,36 @@ RadarPalette g_palette;
 uint64_t g_backgroundUs = 0, g_contactsUs = 0, g_pushUs = 0, g_coastUs = 0;
 uint32_t g_plotFrames = 0;
 
+// And a whole plot's background - all a refresh of the traffic alone keeps -
+// a layer at a time, in the CPU's cycles summed in 64 bits over the frames
+// that drew each, so that a minute's refreshes don't water it down, nor the
+// zoom's frames the radar's map: see radarTakeLayers().
+enum Layer { LAYER_FILL, LAYER_COAST, LAYER_SCOPE, LAYER_CENTRE, LAYER_AIRPORTS, LAYER_NAVAIDS, LAYER_NAMES,
+             LAYER_RUNWAYS, LAYER_TOWER, LAYER_COUNT };
+const char *const LAYER_LABELS[LAYER_COUNT] = {"fill",    "coast", "scope",   "centre", "airports",
+                                              "navaids", "names", "runways", "tower"};
+uint64_t g_layerCycles[LAYER_COUNT] = {};
+uint32_t g_layerFrames[LAYER_COUNT] = {};
+
+// The CPU's cycle counter - none on the PC, which render2d_check builds this
+// for, and where nothing reads the sums.
+inline uint32_t cycleCount() {
+#if defined(ESP_PLATFORM)
+    return esp_cpu_get_cycle_count();
+#else
+    return 0;
+#endif
+}
+
+// The cycles from `since` to now added to `layer`'s, a frame more of it; now,
+// for the next one's.
+uint32_t layerDone(Layer layer, uint32_t since) {
+    uint32_t now = cycleCount();
+    g_layerCycles[layer] += now - since;
+    g_layerFrames[layer]++;
+    return now;
+}
+
 RecButton g_recState = RecButton::IDLE;
 uint32_t g_recElapsedS = 0;
 
@@ -522,6 +555,22 @@ void noteLine(int x0, int y0, int x1, int y1) {
 // The count last drawn, for a refresh of the traffic alone to tell whether
 // the footer has changed.
 String g_countShown;
+
+// The readouts outside the plot's column as the live radar's last frame left
+// them - the range readout's text, whose start is in the left margin, and the
+// footer's count, under the legend: empty where the footer was left empty, out
+// on the map - for a whole frame to leave them as they are where they haven't
+// changed: see radarPlotDraw(). Not `kept` where something else - a replay,
+// the zoom, a card or a list - may have drawn there since.
+struct Footings {
+    String range, count;
+    bool kept = false;
+};
+Footings g_footings;
+
+// Whether a box takes in any of the plot's column - which a whole frame fills
+// afresh, and the traffic is put back and drawn in.
+bool inColumn(const LabelBox &b) { return b.x < PLOT_R && b.x + b.w > PLOT_L; }
 
 // The count drawn, in the footer. Long, its box reaches into the plot's
 // column, which the footer's own erasing stops short of: noted with the
@@ -711,6 +760,12 @@ struct Raster {
     static int textWidth(const String &s) { return (int)s.length() * 12; }
 };
 
+// Where footerBox() puts a box, without drawing it.
+LabelBox footerBoxAt(const String &text, int edgeX, int textY, bool rightAligned) {
+    int w = Raster::textWidth(text) + 2 * BOX_PAD_X;
+    return {(int16_t)(rightAligned ? edgeX - w : edgeX), (int16_t)(textY - BOX_PAD_Y), (int16_t)w, (int16_t)BOX_H};
+}
+
 // A box drawn through the raster as the canvas draws it - drawRect's four
 // lines, and the text in Font0 at size 2 - in a fifth of the time; the
 // canvas's text settings left as they were, for whatever is drawn next.
@@ -720,8 +775,9 @@ LabelBox footerBox(const String &text, int edgeX, int textY, bool rightAligned) 
     canvas.setTextSize(2);
     canvas.setTextColor(colorFaint);
     canvas.setTextDatum(rightAligned ? TR_DATUM : TL_DATUM);
-    int w = Raster::textWidth(text) + 2 * BOX_PAD_X;
-    int x = rightAligned ? edgeX - w : edgeX, y = textY - BOX_PAD_Y;
+    LabelBox at = footerBoxAt(text, edgeX, textY, rightAligned);
+    int w = at.w;
+    int x = at.x, y = at.y;
     Raster out = {(uint16_t *)canvas.getBuffer(), canvas.width(), 0, 0, canvas.width() - 1, canvas.height() - 1, 0, 0};
     out.use(colorRing);
     out.hline(x, y, w);
@@ -1050,34 +1106,39 @@ void drawNavaids(double lat, double lon, float rangeNm, bool labels = true) {
     for (size_t i = 0; i < navaids.size(); i++) {
         const Navaid *n = navaids[i];
         int x = spots[i].first, y = spots[i].second;
-        String text = navaidLabel(*n);
-        int w = canvas.textWidth(text);
-        int was = -1;
-        for (const PlacedNavaidLabel &p : g_navaidLabelsWere) {
-            if (p.navaid == n) {
-                was = p.slot;
-                break;
-            }
-        }
         LabelBox label = {0, (int16_t)(y - LABEL_H / 2), 0, (int16_t)LABEL_H};
-        // Where it was first, then the rest in order.
-        for (int k = -1; labels && k < SLOT_COUNT && g_mapLabelCount < MAX_MAP_LABELS; k++) {
-            int slot = k < 0 ? was : k;
-            if (slot < 0 || (k >= 0 && slot == was)) {
-                continue;
+        // Its label made only where one may be placed: a frequency is
+        // newlib's double formatting and three Strings, for every navaid in
+        // range - past 150nm, where none are labelled, for nothing.
+        if (labels && g_mapLabelCount < MAX_MAP_LABELS) {
+            String text = navaidLabel(*n);
+            int w = canvas.textWidth(text);
+            int was = -1;
+            for (const PlacedNavaidLabel &p : g_navaidLabelsWere) {
+                if (p.navaid == n) {
+                    was = p.slot;
+                    break;
+                }
             }
-            int lx, ly;
-            navaidLabelAt(slot, x, y, w, lx, ly);
-            int pad = slot == was ? KEPT_LABEL_PAD : LABEL_PAD;
-            if (insideScope(lx, ly, w, LABEL_H, pad) && !overlapsRunway(lx, ly, w, LABEL_H, pad) &&
-                !overlapsAny(g_mapLabels, g_mapLabelCount, lx, ly, w, LABEL_H, pad) &&
-                !overlapsAny(g_mapMarks.data(), (int)g_mapMarks.size(), lx, ly, w, LABEL_H, pad,
-                             firstMark + (int)i)) {
-                canvas.drawString(text, lx, ly);
-                label = {(int16_t)lx, (int16_t)ly, (int16_t)w, (int16_t)LABEL_H};
-                g_mapLabels[g_mapLabelCount++] = label;
-                g_navaidLabelsNow.push_back({n, (uint8_t)slot});
-                break;
+            // Where it was first, then the rest in order.
+            for (int k = -1; k < SLOT_COUNT && g_mapLabelCount < MAX_MAP_LABELS; k++) {
+                int slot = k < 0 ? was : k;
+                if (slot < 0 || (k >= 0 && slot == was)) {
+                    continue;
+                }
+                int lx, ly;
+                navaidLabelAt(slot, x, y, w, lx, ly);
+                int pad = slot == was ? KEPT_LABEL_PAD : LABEL_PAD;
+                if (insideScope(lx, ly, w, LABEL_H, pad) && !overlapsRunway(lx, ly, w, LABEL_H, pad) &&
+                    !overlapsAny(g_mapLabels, g_mapLabelCount, lx, ly, w, LABEL_H, pad) &&
+                    !overlapsAny(g_mapMarks.data(), (int)g_mapMarks.size(), lx, ly, w, LABEL_H, pad,
+                                 firstMark + (int)i)) {
+                    canvas.drawString(text, lx, ly);
+                    label = {(int16_t)lx, (int16_t)ly, (int16_t)w, (int16_t)LABEL_H};
+                    g_mapLabels[g_mapLabelCount++] = label;
+                    g_navaidLabelsNow.push_back({n, (uint8_t)slot});
+                    break;
+                }
             }
         }
         if (g_navaidHitCount < MAX_NAVAID_HITS) {
@@ -1592,6 +1653,9 @@ void openCard(const Navaid *n, int x, int y) {
     soundReadNavaid(*n);  // if read aloud is on
     g_cardH = 2 * CHOICE_PAD + 8 + 40 + CARD_LINE_H + 4 + (int)cardLines(*n).size() * CARD_LINE_H + 6 + LABEL_H;
     placeBeside(x, y, g_cardH, g_cardX, g_cardY);
+    // Over the footer or the range readout, it may be, and taken off again
+    // before the radar draws another frame: they are drawn afresh then.
+    g_footings.kept = false;
 }
 
 // --- an airport's card ----------------------------------------------------------
@@ -2089,6 +2153,7 @@ void drawChooser() {
 void openChooser(int x, int y) {
     g_choiceH = 2 * CHOICE_PAD + CHOICE_TITLE_H + (g_choiceCount + 1) * (CHOICE_ROW_H + CHOICE_GAP) - CHOICE_GAP;
     placeBeside(x, y, g_choiceH, g_choiceX, g_choiceY);
+    g_footings.kept = false;  // as a card's: see openCard()
     drawChooser();
     screen::flush();
 }
@@ -2284,9 +2349,20 @@ void radarScreenDraw(const std::vector<Aircraft> &aircraft, const std::vector<ui
         moveDragLine((float)shownNm);
         return;
     }
+    // With a card or a list up, the plot is drawn whole under it and pushed
+    // with it, in pieces - the column, the footer, the readout in the left
+    // margin and the card's part outside the column, each on its own: run
+    // together they were the whole screen, 42ms of the PPA's for 28 or so.
+    // All of it drawn before any is pushed, nothing shows half drawn.
+    if (!full && overlayUp()) {
+        screen::keepApart();
+    }
     g_livePlot = true;  // the filter's funnel, over the plot's corner - a replay has none
     radarPlotDraw(scene, full);
     g_livePlot = false;
+    if (overlayUp() || dragged) {
+        g_footings.kept = false;  // drawn over, it may be, outside the column
+    }
     if (following) {
         radarTelemetryDraw(LIVE_TEL_X, LIVE_TEL_Y, g_heights, millis(), INT32_MIN, g_lostS);
     }
@@ -2389,6 +2465,20 @@ String radarTakeTimings() {
     g_backgroundUs = g_contactsUs = g_pushUs = g_coastUs = 0;
     g_plotFrames = 0;
     return s;
+}
+
+String radarTakeLayers() {
+    String s;
+    for (int i = 0; i < LAYER_COUNT; i++) {
+        if (g_layerFrames[i] != 0) {
+            s += String(s.length() ? ", " : "") + LAYER_LABELS[i] + " " +
+                 String((uint32_t)(g_layerCycles[i] / g_layerFrames[i] / 1000)) + " (" + String(g_layerFrames[i]) +
+                 "x)";
+        }
+        g_layerCycles[i] = 0;
+        g_layerFrames[i] = 0;
+    }
+    return s.length() ? "kcycles a frame: " + s : String("-");
 }
 
 namespace {
@@ -2693,7 +2783,9 @@ void drawContacts(const std::vector<Aircraft> &aircraft, const std::vector<uint8
 // Pushes a plot redrawn on a refresh: the plot's column, marked by its fill,
 // the footer readouts to the bottom right, and the readouts from `leftTop`
 // down in the bottom left - the range, and over it the zoom's runways in use.
-void pushPlot(bool push, int leftTop) {
+// Without `footer` or `left`, those are as they were - only their parts in
+// the column drawn again, which go with it.
+void pushPlot(bool push, int leftTop, bool footer = true, bool left = true) {
     int leftH = RANGE_BOX_T + BOX_H - leftTop;
     if (!push) {
         // Marked rather than pushed: the plot was by its fill, the footer
@@ -2708,8 +2800,12 @@ void pushPlot(bool push, int leftTop) {
     // readout's end in the left margin goes with the footer, a strip too thin
     // beside it to be merged into a box with it.
     screen::flush();
-    screen::markDirty(FOOT_L, FOOT_T, FOOT_R - FOOT_L, FOOT_B - FOOT_T);
-    screen::markDirty(0, leftTop, PLOT_L, leftH);
+    if (footer) {
+        screen::markDirty(FOOT_L, FOOT_T, FOOT_R - FOOT_L, FOOT_B - FOOT_T);
+    }
+    if (left) {
+        screen::markDirty(0, leftTop, PLOT_L, leftH);
+    }
     screen::flush();
 }
 
@@ -2775,30 +2871,100 @@ void pushTraffic(bool push, bool footer) {
     }
 }
 
-// The centre's airport code drawn again over the traffic - a contact on the
-// ground there put its dot over the letters, the L of GLA - with a rim of the
-// plot's own dark round them, so it reads over a dot as it does over the
-// plot. Its box with the traffic's, to be put back and pushed with it.
-void drawCentreCodeOver(const String &code) {
-    if (code.length() == 0) {
+// Whether the traffic drawn this frame, or the last frame's put back from the
+// background, meets box `b`: both inside the plot's column, which is all of
+// either there is.
+bool trafficMeets(const LabelBox &b) {
+    int x0 = std::max<int>(b.x, PLOT_L), x1 = std::min<int>(b.x + b.w, PLOT_R);
+    int y0 = std::max<int>(b.y, PLOT_T), y1 = std::min<int>(b.y + b.h, PLOT_B);
+    if (x1 <= x0 || y1 <= y0) {
+        return false;
+    }
+    return overlapsAny(g_trafficWas.data(), (int)g_trafficWas.size(), x0, y0, x1 - x0, y1 - y0, 0) ||
+           overlapsAny(g_trafficBoxes.data(), (int)g_trafficBoxes.size(), x0, y0, x1 - x0, y1 - y0, 0);
+}
+
+// The centre's airport code drawn over the traffic - a contact on the ground
+// there put its dot over the letters, the L of GLA - with a rim of the plot's
+// own dark round them, so it reads over a dot as it does over the plot. Into
+// the background too, as it is kept, so that a refresh of the traffic alone
+// draws it again only where the traffic meets it - see centreCodeMet().
+//
+// What the canvas drew as nine passes of its text - the code at the eight
+// steps round it in the dark, then in place in home's colour - in one pass
+// through the raster: each of the code's scan lines as bits, a pixel a bit,
+// grown by a pixel each way for the rim. A code too long for 64 bits, which
+// no airport's is, goes round the nine passes, through the raster still.
+void drawCentreCode(const String &code) {
+    int n = code.length();
+    if (n == 0) {
         return;
     }
     auto &canvas = screen::canvas();
-    canvas.setTextSize(2);
-    canvas.setTextDatum(TC_DATUM);
-    canvas.setTextColor(colorBg);
-    for (int dy = -1; dy <= 1; dy++) {
-        for (int dx = -1; dx <= 1; dx++) {
-            if (dx != 0 || dy != 0) {
-                canvas.drawString(code, CENTER_X + dx, CENTRE_CODE_Y + dy);
+    int32_t clipX, clipY, clipW, clipH;
+    canvas.getClipRect(&clipX, &clipY, &clipW, &clipH);
+    Raster out = {(uint16_t *)canvas.getBuffer(), canvas.width(), (int)clipX, (int)clipY,
+                  (int)(clipX + clipW - 1), (int)(clipY + clipH - 1), 0, 0};
+    int left = CENTER_X - (Raster::textWidth(code) >> 1);  // as the canvas centres it
+    if (n > 5) {
+        out.use(colorBg);
+        for (int dy = -1; dy <= 1; dy++) {
+            for (int dx = -1; dx <= 1; dx++) {
+                if (dx != 0 || dy != 0) {
+                    out.text(code, left + dx, CENTRE_CODE_Y + dy);
+                }
+            }
+        }
+        out.use(colorHome);
+        out.text(code, left, CENTRE_CODE_Y);
+        return;
+    }
+    // ink[i] the scan line at CENTRE_CODE_Y - 1 + i, its bit k the pixel at
+    // left - 1 + k: Font0 at size 2, as Raster::text() draws it, with a line
+    // and a column to spare all round for the rim.
+    uint64_t ink[18] = {};
+    for (int k = 0; k < n; k++) {
+        const uint8_t *glyph = glcd::font + (uint8_t)code[k] * 5;
+        for (int col = 0; col < 5; col++) {
+            for (int row = 0; row < 8; row++) {
+                if (glyph[col] >> row & 1) {
+                    uint64_t bits = 3ull << (1 + k * 12 + col * 2);
+                    ink[1 + row * 2] |= bits;
+                    ink[2 + row * 2] |= bits;
+                }
             }
         }
     }
-    canvas.setTextColor(colorHome);
-    canvas.drawString(code, CENTER_X, CENTRE_CODE_Y);
-    int w = canvas.textWidth(code);
-    g_trafficBoxes.push_back({(int16_t)(CENTER_X - w / 2 - 2), (int16_t)(CENTRE_CODE_Y - 2), (int16_t)(w + 4),
-                              (int16_t)(LABEL_H + 4)});
+    auto runs = [&](uint64_t bits, int y) {
+        while (bits) {
+            int from = __builtin_ctzll(bits);
+            int len = __builtin_ctzll(~(bits >> from));
+            out.hline(left - 1 + from, y, len);
+            bits &= ~(((1ull << len) - 1) << from);
+        }
+    };
+    for (int i = 0; i < 18; i++) {
+        uint64_t near = ink[i] | (i > 0 ? ink[i - 1] : 0) | (i < 17 ? ink[i + 1] : 0);
+        int y = CENTRE_CODE_Y - 1 + i;
+        out.use(colorBg);
+        runs((near | near << 1 | near >> 1) & ~ink[i], y);
+        out.use(colorHome);
+        runs(ink[i], y);
+    }
+}
+
+// Whether the traffic drawn this frame, or the last frame's put back from the
+// background, meets the centre's code - its letters and their rim, with a
+// pixel to spare. Elsewhere the code is still there as the background has it,
+// rim and all, and was nine passes of the canvas's text and a box put back
+// and pushed every frame.
+bool centreCodeMet(const String &code) {
+    if (code.length() == 0) {
+        return false;
+    }
+    int w = Raster::textWidth(code);
+    return trafficMeets({(int16_t)(CENTER_X - w / 2 - 2), (int16_t)(CENTRE_CODE_Y - 2), (int16_t)(w + 4),
+                         (int16_t)(LABEL_H + 4)});
 }
 
 // A refresh of the radar's traffic alone - see Background.
@@ -2812,21 +2978,35 @@ void refreshTraffic(const RadarScene &scene, double lat, double lon, int rangeNm
     uint32_t t1 = micros();
     drawContacts(scene.aircraft, scene.isNew, scene.trails, scene.flash,
                  {lat, lon, (float)RADIUS / rangeNm, 60.0f, false, scene.followHex}, plotted, labelled);
-    drawCentreCodeOver(centreCode);
+    if (centreCodeMet(centreCode)) {
+        drawCentreCode(centreCode);
+    }
     canvas.clearClipRect();
     // The footer's readouts, the same for as long as the view is but the
-    // count, drawn again over themselves - the traffic put back may have
-    // taken a piece out of one where it reaches into the plot's column - and
-    // the count erased and drawn afresh, and pushed, only when it changes.
+    // count: each drawn again over itself only where the traffic put back or
+    // drawn meets it - the range readout reaches into the plot's column, and
+    // a long count does - and the count and the legend over it erased and
+    // drawn afresh, and pushed, when the count changes. Elsewhere they are
+    // left as they are: drawn over themselves, some 70 letters a frame, they
+    // changed nothing.
     String count = contactsText(plotted, labelled);
     bool recount = !scene.mapOnly && count != g_countShown;
     if (recount) {
         canvas.fillRect(FOOT_L, FOOT_T, FOOT_R - FOOT_L, FOOT_B - FOOT_T, colorBg);
+        g_footings.count = count;
     }
-    footerBox(rangeText(rangeNm, step, scene.autoRange), 16, FOOTER_Y, false);
+    String range = rangeText(rangeNm, step, scene.autoRange);
+    if (trafficMeets(footerBoxAt(range, 16, FOOTER_Y, false))) {
+        footerBox(range, 16, FOOTER_Y, false);
+    }
     if (!scene.mapOnly) {
-        footerBox("^ climb   v descent", 1264, FOOTER_Y - LEGEND_OFFSET, true);
-        drawCount(count);
+        static const String legend = "^ climb   v descent";
+        if (recount || trafficMeets(footerBoxAt(legend, 1264, FOOTER_Y - LEGEND_OFFSET, true))) {
+            footerBox(legend, 1264, FOOTER_Y - LEGEND_OFFSET, true);
+        }
+        if (recount || trafficMeets(footerBoxAt(count, 1264, FOOTER_Y, true))) {
+            drawCount(count);
+        }
     }
     uint32_t t2 = micros();
     g_backgroundUs += t1 - t0;
@@ -2888,15 +3068,18 @@ void radarPlotDraw(const RadarScene &scene, bool full) {
         return;
     }
 
+    uint32_t layerAt = cycleCount();
     if (!full) {
         screen::fillRect(PLOT_L, PLOT_T, PLOT_R - PLOT_L, PLOT_B - PLOT_T, colorBg);
-        canvas.fillRect(FOOT_L, FOOT_T, FOOT_R - FOOT_L, FOOT_B - FOOT_T, colorBg);
+        layerAt = layerDone(LAYER_FILL, layerAt);
     }
     canvas.setFont(&fonts::Font0);
 
     // --- the map, then rings and bearings over it --------------------------
     drawCoast(lat, lon, (float)rangeNm);
+    layerAt = layerDone(LAYER_COAST, layerAt);
     drawScope((float)rangeNm, (float)step);
+    layerAt = layerDone(LAYER_SCOPE, layerAt);
 
     g_airportHitCount = 0;
     g_navaidHitCount = 0;
@@ -2948,9 +3131,11 @@ void radarPlotDraw(const RadarScene &scene, bool full) {
     } else {
         g_followLabel.reserved = false;
     }
+    layerAt = layerDone(LAYER_CENTRE, layerAt);
     if (drawsAirports) {
         drawAirports(lat, lon, rangeNm, centreCode, following ? scene.originCode : String());
     }
+    layerAt = layerDone(LAYER_AIRPORTS, layerAt);
     // A free look's middle, a small dim cross - but not over an airport's
     // symbol there, as one opened from its zoom is centred on: the airport
     // says where the middle is, and a cross is home's.
@@ -2966,10 +3151,13 @@ void radarPlotDraw(const RadarScene &scene, bool full) {
     } else {
         g_navaidHitCount = 0;
     }
+    layerDone(LAYER_NAVAIDS, layerAt);
 
     // The background kept before the names go on, as they move with the
-    // traffic - see drawNames().
+    // traffic - see drawNames() - and with the centre's code on it as it is
+    // drawn over the traffic.
     if (canKeep && g_background.pending && sameBackground(key, g_background.key)) {
+        drawCentreCode(centreCode);
         keepBackground();
         g_background.pending = false;
     } else if (!keptFor) {
@@ -2978,13 +3166,15 @@ void radarPlotDraw(const RadarScene &scene, bool full) {
         g_background.key = key;
     }  // else a crowd, a list or the names' minute drawn whole over a background still kept
     g_background.wholeMs = millis();
+    layerAt = cycleCount();
     drawNames(lat, lon, (float)rangeNm);
+    layerDone(LAYER_NAMES, layerAt);
 
     int plotted = 0, labelled = 0;
     uint32_t t1 = micros();
     drawContacts(scene.aircraft, scene.isNew, scene.trails, scene.flash,
                  {lat, lon, (float)RADIUS / rangeNm, 60.0f, false, scene.followHex}, plotted, labelled);
-    drawCentreCodeOver(centreCode);
+    drawCentreCode(centreCode);
 
     canvas.clearClipRect();
     // Out over the plot's corner, so wiped with it: put back each time.
@@ -2998,17 +3188,36 @@ void radarPlotDraw(const RadarScene &scene, bool full) {
     // to the range line reached x=664, well inside it. Boxed from the right
     // edge, every one of them starts beyond the widest part of the circle at
     // the height it sits at.
-    // The range readout reaches from the margin into the plot square. Following
-    // changes the range as it goes, so a refresh redraws all of it - the part
-    // in the margin erased first, and pushed with the footer.
-    if (!full) {
+    // The range readout reaches from the margin into the plot square, and a
+    // long count does too: their parts in the column, filled afresh, drawn
+    // again whatever. Outside it, on a refresh of the live radar with nothing
+    // over it, each is left as it was unless its text has changed - following
+    // changes the range as it goes, and the count - and only then erased,
+    // drawn afresh and pushed: the footer and the range's start in the
+    // margin, two pushes and some 70 letters a frame, mostly the same.
+    String range = rangeText(rangeNm, step, scene.autoRange);
+    String count = scene.mapOnly ? String() : contactsText(plotted, labelled);
+    bool kept = !full && scene.push && g_livePlot && g_footings.kept;
+    bool newRange = !kept || range != g_footings.range, newCount = !kept || count != g_footings.count;
+    if (!full && newCount) {
+        canvas.fillRect(FOOT_L, FOOT_T, FOOT_R - FOOT_L, FOOT_B - FOOT_T, colorBg);
+    }
+    if (!full && newRange) {
         canvas.fillRect(0, RANGE_BOX_T, PLOT_L, BOX_H, colorBg);
     }
-    footerBox(rangeText(rangeNm, step, scene.autoRange), 16, FOOTER_Y, false);
-    if (!scene.mapOnly) {
-        footerBox("^ climb   v descent", 1264, FOOTER_Y - LEGEND_OFFSET, true);
-        drawCount(contactsText(plotted, labelled));
+    if (newRange || inColumn(footerBoxAt(range, 16, FOOTER_Y, false))) {
+        footerBox(range, 16, FOOTER_Y, false);
     }
+    if (!scene.mapOnly) {
+        static const String legend = "^ climb   v descent";
+        if (newCount || inColumn(footerBoxAt(legend, 1264, FOOTER_Y - LEGEND_OFFSET, true))) {
+            footerBox(legend, 1264, FOOTER_Y - LEGEND_OFFSET, true);
+        }
+        if (newCount || inColumn(footerBoxAt(count, 1264, FOOTER_Y, true))) {
+            drawCount(count);
+        }
+    }
+    g_footings = {range, count, g_livePlot};
 
     uint32_t t2 = micros();
     g_backgroundUs += t1 - t0;
@@ -3017,7 +3226,7 @@ void radarPlotDraw(const RadarScene &scene, bool full) {
     if (full) {
         return;  // the caller flushes, once it has drawn the rest of the screen
     }
-    pushPlot(scene.push, RANGE_BOX_T);
+    pushPlot(scene.push, RANGE_BOX_T, newCount, newRange);
     g_pushUs += micros() - t2;
 }
 
@@ -3138,10 +3347,16 @@ struct Vec {
     float x, y;
 };
 
-Vec toLocal(const ZoomFrame &f, float lat, float lon) {
-    double nmPerDegLon = 60.0 * cos(f.lat * M_PI / 180.0);
+// The frame's nm to a degree of longitude - in double, a cos the P4's FPU,
+// single precision, hasn't got: some 4,000 instructions, so worked out once
+// for a frame's many points rather than for each.
+double nmPerDegLonOf(const ZoomFrame &f) { return 60.0 * cos(f.lat * M_PI / 180.0); }
+
+Vec toLocal(const ZoomFrame &f, double nmPerDegLon, float lat, float lon) {
     return {(float)((lon - f.lon) * nmPerDegLon), (float)((lat - f.lat) * 60.0)};
 }
+
+Vec toLocal(const ZoomFrame &f, float lat, float lon) { return toLocal(f, nmPerDegLonOf(f), lat, lon); }
 
 // The zoom on the airport with `code`, framed - false where the airport table
 // hasn't got it.
@@ -3189,38 +3404,59 @@ bool frameZoom(const String &code, ZoomFrame &f) {
 // nearest - so a pair of close parallels doesn't light up together for the
 // one aircraft.
 void runwaysInUse(const ZoomFrame &f, const std::vector<Aircraft> &aircraft, bool inUse[][2]) {
+    // Each runway's ends, and from each the way along it and its heading,
+    // worked out once a frame rather than for every contact - every zoom
+    // frame, the partial ones too. The same sums, so the same flags, which
+    // the background is kept by.
+    struct Way {
+        Vec from;
+        float ux, uy, heading;
+    };
+    Way ways[MAX_ZOOM_RUNWAYS][2];
+    float lens[MAX_ZOOM_RUNWAYS];
+    double nmPerDegLon = nmPerDegLonOf(f);
     for (int r = 0; r < f.runwayCount; r++) {
         inUse[r][0] = inUse[r][1] = false;
+        const Runway &rw = f.runways[r];
+        Vec ends[2] = {toLocal(f, nmPerDegLon, rw.end[0].lat, rw.end[0].lon),
+                       toLocal(f, nmPerDegLon, rw.end[1].lat, rw.end[1].lon)};
+        float len = hypotf(ends[1].x - ends[0].x, ends[1].y - ends[0].y);
+        lens[r] = len;
+        if (len <= 0) {
+            continue;
+        }
+        for (int k = 0; k < 2; k++) {
+            // From this end towards the other: the way an aircraft using it goes.
+            const Vec &from = ends[k], &to = ends[1 - k];
+            Way &w = ways[r][k];
+            w.from = from;
+            w.ux = (to.x - from.x) / len;
+            w.uy = (to.y - from.y) / len;
+            w.heading = atan2f(w.ux, w.uy) * 180.0f / (float)M_PI;
+        }
     }
     for (const Aircraft &ac : aircraft) {
         if (!ac.hasPos || !ac.hasTrack || ac.altStr == "?" || ac.altStr == "GND" || ac.status == "GROUND" ||
             ac.status == "TAXI") {
             continue;
         }
-        Vec p = toLocal(f, ac.lat, ac.lon);
+        Vec p = toLocal(f, nmPerDegLon, ac.lat, ac.lon);
+        int altFt = ac.altStr.toInt();
         int bestR = -1, bestK = 0;
         float bestOffset = 1e9f;
         for (int r = 0; r < f.runwayCount; r++) {
             const Runway &rw = f.runways[r];
-            if (rw.closed || ac.altStr.toInt() - rw.elevationFt > IN_USE_MAX_AGL_FT) {
-                continue;
-            }
-            Vec ends[2] = {toLocal(f, rw.end[0].lat, rw.end[0].lon), toLocal(f, rw.end[1].lat, rw.end[1].lon)};
-            float len = hypotf(ends[1].x - ends[0].x, ends[1].y - ends[0].y);
-            if (len <= 0) {
+            if (rw.closed || altFt - rw.elevationFt > IN_USE_MAX_AGL_FT || lens[r] <= 0) {
                 continue;
             }
             for (int k = 0; k < 2; k++) {
-                // From this end towards the other: the way an aircraft using it goes.
-                const Vec &from = ends[k], &to = ends[1 - k];
-                float ux = (to.x - from.x) / len, uy = (to.y - from.y) / len;
-                float heading = atan2f(ux, uy) * 180.0f / (float)M_PI;
-                float off = fabsf(fmodf(ac.track - heading + 540.0f, 360.0f) - 180.0f);
+                const Way &w = ways[r][k];
+                float off = fabsf(fmodf(ac.track - w.heading + 540.0f, 360.0f) - 180.0f);
                 if (off > IN_USE_ALIGN_DEG) {
                     continue;
                 }
-                float rx = p.x - from.x, ry = p.y - from.y;
-                float offset = fabsf(rx * uy - ry * ux);
+                float rx = p.x - w.from.x, ry = p.y - w.from.y;
+                float offset = fabsf(rx * w.uy - ry * w.ux);
                 if (offset <= IN_USE_AIR_OFFSET_NM && offset < bestOffset) {
                     bestOffset = offset;
                     bestR = r;
@@ -3290,9 +3526,11 @@ void drawRunways(const ZoomFrame &f, const bool inUse[][2], const bool recent[][
     bool drawn[MAX_ZOOM_RUNWAYS];
     LabelBox placed[MAX_ZOOM_RUNWAYS * 2];
     int placedCount = 0;
+    double nmPerDegLon = nmPerDegLonOf(f);
     for (int r = 0; r < f.runwayCount; r++) {
         const Runway &rw = f.runways[r];
-        Vec a = toLocal(f, rw.end[0].lat, rw.end[0].lon), b = toLocal(f, rw.end[1].lat, rw.end[1].lon);
+        Vec a = toLocal(f, nmPerDegLon, rw.end[0].lat, rw.end[0].lon),
+            b = toLocal(f, nmPerDegLon, rw.end[1].lat, rw.end[1].lon);
         float ax = CENTER_X + a.x * pxPerNm, ay = CENTER_Y - a.y * pxPerNm;
         float bx = CENTER_X + b.x * pxPerNm, by = CENTER_Y - b.y * pxPerNm;
         float len = hypotf(bx - ax, by - ay);
@@ -3587,6 +3825,7 @@ bool zoomPlot(const ZoomFrame &framed, const std::vector<Aircraft> &aircraft,
               bool push, bool partial, uint32_t nowMs, InUseMemory &memory) {
     auto &canvas = screen::canvas();
     uint32_t t0 = micros();
+    g_footings.kept = false;  // its own readouts where the radar's go
     ZoomFrame f = framed;
     bool onFollowed = false;
     if (followHex.length() && f.rangeNm < f.framedNm - 0.01f) {
@@ -3683,22 +3922,28 @@ bool zoomPlot(const ZoomFrame &framed, const std::vector<Aircraft> &aircraft,
         return onFollowed;
     }
 
+    uint32_t layerAt = cycleCount();
     if (!full) {
         screen::fillRect(PLOT_L, PLOT_T, PLOT_R - PLOT_L, PLOT_B - PLOT_T, colorBg);
         canvas.fillRect(FOOT_L, FOOT_T, FOOT_R - FOOT_L, FOOT_B - FOOT_T, colorBg);
+        layerAt = layerDone(LAYER_FILL, layerAt);
     }
     canvas.setFont(&fonts::Font0);
     drawScope(range, step);
+    layerAt = layerDone(LAYER_SCOPE, layerAt);
     g_mapLabelCount = 0;
 
     canvas.setClipRect(PLOT_L, PLOT_T, PLOT_R - PLOT_L, PLOT_B - PLOT_T);
     drawRunways(f, inUse, recent);
+    layerAt = layerDone(LAYER_RUNWAYS, layerAt);
     drawTower(f);
+    layerAt = layerDone(LAYER_TOWER, layerAt);
     // Over the runways, which an airport's own often sits beside.
     g_navaidHitCount = 0;
     if (g_navaidsOn) {
         drawNavaids(f.lat, f.lon, range);
     }
+    layerDone(LAYER_NAVAIDS, layerAt);
     if (canKeep && g_background.pending && sameBackground(key, g_background.key)) {
         keepBackground();
         g_background.pending = false;
@@ -3778,6 +4023,9 @@ void radarZoomDraw(const std::vector<Aircraft> &aircraft, bool full) {
         return;
     }
     static const std::vector<Aircraft> noAircraft;
+    if (!full && overlayUp()) {
+        screen::keepApart();  // as the radar's, with its INFO card up
+    }
     g_zoomMapOnly = mapOnly;
     g_zoomOnFollowed = zoomPlot(view, mapOnly ? noAircraft : aircraft, nullptr, true, g_zoomFollowHex, full,
                                 !overlayUp() && !dragged, !overlayUp() && !dragged && !mapOnly, millis(),
@@ -4194,6 +4442,30 @@ constexpr int TEL_CHART_H = 166;
 // would claim a climb or descent nobody saw.
 constexpr uint32_t TEL_GAP_MS = 180000;
 
+// What the panel was last drawn from, for it to be drawn again only when
+// that changes - or once anything else has been drawn over it - rather than
+// every frame, where it was 4-6ms of a following frame on the radar: where
+// it is, the field's height and how long the aircraft has been lost; the
+// chart's left edge, on its own grid of pixels; which reports are in the
+// chart and up to now; and what those say.
+struct TelemetryKey {
+    int x, y;
+    int32_t fieldFt;
+    uint32_t lostS;
+    int64_t edge;
+    uint32_t first, count, sum;
+    bool operator==(const TelemetryKey &o) const {
+        return x == o.x && y == o.y && fieldFt == o.fieldFt && lostS == o.lostS && edge == o.edge &&
+               first == o.first && count == o.count && sum == o.sum;
+    }
+};
+TelemetryKey g_telemetryKey;
+bool g_telemetryKept = false;
+// How often it was drawn and how often left as it was, and the time the
+// drawing took - and the PPA's fill of it, of that - for the [perf] line.
+uint32_t g_telemetryDrawn = 0, g_telemetryLeft = 0;
+uint64_t g_telemetryUs = 0, g_telemetryFillUs = 0;
+
 }  // namespace
 
 void radarSetHeights(const std::vector<FollowSample> &samples, uint32_t lostS) {
@@ -4203,25 +4475,68 @@ void radarSetHeights(const std::vector<FollowSample> &samples, uint32_t lostS) {
 
 void radarTelemetryDraw(int x, int y, const std::vector<FollowSample> &samples, uint32_t nowMs, int32_t fieldFt,
                         uint32_t lostS) {
+    uint32_t t0 = micros();
     ensureColors();
     auto &canvas = screen::canvas();
-    canvas.fillRect(x, y, TELEMETRY_W, TELEMETRY_H, colorBg);
-    screen::markDirty(x, y, TELEMETRY_W, TELEMETRY_H);
-    canvas.setFont(&fonts::Font0);
 
-    // The latest report by now, and the window of them the chart covers.
+    // The latest report by now, and the window of them the chart covers -
+    // whose left edge is taken on the chart's own grid, a pixel to every
+    // TELEMETRY_WINDOW_MS / (TELEMETRY_W - 3), 2.2s: the points then step
+    // left together, a pixel at a time, rather than each at its own moment,
+    // and the chart stays as it is in between. A point is at most a pixel
+    // right of where the window's own edge would put it.
     uint32_t from = nowMs > TELEMETRY_WINDOW_MS ? nowMs - TELEMETRY_WINDOW_MS : 0;
+    int64_t edge = (int64_t)(TELEMETRY_W - 3) * from / TELEMETRY_WINDOW_MS;
     const FollowSample *latest = nullptr;
     int32_t highest = fieldFt == INT32_MIN ? 0 : fieldFt;
+    uint32_t count = 0, first = UINT32_MAX;
     for (const FollowSample &s : samples) {
         if (s.ms > nowMs) {
             break;
         }
         latest = &s;
+        if (s.ms >= from && first == UINT32_MAX) {
+            first = count;
+        }
+        count++;
         if (s.ms >= from && s.hasAlt) {
             highest = std::max(highest, s.altFt);
         }
     }
+    // What those reports say - the chart's, and the latest's if it is older
+    // than the chart - summed, FNV-1a, for the key.
+    uint32_t sum = 2166136261u;
+    for (uint32_t i = std::min(first, count ? count - 1 : 0); i < count; i++) {
+        const FollowSample &s = samples[i];
+        for (uint32_t v : {s.ms, (uint32_t)s.altFt, (uint32_t)s.vsFpm, (uint32_t)s.gsKt,
+                           (uint32_t)(s.hasAlt | s.ground << 1 | s.hasVs << 2 | s.hasGs << 3)}) {
+            sum = (sum ^ v) * 16777619u;
+        }
+    }
+    TelemetryKey key = {x, y, fieldFt, lostS, edge, first, count, sum};
+    if (g_telemetryKept && key == g_telemetryKey && !screen::touched()) {
+        // Left as a redraw leaves it, for whatever is drawn next.
+        canvas.clearClipRect();
+        canvas.setFont(&fonts::Font0);
+        canvas.setTextSize(2);
+        canvas.setTextColor(colorFaint);
+        canvas.setTextDatum(TR_DATUM);
+        g_telemetryLeft++;
+        return;
+    }
+    g_telemetryKey = key;
+    g_telemetryKept = true;
+    // By the PPA, which fills at 355MB/s where the CPU writes 67 - marked
+    // dirty as it goes. The cache is written back over the panel's 330 whole
+    // rows, 845KB, before it and dropped after, which no bench has timed:
+    // the plot's push was seen writing back 1.8MB in 0.6ms, which would make
+    // this about 1ms all told where the CPU's fill was about 3. [perf]'s
+    // "fill" says; canvas.fillRect() is the way back should it not come in
+    // well under 3ms.
+    uint32_t f0 = micros();
+    screen::fillRect(x, y, TELEMETRY_W, TELEMETRY_H, colorBg);
+    g_telemetryFillUs += micros() - f0;
+    canvas.setFont(&fonts::Font0);
 
     // --- readouts ---
     canvas.setTextDatum(TL_DATUM);
@@ -4275,7 +4590,7 @@ void radarTelemetryDraw(int x, int y, const std::vector<FollowSample> &samples, 
     int cx = x, cy = y + TEL_CHART_Y, cw = TELEMETRY_W, ch = TEL_CHART_H;
     canvas.drawRect(cx, cy, cw, ch, colorRing);
     int32_t top = chartTop(highest);
-    auto px = [&](uint32_t ms) { return cx + 1 + (int)((int64_t)(cw - 3) * (int64_t)(ms - from) / TELEMETRY_WINDOW_MS); };
+    auto px = [&](uint32_t ms) { return cx + 1 + (int)((int64_t)(cw - 3) * ms / TELEMETRY_WINDOW_MS - edge); };
     auto py = [&](int32_t ft) {
         int32_t clamped = std::min(std::max(ft, (int32_t)0), top);
         return cy + ch - 2 - (int)((int64_t)(ch - 4) * clamped / top);
@@ -4343,6 +4658,25 @@ void radarTelemetryDraw(int x, int y, const std::vector<FollowSample> &samples, 
     canvas.drawString("-" + String(TELEMETRY_WINDOW_MS / 60000) + "m", cx, cy + ch + 6);
     canvas.setTextDatum(TR_DATUM);
     canvas.drawString("now", cx + cw, cy + ch + 6);
+    // Watched from here, now its own drawing is marked.
+    screen::watch(x, y, TELEMETRY_W, TELEMETRY_H);
+    g_telemetryDrawn++;
+    g_telemetryUs += micros() - t0;
+}
+
+String radarTakeTelemetry() {
+    String s = "-";
+    if (g_telemetryDrawn + g_telemetryLeft != 0) {
+        s = String(g_telemetryDrawn) + "x drawn";
+        if (g_telemetryDrawn != 0) {
+            s += " avg " + String(g_telemetryUs / 1000.0f / g_telemetryDrawn, 1) + "ms (fill " +
+                 String(g_telemetryFillUs / 1000.0f / g_telemetryDrawn, 2) + ")";
+        }
+        s += ", " + String(g_telemetryLeft) + "x left";
+    }
+    g_telemetryDrawn = g_telemetryLeft = 0;
+    g_telemetryUs = g_telemetryFillUs = 0;
+    return s;
 }
 
 

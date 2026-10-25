@@ -668,7 +668,7 @@ void nextSpeed(int most) {
 
 }  // namespace
 
-void playbackScreenTick() {
+bool playbackScreenTick() {
     uint32_t now = millis();
     if (advance()) {
         drawPlayButton();
@@ -679,7 +679,9 @@ void playbackScreenTick() {
         drawScene();
         g_lastDrawMs = now;
         g_dirty = false;
+        return true;
     }
+    return false;
 }
 
 PlaybackAction playbackScreenHandleTouch(int x, int y, Aircraft &outAircraft) {

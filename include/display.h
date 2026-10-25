@@ -72,8 +72,9 @@ void displaySetMuted(bool muted);
 void displaySetShowRefresh(bool enabled);
 
 // Fades out cell shading once it has had its time on screen. Call every loop
-// while the main screen is up; it does nothing until something expires.
-void displayTickHighlights();
+// while the main screen is up; it does nothing until something expires. True
+// when it redrew some, for the [perf] line.
+bool displayTickHighlights();
 
 // The state of the polling, for the status line under the table. A
 // lastSuccessMs of 0 (everSucceeded false) means nothing has arrived yet.

@@ -11,8 +11,10 @@ Needs firmware built with the bench in it, from the table:
 The letters, as include/bench2d.h has them: m the map's first draw, n the
 names, r the radar's plot, z the airport zoom, t the table, x the whole
 screen's push, p a reply from the feed parsed (bench-*.json put on the card
-first with tools/sd_upload.py), k the tracks, s the voices and the engines.
-"mnrztxpks" runs them all, one after another.
+first with tools/sd_upload.py), k the tracks, s the voices and the engines,
+c the code's misses in the caches round a frame of the radar, X the big
+pushes through internal RAM against today's, the panel read back.
+"mnrztxpkscX" runs them all, one after another.
 
 Needs pyserial; close any serial monitor first.
 """
