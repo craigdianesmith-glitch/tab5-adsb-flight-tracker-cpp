@@ -1685,7 +1685,11 @@ engine_noise::Sound engineSound(const Followed &f, const FollowEstimate &e, int 
     s.at[0] = engines.x, s.at[1] = engines.y, s.at[2] = engines.z;
     s.nose[0] = nose.x, s.nose[1] = nose.y, s.nose[2] = nose.z;
     s.ear[0] = camera.eye.x, s.ear[1] = camera.eye.y, s.ear[2] = camera.eye.z;
-    s.ms = millis();
+    // Timed by the clock it moves by - millis() live, the recording's in a
+    // replay - for its speed to be its own: by the wall's, a replay at 4x
+    // had it coming four times as fast as it flew, its whine as it came
+    // three times its pitch.
+    s.ms = g_nowMs;
     // Off the ground: its engines' height over it, and the camera's - high
     // up, over the sea the round earth is, too high for an echo to matter;
     // the ground hard where it is on the airfield or just over it, a
