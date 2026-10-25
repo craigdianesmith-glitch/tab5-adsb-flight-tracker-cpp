@@ -359,13 +359,21 @@ Synth::Synth() {
 // one before's history forgotten.
 void Synth::set(const Sound &sound) {
     bool forget = sound.kind != target_.kind || sound.who != target_.who || sound.engine != target_.engine;
-    // Placed, a jump no aircraft makes - its frame moved under it, a replay
-    // sought on - leaves what was asked before in another place: forgotten
-    // too, rather than heard from there.
+    // Placed, a jump no aircraft makes in the time between - its frame moved
+    // under it, a replay sought back - leaves what was asked before in
+    // another place: forgotten too, rather than heard from there. The time
+    // between by the frames' own clock where they give it: by the sound made
+    // since, a frame held up a third of a second - the last set again each
+    // block meanwhile - had the next one a jump, and a far aircraft heard at
+    // once from where it then was. A replay sought on is heard as flown
+    // between.
     if (!forget && sound.placed && askedCount_ > 0 && asked_[askedNewest_].sound.placed) {
-        const float *a = sound.at, *b = asked_[askedNewest_].sound.at;
+        const Asked &newest = asked_[askedNewest_];
+        const float *a = sound.at, *b = newest.sound.at;
         float dx = a[0] - b[0], dy = a[1] - b[1], dz = a[2] - b[2];
-        float most = 400 * std::max(0.04f, (clock_ - asked_[askedNewest_].at) / (float)RATE) + 50;
+        float since = sound.ms != 0 && newest.sound.ms != 0 ? (int32_t)(sound.ms - newest.sound.ms) * 0.001f
+                                                            : (clock_ - newest.at) / (float)RATE;
+        float most = 400 * std::max(0.04f, since) + 50;
         forget = dx * dx + dy * dy + dz * dz > most * most;
     }
     if (forget) {
