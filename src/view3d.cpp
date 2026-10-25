@@ -2121,10 +2121,14 @@ void prepareNext(const Followed &f, const std::vector<Aircraft> &traffic, uint32
     if (replaying) {
         g_scene.followed.pose = shown;
     }
+    // Heard where it really is: through CINEMA's replay of its flare the
+    // sound stays with the live roll-out, as a TV replay runs over the live
+    // sound - its wheels, reversers and spoilers are the roll-out's, and the
+    // replay's pose moves at half speed against the live clock.
     if (g_engineSound) {
         soundEngine(g_inReplay && !g_replay.playing ? engine_noise::Sound()
-                                                    : engineSound(f, e, shownKt, look, g_scene.followed.pose,
-                                                                  g_scene.followed.config, camera, dt));
+                                                    : engineSound(f, e, shownKt, look, pose, g_scene.followed.config,
+                                                                  camera, dt));
     }
     setHorizon(camera, high);
     s3::prepareBegin(VIEW_W, VIEW_H, g_rows, true, g_scene, camera);
