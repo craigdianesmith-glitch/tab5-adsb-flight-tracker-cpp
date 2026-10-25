@@ -1050,34 +1050,39 @@ void drawNavaids(double lat, double lon, float rangeNm, bool labels = true) {
     for (size_t i = 0; i < navaids.size(); i++) {
         const Navaid *n = navaids[i];
         int x = spots[i].first, y = spots[i].second;
-        String text = navaidLabel(*n);
-        int w = canvas.textWidth(text);
-        int was = -1;
-        for (const PlacedNavaidLabel &p : g_navaidLabelsWere) {
-            if (p.navaid == n) {
-                was = p.slot;
-                break;
-            }
-        }
         LabelBox label = {0, (int16_t)(y - LABEL_H / 2), 0, (int16_t)LABEL_H};
-        // Where it was first, then the rest in order.
-        for (int k = -1; labels && k < SLOT_COUNT && g_mapLabelCount < MAX_MAP_LABELS; k++) {
-            int slot = k < 0 ? was : k;
-            if (slot < 0 || (k >= 0 && slot == was)) {
-                continue;
+        // Its label made only where one may be placed: a frequency is
+        // newlib's double formatting and three Strings, for every navaid in
+        // range - past 150nm, where none are labelled, for nothing.
+        if (labels && g_mapLabelCount < MAX_MAP_LABELS) {
+            String text = navaidLabel(*n);
+            int w = canvas.textWidth(text);
+            int was = -1;
+            for (const PlacedNavaidLabel &p : g_navaidLabelsWere) {
+                if (p.navaid == n) {
+                    was = p.slot;
+                    break;
+                }
             }
-            int lx, ly;
-            navaidLabelAt(slot, x, y, w, lx, ly);
-            int pad = slot == was ? KEPT_LABEL_PAD : LABEL_PAD;
-            if (insideScope(lx, ly, w, LABEL_H, pad) && !overlapsRunway(lx, ly, w, LABEL_H, pad) &&
-                !overlapsAny(g_mapLabels, g_mapLabelCount, lx, ly, w, LABEL_H, pad) &&
-                !overlapsAny(g_mapMarks.data(), (int)g_mapMarks.size(), lx, ly, w, LABEL_H, pad,
-                             firstMark + (int)i)) {
-                canvas.drawString(text, lx, ly);
-                label = {(int16_t)lx, (int16_t)ly, (int16_t)w, (int16_t)LABEL_H};
-                g_mapLabels[g_mapLabelCount++] = label;
-                g_navaidLabelsNow.push_back({n, (uint8_t)slot});
-                break;
+            // Where it was first, then the rest in order.
+            for (int k = -1; k < SLOT_COUNT && g_mapLabelCount < MAX_MAP_LABELS; k++) {
+                int slot = k < 0 ? was : k;
+                if (slot < 0 || (k >= 0 && slot == was)) {
+                    continue;
+                }
+                int lx, ly;
+                navaidLabelAt(slot, x, y, w, lx, ly);
+                int pad = slot == was ? KEPT_LABEL_PAD : LABEL_PAD;
+                if (insideScope(lx, ly, w, LABEL_H, pad) && !overlapsRunway(lx, ly, w, LABEL_H, pad) &&
+                    !overlapsAny(g_mapLabels, g_mapLabelCount, lx, ly, w, LABEL_H, pad) &&
+                    !overlapsAny(g_mapMarks.data(), (int)g_mapMarks.size(), lx, ly, w, LABEL_H, pad,
+                                 firstMark + (int)i)) {
+                    canvas.drawString(text, lx, ly);
+                    label = {(int16_t)lx, (int16_t)ly, (int16_t)w, (int16_t)LABEL_H};
+                    g_mapLabels[g_mapLabelCount++] = label;
+                    g_navaidLabelsNow.push_back({n, (uint8_t)slot});
+                    break;
+                }
             }
         }
         if (g_navaidHitCount < MAX_NAVAID_HITS) {
