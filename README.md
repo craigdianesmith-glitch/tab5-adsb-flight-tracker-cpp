@@ -208,7 +208,7 @@ With auto-record on, following starts a recording - taking over from one an aler
 
 | Camera | |
 | --- | --- |
-| CINEMA | Cuts by itself between shots made for what the aircraft is doing: a long lens up the approach, the touchdown from low beside the runway and a half-speed replay of the flare, the roll-out alongside and the taxi in from the tower; lined up, the take-off roll, the climb out and climbing away; chase, wide and from-below shots in turn when cruising; for a helicopter, a camera on the ground by where it sets down or lifts off. |
+| CINEMA | Cuts by itself between shots made for what the aircraft is doing: a long lens up the approach, the touchdown from low beside the runway and a half-speed replay of the flare over the roll-out's live sound, the roll-out alongside and the taxi in from the tower; lined up, the take-off roll, the climb out and climbing away; chase, wide and from-below shots in turn when cruising; for a helicopter, a camera on the ground by where it sets down or lifts off. |
 | CHASE | Behind it, a little above. |
 | ORBIT | Round it; drag to turn the view. |
 | TOWER | At an airport, from the control tower's cab - raised where a building would be in the way. |
