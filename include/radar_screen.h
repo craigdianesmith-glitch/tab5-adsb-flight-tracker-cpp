@@ -329,8 +329,9 @@ constexpr int TELEMETRY_W = 274, TELEMETRY_H = 330;
 constexpr uint32_t TELEMETRY_WINDOW_MS = 10UL * 60 * 1000;
 void radarTelemetryDraw(int x, int y, const std::vector<FollowSample> &samples, uint32_t nowMs, int32_t fieldFt,
                         uint32_t lostS);
-// How many times since last asked it was drawn, and the time that took, and
-// how many it was left as it was, for the [perf] line; "-" for neither.
+// How many times since last asked it was drawn, and the time that took - the
+// PPA's fill of it apart too - and how many it was left as it was, for the
+// [perf] line; "-" for neither.
 String radarTakeTelemetry();
 
 // The followed aircraft's samples, for the live radar and zoom to draw beside

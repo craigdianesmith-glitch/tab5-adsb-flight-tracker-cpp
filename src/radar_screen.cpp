@@ -4462,9 +4462,9 @@ struct TelemetryKey {
 TelemetryKey g_telemetryKey;
 bool g_telemetryKept = false;
 // How often it was drawn and how often left as it was, and the time the
-// drawing took, for the [perf] line.
+// drawing took - and the PPA's fill of it, of that - for the [perf] line.
 uint32_t g_telemetryDrawn = 0, g_telemetryLeft = 0;
-uint64_t g_telemetryUs = 0;
+uint64_t g_telemetryUs = 0, g_telemetryFillUs = 0;
 
 }  // namespace
 
@@ -4527,8 +4527,15 @@ void radarTelemetryDraw(int x, int y, const std::vector<FollowSample> &samples, 
     g_telemetryKey = key;
     g_telemetryKept = true;
     // By the PPA, which fills at 355MB/s where the CPU writes 67 - marked
-    // dirty as it goes.
+    // dirty as it goes. The cache is written back over the panel's 330 whole
+    // rows, 845KB, before it and dropped after, which no bench has timed:
+    // the plot's push was seen writing back 1.8MB in 0.6ms, which would make
+    // this about 1ms all told where the CPU's fill was about 3. [perf]'s
+    // "fill" says; canvas.fillRect() is the way back should it not come in
+    // well under 3ms.
+    uint32_t f0 = micros();
     screen::fillRect(x, y, TELEMETRY_W, TELEMETRY_H, colorBg);
+    g_telemetryFillUs += micros() - f0;
     canvas.setFont(&fonts::Font0);
 
     // --- readouts ---
@@ -4662,12 +4669,13 @@ String radarTakeTelemetry() {
     if (g_telemetryDrawn + g_telemetryLeft != 0) {
         s = String(g_telemetryDrawn) + "x drawn";
         if (g_telemetryDrawn != 0) {
-            s += " avg " + String(g_telemetryUs / 1000.0f / g_telemetryDrawn, 1) + "ms";
+            s += " avg " + String(g_telemetryUs / 1000.0f / g_telemetryDrawn, 1) + "ms (fill " +
+                 String(g_telemetryFillUs / 1000.0f / g_telemetryDrawn, 2) + ")";
         }
         s += ", " + String(g_telemetryLeft) + "x left";
     }
     g_telemetryDrawn = g_telemetryLeft = 0;
-    g_telemetryUs = 0;
+    g_telemetryUs = g_telemetryFillUs = 0;
     return s;
 }
 
