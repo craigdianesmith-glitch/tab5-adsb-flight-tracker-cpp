@@ -1903,6 +1903,14 @@ void drawRadar(bool full, bool title = false) {
         if (!radarOnExtraList()) {
             isNew = g_latestIsNew;
         }
+        // Drawn now, the list needn't be again for being new: a whole draw -
+        // leave3d's, Back's - would otherwise be followed in the same pass by
+        // loop()'s, of the same list, and following that is a whole plot and
+        // its push. A poll that lands after this says so again.
+        g_dataReady = false;
+        if (radarOnExtraList()) {
+            g_zoomReady = false;
+        }
         lat = g_lat;
         lon = g_lon;
         radius = g_radiusNm;
@@ -2147,6 +2155,7 @@ void drawZoom(bool full) {
     if (xSemaphoreTake(g_dataMutex, portMAX_DELAY) == pdTRUE) {
         aircraft = g_zoomAircraft;
         provider = g_zoomProvider;
+        g_zoomReady = false;  // drawn now - as drawRadar() has it
         xSemaphoreGive(g_dataMutex);
     }
     if (g_follow.active) {
