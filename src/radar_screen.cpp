@@ -561,7 +561,7 @@ String g_countShown;
 // footer's count, under the legend: empty where the footer was left empty, out
 // on the map - for a whole frame to leave them as they are where they haven't
 // changed: see radarPlotDraw(). Not `kept` where something else - a replay,
-// the zoom - may have drawn there since.
+// the zoom, a card or a list - may have drawn there since.
 struct Footings {
     String range, count;
     bool kept = false;
@@ -1653,6 +1653,9 @@ void openCard(const Navaid *n, int x, int y) {
     soundReadNavaid(*n);  // if read aloud is on
     g_cardH = 2 * CHOICE_PAD + 8 + 40 + CARD_LINE_H + 4 + (int)cardLines(*n).size() * CARD_LINE_H + 6 + LABEL_H;
     placeBeside(x, y, g_cardH, g_cardX, g_cardY);
+    // Over the footer or the range readout, it may be, and taken off again
+    // before the radar draws another frame: they are drawn afresh then.
+    g_footings.kept = false;
 }
 
 // --- an airport's card ----------------------------------------------------------
@@ -2150,6 +2153,7 @@ void drawChooser() {
 void openChooser(int x, int y) {
     g_choiceH = 2 * CHOICE_PAD + CHOICE_TITLE_H + (g_choiceCount + 1) * (CHOICE_ROW_H + CHOICE_GAP) - CHOICE_GAP;
     placeBeside(x, y, g_choiceH, g_choiceX, g_choiceY);
+    g_footings.kept = false;  // as a card's: see openCard()
     drawChooser();
     screen::flush();
 }
