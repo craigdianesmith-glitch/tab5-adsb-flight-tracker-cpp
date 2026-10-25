@@ -966,23 +966,35 @@ void soundBench() {
     // 3D view sets it - on its take-off roll at full power, the buzz-saw's
     // combs going; climbing out far off; on its approach, its gear and flaps
     // out and an older airframe's fuel vents whistling; touching down, its
-    // reversers and spoilers out; taxiing with its APU.
+    // reversers and spoilers out; taxiing with its APU. Each case's expect is
+    // the sound the synth heard and approved (41bdaa4's, the resonator as
+    // polished) makes on the P4, worked out under qemu from the tab5 build's
+    // engine_noise.cpp.o - which, stripped of its debug info, is the BENCH3D
+    // build's byte for byte; anything else prints CHANGED.
     struct Case {
         const char *name;
         engine_noise::Engine engine;
         float power, rollingMs, airspeedMs, x0, vx, z;
         bool gear, flaps, reverse, apu, fopp;
         float spoilers;
+        uint32_t expect;
     };
     using E = engine_noise::Engine;
     const Case CASES[] = {
-        {"take-off roll, CFM56", E::CFM56_5B, 1.0f, 50, 50, -600, 50, 0, false, false, false, false, false, 0},
-        {"take-off roll, V2500", E::V2500_A5, 1.0f, 50, 50, -600, 50, 0, false, false, false, false, false, 0},
-        {"take-off roll, LEAP-1A", E::LEAP_1A, 1.0f, 50, 50, -600, 50, 0, false, false, false, false, false, 0},
-        {"climb-out, CFM56, far", E::CFM56_5B, 1.0f, 0, 80, -2000, 80, 400, false, false, false, false, false, 0},
-        {"approach, CFM56, vents", E::CFM56_5B, 0.45f, 0, 70, -1500, 70, 150, true, true, false, false, true, 0},
-        {"touchdown, reversers", E::CFM56_5B, 0.75f, 60, 60, -50, 60, 0, true, true, true, false, false, 1},
-        {"taxiing with its APU", E::CFM56_5B, 0.08f, 8, 8, -100, 8, 0, true, false, false, true, false, 0},
+        {"take-off roll, CFM56", E::CFM56_5B, 1.0f, 50, 50, -600, 50, 0, false, false, false, false, false, 0,
+         0xa3f95484u},
+        {"take-off roll, V2500", E::V2500_A5, 1.0f, 50, 50, -600, 50, 0, false, false, false, false, false, 0,
+         0xeff345bfu},
+        {"take-off roll, LEAP-1A", E::LEAP_1A, 1.0f, 50, 50, -600, 50, 0, false, false, false, false, false, 0,
+         0x6c1a8df4u},
+        {"climb-out, CFM56, far", E::CFM56_5B, 1.0f, 0, 80, -2000, 80, 400, false, false, false, false, false, 0,
+         0x91d23fb4u},
+        {"approach, CFM56, vents", E::CFM56_5B, 0.45f, 0, 70, -1500, 70, 150, true, true, false, false, true, 0,
+         0x2c7afe0du},
+        {"touchdown, reversers", E::CFM56_5B, 0.75f, 60, 60, -50, 60, 0, true, true, true, false, false, 1,
+         0x818fe1b8u},
+        {"taxiing with its APU", E::CFM56_5B, 0.08f, 8, 8, -100, 8, 0, true, false, false, true, false, 0,
+         0x7665e94bu},
     };
     for (const Case &e : CASES) {
         engine_noise::Synth *synth = new (room) engine_noise::Synth();
@@ -1018,8 +1030,9 @@ void soundBench() {
             }
         }
         synth->~Synth();
-        Serial.printf("[bench] A320 %s: %.3fms a 40ms block, %.2f%% of a core; its sound %08lx\n", e.name,
-                      us / 1000.0f / BLOCKS, us / (BLOCKS * 400.0f), (unsigned long)sum);
+        Serial.printf("[bench] A320 %s: %.3fms a 40ms block, %.2f%% of a core; its sound %08lx, %s\n", e.name,
+                      us / 1000.0f / BLOCKS, us / (BLOCKS * 400.0f), (unsigned long)sum,
+                      sum == e.expect ? "as approved" : "CHANGED");
     }
     heap_caps_free(room);
     heap_caps_free(block);
