@@ -469,6 +469,7 @@ void benchStrips() {
             perf.waitUs += each.waitUs;
             perf.freeBefore = each.freeBefore;
             perf.largestBefore = each.largestBefore;
+            perf.freeHeld = pushed == 1 ? each.freeHeld : std::min(perf.freeHeld, each.freeHeld);
             screen::benchReadPanel(k.x, k.y, k.w, k.h, byStrips);
             for (size_t i = 0; i < n; i++) {
                 apart += byStrips[i] != bySrm[i];
@@ -485,11 +486,13 @@ void benchStrips() {
         int a = std::max(1, perf.strips);
         Serial.printf("; strips %.2fms (least %.2f, most %.2f), the cache not written back: %d a push, %d wide, "
                       "copying %uus and waiting %uus a strip, %uus taking them; internal RAM %uKB free, the largest "
-                      "block %uKB; the panel %u of %u pixels apart from the PPA's own push, which was %u apart from "
-                      "the canvas\n",
+                      "block %uKB, at the least %uKB left with the strips taken, %uKB the lowest since boot; the "
+                      "panel %u of %u pixels apart from the PPA's own push, which was %u apart from the canvas\n",
                       strips.mean(), strips.min(), strips.max(), perf.strips / (int)pushed, perf.stripW,
                       (unsigned)(perf.copyUs / a), (unsigned)(perf.waitUs / a), (unsigned)(perf.allocUs / pushed),
-                      (unsigned)(perf.freeBefore / 1024), (unsigned)(perf.largestBefore / 1024), (unsigned)apart,
+                      (unsigned)(perf.freeBefore / 1024), (unsigned)(perf.largestBefore / 1024),
+                      (unsigned)(perf.freeHeld / 1024),
+                      (unsigned)(heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL) / 1024), (unsigned)apart,
                       (unsigned)(n * pushed), (unsigned)srmWrong);
     }
     heap_caps_free(bySrm);

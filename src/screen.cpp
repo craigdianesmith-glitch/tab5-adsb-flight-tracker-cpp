@@ -505,7 +505,9 @@ namespace {
 // the narrowest half worth pushing that way, where the transfers' own 85us
 // each begin to eat what the internal RAM saves. And the internal RAM left
 // free with both strips taken, for the WiFi's buffers meanwhile: TLS's go to
-// the PSRAM (main.cpp's tlsCalloc()).
+// the PSRAM (main.cpp's tlsCalloc()). That is a guess, measured by nothing
+// yet - the last live log had 200KB free, 24KB at the least - and good
+// enough for the bench alone: see screen.h before flush() takes it up.
 constexpr int STRIP_ROWS = 16, STRIP_MIN_W = 200;
 constexpr size_t STRIP_KEEP_FREE = 64 * 1024;
 
@@ -556,6 +558,7 @@ bool pushStrips(int x, int y, int w, int h, StripPerf *perf, int widest) {
     int64_t t1 = esp_timer_get_time();
     p.allocUs = (uint32_t)(t1 - t0);
     p.stripW = stripW;
+    p.freeHeld = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
 
     // Strip i into one buffer while strip i - 1 goes from the other; i + 1
     // into that one only once its push is done.
@@ -565,6 +568,7 @@ bool pushStrips(int x, int y, int w, int h, StripPerf *perf, int widest) {
         int sy = std::min(y + i / across * STRIP_ROWS, y + h - STRIP_ROWS);
         int sx = x + i % across * stripW, sw = std::min(stripW, x + w - sx);
         uint16_t *to = strip[i & 1];
+        p.freeHeld = std::min(p.freeHeld, heap_caps_get_free_size(MALLOC_CAP_INTERNAL));
         int64_t c0 = esp_timer_get_time();
         for (int r = 0; r < STRIP_ROWS; r++) {
             memcpy(to + (size_t)r * sw, g_buffer + (size_t)(sy + r) * CANVAS_W + sx, (size_t)sw * 2);

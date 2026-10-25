@@ -138,10 +138,18 @@ PpaPerf takePpaPerf();
 // rows still to be written back by the next flush, as ever.
 //
 // For the bench to measure, for now - "##=X" - before flush() takes it up.
+// And before it does, the internal RAM it leaves for the WiFi is to be set
+// from what is measured, not the guess it is now: "##=X" with the polls
+// going says the least left while the strips were held, and the [perf]
+// line's lowest over a soak what else takes it. Nor should flush() take the
+// strips and give them back for every push, from a heap whose largest block
+// is down to 30KB around the 3D view: two kept from boot, or one pool with
+// the 3D view's bands - deeper bands for it too - would split it no further.
 struct StripPerf {
     int strips = 0, stripW = 0;  // how many pushed, and the widest
     uint32_t allocUs = 0, copyUs = 0, waitUs = 0, totalUs = 0;
     size_t freeBefore = 0, largestBefore = 0;  // internal RAM's, as they were
+    size_t freeHeld = 0;  // and the least of it free with the strips taken
 };
 bool pushStrips(int x, int y, int w, int h, StripPerf *perf = nullptr, int widest = 0);
 

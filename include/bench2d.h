@@ -21,7 +21,8 @@
 //      radar's plot - whole, a refresh and following - and the frame's time
 //   X  the plot's column and the whole screen pushed through internal RAM by
 //      screen::pushStrips() against the PPA reading the canvas, timed, and
-//      the panel read back after each, set against the other's
+//      the panel read back after each, set against the other's; and the
+//      internal RAM the strips left
 #ifdef BENCH3D
 #include <vector>
 
