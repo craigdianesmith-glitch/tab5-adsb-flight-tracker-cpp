@@ -496,6 +496,104 @@ bool pushBandWait() {
     return finished;
 }
 
+namespace {
+
+// See pushStrips(): the strips' height - the 3D view's deepest band - and
+// the narrowest half worth pushing that way, where the transfers' own 85us
+// each begin to eat what the internal RAM saves. And the internal RAM left
+// free with both strips taken, for the WiFi's buffers meanwhile: TLS's go to
+// the PSRAM (main.cpp's tlsCalloc()).
+constexpr int STRIP_ROWS = 16, STRIP_MIN_W = 200;
+constexpr size_t STRIP_KEEP_FREE = 64 * 1024;
+
+size_t stripBytes(int w) { return ((size_t)w * STRIP_ROWS * 2 + 63) & ~(size_t)63; }
+
+}  // namespace
+
+bool pushStrips(int x, int y, int w, int h, StripPerf *perf, int widest) {
+    int64_t t0 = esp_timer_get_time();
+    if (x < 0) { w += x; x = 0; }
+    if (y < 0) { h += y; y = 0; }
+    w = std::min(w, CANVAS_W - x);
+    h = std::min(h, CANVAS_H - y);
+    if (!g_ppaOk || g_ppaStuck || g_liveW > 0 || g_buffer == nullptr || w < STRIP_MIN_W || h < STRIP_ROWS) {
+        return false;
+    }
+    StripPerf p;
+    p.freeBefore = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
+    p.largestBefore = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA);
+    if (perf != nullptr) {
+        *perf = p;  // what there was, should they not be had
+    }
+    // As wide as the rect if two strips that wide can be had with enough
+    // left; else halves; else not at all.
+    int stripW = widest > 0 ? std::min(w, widest) : w;
+    uint16_t *strip[2] = {nullptr, nullptr};
+    while (true) {
+        size_t bytes = stripBytes(stripW);
+        if (heap_caps_get_free_size(MALLOC_CAP_INTERNAL) >= 2 * bytes + STRIP_KEEP_FREE &&
+            heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA) >= bytes) {
+            for (uint16_t *&s : strip) {
+                s = (uint16_t *)heap_caps_aligned_alloc(64, bytes, MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA);
+            }
+            if (strip[0] != nullptr && strip[1] != nullptr) {
+                break;
+            }
+            for (uint16_t *&s : strip) {
+                heap_caps_free(s);
+                s = nullptr;
+            }
+        }
+        int half = (w + 1) / 2;
+        if (stripW <= half || half < STRIP_MIN_W) {
+            return false;
+        }
+        stripW = half;
+    }
+    int64_t t1 = esp_timer_get_time();
+    p.allocUs = (uint32_t)(t1 - t0);
+    p.stripW = stripW;
+
+    // Strip i into one buffer while strip i - 1 goes from the other; i + 1
+    // into that one only once its push is done.
+    int across = (w + stripW - 1) / stripW, slabs = (h + STRIP_ROWS - 1) / STRIP_ROWS;
+    bool ok = true, pushing = false;
+    for (int i = 0; i < slabs * across && ok; i++) {
+        int sy = std::min(y + i / across * STRIP_ROWS, y + h - STRIP_ROWS);
+        int sx = x + i % across * stripW, sw = std::min(stripW, x + w - sx);
+        uint16_t *to = strip[i & 1];
+        int64_t c0 = esp_timer_get_time();
+        for (int r = 0; r < STRIP_ROWS; r++) {
+            memcpy(to + (size_t)r * sw, g_buffer + (size_t)(sy + r) * CANVAS_W + sx, (size_t)sw * 2);
+        }
+        int64_t c1 = esp_timer_get_time();
+        p.copyUs += (uint32_t)(c1 - c0);
+        if (pushing) {
+            ok = pushBandWait();
+            pushing = false;
+            p.waitUs += (uint32_t)(esp_timer_get_time() - c1);
+        }
+        if (ok) {
+            ok = pushBandStart(to, sx, sy, sw, STRIP_ROWS);
+            pushing = ok;
+            p.strips += ok;
+        }
+    }
+    if (pushing) {
+        int64_t w0 = esp_timer_get_time();
+        ok = pushBandWait();
+        p.waitUs += (uint32_t)(esp_timer_get_time() - w0);
+    }
+    for (uint16_t *s : strip) {
+        heap_caps_free(s);
+    }
+    p.totalUs = (uint32_t)(esp_timer_get_time() - t0);
+    if (perf != nullptr) {
+        *perf = p;
+    }
+    return ok;
+}
+
 #ifdef BENCH3D
 void benchGiveUpPpa() {
     Serial.println("[screen] the PPA given up, for the bench");
@@ -505,6 +603,20 @@ void benchGiveUpPpa() {
 bool pushBand(const uint16_t *pixels, int x, int y, int w, int rows, int client) {
     (void)client;
     return pushBandStart(pixels, x, y, w, rows) && pushBandWait();
+}
+
+void benchReadPanel(int x, int y, int w, int h, uint16_t *out) {
+    // What the PPA wrote, not what the cache last held of it.
+    esp_cache_msync(g_fb, g_fbBytes, ESP_CACHE_MSYNC_FLAG_DIR_M2C);
+    const uint16_t *fb = (const uint16_t *)g_fb;
+    bool ninety = g_angle == PPA_SRM_ROTATION_ANGLE_90;
+    for (int cy = y; cy < y + h; cy++) {
+        int fx = ninety ? cy : CANVAS_H - 1 - cy;
+        for (int cx = x; cx < x + w; cx++) {
+            int fy = ninety ? CANVAS_W - 1 - cx : cx;
+            out[(size_t)(cy - y) * w + (cx - x)] = __builtin_bswap16(fb[(size_t)fy * g_panelW + fx]);
+        }
+    }
 }
 #endif
 

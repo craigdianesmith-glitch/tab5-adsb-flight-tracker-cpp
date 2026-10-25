@@ -24,6 +24,7 @@
 #include "names.h"
 #include "radar_screen.h"
 #include "screen.h"
+#include "view3d.h"
 
 // Kept beside what they time - see each.
 void adsbBenchParse();  // adsb_client.cpp
@@ -377,6 +378,124 @@ void benchCodeMisses() {
     report("following, after the canvas read", codeMisses(draw));
 }
 
+// --- big pushes through internal RAM -----------------------------------------------
+// screen::pushStrips() against the push flush() makes today - the PPA reading
+// the canvas from the PSRAM - for the plot's column and the whole screen, the
+// latter in half strips too: five of each, timed, and the panel read back
+// after each way and set against the other's, pixel for pixel, and the PPA's
+// own against the canvas. Each run's pattern differs from its neighbours'
+// pixels and from the last run's, and the panel is given another before the
+// strips go, so that a strip left unpushed or misplaced shows.
+
+uint16_t patternAt(int x, int y, uint32_t seed) {
+    uint32_t v = (uint32_t)x * 2654435761u ^ (uint32_t)y * 40503u ^ seed * 97u;
+    v ^= v >> 15;
+    v *= 2246822519u;
+    v ^= v >> 13;
+    return (uint16_t)v;
+}
+
+void fillPattern(int x, int y, int w, int h, uint32_t seed) {
+    uint16_t *canvas = (uint16_t *)screen::canvas().getBuffer();
+    for (int cy = y; cy < y + h; cy++) {
+        for (int cx = x; cx < x + w; cx++) {
+            canvas[(size_t)cy * 1280 + cx] = patternAt(cx, cy, seed);
+        }
+    }
+    screen::markDirty(x, y, w, h);
+}
+
+void benchStrips() {
+    struct Case {
+        const char *name;
+        int x, y, w, h, widest;
+    };
+    const Case CASES[] = {{"the plot's column", 292, 0, 696, 720, 0},
+                          {"the whole screen", 0, 0, 1280, 720, 0},
+                          {"the whole screen, half strips", 0, 0, 1280, 720, 640}};
+    if (view3d::isOpen()) {
+        Serial.println("[bench] strips: not with the 3D view open, which the strips never are");
+        return;
+    }
+    constexpr size_t MOST = (size_t)1280 * 720;
+    uint16_t *bySrm = (uint16_t *)heap_caps_malloc(MOST * 2, MALLOC_CAP_SPIRAM);
+    uint16_t *byStrips = (uint16_t *)heap_caps_malloc(MOST * 2, MALLOC_CAP_SPIRAM);
+    if (bySrm == nullptr || byStrips == nullptr) {
+        Serial.println("[bench] strips: no room in the PSRAM to read the panel back into");
+        heap_caps_free(bySrm);
+        heap_caps_free(byStrips);
+        return;
+    }
+    const uint16_t *canvas = (const uint16_t *)screen::canvas().getBuffer();
+    for (const Case &k : CASES) {
+        Times srm, blit, sync, strips;
+        screen::StripPerf perf, each;
+        uint32_t apart = 0, srmWrong = 0, pushed = 0;
+        size_t n = (size_t)k.w * k.h;
+        for (int run = 0; run < 5; run++) {
+            // As flush() pushes it today: the cache written back, then the PPA.
+            fillPattern(k.x, k.y, k.w, k.h, 1 + run);
+            screen::takePpaPerf();
+            uint32_t t0 = micros();
+            screen::flush();
+            srm.add(micros() - t0);
+            screen::PpaPerf ppa = screen::takePpaPerf();
+            blit.add((uint32_t)ppa.blitUs);
+            sync.add((uint32_t)ppa.syncUs);
+            screen::benchReadPanel(k.x, k.y, k.w, k.h, bySrm);
+            for (size_t i = 0; i < n; i++) {
+                srmWrong += bySrm[i] != canvas[(size_t)(k.y + i / k.w) * 1280 + k.x + i % k.w];
+            }
+            // Something else on the panel, then the same by strips.
+            fillPattern(k.x, k.y, k.w, k.h, 101 + run);
+            screen::flush();
+            fillPattern(k.x, k.y, k.w, k.h, 1 + run);
+            t0 = micros();
+            bool ok = screen::pushStrips(k.x, k.y, k.w, k.h, &each, k.widest);
+            uint32_t took = micros() - t0;
+            if (!ok) {
+                Serial.printf("[bench] strips: %s not pushed by strips - internal RAM %uKB free, the largest block "
+                              "%uKB\n",
+                              k.name, (unsigned)(each.freeBefore / 1024), (unsigned)(each.largestBefore / 1024));
+                screen::flush();
+                continue;
+            }
+            strips.add(took);
+            pushed++;
+            perf.strips += each.strips;
+            perf.stripW = each.stripW;
+            perf.allocUs += each.allocUs;
+            perf.copyUs += each.copyUs;
+            perf.waitUs += each.waitUs;
+            perf.freeBefore = each.freeBefore;
+            perf.largestBefore = each.largestBefore;
+            screen::benchReadPanel(k.x, k.y, k.w, k.h, byStrips);
+            for (size_t i = 0; i < n; i++) {
+                apart += byStrips[i] != bySrm[i];
+            }
+            screen::flush();  // the rect still marked, as a flush would leave the canvas
+        }
+        Serial.printf("[bench] strips: %s %dx%d  flush() %.2fms (least %.2f, most %.2f) - the PPA from the PSRAM "
+                      "%.2f of it, the cache written back %.2f", k.name, k.w, k.h, srm.mean(), srm.min(), srm.max(),
+                      blit.mean(), sync.mean());
+        if (pushed == 0) {
+            Serial.println("; strips none");
+            continue;
+        }
+        int a = std::max(1, perf.strips);
+        Serial.printf("; strips %.2fms (least %.2f, most %.2f), the cache not written back: %d a push, %d wide, "
+                      "copying %uus and waiting %uus a strip, %uus taking them; internal RAM %uKB free, the largest "
+                      "block %uKB; the panel %u of %u pixels apart from the PPA's own push, which was %u apart from "
+                      "the canvas\n",
+                      strips.mean(), strips.min(), strips.max(), perf.strips / (int)pushed, perf.stripW,
+                      (unsigned)(perf.copyUs / a), (unsigned)(perf.waitUs / a), (unsigned)(perf.allocUs / pushed),
+                      (unsigned)(perf.freeBefore / 1024), (unsigned)(perf.largestBefore / 1024), (unsigned)apart,
+                      (unsigned)(n * pushed), (unsigned)srmWrong);
+    }
+    heap_caps_free(bySrm);
+    heap_caps_free(byStrips);
+}
+
 void benchPush() {
     Times t;
     for (int i = 0; i < 5; i++) {
@@ -697,6 +816,7 @@ void bench2dCommand(char c, void (*repaint)()) {
     case 'i': benchCycles(); break;
     case 'a': airportsBench(); break;
     case 'c': benchCodeMisses(); break;
+    case 'X': benchStrips(); break;
     default: Serial.printf("[bench] no bench '%c'\n", c); break;
     }
     if (repaint != nullptr) {

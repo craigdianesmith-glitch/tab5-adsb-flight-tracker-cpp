@@ -19,6 +19,9 @@
 //   s  the voices' words turned back into sound, and the engines' noise made
 //   c  the instruction caches' misses, L1 and L2, round one frame of the
 //      radar's plot - whole, a refresh and following - and the frame's time
+//   X  the plot's column and the whole screen pushed through internal RAM by
+//      screen::pushStrips() against the PPA reading the canvas, timed, and
+//      the panel read back after each, set against the other's
 #ifdef BENCH3D
 #include <vector>
 
