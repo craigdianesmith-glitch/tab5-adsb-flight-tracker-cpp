@@ -4628,6 +4628,7 @@ void setup() {
     g_alertRules.watch = parseWatchlist(g_watchlist);
     soundSetMuted(g_muted);
     radarScreenSetMuted(g_muted, false);
+    view3d::setEngineSound(s.engineSound);
     view3d::setTerrain(s.terrain);
     soundSetReadAloud(g_readAloud);
     soundSetElsewhereAccent(g_elsewhereAccent);
@@ -5281,6 +5282,15 @@ void loop() {
             if (const AirportInfo *info = airportInfo(g_testCode)) {
                 soundReadAirport(*info, true);
             }
+            break;
+        case 'e':
+            // "##e" the 3D view's touchdown squeal and reversers heard as the
+            // picture shows them, or as late as the sound takes to come from
+            // where they are, each time the other: the two side by side, by
+            // ear - see engine_noise.h. Until restarted.
+            engine_noise::g_transientsOnPicture = !engine_noise::g_transientsOnPicture;
+            Serial.printf("[sound] tyres and reversers: %s\n",
+                          engine_noise::g_transientsOnPicture ? "on the picture" : "when the sound arrives");
             break;
 #ifdef BENCH3D
         case '3':

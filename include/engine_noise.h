@@ -166,9 +166,6 @@ Engine a320Engines(const char *type, uint32_t who);
 // hundred, by `who`; never a neo, all built with the fix.
 bool a320Fopp(Engine engine, uint32_t who);
 
-// No recordings any more: kept for the "##e" switch that chose them, which
-// now does nothing.
-extern bool g_recordedVoices;
 // The touchdown's squeal and the reversers' coming on heard as the picture
 // shows them - a tenth of a second late at most - rather than as late as the
 // sound takes to come: from 300m that is nine tenths of a second, and on a

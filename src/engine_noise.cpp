@@ -10,7 +10,6 @@
 
 namespace engine_noise {
 
-bool g_recordedVoices = false;
 bool g_transientsOnPicture = false;
 
 namespace {
