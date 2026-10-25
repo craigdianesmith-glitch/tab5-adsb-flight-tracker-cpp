@@ -4929,8 +4929,8 @@ void startSoak(int n) {
         ok = onRunwayAt(m, "GLA", "23");
         break;
     case 22: m = circling("aa0026", "UPS208", "B763", "A5", false, 55.4, -3.6, 20000, 410, 30000); break;
-    // A turboprop, for its engines' sound - synthesised and recorded, side
-    // by side with "##e": its approach and reverse, and its full power.
+    // A turboprop, for its engines' sound: its approach and reverse, and its
+    // full power - silent until a turboprop's has been made.
     case 23:
     case 24:
         m = circling(n == 23 ? "aa0027" : "aa0028", n == 23 ? "LOG6KM" : "LOG8PW", "AT76", "A2", false, 0, 0, 0, 0, 0);
@@ -5190,10 +5190,12 @@ void loop() {
     // "##G" and "##U" say an alert, a landing and an aircraft's details at
     // Glasgow, Heathrow and JFK - in the Scottish, English and American
     // voices - and "##N" and "##A" read the card of the navaid nearest the
-    // last of those, and of its airport. Behind "##"
-    // rather than a bare letter: a computer opening the port echoes back the
-    // log lines it catches for a moment, and their letters ran the tests - a
-    // warble and a screenshot each time the port was opened.
+    // last of those, and of its airport. "##e" has the 3D view's touchdown
+    // squeal and reversers heard on the picture, or as late as their sound
+    // takes to come, each time the other. Behind "##" rather than a bare
+    // letter: a computer opening the port echoes back the log lines it
+    // catches for a moment, and their letters ran the tests - a warble and a
+    // screenshot each time the port was opened.
     static int hashes = 0;
     g_loopAt = "the serial commands";
     while (Serial.available()) {

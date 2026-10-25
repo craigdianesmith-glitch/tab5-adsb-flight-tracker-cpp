@@ -544,7 +544,7 @@ void soundInit() {
     // A step above the loop on its core: it takes a moment every 10ms, and a
     // millisecond to ready each word. Its stack 6KB, the most the words have
     // taken some 2.5KB of it; making the 3D view's engine noise, as the
-    // compiler counts it, some 1.5KB.
+    // compiler counts it from soundTick() down, some 2.2KB.
     xTaskCreatePinnedToCore(
         [](void *) {
             for (;;) {
