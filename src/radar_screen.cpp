@@ -2780,30 +2780,88 @@ void pushTraffic(bool push, bool footer) {
     }
 }
 
-// The centre's airport code drawn again over the traffic - a contact on the
-// ground there put its dot over the letters, the L of GLA - with a rim of the
-// plot's own dark round them, so it reads over a dot as it does over the
-// plot. Its box with the traffic's, to be put back and pushed with it.
-void drawCentreCodeOver(const String &code) {
-    if (code.length() == 0) {
+// The centre's airport code drawn over the traffic - a contact on the ground
+// there put its dot over the letters, the L of GLA - with a rim of the plot's
+// own dark round them, so it reads over a dot as it does over the plot. Into
+// the background too, as it is kept, so that a refresh of the traffic alone
+// draws it again only where the traffic meets it - see centreCodeMet().
+//
+// What the canvas drew as nine passes of its text - the code at the eight
+// steps round it in the dark, then in place in home's colour - in one pass
+// through the raster: each of the code's scan lines as bits, a pixel a bit,
+// grown by a pixel each way for the rim. A code too long for 64 bits, which
+// no airport's is, goes round the nine passes, through the raster still.
+void drawCentreCode(const String &code) {
+    int n = code.length();
+    if (n == 0) {
         return;
     }
     auto &canvas = screen::canvas();
-    canvas.setTextSize(2);
-    canvas.setTextDatum(TC_DATUM);
-    canvas.setTextColor(colorBg);
-    for (int dy = -1; dy <= 1; dy++) {
-        for (int dx = -1; dx <= 1; dx++) {
-            if (dx != 0 || dy != 0) {
-                canvas.drawString(code, CENTER_X + dx, CENTRE_CODE_Y + dy);
+    int32_t clipX, clipY, clipW, clipH;
+    canvas.getClipRect(&clipX, &clipY, &clipW, &clipH);
+    Raster out = {(uint16_t *)canvas.getBuffer(), canvas.width(), (int)clipX, (int)clipY,
+                  (int)(clipX + clipW - 1), (int)(clipY + clipH - 1), 0, 0};
+    int left = CENTER_X - (Raster::textWidth(code) >> 1);  // as the canvas centres it
+    if (n > 5) {
+        out.use(colorBg);
+        for (int dy = -1; dy <= 1; dy++) {
+            for (int dx = -1; dx <= 1; dx++) {
+                if (dx != 0 || dy != 0) {
+                    out.text(code, left + dx, CENTRE_CODE_Y + dy);
+                }
+            }
+        }
+        out.use(colorHome);
+        out.text(code, left, CENTRE_CODE_Y);
+        return;
+    }
+    // ink[i] the scan line at CENTRE_CODE_Y - 1 + i, its bit k the pixel at
+    // left - 1 + k: Font0 at size 2, as Raster::text() draws it, with a line
+    // and a column to spare all round for the rim.
+    uint64_t ink[18] = {};
+    for (int k = 0; k < n; k++) {
+        const uint8_t *glyph = glcd::font + (uint8_t)code[k] * 5;
+        for (int col = 0; col < 5; col++) {
+            for (int row = 0; row < 8; row++) {
+                if (glyph[col] >> row & 1) {
+                    uint64_t bits = 3ull << (1 + k * 12 + col * 2);
+                    ink[1 + row * 2] |= bits;
+                    ink[2 + row * 2] |= bits;
+                }
             }
         }
     }
-    canvas.setTextColor(colorHome);
-    canvas.drawString(code, CENTER_X, CENTRE_CODE_Y);
-    int w = canvas.textWidth(code);
-    g_trafficBoxes.push_back({(int16_t)(CENTER_X - w / 2 - 2), (int16_t)(CENTRE_CODE_Y - 2), (int16_t)(w + 4),
-                              (int16_t)(LABEL_H + 4)});
+    auto runs = [&](uint64_t bits, int y) {
+        while (bits) {
+            int from = __builtin_ctzll(bits);
+            int len = __builtin_ctzll(~(bits >> from));
+            out.hline(left - 1 + from, y, len);
+            bits &= ~(((1ull << len) - 1) << from);
+        }
+    };
+    for (int i = 0; i < 18; i++) {
+        uint64_t near = ink[i] | (i > 0 ? ink[i - 1] : 0) | (i < 17 ? ink[i + 1] : 0);
+        int y = CENTRE_CODE_Y - 1 + i;
+        out.use(colorBg);
+        runs((near | near << 1 | near >> 1) & ~ink[i], y);
+        out.use(colorHome);
+        runs(ink[i], y);
+    }
+}
+
+// Whether the traffic drawn this frame, or the last frame's put back from the
+// background, meets the centre's code - its letters and their rim, with a
+// pixel to spare. Elsewhere the code is still there as the background has it,
+// rim and all, and was nine passes of the canvas's text and a box put back
+// and pushed every frame.
+bool centreCodeMet(const String &code) {
+    if (code.length() == 0) {
+        return false;
+    }
+    int w = Raster::textWidth(code);
+    int x = CENTER_X - w / 2 - 2, y = CENTRE_CODE_Y - 2;
+    return overlapsAny(g_trafficWas.data(), (int)g_trafficWas.size(), x, y, w + 4, LABEL_H + 4, 0) ||
+           overlapsAny(g_trafficBoxes.data(), (int)g_trafficBoxes.size(), x, y, w + 4, LABEL_H + 4, 0);
 }
 
 // A refresh of the radar's traffic alone - see Background.
@@ -2817,7 +2875,9 @@ void refreshTraffic(const RadarScene &scene, double lat, double lon, int rangeNm
     uint32_t t1 = micros();
     drawContacts(scene.aircraft, scene.isNew, scene.trails, scene.flash,
                  {lat, lon, (float)RADIUS / rangeNm, 60.0f, false, scene.followHex}, plotted, labelled);
-    drawCentreCodeOver(centreCode);
+    if (centreCodeMet(centreCode)) {
+        drawCentreCode(centreCode);
+    }
     canvas.clearClipRect();
     // The footer's readouts, the same for as long as the view is but the
     // count, drawn again over themselves - the traffic put back may have
@@ -2973,8 +3033,10 @@ void radarPlotDraw(const RadarScene &scene, bool full) {
     }
 
     // The background kept before the names go on, as they move with the
-    // traffic - see drawNames().
+    // traffic - see drawNames() - and with the centre's code on it as it is
+    // drawn over the traffic.
     if (canKeep && g_background.pending && sameBackground(key, g_background.key)) {
+        drawCentreCode(centreCode);
         keepBackground();
         g_background.pending = false;
     } else if (!keptFor) {
@@ -2989,7 +3051,7 @@ void radarPlotDraw(const RadarScene &scene, bool full) {
     uint32_t t1 = micros();
     drawContacts(scene.aircraft, scene.isNew, scene.trails, scene.flash,
                  {lat, lon, (float)RADIUS / rangeNm, 60.0f, false, scene.followHex}, plotted, labelled);
-    drawCentreCodeOver(centreCode);
+    drawCentreCode(centreCode);
 
     canvas.clearClipRect();
     // Out over the plot's corner, so wiped with it: put back each time.
