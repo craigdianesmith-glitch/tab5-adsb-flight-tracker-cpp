@@ -760,6 +760,9 @@ constexpr float TURN_MIN_S = 3.0f, TURN_MAX_S = 10.0f;
 // way; and each report is eased into, so it neither stops nor jumps between
 // them.
 constexpr float TAXI_CARRY_S = 12.0f;
+// A landing put back down the runway is eased by its roll, not the clock:
+// held this long, its stop included, unless a report comes first.
+constexpr uint32_t ROLL_EASE_MS = 600000;
 
 bool lowReport(const FollowSample &s) { return s.ground || (s.hasAlt && s.altFt < ESTIMATE_MAX_FT); }
 
@@ -863,6 +866,7 @@ void RunwaySim::report(const FollowSample &s) {
     bool turnOff = advance(prev, hadPrev);
     easeStartMs_ = easeEndMs_ = altEndMs_ = s.ms;
     turning_ = false;
+    rollOverNm_ = 0;
     // In the air still by this report, though shown down already - put down
     // a little early, the feed having lost it fast on final - and over the
     // runway, not climbing away: kept down, not shown lifting off again to
@@ -909,6 +913,27 @@ void RunwaySim::report(const FollowSample &s) {
             float toTouchdownS = (TOUCHDOWN_NM - along) / std::max((float)now.gsKt, EASE_MIN_KT) * 3600.0f;
             altS = std::min(altS, std::max(toTouchdownS - 1.0f, EASE_MIN_S));
         }
+        // Landing, and put back down the runway - found again behind where
+        // the simulation had it, which brakes more gently than most: taken
+        // in as it goes on, not over so many seconds, so it is seen to slow
+        // and never to go back. Over eight times the distance where its roll
+        // leaves room - slowed by a fifth at most, so a few metres put right
+        // don't dip it under the 40 knots the taxiway follower takes it at -
+        // and one and a half at least, which keeps it going forwards;
+        // stopping first, it is left that little on from the report rather
+        // than slid back to it.
+        if (phase_ == LANDING) {
+            float nowAlong, shownAlong, stopAlong, offset;
+            relate(rw_, now.lat, now.lon, nowAlong, offset);
+            relate(rw_, shown.lat, shown.lon, shownAlong, offset);
+            FollowEstimate stop = model(s.ms + ROLL_EASE_MS, 1e9f);
+            relate(rw_, stop.lat, stop.lon, stopAlong, offset);
+            float roll = stopAlong - nowAlong;
+            if (shownAlong > nowAlong && roll > 0) {
+                rollFromNm_ = nowAlong;
+                rollOverNm_ = std::max(1.5f * d, std::min(8.0f * d, roll));
+            }
+        }
         // Already handed back, and still easing: the feed's from here. Not
         // taxiing, though: carried on along its track since its last report,
         // one that has it slowing - turned off and down to taxiing speed -
@@ -917,7 +942,7 @@ void RunwaySim::report(const FollowSample &s) {
             easeS = altS = EASE_MIN_S;
         }
         altEndMs_ = s.ms + (uint32_t)(altS * 1000.0f);
-        easeS = std::max(easeS, altS);
+        easeS = rollOverNm_ > 0 ? ROLL_EASE_MS / 1000.0f : std::max(easeS, altS);
     }
     easeEndMs_ = s.ms + (uint32_t)(easeS * 1000.0f);
 }
@@ -1108,9 +1133,21 @@ FollowEstimate RunwaySim::at(uint32_t ms, float maxAgeS) const {
     }
     float u = smoothstep(since <= 0 ? 0.0f : (float)since / span);
     if (!turning_) {
-        // Its height over its own span, by the touchdown.
+        // Its height over its own span, by the touchdown; its place by the
+        // clock, or by how far it has rolled on - see report().
         int32_t altSpan = (int32_t)(altEndMs_ - easeStartMs_);
         float ua = altSpan <= 0 || since >= altSpan ? 1.0f : smoothstep(since <= 0 ? 0.0f : (float)since / altSpan);
+        if (rollOverNm_ > 0) {
+            float along, offset;
+            relate(rw_, e.lat, e.lon, along, offset);
+            float r = std::min(std::max((along - rollFromNm_) / rollOverNm_, 0.0f), 1.0f);
+            u = smoothstep(r);
+            // And its speed the speed it is shown going, slower than the
+            // roll's while the offset is taken in: carried on at the roll's,
+            // the view ran on ahead of it, and back.
+            float d = hypotf(dLat_ * 60.0f, dLon_ * nmPerDegLonAt(e.lat));
+            e.gsKt = (int)lroundf(e.gsKt * std::max(0.0f, 1.0f - d * 6.0f * r * (1.0f - r) / rollOverNm_));
+        }
         e.lat += dLat_ * (1.0f - u);
         e.lon += dLon_ * (1.0f - u);
         e.altFt += (int32_t)(dAlt_ * (1.0f - ua));

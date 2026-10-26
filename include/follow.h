@@ -156,5 +156,8 @@ private:
     bool turning_ = false;
     bool heldDown_ = false;  // LANDING: fresh_ in the air, but taken as down - see report()
     float dLat_ = 0, dLon_ = 0, dAlt_ = 0;     // the offset
+    // Landing, put back down the runway: the offset taken in over the
+    // rollOverNm_ it rolls on from rollFromNm_ along it, rather than by time.
+    float rollFromNm_ = 0, rollOverNm_ = 0;
     float fromLat_ = 0, fromLon_ = 0, fromTrack_ = 0;  // the turn's start
 };
