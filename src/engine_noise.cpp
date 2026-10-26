@@ -1613,7 +1613,7 @@ namespace {
 // x-eufi-close-pass, x-eufi-display-100m) against the 18 recordings, six
 // realisations of each scene, through the same chains as the recordings
 // [M: tools/engine_preview/NOTES.md, renders/eufi-fit/metrics.json].
-//  Its level, dB, against the airliner's LEVEL: its reheat take-off 2.1LU
+//  Its level, dB, against the airliner's LEVEL: its reheat take-off 2.2LU
 //  over the airliner's in short-term loudness, its 80m reheat pass 1.9LU,
 //  the soft limiter rounding off 0.045% and 0.096% of their samples - half
 //  a decibel more put the pass's over 0.1% (the roar's own peaks, not its
@@ -1691,11 +1691,15 @@ float tam(const float *t, float octaves) {
 // The big eddies' roar: most at the Mach waves' angle off the nose - 130
 // to 140 degrees dry, 115 to 125 lit, its jet the faster [I: eufi-sources
 // 1.3; P: the F-22A's 120-140, the F404's 150 at low power to 120 in
-// afterburner] - 30dB down ahead, and down again right behind, in the jet's
-// cone of silence.
+// afterburner] - 20dB down ahead, and a little down right behind, in the
+// jet's cone of silence: flatter than the research's 30dB, which left the
+// passes 23dB under their peak two seconds before it where the recordings
+// are 9-12dB under [M].
 constexpr Lobe LTS_DRY = {-20.0f, -19.0f, -17.0f, -14.0f, -10.0f, -6.0f, -2.0f, 0.0f, -0.5f, -2.5f};
 constexpr Lobe LTS_WET = {-19.0f, -18.0f, -16.0f, -12.0f, -7.0f, -2.5f, 0.0f, -0.5f, -1.0f, -3.0f};
-// The fine turbulence's: broad, most to the side, 12dB down ahead.
+// The fine turbulence's: broad, most to the side, 4dB down ahead - the front
+// of a pass, its in-band spectrum the same as behind [M: no forward hump in
+// 28 passes, so no shock-associated hump here].
 constexpr Lobe FST = {-4.0f, -3.5f, -3.0f, -2.0f, -1.0f, 0.0f, 0.0f, -2.0f, -4.0f, -6.0f};
 // The shocks', against the roar they ride on: most about the Mach angle,
 // and still there, weaker, coming [M: the passes' derivative skewness, through
