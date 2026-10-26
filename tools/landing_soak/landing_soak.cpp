@@ -70,7 +70,6 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
-#include <map>
 #include <string>
 #include <vector>
 
@@ -419,7 +418,6 @@ static Result run(const Scenario &sc, const Options &o) {
     bool again = false;
     float nextAgain = sc.againS;
     int againN = 0;
-    subject3d::Picker picker;
 
     const float dt = 1 / o.fps;
     struct Frame {
@@ -545,8 +543,6 @@ static Result run(const Scenario &sc, const Options &o) {
         // main's update3dSubject(): seen landing, slowed under 45kt on the
         // ground - the moment it moves on, if there is anything else about.
         {
-            std::map<String, int> none;
-            String next;
             FollowEstimate pe = sim.at(now);
             if (res.picker45T < 0 && pe.ground && f.movement == RunwaySim::Movement::LANDING &&
                 pe.gsKt < subject3d::ROLLED_OUT_KT) {

@@ -611,7 +611,12 @@ FollowEstimate estimateFollowed(const FollowSample &given, float ageS, const Sam
     bool lowEnough = last.ground || !last.hasAlt || last.altFt < ESTIMATE_MAX_FT;
     bool climbing = !last.ground && last.hasVs && last.vsFpm >= CLIMBING_FPM;
     bool fast = !last.ground && gs > LANDING_MAX_KT;
-    bool lined = runways && rolling && lowEnough && !climbing && !fast && findLineup(last, l);
+    // In the air with no speed, given or worked out - its first report, none
+    // before to go by - nothing to fly it in by: landed at nought, it was put
+    // down stopped at the touchdown point, and set back in the air 8km out
+    // at the next report.
+    bool still = !last.ground && gs <= 0;
+    bool lined = runways && rolling && lowEnough && !climbing && !fast && !still && findLineup(last, l);
     if (lined && !last.ground && last.hasAlt && !couldLand(last, l.along, (float)(aboveSeaFt(last) - l.fieldFt))) {
         lined = false;
     }
@@ -862,6 +867,15 @@ void RunwaySim::report(const FollowSample &s) {
     haveFresh_ = true;
     if (!hadPrev) {
         phase_ = NONE;
+    }
+    // Landing, and this report on final with no speed - one in a while, from
+    // some feeds - kept landing at the speed it was shown: ended there, it
+    // was carried on at a speed worked out from positions of different ages,
+    // 215 knots for one at 149, and slid back as much as a kilometre at the
+    // next report.
+    if (hadPrev && phase_ == LANDING && !s.ground && !s.hasGs && shown.gsKt > 0) {
+        fresh_.hasGs = true;
+        fresh_.gsKt = (int16_t)shown.gsKt;
     }
     bool turnOff = advance(prev, hadPrev);
     easeStartMs_ = easeEndMs_ = altEndMs_ = s.ms;
