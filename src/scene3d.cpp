@@ -11849,6 +11849,10 @@ const char *const SHOT_NAMES[] = {"chase",  "long lens", "touchdown", "replay", 
 constexpr float REPLAY_FROM = 3.5f, REPLAY_SLOW = 0.5f, REPLAY_LIVE_S = 4.5f;
 // The least a shot is held, unless something happens.
 constexpr float HOLD_S = 3;
+// How far off an aircraft climbing away is watched from past the runway's
+// end, at most: further, the haze takes it - with the sun low, past this
+// only its engines and lights stood out from a sky the haze's own colour.
+constexpr float CLIMB_AWAY_MOST_M = 1500;
 
 }  // namespace
 
@@ -11904,6 +11908,14 @@ Camera Director::next(const Flight &flight, float seconds, const char **shot, Po
     if (end) {
         along = dot(pose.at - end->origin, end->along);
     }
+    // A point on the runway's own terms - along it, out to its right - with
+    // the taxiway's side kept clear.
+    auto at = [&](float a, float right, float z) {
+        float r = end->exitRight ? -right : right;
+        return end->origin + end->along * a + end->right * r + Vec3{0, 0, z};
+    };
+    // Where Shot::CLIMB_AWAY watches from: past the runway's end, to one side.
+    auto pastTheEnd = [&] { return at(end->length + 150, 80, 1.7f); };
 
     // The shot what it is doing calls for.
     Shot want = Shot::CHASE;
@@ -11931,7 +11943,13 @@ Camera Director::next(const Flight &flight, float seconds, const char **shot, Po
         } else if (sinceLiftoff >= 0 && sinceLiftoff < 3) {
             want = Shot::ROLL;
         } else {
-            want = height < 350 ? Shot::CLIMB : Shot::CLIMB_AWAY;
+            // Watched climbing away from past the runway's end only while it
+            // is near enough to make out: the long lens held it there to
+            // 3,000ft and more, kilometres off, faded into a sky the haze's
+            // colour - a blank screen with a few of its edges showing. Then,
+            // and not back again, from behind it, the land below.
+            bool near = st.shot != Shot::CHASE && length(middleOf(pose, size) - pastTheEnd()) < CLIMB_AWAY_MOST_M;
+            want = height < 350 ? Shot::CLIMB : near ? Shot::CLIMB_AWAY : Shot::CHASE;
         }
     }
     // Cut to it - at once for a touchdown, a replay or a lift-off, or from a
@@ -11951,12 +11969,6 @@ Camera Director::next(const Flight &flight, float seconds, const char **shot, Po
     }
     float in = seconds - st.shotFrom;  // how long the shot has been up
 
-    // A point on the runway's own terms - along it, out to its right - with
-    // the taxiway's side kept clear.
-    auto at = [&](float a, float right, float z) {
-        float r = end->exitRight ? -right : right;
-        return end->origin + end->along * a + end->right * r + Vec3{0, 0, z};
-    };
     // A camera on the ground raised - five metres at a time, forty at most,
     // quickly, and down again slowly once clear - while a building stands
     // between it and `target`: by a runway, or carried beside it as it taxied
@@ -12054,7 +12066,7 @@ Camera Director::next(const Flight &flight, float seconds, const char **shot, Po
     case Shot::CLIMB:
         return orbitCamera(pose, 12, -6, 75 * size, 42);
     case Shot::CLIMB_AWAY:
-        return fixedCamera(pose, raised(at(end->length + 150, 80, 1.7f), middleOf(pose, size)), 0.3f, size);
+        return fixedCamera(pose, raised(pastTheEnd(), middleOf(pose, size)), 0.3f, size);
     default:
         // Behind and a little above, off one quarter.
         return orbitCamera(pose, 20, 9, 85 * size, 44);
