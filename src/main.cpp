@@ -54,6 +54,7 @@
 #include "bench3d.h"
 #include "bench2d.h"
 #include "wifi_screen.h"
+#include "wifi_watch.h"
 
 // The loop's stack, 10KB rather than the framework's 8: at its deepest it had
 // 1.6KB of the 8 to spare, little margin for a path a soak doesn't take.
@@ -580,6 +581,30 @@ bool ensureWifi() {
         }
     }
     return false;
+}
+
+// For the WiFi watchdog - see wifi_watch.h - which looks after the link on
+// the poll task beside ensureWifi(), for the failures ensureWifi() cannot
+// see, and stands down as it does: while the WiFi screen has the radio, and
+// with no network to join. It leaves g_wifiFails and g_wifiGaveUp alone:
+// those count ensureWifi()'s own attempts, towards the screen that lets
+// another network be picked.
+bool watchUiOwnsWifi() {
+    bool owns = true;
+    if (xSemaphoreTake(g_dataMutex, portMAX_DELAY) == pdTRUE) {
+        owns = g_uiOwnsWifi;
+        xSemaphoreGive(g_dataMutex);
+    }
+    return owns;
+}
+
+bool watchCredentials(String &ssid, String &pass) {
+    if (xSemaphoreTake(g_dataMutex, portMAX_DELAY) == pdTRUE) {
+        ssid = g_wifiSsid;
+        pass = g_wifiPass;
+        xSemaphoreGive(g_dataMutex);
+    }
+    return !credentialsUnset(ssid);
 }
 
 #ifdef BENCH3D
@@ -1354,6 +1379,11 @@ void pollTask(void *) {
             xSemaphoreGive(g_dataMutex);
         }
 
+        // The WiFi watchdog, this poll's outcome now in the feed's count -
+        // and again in every slice of the wait below, where its check of the
+        // link comes round every 10s. See wifi_watch.h.
+        wifiwatch::tick();
+
         // Sliced rather than one long delay, so a location or filter change
         // takes effect straight away instead of up to a poll interval later.
         // The interval is re-read each slice too, so dragging it shorter on the
@@ -1373,6 +1403,7 @@ void pollTask(void *) {
         uint32_t waitStart = lastRequestMs;
         for (;;) {
             vTaskDelay(pdMS_TO_TICKS(200));
+            wifiwatch::tick();
             bool now = false;
             ZoomPoll zoom;
             if (xSemaphoreTake(g_dataMutex, 0) == pdTRUE) {
@@ -4564,13 +4595,17 @@ void leaveWifiScreen() {
     // should reconnect with - so take them back from there rather than
     // tracking every path through the screen that might have changed them.
     AppSettings s = loadSettings();
+    String network;
     if (xSemaphoreTake(g_dataMutex, portMAX_DELAY) == pdTRUE) {
         g_uiOwnsWifi = false;
         g_wifiGaveUp = false;
         g_wifiSsid = s.wifiSsid.length() ? s.wifiSsid : String(WIFI_SSID);
         g_wifiPass = s.wifiSsid.length() ? s.wifiPass : String(WIFI_PASSWORD);
+        network = g_wifiSsid;
         xSemaphoreGive(g_dataMutex);
     }
+    settingsScreenSetNetwork(network);  // see setup()
+    shareScreenSetNetwork(network);
     g_nextWifiTryMs = 0;  // a fresh attempt is wanted now, not after the backoff
     g_wifiRetryMs = WIFI_RETRY_MIN_MS;
     g_wifiFails = 0;  // and a full set of them before the screen comes back
@@ -4627,6 +4662,39 @@ void checkWifiGaveUp() {
     wifiScreenEnter("Could not reach " + ssid + " - choose a network");
 }
 
+// Whether a replay is what is on the screen: its own, its 3D view, or an
+// aircraft's details opened from either.
+bool replayOnScreen() {
+    auto fromReplay = [](Screen s) { return s == Screen::PLAYBACK || (s == Screen::VIEW3D && g_view3dReplay); };
+    return fromReplay(g_screen) || (g_screen == Screen::DETAIL && fromReplay(g_detailReturnTo));
+}
+
+// The WiFi watchdog's restart - see wifi_watch.h - once it has asked for one,
+// at a time nothing would be lost by it. Not while a recording is being
+// written: its file would be left without its end. Not while a replay is
+// playing, nor with the WiFi screen open, where someone is in the middle of
+// something that needs no network or is mending it themselves. Asked again
+// every pass until then, and said once for each reason it waits.
+void checkWatchdogRestart() {
+    static const char *saidHeld = nullptr;
+    if (!wifiwatch::restartWanted()) {
+        saidHeld = nullptr;
+        return;
+    }
+    const char *held = recorder::active()         ? "a recording is being written"
+                       : replayOnScreen()         ? "a replay is playing"
+                       : g_screen == Screen::WIFI ? "the WiFi screen is open"
+                                                  : nullptr;
+    if (held != nullptr) {
+        if (held != saidHeld) {
+            saidHeld = held;
+            Serial.printf("[wifi] watchdog: the restart waits - %s\n", held);
+        }
+        return;
+    }
+    wifiwatch::restartNow();
+}
+
 }  // namespace
 
 // The chip's own memory - fast, and all the 3D view's drawing and the
@@ -4646,6 +4714,10 @@ void setup() {
     Serial.setTxTimeoutMs(SERIAL_TX_TIMEOUT_MS);
     delay(300);
     Serial.printf("[boot] Overhead v%s\n", FIRMWARE_VERSION);
+    // What started it this time - and whether it was the WiFi watchdog's
+    // restart, after which it comes up without the take-off: at three in the
+    // morning that would be the only sign the watchdog had done anything.
+    bool quietBoot = wifiwatch::noteBoot();
     // Tab5's WiFi lives on a separate ESP32-C6 over SDIO, and the generic P4
     // eval-board pin defaults don't reach it. M5Unified is supposed to fix
     // this via a weak-linked hostedSetPins() call in M5.begin(), but set it
@@ -4765,17 +4837,33 @@ void setup() {
     g_wifiSsid = s.wifiSsid.length() ? s.wifiSsid : String(WIFI_SSID);
     g_wifiPass = s.wifiSsid.length() ? s.wifiPass : String(WIFI_PASSWORD);
     bool haveCredentials = !credentialsUnset(g_wifiSsid);
+    // The network's name, for the settings button's "Connected to" and the
+    // share screen's "the same WiFi", given to them rather than had from
+    // WiFi.SSID(). That is a request to the C6, and from the loop it froze
+    // the screen for five seconds whenever the C6 stopped answering - on 24
+    // Oct, opening the settings mid-outage. And in ESP-Hosted 2.12.13 two
+    // requests from two tasks at once can take each other's answers, the
+    // watchdog's check of the link among them; WiFi.SSID()'s, given the wrong
+    // one, copies through a pointer that isn't there. The network joined is
+    // the one it was told to join; leaveWifiScreen() passes on a new one.
+    settingsScreenSetNetwork(g_wifiSsid);
+    shareScreenSetNetwork(g_wifiSsid);
 
     // The network is joined while the splash screen plays, and waited on
     // after it for what is left of the timeout, the splash saying so. With
     // nothing to connect with, the timeout isn't spent finding out; the WiFi
     // screen scans, which needs the radio in station mode either way.
     WiFi.mode(WIFI_STA);
+    // ESP-Hosted is up now, and the C6 has said which version it runs: the
+    // watchdog says both, and starts counting the link's events.
+    wifiwatch::begin(wifiwatch::Hooks{watchUiOwnsWifi, watchCredentials});
     uint32_t wifiStart = millis();
     if (haveCredentials) {
         WiFi.begin(g_wifiSsid.c_str(), g_wifiPass.c_str());
     }
-    soundTakeoff();
+    if (!quietBoot) {
+        soundTakeoff();
+    }
     splashPlay();
     if (haveCredentials) {
         if (WiFi.status() != WL_CONNECTED) {
@@ -5883,6 +5971,41 @@ void loop() {
                 open3d();
             }
             break;
+        case '!': {
+            // "##!" and a letter: the WiFi watchdog's - see wifi_watch.h -
+            // carried out on the poll task, which asks the C6, so within a
+            // fifth of a second while it waits between polls and after the
+            // poll otherwise. Every letter and digit after "##" was taken.
+            // 's' the link's state: what the Tab5 believes, what the C6
+            //     says, its signal and channel, whether the router answers,
+            //     both ends' ESP-Hosted versions, the feed's count and the
+            //     watchdog's own.
+            // 'x' the stuck state of 26 Oct, made: the C6 told to leave the
+            //     network with the Tab5 not told, so it goes on believing it
+            //     is connected. 'X' the same with the link check paused, for
+            //     the feed's watchdog to find it instead.
+            // 'd' name lookups broken - every DNS server pointed at nothing -
+            //     for the feed's watchdog to count; 'D' put back. 'r' the
+            //     router taken as silent, or asked again: with lookups
+            //     broken, the ladder runs rather than the router being found
+            //     to answer and the WiFi left alone.
+            // '1', '2', '3' that step of the ladder now: the network rejoined,
+            //     the C6's WiFi restarted, the Tab5 restarted - the last when
+            //     the loop's rules allow, as the watchdog's own would be.
+            // '0' all of the bench's changes undone, any trouble forgotten.
+            int which = -1;
+            uint32_t until = millis() + 1000;
+            while (which < 0 && (int32_t)(millis() - until) < 0) {
+                which = Serial.read();
+                if (which < 0) {
+                    delay(2);
+                }
+            }
+            if (which > 0) {
+                wifiwatch::benchCommand((char)which);
+            }
+            break;
+        }
 #endif
         }
     }
@@ -6066,6 +6189,7 @@ void loop() {
         }
     }
     checkWifiGaveUp();
+    checkWatchdogRestart();
 
     static uint32_t nextRotationCheck = 0;
     uint32_t now = millis();

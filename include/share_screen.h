@@ -1,5 +1,7 @@
 #pragma once
 
+#include <Arduino.h>
+
 enum class ShareAction {
     NONE,
     BACK,
@@ -15,3 +17,6 @@ void shareScreenTick();
 ShareAction shareScreenHandleTouch(int x, int y);
 // Stops sharing; for whoever takes the screen away.
 void shareScreenLeave();
+// The network the device joins, named for the phone to join too - told,
+// rather than asked of the C6 as it draws: see setup() in main.cpp.
+void shareScreenSetNetwork(const String &name);

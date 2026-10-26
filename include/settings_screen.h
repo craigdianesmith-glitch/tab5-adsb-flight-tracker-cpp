@@ -39,6 +39,10 @@ bool settingsScreenAutoZoom();
 // been in and changed it.
 void settingsScreenSetLocation(const String &locationLabel);
 
+// The network the device joins, for the WiFi button's "Connected to" - told,
+// rather than asked of the C6 as it draws: see setup() in main.cpp.
+void settingsScreenSetNetwork(const String &name);
+
 // The one-line summary shown on the alerts button, e.g. "3 of 4 on, auto-record on".
 void settingsScreenSetAlertSummary(const String &summary);
 

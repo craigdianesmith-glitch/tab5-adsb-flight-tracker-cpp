@@ -66,3 +66,31 @@ bool stillInTheAir(float gsKt, const String &type, const String &category);
 
 bool fetchAircraft(double lat, double lon, int radiusNm, bool military, AdsbSource source,
                    std::vector<Aircraft> &out, const char *&usedProvider);
+
+// How the requests to the feed have gone lately, for the WiFi watchdog (see
+// wifi_watch.h): when a provider last answered at all, and how many requests
+// have failed at the network since. "Answered" is any HTTP status - a 429 or
+// a 503 is a server that was reached, which is all the watchdog asks - and a
+// reply that came but would not parse is answered too. A network failure is
+// a request that never got a reply: the name not looked up, the connection
+// or its TLS not made, nothing back in the time allowed, the connection lost
+// part way, or a reply cut off by the 30s cap. A request the 429 backoff
+// held back was never made, and counts as neither.
+//
+// Both the main poll and the zoom's go through here, and only the poll task
+// makes requests, so only it should read this.
+struct AdsbFeedHealth {
+    uint32_t requests = 0;         // requests made since boot
+    uint32_t lastAnswerMs = 0;     // millis() a provider last answered; 0 never
+    uint32_t netFails = 0;         // network failures in a row since then
+    uint32_t netFailsSinceMs = 0;  // when the first of them was
+    uint32_t lastNetFailMs = 0;
+    const char *lastNetFail = "";  // the last one, in words
+};
+const AdsbFeedHealth &adsbFeedHealth();
+
+// Closes the kept-alive connection to the feed. For the watchdog, after it
+// has rejoined the network or restarted the WiFi: the socket is from before,
+// and the next request is better made afresh than left to find that out.
+// From the poll task only, as every request is.
+void adsbDropConnection();

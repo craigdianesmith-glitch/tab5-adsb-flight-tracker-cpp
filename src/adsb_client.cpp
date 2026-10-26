@@ -109,7 +109,17 @@ class PoliteTls : public WiFiClientSecure {
   public:
     // Until when, on millis(), the reply under way may go on being read; 0
     // for no limit.
-    void allowUntil(uint32_t ms) { untilMs_ = ms; }
+    void allowUntil(uint32_t ms) {
+        untilMs_ = ms;
+        if (ms != 0) {
+            dropped_ = false;
+        }
+    }
+    // Whether the reply was cut off by that time. It shows as a reply that
+    // will not parse, but it is the network that stopped delivering - the
+    // first sign, twice now, of the WiFi link to the co-processor sticking -
+    // so the watchdog's count needs it told apart from a server's garbage.
+    bool dropped() const { return dropped_; }
 
     size_t readBytes(char *buffer, size_t length) override {
         size_t got = 0;
@@ -118,6 +128,7 @@ class PoliteTls : public WiFiClientSecure {
             if (untilMs_ != 0 && (int32_t)(millis() - untilMs_) > 0) {
                 Serial.println("[adsb] a reply still not in after 30s - dropped");
                 untilMs_ = 0;
+                dropped_ = true;
                 stop();
                 break;
             }
@@ -141,6 +152,7 @@ class PoliteTls : public WiFiClientSecure {
 
   private:
     uint32_t untilMs_ = 0;
+    bool dropped_ = false;
 };
 static PoliteTls g_tls;
 static HTTPClient g_http;
@@ -180,6 +192,35 @@ static bool g_tlsConfigured = false;
 // to a different provider would send the request down a connection to the
 // wrong server, so a change of host closes it first.
 static String g_connectedHost;
+// Set by requestInto() when the request was never made - a URL the client
+// would not take - which fails with the same code as a refused connection
+// but says nothing about the network.
+static bool g_requestNotMade = false;
+
+static AdsbFeedHealth g_health;
+
+const AdsbFeedHealth &adsbFeedHealth() { return g_health; }
+
+void adsbDropConnection() {
+    g_http.end();
+    g_tls.stop();
+    g_connectedHost = "";
+}
+
+// What came of one request, for the watchdog's count: see AdsbFeedHealth.
+static void noteAnswered() {
+    g_health.lastAnswerMs = millis();
+    g_health.netFails = 0;
+}
+static void noteNetFail(const char *what) {
+    uint32_t now = millis();
+    if (g_health.netFails == 0) {
+        g_health.netFailsSinceMs = now;
+    }
+    g_health.netFails++;
+    g_health.lastNetFailMs = now;
+    g_health.lastNetFail = what;
+}
 
 // Providers answer 429 when they have had enough, and going straight back at
 // the same cadence only collects more of them. After one, the polls skip that
@@ -1008,8 +1049,10 @@ static int requestInto(const String &url, const AdsbEndpoint &ep, bool military,
     }
     g_connectedHost = host;
 
+    g_requestNotMade = false;
     if (!g_http.begin(g_tls, url)) {
         Serial.println("[adsb] http.begin() failed");
+        g_requestNotMade = true;
         return HTTPC_ERROR_CONNECTION_REFUSED;
     }
     g_http.setUserAgent(USER_AGENT);
@@ -1069,6 +1112,42 @@ static int requestInto(const String &url, const AdsbEndpoint &ep, bool military,
     return code;
 }
 
+// How one request ended, for AdsbFeedHealth: answered, failed at the network,
+// or neither - never made, or out of memory and the like, which are this
+// device's own trouble and no sign of the network's.
+static void noteOutcome(int code) {
+    g_health.requests++;
+    if (code > 0) {
+        if (g_tls.dropped()) {
+            noteNetFail("a reply cut off after 30s");
+        } else {
+            noteAnswered();
+        }
+        return;
+    }
+    if (g_requestNotMade) {
+        return;
+    }
+    switch (code) {
+    case HTTPC_ERROR_CONNECTION_REFUSED:
+        // The name not looked up, the server not reached, or the TLS
+        // handshake not made: HTTPClient says the same for all three.
+        noteNetFail("no connection made");
+        break;
+    case HTTPC_ERROR_READ_TIMEOUT:
+        noteNetFail("no reply in 12s");
+        break;
+    case HTTPC_ERROR_SEND_HEADER_FAILED:
+    case HTTPC_ERROR_SEND_PAYLOAD_FAILED:
+    case HTTPC_ERROR_NOT_CONNECTED:
+    case HTTPC_ERROR_CONNECTION_LOST:
+        noteNetFail("the connection lost");
+        break;
+    default:
+        break;
+    }
+}
+
 // One provider, asked once (plus the single retry a died socket earns).
 static bool fetchFrom(int idx, double lat, double lon, int radiusNm, bool military, std::vector<Aircraft> &out) {
     const AdsbProvider &provider = ADSB_PROVIDERS[idx];
@@ -1106,11 +1185,13 @@ static bool fetchFrom(int idx, double lat, double lon, int radiusNm, bool milita
                            code == HTTPC_ERROR_SEND_PAYLOAD_FAILED || code == HTTPC_ERROR_NOT_CONNECTED);
         if (!socketDied) {
             Serial.printf("[adsb] %s: transport error %d\n", provider.name, code);
+            noteOutcome(code);
             return false;
         }
         Serial.printf("[adsb] %s: connection %d on a reused socket, retrying once\n", provider.name, code);
         code = requestInto(url, ep, military, lat, lon, radiusNm, result, jerr);
     }
+    noteOutcome(code);
     if (code == 429) {
         uint32_t wait = RATE_LIMIT_BACKOFF_MS << std::min<int>(g_rateLimitedRun[idx], 4);
         wait = std::max(std::min(wait, RATE_LIMIT_MOST_MS), std::min(g_retryAfterS, (uint32_t)3600) * 1000);

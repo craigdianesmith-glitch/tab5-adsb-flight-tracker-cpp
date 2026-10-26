@@ -19,6 +19,7 @@ constexpr int STATUS_Y = 600, STATUS_H = 60;
 
 bool g_started = false;
 share::Status g_shown = {};  // what the status line says now
+String g_networkName;
 
 uint16_t colorBg, colorWhite, colorGrey, colorDim, colorBtnBg, colorAccent, colorWarn;
 
@@ -74,6 +75,8 @@ void shareScreenLeave() {
     g_started = false;
 }
 
+void shareScreenSetNetwork(const String &name) { g_networkName = name; }
+
 void shareScreenDraw() {
     ensureColors();
     auto &canvas = screen::canvas();
@@ -126,7 +129,7 @@ void shareScreenDraw() {
     canvas.setTextSize(2);
     canvas.drawString("Your phone has to be on the same WiFi:", TEXT_X, 300);
     canvas.setTextColor(colorGrey);
-    canvas.drawString(WiFi.SSID(), TEXT_X, 326);
+    canvas.drawString(g_networkName, TEXT_X, 326);
     canvas.setTextColor(colorDim);
     canvas.drawString("Videos can be played, downloaded or", TEXT_X, 390);
     canvas.drawString("deleted there; recordings downloaded.", TEXT_X, 416);

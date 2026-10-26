@@ -83,6 +83,7 @@ bool g_rings = false;
 bool g_autoZoom = false;
 String g_locationLabel;
 String g_alertSummary;
+String g_networkName;
 AdsbSource g_source = DEFAULT_ADSB_SOURCE;
 
 // Which slider, if either, currently owns the finger.
@@ -323,7 +324,7 @@ void drawLocationButton() {
 void drawWifiButton() {
     drawNavButton(WIFI_X, WIFI_Y, WIFI_W, WIFI_H, "WiFi settings",
                   WiFi.status() == WL_CONNECTED
-                      ? ("Connected to " + WiFi.SSID() + "   " + WiFi.localIP().toString())
+                      ? ("Connected to " + g_networkName + "   " + WiFi.localIP().toString())
                       : String("Not connected"));
 }
 
@@ -361,6 +362,8 @@ void settingsScreenSet(int radiusNm, bool showRefresh, int pollIntervalS, const 
 }
 
 void settingsScreenSetLocation(const String &locationLabel) { g_locationLabel = locationLabel; }
+
+void settingsScreenSetNetwork(const String &name) { g_networkName = name; }
 
 void settingsScreenSetNavaids(bool on) { g_navaids = on; }
 bool settingsScreenNavaids() { return g_navaids; }
