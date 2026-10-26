@@ -918,7 +918,8 @@ void soundTick() {
 #ifdef BENCH3D
 // "##=s" (bench2d.h): the voices' words turned back into samples as they are
 // said - every letter, digit, maker and airline of each - and ten seconds of
-// an A320's sound in each of a few states, made as the sound's task makes it.
+// an A320's sound in each of a few states, and of a Typhoon's in two, made
+// as the sound's task makes it.
 void soundBench() {
     static const char *const NAMES[] = {"Scottish", "English", "American"};
     size_t most = 0;
@@ -1033,6 +1034,58 @@ void soundBench() {
         Serial.printf("[bench] A320 %s: %.3fms a 40ms block, %.2f%% of a core; its sound %08lx, %s\n", e.name,
                       us / 1000.0f / BLOCKS, us / (BLOCKS * 400.0f), (unsigned long)sum,
                       sum == e.expect ? "as approved" : "CHANGED");
+    }
+    // A Typhoon's, as tools/engine_preview/eufi_cases.inc has them for the
+    // PC's model of the P4's time, so the Tab5's own can be set beside it:
+    // its take-off roll in reheat from 150m off the runway, and taxiing past
+    // 35m off, the dearest of them all. Each one's expect as the A320's -
+    // the same sound as the model's case.
+    struct Fighter {
+        const char *name;
+        float power, reheat, rollingMs, airspeedMs, x0, vx, z;
+        float earY, earZ;
+        uint32_t expect;
+    };
+    const Fighter FIGHTERS[] = {
+        {"take-off roll, reheat", 1.0f, 1, 50, 50, -250, 50, 0, 150, 4, 0x69276a23u},
+        {"taxiing past", 0.14f, 0, 8, 8, -40, 8, 0, 35, 1.5f, 0x70194abcu},
+    };
+    for (const Fighter &e : FIGHTERS) {
+        engine_noise::Synth *synth = new (room) engine_noise::Synth();
+        constexpr int BLOCKS = 250;  // ten seconds
+        uint32_t us = 0, sum = 2166136261u;
+        for (int i = 0; i < BLOCKS; i++) {
+            engine_noise::Sound s;
+            s.kind = engine_noise::Kind::LOW_BYPASS;
+            s.engine = engine_noise::Engine::EJ200;
+            s.engines = 2;
+            s.size = 0.425f;
+            s.who = 0x43c6f1;
+            s.power = e.power;
+            s.reheat = e.reheat;
+            s.afterburner = e.reheat > 0;
+            s.rollingMs = e.rollingMs;
+            s.airspeedMs = e.airspeedMs;
+            s.gearDown = true;
+            s.placed = true;
+            s.at[0] = e.x0 + e.vx * i * 0.04f, s.at[2] = e.z + 1.5f;
+            s.ear[1] = e.earY, s.ear[2] = e.earZ;
+            s.earUpM = s.ear[2];
+            s.sourceUpM = s.at[2];
+            s.hardGround = e.rollingMs > 0;
+            s.ms = (uint32_t)i * 40;
+            uint32_t t0 = micros();
+            synth->set(s);
+            synth->render(block, ENGINE_BLOCK);
+            us += micros() - t0;
+            for (int k = 0; k < ENGINE_BLOCK; k++) {
+                sum = (sum ^ (uint16_t)block[k]) * 16777619u;
+            }
+        }
+        synth->~Synth();
+        Serial.printf("[bench] Typhoon %s: %.3fms a 40ms block, %.2f%% of a core; its sound %08lx, %s\n", e.name,
+                      us / 1000.0f / BLOCKS, us / (BLOCKS * 400.0f), (unsigned long)sum,
+                      sum == e.expect ? "as the model's" : "CHANGED");
     }
     heap_caps_free(room);
     heap_caps_free(block);
