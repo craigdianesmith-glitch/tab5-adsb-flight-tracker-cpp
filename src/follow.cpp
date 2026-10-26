@@ -1000,7 +1000,7 @@ bool RunwaySim::advance(const FollowSample &prev, bool hadPrev) {
     case LANDING:
         if (!s.ground) {
             bool goingAround = s.hasVs && s.vsFpm >= GO_AROUND_FPM;
-            if (!goingAround && gs <= LANDING_MAX_KT && (!s.hasAlt || couldLand(s, along, aglFt)) &&
+            if (!goingAround && s.hasGs && gs <= LANDING_MAX_KT && (!s.hasAlt || couldLand(s, along, aglFt)) &&
                 along <= rw_.len && offset <= OFF_LINE_NM && off <= OFF_LINE_DEG) {
                 return false;
             }
@@ -1036,7 +1036,11 @@ void RunwaySim::start(const FollowSample &prev, bool hadPrev) {
     float gs = s.hasGs ? (float)s.gsKt : 0.0f;
     Lineup l;
     if (!s.ground) {
-        if ((s.hasVs && s.vsFpm >= CLIMBING_FPM) || gs > LANDING_MAX_KT) {
+        // No speed given - a position worked out from when its signals
+        // reached the receivers, or some feeds' military contacts - nothing
+        // to fly it in by: a jet lined up 5nm out was put down stopped at
+        // the touchdown point and slid there. Its reports, as they are.
+        if ((s.hasVs && s.vsFpm >= CLIMBING_FPM) || gs > LANDING_MAX_KT || !s.hasGs) {
             return;
         }
         // On the ground a moment ago, it is not out on final, however it is
