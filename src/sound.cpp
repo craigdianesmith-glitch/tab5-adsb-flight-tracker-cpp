@@ -15,6 +15,7 @@
 #include "alerts.h"
 #include "config.h"
 #include "regions.h"
+#include "splash_takeoff.h"
 
 namespace {
 
@@ -68,12 +69,17 @@ constexpr uint32_t ENGINE_STALE_MS = 1000;
 portMUX_TYPE g_engineMux = portMUX_INITIALIZER_UNLOCKED;
 engine_noise::Sound g_engineWant;
 uint32_t g_engineSetMs = 0;
+// The splash screen's take-off - see soundTakeoff() - asked for, and when;
+// under the same lock.
+bool g_takeoffAsked = false;
+uint32_t g_takeoffFromMs = 0;
 // The sound task's alone.
 engine_noise::Synth *g_engine = nullptr;
 int16_t *g_engineBlocks[3] = {};
 int g_engineNext = 0;
 bool g_enginePlaying = false;  // something to play: set as it is asked for, cleared once faded out
 bool g_engineFailed = false;   // no room for it
+int g_takeoffBlock = -1;       // the splash's take-off: its next 40ms block, or none
 
 struct Note {
     uint16_t hz;
@@ -120,7 +126,6 @@ struct Voice {
 #include "voice_scottish.inc"
 #include "voice_english.inc"
 #include "voice_american.inc"
-#include "jet_table.inc"
 #include "click_table.inc"
 
 // In Accent's order.
@@ -581,8 +586,12 @@ void soundTakeoff() {
     if (!g_ready || g_muted) {
         return;
     }
-    // Played from flash by the speaker's own task, as the words are.
-    M5.Speaker.playRaw(JET_TAKEOFF, sizeof(JET_TAKEOFF) / sizeof(JET_TAKEOFF[0]), JET_RATE, false, 1, CHANNEL, true);
+    // Made as it plays by the sound's task, with the 3D view's synthesiser -
+    // see engineTick().
+    taskENTER_CRITICAL(&g_engineMux);
+    g_takeoffAsked = true;
+    g_takeoffFromMs = millis();
+    taskEXIT_CRITICAL(&g_engineMux);
 }
 
 // A phone keyboard's click rather than a beep - see tools/gen_click.py -
@@ -778,9 +787,23 @@ namespace {
 void engineTick() {
     taskENTER_CRITICAL(&g_engineMux);
     engine_noise::Sound want = g_engineWant;
-    uint32_t setMs = g_engineSetMs;
+    uint32_t setMs = g_engineSetMs, takeoffFromMs = g_takeoffFromMs;
+    bool takeoffAsked = g_takeoffAsked;
+    g_takeoffAsked = false;
     taskEXIT_CRITICAL(&g_engineMux);
-    if (g_muted || millis() - setMs > ENGINE_STALE_MS) {
+    // The splash's take-off, from its first block, until it has climbed
+    // away - or the 3D view asks for its own, or the speaker is muted.
+    if (takeoffAsked) {
+        g_takeoffBlock = 0;
+    }
+    bool viewAsks = (int32_t)(setMs - takeoffFromMs) > 0 && millis() - setMs <= ENGINE_STALE_MS;
+    if (g_takeoffBlock >= 0 && (g_muted || viewAsks)) {
+        g_takeoffBlock = -1;
+    }
+    bool takeoff = g_takeoffBlock >= 0;
+    if (takeoff) {
+        want = splash_takeoff::at(g_takeoffBlock * 0.04f);
+    } else if (g_muted || millis() - setMs > ENGINE_STALE_MS) {
         want.kind = engine_noise::Kind::NONE;
     }
     if (g_engine == nullptr) {
@@ -795,9 +818,9 @@ void engineTick() {
                 return;
             }
         }
-        // In PSRAM, as its blocks are: made the first time the 3D view asks
-        // for it, in the chip's own memory it lay between the view's buffers
-        // and split the room they come back to.
+        // In PSRAM, as its blocks are: made the first time it is asked for -
+        // the splash's take-off, at boot - in the chip's own memory it lay
+        // between the 3D view's buffers and split the room they come back to.
         void *room = heap_caps_malloc(sizeof(engine_noise::Synth), MALLOC_CAP_SPIRAM);
         if (room == nullptr) {
             Serial.println("[sound] no room for the engine noise");
@@ -806,7 +829,9 @@ void engineTick() {
         }
         g_engine = new (room) engine_noise::Synth();
     }
-    g_engine->set(want);
+    if (!takeoff) {
+        g_engine->set(want);
+    }
     if (want.kind != engine_noise::Kind::NONE) {
         g_enginePlaying = true;
     }
@@ -823,6 +848,13 @@ void engineTick() {
         gaps++;
     }
     while (M5.Speaker.isPlaying(ENGINE_CHANNEL) < 2) {
+        // The take-off set a block at a time, each as it is made, as the PC
+        // preview's a320-splash is: the same sound, whenever the blocks are.
+        if (g_takeoffBlock >= 0) {
+            want = splash_takeoff::at(g_takeoffBlock * 0.04f);
+            g_engine->set(want);
+            g_takeoffBlock = want.kind == engine_noise::Kind::NONE ? -1 : g_takeoffBlock + 1;
+        }
         int16_t *block = g_engineBlocks[g_engineNext];
         g_engineNext = (g_engineNext + 1) % 3;
         uint32_t t0 = micros();

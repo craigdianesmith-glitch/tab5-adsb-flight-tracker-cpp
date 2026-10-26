@@ -29,6 +29,9 @@
 // on its landing rolls, as the view sets them, for the fighter to ignore.
 // tools/engine_preview/render_eufi.sh renders them all; NOTES.md beside it.
 //
+// And a320-splash: the boot splash's take-off, as include/splash_takeoff.h
+// gives it whole and the device makes it, a 40ms block at a time.
+//
 // ENGINE=cfm56 (the default), v2500, leap or pw: the airframe's engines.
 // FOPP=1: its fuel vents unmodified, whistling. SYNC=1: the touchdown's
 // squeal and the reversers' coming on heard as the picture shows them -
@@ -49,6 +52,7 @@
 #include <vector>
 
 #include "engine_noise.h"
+#include "splash_takeoff.h"
 
 using engine_noise::Engine;
 using engine_noise::Kind;
@@ -841,6 +845,53 @@ int main(int argc, char **argv) {
 #endif
         writeWav(dir + "/" + scene.name + suffix + ".wav", samples);
         writeWav(dir + "/" + scene.name + suffix + "-tab5.wav", tab5(samples));
+    }
+    // The splash screen's take-off, as the device makes it at boot: its sound
+    // given whole by include/splash_takeoff.h, not worked out from a Moment
+    // as the scenes' are, set a 40ms block at a time - and two seconds more,
+    // to its fading out.
+    if (argc <= 2 || strcmp(argv[2], "a320-splash") == 0) {
+        engine_noise::Synth synth;
+        std::vector<int16_t> samples;
+        const int BLOCK = engine_noise::RATE / 25;
+        double sum = 0;
+        int peak = 0, counted = 0;
+        printf("a320-splash%s:", suffix.c_str());
+        for (int i = 0; i * 0.04f < splash_takeoff::END_S + 2; i++) {
+            synth.set(splash_takeoff::at(i * 0.04f));
+            size_t from = samples.size();
+            samples.resize(from + BLOCK);
+            synth.render(samples.data() + from, BLOCK);
+            for (int k = 0; k < BLOCK; k++) {
+                int v = samples[from + k];
+                sum += (double)v * v;
+                peak = std::max(peak, abs(v));
+            }
+            counted += BLOCK;
+            if (counted >= engine_noise::RATE / 2) {
+                double rms = sqrt(sum / counted) / 32768;
+                printf(" %.0f", rms > 0 ? 20 * log10(rms) : -99);
+#ifdef ENGINE_NOISE_DEBUG
+                // and how many samples of that half second the limiter rounded off
+                static uint64_t limitedWas = 0;
+                if (engine_noise::g_limited > limitedWas) {
+                    printf("(%llu)", (unsigned long long)(engine_noise::g_limited - limitedWas));
+                }
+                limitedWas = engine_noise::g_limited;
+#endif
+                sum = 0;
+                counted = 0;
+            }
+        }
+        printf("  (dBFS every 0.5s; peak %.0f dBFS)\n", peak > 0 ? 20 * log10(peak / 32768.0) : -99);
+#ifdef ENGINE_NOISE_DEBUG
+        fprintf(stderr, "a320-splash: the limiter rounded off %llu of %llu samples (%.4f%%)\n",
+                (unsigned long long)engine_noise::g_limited, (unsigned long long)engine_noise::g_samples,
+                100.0 * engine_noise::g_limited / std::max<uint64_t>(1, engine_noise::g_samples));
+        engine_noise::g_limited = engine_noise::g_samples = 0;
+#endif
+        writeWav(dir + "/a320-splash" + suffix + ".wav", samples);
+        writeWav(dir + "/a320-splash" + suffix + "-tab5.wav", tab5(samples));
     }
     return 0;
 }

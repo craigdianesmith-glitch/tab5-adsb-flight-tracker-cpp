@@ -17,7 +17,10 @@
 void soundInit();
 
 // Two-note rise, played once the firmware is up.
-// The jet take-off the splash screen plays to - see tools/gen_jet.py.
+// The splash screen's take-off: an A320 rolling down its runway at the
+// viewer and out over the top, made as it plays by the 3D view's
+// synthesiser - see splash_takeoff.h - and climbing away for some seconds
+// after the picture. Returns at once; muted, nothing.
 void soundTakeoff();
 
 // Short blip when an aircraft that wasn't there before appears in the table.
