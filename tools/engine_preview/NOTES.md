@@ -158,3 +158,37 @@ and `metrics.json`; the fitting scripts in `~/.cache/terrain-lab/sound/eufi-fit-
   "100 yards" in the recording's title is its altitude.
 - **Limiter across realisations**: these renders 0.096 % at the close pass; over six realisations 0.03-0.28 % (the
   surges at its peak move it +-1.4 LU), the take-off 0.02-0.09 %.
+
+## Build "fit", polished (v2: edc594f, 9e3f4e8)
+
+- **v1 is 4571cd9.** It is the build on the user's listening page (renders in `renders/eufi-fit/`). To restore
+  it: `git checkout 4571cd9 -- src include`.
+- **v2 renders and notes**: `renders/eufi-fit-p/` (`NOTES.md` there has every number before and after).
+- **How measured**: over 7 airframes (default, WHO=1..6), through the judges' chains.
+
+What changed:
+- **Low powers**: the law under full dry is squeezed (`TY_Q3_IDLE_DB` -14.5, the physics' -38). The idle
+  jet's beaming is flatter, the spools' sound lags their speed, and the starter's air plays before light-off.
+  - Stand -30.6 to -9.8 LU and taxi -27.3 to -8.4 LU against the A320 take-off.
+  - Approach chase -9.6 to -2.4 LU.
+  - The chase's idle drop is -16.8 dB over 3-4 s, not -24.6 in 1.5 s.
+- **Whine** (`TY_Q1_WHINE_DB` -35): one line, ahead and beside only, nothing over 3 kHz.
+  - 24-31 dB lines are now 17-20 dB ahead, and noise's 13-14 dB behind.
+- **Cuts**: the convective gain is in the sources' levels, the distance is not eased, and the low band is
+  normalised for its tuning. Fly-past cuts +12.4/+15.2 to +6.2/+7.7 dB.
+- **Limiter**: the shocks are ridden with the roar and capped at the limiter's threshold. The ride follows in
+  50 ms, with a knee of 0.2 and a ceiling of 0.27, and the ceiling comes down while the share over the
+  threshold runs high.
+  - Every page scene is under 0.1 % in all 7 airframes; the worst is the close pass at 0.036 %.
+  - The judges' probes are all under too; the worst is static front at 0.092 %.
+  - The loud scenes are -0.2 to -1.5 LU against the A320 take-off, against v1's +1.1 to +2.3. The standing
+    probes hold them there.
+- **Bank Doppler**: 0.5 of the Doppler, not 0.15. The squeal is at 0.04 of the A320's.
+- **Crackle** (`TY_Q2_CRACKLE` 1): 3 dB weaker ahead.
+  - The 80 m pass: 0.55 coming, 1.01 at the peak, 0.56 going (the ILA passes: 0.43 / 1.00 / 0.69).
+- **Fitted figures**: 414 of 450 in range (v1 412 of 452 in the same run).
+- **Checks on 9e3f4e8**:
+  - A320 PC: 106 identical. A320 P4: 7 of 7.
+  - Worst cost: 329,450 model cycles against the A320 take-off's 402,514.
+  - Stack: fighterRender 448 B, deepest chain 640 B (restart).
+  - sizeof(Synth): 51,012 B (+4 B on v1).
