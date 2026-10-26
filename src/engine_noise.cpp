@@ -1618,11 +1618,14 @@ namespace {
 //  the soft limiter rounding off 0.06% and 0.09% of their samples - a
 //  decibel more put the pass's over 0.1% (the roar's own peaks, not its
 //  shocks', at that loudness).
-constexpr float TY_LEVEL_DB = -7.5f;
+constexpr float TY_LEVEL_DB = -7.0f;
 //  The fine turbulence's level against the big eddies', dB, and its peak,
 //  octaves from theirs; the share of the Doppler the bank's spectrum moves
 //  by; the 250Hz band's power kept, the speaker playing next to none of it.
 constexpr float TY_FST_DB = -1.0f, TY_FST_OCT = -0.6f, TY_KAPPA = 0.15f, TY_BAND0 = 0.25f;
+//  The 4 and 6.3kHz bands' power kept, the shocks filling the rest of the
+//  top; the share of the air's treble loss the jet's steepening puts back.
+constexpr float TY_TOP = 0.3f, TY_NL = 0.2f;
 //  The big eddies' Strouhal number; the low band's sharpness.
 constexpr float TY_ST_L = 0.13f, TY_LOW_Q = 0.8f;
 //  The surges: their quick and slow parts' time constants, s, the quick
@@ -1639,8 +1642,8 @@ constexpr float TY_FLUT_S = 0.02f, TY_FLUT_NP = 0.10f, TY_ENV_HZ = 60.0f, TY_MU_
 //  nepers; their strength against the roar's RMS; the distance their
 //  wearing down halves them over, m; the eddies' Mach numbers their gate
 //  opens over.
-constexpr float TY_P0 = 1.0f, TY_THETA = 0.4f, TY_BURST_NP = 1.1f, TY_ALPHA = 0.35f, TY_LN_NP = 0.25f;
-constexpr float TY_G_CR = 7.0f, TY_CR_FAR = 1500.0f, TY_CR_DB = 0.0f, TY_MC_ON = 0.8f, TY_MC_ALL = 1.5f;
+constexpr float TY_P0 = 0.35f, TY_THETA = 0.4f, TY_BURST_NP = 1.1f, TY_ALPHA = 0.35f, TY_LN_NP = 0.25f, TY_LOCK = 0.5f;
+constexpr float TY_G_CR = 8.5f, TY_CR_FAR = 1500.0f, TY_CR_DB = 0.0f, TY_MC_ON = 0.8f, TY_MC_ALL = 1.5f;
 //  The intake's whine idling, dB against the jet's level; the level the
 //  roar is ridden down to at its loudest, as samples go.
 constexpr float TY_WHINE_DB = -40.0f, TY_RIDE = 0.14f;
@@ -1693,8 +1696,8 @@ constexpr Lobe FST = {-4.0f, -3.5f, -3.0f, -2.0f, -1.0f, 0.0f, 0.0f, -2.0f, -4.0
 // and still there, weaker, coming [M: the passes' derivative skewness, through
 // the speaker's 180Hz high-pass, 0.3-1.0 coming, 0.8-1.0 at the peak, 0.5
 // going - not the 20-30dB swing of their source alone].
-constexpr Lobe CRACKLE_DRY = {-6.0f, -5.5f, -5.0f, -4.5f, -3.5f, -2.5f, -1.0f, 0.0f, -1.5f, -5.0f};
-constexpr Lobe CRACKLE_WET = {-5.0f, -4.5f, -4.0f, -3.5f, -2.5f, -1.0f, 0.0f, -0.5f, -2.0f, -5.0f};
+constexpr Lobe CRACKLE_DRY = {-6.0f, -5.5f, -5.0f, -4.5f, -3.5f, -2.5f, -1.0f, 0.0f, -4.0f, -10.0f};
+constexpr Lobe CRACKLE_WET = {-5.0f, -4.5f, -4.0f, -3.5f, -2.5f, -1.0f, 0.0f, -1.5f, -5.0f, -10.0f};
 
 // A shock's shape, as the real ones average at 16kHz [M: r69878's loud
 // passes, eufi-methods 1.2]: a slow fall into it, the rarefaction before
@@ -1842,7 +1845,7 @@ __attribute__((noinline)) void Synth::fighterStep() {
     static const float P0 = TY_P0, BURST_NP = TY_BURST_NP, MC_ON = TY_MC_ON,
                        MC_ALL = TY_MC_ALL;
     float gate = smoothstep(MC_ON, MC_ALL, j.mc) * lit_;
-    j.shockUnit = P0 * gate * sqrtf(j.ltsSurge) * exp2Fast(1.44269504f * BURST_NP * (j.burst - 0.5f * BURST_NP));
+    j.shockUnit = P0 * gate * powFast(j.ltsSurge, TY_LOCK) * exp2Fast(1.44269504f * BURST_NP * (j.burst - 0.5f * BURST_NP));
     j.shockP = j.shockUnit * (1 + j.hawkes);
     // Its intake's whine, the fan's blades passing and twice that - 24 blades
     // assumed, none published [I: eufi-sources 1.2] - as heard, the Doppler on
@@ -1877,7 +1880,15 @@ __attribute__((noinline)) void Synth::fighterStep() {
 __attribute__((noinline)) void Synth::fighterSlowStep() {
     const Sound &s = sound_;
     Jet &j = jet_;
-    float d = expFast(logDistance_), km = d * 0.001f;
+    float d = expFast(logDistance_);
+    // The air takes less of its treble than of a quiet sound's: at full dry
+    // power and lit its waves steepen as they go, putting back high notes
+    // the air takes [P: Gee et al. 2008, near an F-22A far more high-
+    // frequency energy arriving than linear propagation gives; M: the passes
+    // 300m off keep their 4kHz octave 19dB under the band, where the air's
+    // loss alone left it 22] - as if the way were shorter, by up to TY_NL.
+    float steep = smoothstep(TY_MC_ON, TY_MC_ALL, j.mc), km = d * 0.001f * (1 - TY_NL * steep);
+    air_.tune(mufflingHz(km), 0.6f);
     // Its own convective gain, with its quicker way: louder coming, by no
     // more than 2.5 times, quieter going, by no more than half.
     gain_ = powFast(35 / std::max(35.0f, d) * dbAmp(-heldDb_), 0.65f);
@@ -2007,7 +2018,7 @@ __attribute__((noinline)) void Synth::fighterSlowStep() {
         float lf = bandLog_[b] - shift;
         float pL = dbPower(ltsDb + tam(TAM_F, lf - peak)), pF = dbPower(fstDb + tam(TAM_G, lf - peak - TY_FST_OCT));
         float surge = exp2Fast(2.88539008f * sg * (lowW[b] * nLow + highW[b] * nHigh - sg));  // e^(2sn - 2s^2): mean one
-        float p = (pL + pF) * surge * (b == 0 ? TY_BAND0 : 1.0f);
+        float p = (pL + pF) * surge * (b == 0 ? TY_BAND0 : b >= 6 ? TY_TOP : 1.0f);
         if (buffetDb > -150) {
             float xb = lf + 1.59946f;  // octaves from 330Hz
             p += dbPower(buffetDb - std::min(25.0f, 4 * xb * xb));
