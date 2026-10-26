@@ -20,6 +20,12 @@
 #include "esp_hosted_event.h"
 #include "recorder.h"
 
+// ESP-Hosted 2.12.13's own, exported from its library though not in a header
+// this build can include (theirs pull in its protobuf definitions): whether
+// its link to the C6 is up, so that a request can be sent at all - see
+// askC6().
+extern "C" uint8_t is_transport_tx_ready(void);
+
 #ifdef BENCH3D
 // ESP-Hosted 2.12.13's own, exported from its library though not in a header
 // this build can include (theirs pulls in its protobuf definitions): the
@@ -294,7 +300,7 @@ enum class Answer : uint8_t {
 struct Probe {
     Answer answer = Answer::ON_AP;
     esp_err_t err = ESP_OK;
-    uint16_t aid = 0;
+    int rssi = 0;  // the signal, in dBm, while it is on the network
     uint32_t tookMs = 0, atMs = 0;
 };
 
@@ -325,35 +331,44 @@ bool unanswered(esp_err_t err, uint32_t sinceMs) {
 
 bool deaf() { return g_unansweredRun >= DEAF_RUN; }
 
-// Whether the C6 is associated, asked of the C6 itself: its association id,
-// which is 0 while it isn't. This rather than esp_wifi_sta_get_ap_info(),
+// Whether the C6 is associated, asked of the C6 itself: the signal of the
+// access point it is on, which it has only while it is on one, and says
+// "not connected" otherwise. Not its association id, the question asked at
+// first: the factory C6 firmware keeps that after leaving - on the bench on
+// 26 Oct, the C6 off the network, it answered "association 4" and ESP_OK,
+// and the stuck state it was there to find went unseen until the feed's
+// watchdog found it a minute and a half later. Nor esp_wifi_sta_get_ap_info(),
 // the obvious question, for one reason. ESP-Hosted 2.12.13 hands each
 // answer to whichever waiting request takes it first, not the request it
 // answers (esp-hosted-mcu #242), and an answer left behind by a request that
 // gave up waiting goes to the next request made. An answer read as the wrong
 // kind is harmless where only a number is copied out of it, as here; the
 // access point's details are copied through a pointer, which in another
-// request's answer is nothing, and the Tab5 crashes. Both questions are ones
-// the factory C6 firmware answers. Asked holding the poll task's turn.
+// request's answer is nothing, and the Tab5 crashes. Asked holding the poll
+// task's turn.
 Probe askC6() {
     Probe p;
-    uint16_t aid = 0;
+    int rssi = 0;
     uint32_t t0 = millis();
-    esp_err_t err = esp_wifi_sta_get_aid(&aid);
+    esp_err_t err = esp_wifi_sta_get_rssi(&rssi);
     p.atMs = millis();
     p.tookMs = p.atMs - t0;
     p.err = err;
-    p.aid = aid;
+    p.rssi = rssi;
     if (unanswered(err, t0)) {
         p.answer = Answer::NO_ANSWER;
     } else if (err == ESP_OK) {
-        p.answer = aid != 0 ? Answer::ON_AP : Answer::OFF_AP;
+        p.answer = Answer::ON_AP;
     } else if (err == ESP_ERR_WIFI_NOT_CONNECT) {
         p.answer = Answer::OFF_AP;
     } else if (err == ESP_ERR_WIFI_NOT_INIT || err == ESP_ERR_WIFI_NOT_STARTED) {
         p.answer = Answer::WIFI_OFF;
     } else if (err == ESP_FAIL) {
-        p.answer = Answer::LINK_DOWN;
+        // At once: the C6's own answer, if ESP-Hosted's link to it is up -
+        // the factory firmware says ESP_FAIL, not "not connected", for a
+        // signal it does not have, as the bench found - and otherwise
+        // ESP-Hosted refusing to send the request at all.
+        p.answer = is_transport_tx_ready() ? Answer::OFF_AP : Answer::LINK_DOWN;
     } else {
         p.answer = Answer::OFF_AP;  // an error of some other kind: not on the network, as far as can be told
     }
@@ -1031,8 +1046,9 @@ void maybeProbe(uint32_t now) {
         startEpisode(Cause::NO_ANSWER, "the Tab5 believes it is connected, but ESP-Hosted says its link to the C6 is "
                                        "down (asked twice, 10s apart)");
     } else {
-        startEpisode(Cause::OFF_AP, "the Tab5 believes it is connected, but the C6 says it is not on the network "
-                                    "(asked twice, 10s apart)");
+        startEpisode(Cause::OFF_AP, String("the Tab5 believes it is connected, but the C6 says it is not on the "
+                                           "network (asked twice, 10s apart; ") +
+                                        esp_err_to_name(g_probe.err) + ")");
     }
 }
 
@@ -1315,14 +1331,12 @@ void printState() {
             Serial.println("[wifi] state: the C6 not asked - the WiFi screen has the radio");
         } else {
             Probe p = askC6();
-            int rssi = 0;
             uint8_t primary = 0;
             wifi_second_chan_t second = WIFI_SECOND_CHAN_NONE;
-            bool haveRssi = p.answer == Answer::ON_AP && esp_wifi_sta_get_rssi(&rssi) == ESP_OK;
             bool haveChannel = p.answer == Answer::ON_AP && esp_wifi_get_channel(&primary, &second) == ESP_OK;
-            Serial.printf("[wifi] state: the C6 says %s (association %u, %s) in %ums; signal %s, channel %s\n",
-                          answerText(p.answer), (unsigned)p.aid, esp_err_to_name(p.err), (unsigned)p.tookMs,
-                          haveRssi ? (String(rssi) + " dBm").c_str() : "-",
+            Serial.printf("[wifi] state: the C6 says %s (%s) in %ums; signal %s, channel %s\n", answerText(p.answer),
+                          esp_err_to_name(p.err), (unsigned)p.tookMs,
+                          p.answer == Answer::ON_AP ? (String(p.rssi) + " dBm").c_str() : "-",
                           haveChannel ? String(primary).c_str() : "-");
         }
     }
