@@ -550,9 +550,26 @@ bool ensureWifi() {
         return false;
     }
 
-    Serial.printf("[wifi] link down, reconnecting to %s\n", ssid.c_str());
-    WiFi.disconnect();
-    WiFi.begin(ssid.c_str(), pass.c_str());
+    {
+        // Its requests to the C6 made holding the poll task's turn at it, as
+        // the watchdog's are, and only if the WiFi screen has not claimed the
+        // radio since it was looked at above: the screen waits for the turn
+        // to be free before its first request, so the two never have
+        // requests in flight at once - in ESP-Hosted 2.12.13 they could take
+        // each other's answers. The wait below makes none, and is not held.
+        wifiwatch::RadioTurn turn;
+        bool claimed = true;
+        if (xSemaphoreTake(g_dataMutex, portMAX_DELAY) == pdTRUE) {
+            claimed = g_uiOwnsWifi;
+            xSemaphoreGive(g_dataMutex);
+        }
+        if (claimed) {
+            return false;
+        }
+        Serial.printf("[wifi] link down, reconnecting to %s\n", ssid.c_str());
+        WiFi.disconnect();
+        WiFi.begin(ssid.c_str(), pass.c_str());
+    }
     uint32_t start = millis();
     while (WiFi.status() != WL_CONNECTED && millis() - start < WIFI_CONNECT_TIMEOUT_MS) {
         vTaskDelay(pdMS_TO_TICKS(250));
@@ -589,10 +606,18 @@ bool ensureWifi() {
 // with no network to join. It leaves g_wifiFails and g_wifiGaveUp alone:
 // those count ensureWifi()'s own attempts, towards the screen that lets
 // another network be picked.
+//
+// And from the moment ensureWifi() gives up, before the screen is up: the
+// loop puts it up on its next pass from a live screen, and a step of the
+// watchdog's under way then - stopping the C6's WiFi as the screen starts
+// its own disconnect and scan - would have two drivers at the radio at once
+// and fail the screen's first scan. The watchdog's own trigger for joinings
+// that never got an address went for the same reason: ensureWifi()'s third
+// failure, and with it this, always came first.
 bool watchUiOwnsWifi() {
     bool owns = true;
     if (xSemaphoreTake(g_dataMutex, portMAX_DELAY) == pdTRUE) {
-        owns = g_uiOwnsWifi;
+        owns = g_uiOwnsWifi || g_wifiGaveUp;
         xSemaphoreGive(g_dataMutex);
     }
     return owns;
@@ -2767,6 +2792,16 @@ void stopFollowRecording() {
     g_follow.recording = false;
 }
 
+// A recording ended cleanly for the WiFi watchdog's restart, rather than the
+// restart waiting on it - see checkWatchdogRestart() - and said, so a
+// recording found ended short is explained.
+void endRecordingForRestart() {
+    if (recorder::active()) {
+        Serial.println("[rec] the recording ended for the WiFi watchdog's restart");
+        recorder::stop();
+    }
+}
+
 // Adds a report to the telemetry's history, dropping what has scrolled off
 // the chart.
 void noteHeight(const Aircraft &ac) {
@@ -4482,6 +4517,18 @@ void handleSettingsTouch(int x, int y, bool pressed, bool clicked) {
         alertsScreenDraw();
         break;
     case SettingsAction::OPEN_WIFI:
+        if (wifiwatch::restartBeforeWifiScreen()) {
+            // A request to the C6 went unanswered earlier, and the watchdog
+            // wants a restart for it: its late answer, or any since, could be
+            // taken by the screen's own requests - its scan's records are
+            // copied through a pointer, which in the wrong answer is nothing.
+            // So the restart comes first, and the boot after it opens the
+            // screen: see setup().
+            Serial.println("[wifi] watchdog: restarting before the WiFi screen opens, its answers from the C6 "
+                           "perhaps out of step; the screen opens after");
+            endRecordingForRestart();
+            wifiwatch::restartNow(true);
+        }
         if (xSemaphoreTake(g_dataMutex, portMAX_DELAY) == pdTRUE) {
             g_uiOwnsWifi = true;  // hands the radio to the screen; see ensureWifi()
             xSemaphoreGive(g_dataMutex);
@@ -4656,6 +4703,17 @@ void checkWifiGaveUp() {
     if (!gaveUp) {
         return;
     }
+    if (wifiwatch::restartBeforeWifiScreen()) {
+        // As for the settings' WiFi button: a request to the C6 went
+        // unanswered earlier, and the screen's own requests could take its
+        // late answer. A restart instead, which may well bring the network
+        // back by itself - its answers in step again - and if not, the boot
+        // gives up after its own tries and the screen comes up then.
+        Serial.println("[wifi] watchdog: restarting rather than opening the WiFi screen, its answers from the C6 "
+                       "perhaps out of step");
+        endRecordingForRestart();
+        wifiwatch::restartNow();
+    }
     Serial.printf("[wifi] giving up on %s - opening the WiFi screen\n", ssid.c_str());
     g_wifiReturnTo = Screen::MAIN;
     g_screen = Screen::WIFI;
@@ -4669,22 +4727,64 @@ bool replayOnScreen() {
     return fromReplay(g_screen) || (g_screen == Screen::DETAIL && fromReplay(g_detailReturnTo));
 }
 
+// How long after a touch - or an alert, which wakes the screen as a touch
+// does - the watchdog's restart waits: a minute for one wanted now, for
+// whatever was being typed or tapped through; ten for one wanted at a quiet
+// moment, which is what a quiet moment is. And the share page is in use
+// while a file is going, or for two minutes after a phone last asked it
+// for anything.
+constexpr uint32_t RESTART_TOUCH_MS = 60000, QUIET_TOUCH_MS = 10 * 60000;
+constexpr uint32_t SHARE_QUIET_MS = 120000;
+
 // The WiFi watchdog's restart - see wifi_watch.h - once it has asked for one,
-// at a time nothing would be lost by it. Not while a recording is being
-// written: its file would be left without its end. Not while a replay is
-// playing, nor with the WiFi screen open, where someone is in the middle of
-// something that needs no network or is mending it themselves. Asked again
-// every pass until then, and said once for each reason it waits.
+// at the time it costs least. Asked again every pass until then, and said
+// once for each reason it waits.
+//
+// Wanted now, the WiFi down and nothing else having mended it, it waits only
+// while someone is in the middle of something it would spoil: a replay on
+// the screen, and a video being made of one with it; the WiFi screen, where
+// they are mending it themselves; the share page while a phone is using it;
+// and a minute after any touch, for what was being typed or tapped through.
+// Not the share page merely left up, which would hold the restart for as
+// long as nobody came back to it, with the network it serves on down - and
+// restartNow() takes the card's lock, so no deletion of its server's is cut
+// off part way.
+//
+// Nor a recording. With the feed down no poll reaches one - not a frame
+// since the watchdog last acted - and every frame is flushed as it is
+// written, so ending it loses nothing: it is ended cleanly, its file closed,
+// and the restart goes ahead. Waiting for it, as this did at first, could be
+// waiting for ever, and the restart is the only remedy for a C6 gone deaf:
+// an alert's recording stops only after a poll that succeeds, one of
+// following by hand runs on past the aircraft lost, and one started with
+// REC runs until REC is tapped.
+//
+// Wanted at a quiet moment instead - the WiFi working, a request to the C6
+// unanswered earlier - it waits for the device to be left alone: ten minutes
+// untouched, nothing recorded or followed, no replay and no share page up.
 void checkWatchdogRestart() {
     static const char *saidHeld = nullptr;
-    if (!wifiwatch::restartWanted()) {
+    wifiwatch::Restart kind = wifiwatch::restartWanted();
+    if (kind == wifiwatch::Restart::NONE) {
         saidHeld = nullptr;
         return;
     }
-    const char *held = recorder::active()         ? "a recording is being written"
-                       : replayOnScreen()         ? "a replay is playing"
-                       : g_screen == Screen::WIFI ? "the WiFi screen is open"
-                                                  : nullptr;
+    bool now = kind == wifiwatch::Restart::NOW;
+    uint32_t untouchedMs = millis() - g_lastTouchMs;
+    const char *held = nullptr;
+    if (replayOnScreen()) {
+        held = "a replay is playing";
+    } else if (g_screen == Screen::WIFI) {
+        held = "the WiFi screen is open";
+    } else if (g_screen == Screen::SHARE && (!now || shareScreenServedWithin(SHARE_QUIET_MS))) {
+        held = now ? "the share page is in use" : "the share page is up";
+    } else if (untouchedMs < (now ? RESTART_TOUCH_MS : QUIET_TOUCH_MS)) {
+        held = "the screen was touched lately";
+    } else if (!now && recorder::active()) {
+        held = "a recording is being written";
+    } else if (!now && g_follow.active) {
+        held = "an aircraft is being followed";
+    }
     if (held != nullptr) {
         if (held != saidHeld) {
             saidHeld = held;
@@ -4692,6 +4792,7 @@ void checkWatchdogRestart() {
         }
         return;
     }
+    endRecordingForRestart();
     wifiwatch::restartNow();
 }
 
@@ -4890,9 +4991,16 @@ void setup() {
     // UTC, for naming recordings and stamping their polls. SNTP keeps trying in
     // the background, so a link that comes up later still gets the time.
     configTime(0, 0, "pool.ntp.org", "time.google.com");
+    // The WiFi screen first: with no network to join, or after the WiFi
+    // watchdog's restart made as the screen was being opened - see
+    // handleSettingsTouch() - which it was in place of.
+    bool reopenWifi = haveCredentials && wifiwatch::bootOpensWifiScreen();
+    if (reopenWifi) {
+        Serial.println("[wifi] opening the WiFi screen, as it was being opened when the watchdog restarted");
+    }
     // Set before the poll task exists, or its first pass could race the scan
     // the WiFi screen is about to start.
-    g_uiOwnsWifi = !haveCredentials;
+    g_uiOwnsWifi = !haveCredentials || reopenWifi;
 
     g_dataMutex = xSemaphoreCreateMutex();
     // Pinned to core 0 so it doesn't contend with the render/UI loop on core 1.
@@ -4903,8 +5011,10 @@ void setup() {
     xTaskCreate(hangWatch, "hangwatch", 3072, nullptr, configMAX_PRIORITIES - 2, nullptr);
 
     // A device that has never been told about a network lands on the screen
-    // that fixes that, rather than on a table that can never fill.
-    if (!haveCredentials) {
+    // that fixes that, rather than on a table that can never fill. Its Back
+    // goes to the table either way: the settings screen it was opened from
+    // before the restart is not set up to be drawn.
+    if (!haveCredentials || reopenWifi) {
         g_wifiReturnTo = Screen::MAIN;
         g_screen = Screen::WIFI;
         wifiScreenEnter();
@@ -5989,9 +6099,16 @@ void loop() {
             //     router taken as silent, or asked again: with lookups
             //     broken, the ladder runs rather than the router being found
             //     to answer and the WiFi left alone.
+            // 'z' the #243 stall made, crudely: ESP-Hosted's reads from the
+            //     C6 stopped, so nothing is answered or heard - for the
+            //     restart; 'Z' lets them go again, at once, so a late answer
+            //     can be tried. 'm' the stall tried for real: internal DMA
+            //     memory held for 20s, for a burst from the C6 to find no
+            //     room - soon after boot, off the 3D view; 'M' given back.
             // '1', '2', '3' that step of the ladder now: the network rejoined,
             //     the C6's WiFi restarted, the Tab5 restarted - the last when
             //     the loop's rules allow, as the watchdog's own would be.
+            //     '4' the restart at the next quiet moment instead.
             // '0' all of the bench's changes undone, any trouble forgotten.
             int which = -1;
             uint32_t until = millis() + 1000;

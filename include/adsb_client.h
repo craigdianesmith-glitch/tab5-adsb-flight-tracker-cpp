@@ -79,11 +79,18 @@ bool fetchAircraft(double lat, double lon, int radiusNm, bool military, AdsbSour
 //
 // Both the main poll and the zoom's go through here, and only the poll task
 // makes requests, so only it should read this.
+//
+// The two running totals are what the watchdog judges by - whether there
+// has been an answer, or another failure, since it last acted - rather than
+// the times: comparing two times can go wrong once they are weeks apart, as
+// millis() comes round every 49.7 days, and a feed can be down that long.
 struct AdsbFeedHealth {
     uint32_t requests = 0;         // requests made since boot
+    uint32_t answers = 0;          // of them answered, since boot
     uint32_t lastAnswerMs = 0;     // millis() a provider last answered; 0 never
     uint32_t netFails = 0;         // network failures in a row since then
-    uint32_t netFailsSinceMs = 0;  // when the first of them was
+    uint32_t netFailsEver = 0;     // network failures since boot
+    uint32_t netFailsSinceMs = 0;  // when the first of the run was
     uint32_t lastNetFailMs = 0;
     const char *lastNetFail = "";  // the last one, in words
 };

@@ -20,3 +20,7 @@ void shareScreenLeave();
 // The network the device joins, named for the phone to join too - told,
 // rather than asked of the C6 as it draws: see setup() in main.cpp.
 void shareScreenSetNetwork(const String &name);
+// Whether the page is in use: up, and a file going now, or a phone having
+// asked it for anything within `ms` - or the screen only just opened. For
+// the WiFi watchdog's restart, which waits for it.
+bool shareScreenServedWithin(uint32_t ms);

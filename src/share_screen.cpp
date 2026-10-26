@@ -20,6 +20,9 @@ constexpr int STATUS_Y = 600, STATUS_H = 60;
 bool g_started = false;
 share::Status g_shown = {};  // what the status line says now
 String g_networkName;
+// When a phone last asked for anything, or a file was last seen going - the
+// screen's opening to start with: see shareScreenServedWithin().
+uint32_t g_lastServedMs = 0;
 
 uint16_t colorBg, colorWhite, colorGrey, colorDim, colorBtnBg, colorAccent, colorWarn;
 
@@ -67,7 +70,12 @@ void shareScreenEnter() {
     // first update: the screen is drawn before that update, and for a moment
     // said four billion requests had been served.
     g_shown = share::status();
+    g_lastServedMs = millis();
     shareScreenDraw();
+}
+
+bool shareScreenServedWithin(uint32_t ms) {
+    return g_started && (g_shown.current[0] != 0 || millis() - g_lastServedMs < ms);
 }
 
 void shareScreenLeave() {
@@ -150,6 +158,9 @@ void shareScreenTick() {
     }
     lastCheck = now;
     share::Status s = share::status();
+    if (s.requests != g_shown.requests || s.current[0] != 0) {
+        g_lastServedMs = now;
+    }
     // Redrawn when what it says has changed, with the byte count steadied to
     // a tenth of a megabyte so a transfer doesn't repaint it every check.
     bool changed = s.requests != g_shown.requests || strcmp(s.current, g_shown.current) != 0 ||

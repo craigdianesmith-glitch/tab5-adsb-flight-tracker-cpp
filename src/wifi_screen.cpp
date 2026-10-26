@@ -7,6 +7,7 @@
 #include "keyboard.h"
 #include "screen.h"
 #include "settings.h"
+#include "wifi_watch.h"
 
 namespace {
 
@@ -52,8 +53,17 @@ bool g_connecting = false;
 // Credentials tried but not yet seen to work. They are saved only once they
 // have: saved up front, one mistyped password - or a tap on the neighbour's
 // network - replaced the credentials of the network that was working, and
-// the device had nothing to go back to.
+// the device had nothing to go back to. And how many joinings there had
+// been when they were tried: only one since, to that network, is theirs.
 bool g_pending = false;
+uint32_t g_joinsAtConnect = 0;
+// The screen's first requests to the C6 held back until the poll task has
+// none of its own in flight - see wifiwatch::radioFree() - "Waiting for the
+// WiFi..." on the status line meanwhile. In ESP-Hosted 2.12.13 two requests
+// from two tasks at once can take each other's answers, and the poll task
+// may be part way through the watchdog's check of the link, or a step of
+// its ladder, as the radio is handed over.
+bool g_awaitRadio = false;
 
 uint16_t colorBg, colorWhite, colorGrey, colorDim, colorBtnBg, colorScanBtn, colorConnect, colorRow, colorBorder;
 
@@ -73,9 +83,14 @@ void ensureColors() {
     colorsReady = true;
 }
 
+// The network named as the C6's own "connected" event had it, not asked of
+// the C6 as WiFi.SSID() would: that is a request, copied out through a
+// pointer that in another request's answer is nothing - and with the C6 not
+// answering, it froze the screen for five seconds every time it was drawn.
 String connectionSummary() {
     if (WiFi.status() == WL_CONNECTED) {
-        return "Connected to " + WiFi.SSID() + "   " + WiFi.localIP().toString();
+        String name = wifiwatch::joinedNetwork();
+        return (name.length() ? "Connected to " + name : String("Connected")) + "   " + WiFi.localIP().toString();
     }
     return "Not connected";
 }
@@ -87,6 +102,25 @@ void startScan() {
     g_status = "Scanning...";
     WiFi.scanDelete();
     WiFi.scanNetworks(true);  // async: results collected in wifiScreenTick()
+}
+
+// The screen's first requests - the disconnect of a station left trying, and
+// the scan - once the poll task has none in flight; otherwise said to be
+// waited for, and made from wifiScreenTick() as soon as it has none.
+void startWhenFree() {
+    if (!wifiwatch::radioFree()) {
+        g_awaitRadio = true;
+        g_status = "Waiting for the WiFi...";
+        return;
+    }
+    g_awaitRadio = false;
+    // A station left trying to join a network that isn't there keeps the
+    // radio busy enough to fail a scan. A working link is left alone.
+    if (WiFi.status() != WL_CONNECTED) {
+        WiFi.disconnect();
+    }
+    g_scanRetriesLeft = SCAN_RETRIES;
+    startScan();
 }
 
 void drawStatus() {
@@ -138,7 +172,7 @@ void drawList() {
                           y + (LIST_ROW_H - 6) / 2);
         drawSignal(LIST_X + LIST_W - 90, y + (LIST_ROW_H - 6) / 2, g_networks[i].rssi);
     }
-    if (rows == 0 && !g_scanning) {
+    if (rows == 0 && !g_scanning && !g_awaitRadio) {
         canvas.setTextSize(2);
         canvas.setTextColor(colorDim);
         canvas.setTextDatum(TL_DATUM);
@@ -249,6 +283,7 @@ void beginConnect() {
     g_status = "Connecting to " + g_ssid + "...";
     drawStatus();
     screen::flush();
+    wifiwatch::joinedNetwork(&g_joinsAtConnect);
     WiFi.disconnect();
     WiFi.begin(g_ssid.c_str(), g_password.c_str());
 }
@@ -264,13 +299,8 @@ void wifiScreenEnter(const String &notice) {
     g_status = "";
     g_notice = notice;
     g_pending = false;
-    // A station left trying to join a network that isn't there keeps the
-    // radio busy enough to fail a scan. A working link is left alone.
-    if (WiFi.status() != WL_CONNECTED) {
-        WiFi.disconnect();
-    }
-    g_scanRetriesLeft = SCAN_RETRIES;
-    startScan();
+    g_networks.clear();
+    startWhenFree();
     drawListScreen();
 }
 
@@ -284,6 +314,17 @@ void wifiScreenDraw() {
 }
 
 WifiAction wifiScreenTick() {
+    if (g_awaitRadio) {
+        if (wifiwatch::radioFree()) {
+            startWhenFree();
+            if (g_mode == Mode::LIST) {
+                drawStatus();
+                drawList();
+                screen::flush();
+            }
+        }
+        return WifiAction::NONE;
+    }
     if (g_scanning) {
         int found = WiFi.scanComplete();
         if (found >= 0) {
@@ -335,8 +376,13 @@ WifiAction wifiScreenTick() {
     }
 
     // Checked whether or not the attempt has timed out: a connection that
-    // comes up late is no less worth keeping.
-    if (g_pending && WiFi.status() == WL_CONNECTED && WiFi.SSID() == g_ssid) {
+    // comes up late is no less worth keeping. Its network as the C6's own
+    // "connected" said it, from a joining since the attempt began - not
+    // WiFi.SSID(), asked of the C6 on every pass of the loop while a connect
+    // is under way: see connectionSummary().
+    uint32_t joins = 0;
+    String joined = g_pending ? wifiwatch::joinedNetwork(&joins) : String();
+    if (g_pending && WiFi.status() == WL_CONNECTED && joins != g_joinsAtConnect && joined == g_ssid) {
         saveWifi(g_ssid, g_password);
         g_pending = false;
         g_connecting = false;
@@ -369,6 +415,9 @@ WifiAction wifiScreenHandleTouch(int x, int y) {
 
     if (g_mode == Mode::LIST) {
         if (x >= SCAN_X && x < SCAN_X + SCAN_W && y >= SCAN_Y && y < SCAN_Y + SCAN_H) {
+            if (g_awaitRadio) {
+                return WifiAction::NONE;  // its scan is on its way as soon as the radio is free
+            }
             g_scanRetriesLeft = SCAN_RETRIES;
             startScan();
             drawStatus();

@@ -209,6 +209,7 @@ void adsbDropConnection() {
 
 // What came of one request, for the watchdog's count: see AdsbFeedHealth.
 static void noteAnswered() {
+    g_health.answers++;
     g_health.lastAnswerMs = millis();
     g_health.netFails = 0;
 }
@@ -218,6 +219,7 @@ static void noteNetFail(const char *what) {
         g_health.netFailsSinceMs = now;
     }
     g_health.netFails++;
+    g_health.netFailsEver++;
     g_health.lastNetFailMs = now;
     g_health.lastNetFail = what;
 }
