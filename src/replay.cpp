@@ -332,7 +332,7 @@ void fillGaps(uint32_t abs, const char *followed, std::vector<Aircraft> &aircraf
             !(kindOf(hex, type, category, military) ? canHover(type, category) : sim.fresh().rotorcraft)) {
             continue;
         }
-        FollowEstimate e = sim.at(abs);
+        FollowEstimate e = sim.plotAt(abs);
         Aircraft ghost;
         for (auto it = aircraft.begin(); it != aircraft.end(); ++it) {
             if (it->hex == hex) {
@@ -591,7 +591,7 @@ bool estimateAt(const String &hex, uint32_t t, FollowEstimate &out, uint32_t &lo
     if (!sim.haveFresh() || abs - sim.fresh().ms > std::max(FOLLOW_LOST_MS, sim.keepMs())) {
         return false;
     }
-    out = sim.at(abs);
+    out = sim.plotAt(abs);
     lostMs = abs - sim.fresh().ms;
     return true;
 }
@@ -798,7 +798,7 @@ void sceneAt(uint32_t t, std::vector<Aircraft> &aircraft, std::vector<TrailPoint
         }
         const RunwaySim &sim = simFor(keyOf(a.hex), abs);
         if (sim.simulating(abs)) {
-            showEstimate(a, sim.at(abs));
+            showEstimate(a, sim.plotAt(abs));
         }
     }
 

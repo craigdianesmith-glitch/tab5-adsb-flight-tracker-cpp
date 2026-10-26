@@ -1451,6 +1451,8 @@ void setRadarControls(bool onScreen);
 
 // Where the followed aircraft is shown now: see RunwaySim.
 FollowEstimate followEstimateNow() { return g_follow.sim.at(millis()); }
+// And where the radar and the zoom put it: see RunwaySim::plotAt().
+FollowEstimate followPlotNow() { return g_follow.sim.plotAt(millis()); }
 
 // The status an estimate draws with: its trend chevron, and ring or dot.
 String estimateStatus(const FollowEstimate &e) {
@@ -1503,7 +1505,7 @@ void keepFollowedOnPlot(std::vector<Aircraft> &aircraft) {
     if (!g_follow.lost || !g_follow.sim.haveFresh()) {
         return;
     }
-    putEstimate(aircraft, g_follow.last, followEstimateNow());
+    putEstimate(aircraft, g_follow.last, followPlotNow());
 }
 
 // --- every contact -----------------------------------------------------------
@@ -1661,8 +1663,9 @@ void noteTracks(const std::vector<Aircraft> &list, bool zoomList, const String &
     }
 }
 
-// `maxAgeS` caps how far on it is taken - see moveOnToNow().
-FollowEstimate trackEstimate(const Track &t, float maxAgeS = 1e9f) { return t.sim.at(millis(), maxAgeS); }
+// Where the radar and the zoom put it - see RunwaySim::plotAt(). `maxAgeS`
+// caps how far on it is taken - see moveOnToNow().
+FollowEstimate trackEstimate(const Track &t, float maxAgeS = 1e9f) { return t.sim.plotAt(millis(), maxAgeS); }
 
 // Puts each contact `aircraft` - a list of the kind `zoomList` says, which
 // `provider` answered - has lost since it last had it where it is estimated
@@ -1756,7 +1759,7 @@ void followCentre(double &lat, double &lon) {
     lat = g_follow.last.lat;
     lon = g_follow.last.lon;
     if (g_follow.sim.haveFresh()) {
-        FollowEstimate e = followEstimateNow();
+        FollowEstimate e = followPlotNow();
         lat = e.lat;
         lon = e.lon;
     }
@@ -1791,7 +1794,7 @@ void moveOnToNow(std::vector<Aircraft> &aircraft, uint32_t dataMs, int intervalS
             continue;  // a lost one is the estimate's, already moved on
         }
         if (g_follow.active && a.hex == g_follow.hex && g_follow.sim.haveFresh()) {
-            showAt(a, g_follow.sim, followEstimateNow());
+            showAt(a, g_follow.sim, followPlotNow());
             continue;
         }
         // Low, by the estimate too: one rolling out slows down the runway

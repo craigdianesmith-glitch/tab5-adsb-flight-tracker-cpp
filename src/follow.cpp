@@ -755,6 +755,10 @@ constexpr float RUNWAY_EDGE_NM = 0.03f;
 // A correction is eased in at no more than half its speed again, over
 // between these - and one to its height at no more than this.
 constexpr float EASE_MIN_S = 3.0f, EASE_MAX_S = 20.0f;
+// Put back along its way by more than this - see plotAt() - the radar takes
+// it at once. Less, eased as at() eases it: too little to see on the plot,
+// and no jitter.
+constexpr float PLOT_BACK_M = 5.0f;
 constexpr float EASE_MIN_KT = 20.0f;
 constexpr float EASE_FPM = 600.0f;
 // A turn off the runway is taxied at about this, over between these.
@@ -881,6 +885,7 @@ void RunwaySim::report(const FollowSample &s) {
     easeStartMs_ = easeEndMs_ = altEndMs_ = s.ms;
     turning_ = false;
     rollOverNm_ = 0;
+    plotCut_ = false;
     // In the air still by this report, though shown down already - put down
     // a little early, the feed having lost it fast on final - and over the
     // runway, not climbing away: kept down, not shown lifting off again to
@@ -966,6 +971,13 @@ void RunwaySim::report(const FollowSample &s) {
         }
         altEndMs_ = s.ms + (uint32_t)(altS * 1000.0f);
         easeS = rollOverNm_ > 0 ? ROLL_EASE_MS / 1000.0f : std::max(easeS, altS);
+        // Eased back along its way by the clock - not slowed for as it rolls
+        // on, nor turned to face the report - which on the radar is a blip
+        // sliding backwards: there, taken at once. See plotAt().
+        if (rollOverNm_ == 0) {
+            float t = now.track * (float)M_PI / 180.0f;
+            plotCut_ = (dLat_ * 60.0f * cosf(t) + dLon_ * k * sinf(t)) * 1852.0f > PLOT_BACK_M;
+        }
     }
     easeEndMs_ = s.ms + (uint32_t)(easeS * 1000.0f);
 }
@@ -1150,6 +1162,23 @@ FollowEstimate RunwaySim::model(uint32_t ms, float maxAgeS) const {
     }
     e.pressureFt = s.pressureFt;
     return e;
+}
+
+// Where the radar, the zoom and their replays put it: at()'s, but a report
+// behind where it was shown - the simulation having taken it on further
+// than it went, a landing that braked harder stopped short of it, a
+// position some seconds old - that at() eases back by the clock is taken
+// at once: the blip put where the report has it. Eased back so for the 3D
+// view, where the taxiway follower takes it on the ground, a blip slid back
+// along its way for seconds, up to 450m, while showing it stopped: on a
+// plot, going backwards. at()'s easing as it rolls on - slowed, never
+// backwards - and its turn to face a report behind are the radar's too.
+FollowEstimate RunwaySim::plotAt(uint32_t ms, float maxAgeS) const {
+    int32_t span = (int32_t)(easeEndMs_ - easeStartMs_), since = (int32_t)(ms - easeStartMs_);
+    if (plotCut_ && span > 0 && since < span) {
+        return model(ms, maxAgeS);
+    }
+    return at(ms, maxAgeS);
 }
 
 FollowEstimate RunwaySim::at(uint32_t ms, float maxAgeS) const {
