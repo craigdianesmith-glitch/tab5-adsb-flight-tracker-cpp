@@ -136,15 +136,17 @@ and `metrics.json`; the fitting scripts in `~/.cache/terrain-lab/sound/eufi-fit-
   of the way (the jet's steepening).
 - **Low power**: an intake whine (BPF and 2 x BPF, ahead, gone above N1 0.75-0.9); the second engine 30 s after the
   first; the airbrake's buffet; the A320's touchdown squeal at half level. `reverse` never read.
+- **Reheat**: lit at N1 >= 0.95 over ~0.6 s, cancelled in 0.25 s; as it catches, a whoomp (noise at 320 Hz x
+  Doppler, 10 ms up, 100 ms down) and a cluster of shocks 0.15 s on.
 - **Propagation** on its own path: aspect and closing eased in 35 ms, closing clamp 0.8c, convective gain 0.5-2.5,
   the air's loss compensated over each band's width; the roar ridden down at its very loudest for the limiter.
 - **Fitted** on x-eufi-close-pass (vs ILA 2022, 10 passes), x-eufi-display-100m (vs fs69878, 14 passes) and
   x-eufi-zeltweg (vs all 11 pass clips), six realisations each, through the same chains (asymmetry before the
   speaker against the references through hp180c, impulsiveness after it through hp180c + tab5): 99, 109 and 110
-  of 114 values within the references' 10th-90th percentiles (one realisation, the default render: 84, 103, 99).
-- **Level**: reheat take-off -15.5 LUFS, +2.1 LU over the A320's take-off (-17.6); limiter 0.045 % there, 0.096 %
+  of 114 values within the references' 10th-90th percentiles (one realisation, the default render: 84, 98, 99).
+- **Level**: reheat take-off -15.4 LUFS, +2.2 LU over the A320's take-off (-17.6); limiter 0.045 % there, 0.096 %
   at the 80 m reheat pass, under 0.03 % in the other scenes. +0.5 dB put the close pass's roar over 0.1 %.
-- **Cost**: 0.89-1.06 ms warm a block (the A320's take-off 1.23-1.27). sizeof(Synth) 50,968 B (+436 B on the base).
+- **Cost**: 0.89-1.07 ms warm a block (the A320's take-off 1.23-1.27). sizeof(Synth) 51,008 B (+476 B on the base).
 - **A320**: a320_pccheck 106 identical; a320_bitcheck 7 of 7 as approved.
 - **For the 3D view, beyond the list above**: level-flight power should follow speed for fighters (at 0.65 the
   420-knot low pass is 16 LU quieter and crackle-free); no APU is played; a cut's one-frame speed jump in
