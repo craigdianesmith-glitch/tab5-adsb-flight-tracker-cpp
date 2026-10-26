@@ -7451,6 +7451,17 @@ void terrainMarch() {
                 sStart = std::max(sStart, std::min(nearReach, zNear * along));
             }
             first = stepNear(far, steps, first, sStart, startNear);
+            // And the step before it, where that one is past where the bottom
+            // row could first meet the land - near the eye the steps are half
+            // a cell of the heights' grid apart, a hundred metres and more -
+            // so that the bottom rows' land is between two samples, not under
+            // the nearest alone: every row under that sample had its depth,
+            // and the cover there ran straight down the screen in stripes,
+            // jagged where the depth's bfloat16 stepped - a waterfall as the
+            // view moved on.
+            if (first > 0 && far[first] * 0.9f > sStart) {
+                first--;
+            }
         }
         int filled = h;
         if (onFlat) {
@@ -7784,6 +7795,13 @@ void prepareBegin(int w, int h, int bandRows, bool swapBytes, const Scene &scene
     // a good part of the rows' time.
     float er = scene.earthRadius, ex = g.eye.x, ey = g.eye.y, ez = g.eye.z;
     float above = ex * ex + ey * ey + ez * (ez + 2 * er), perVisibility = 1 / pal.visibility;
+    // With the land at its height, its haze - see terrainMarch() - for the
+    // rows' own colours too: the sea and whatever the pack has nothing for,
+    // and the airfield's ground, were hazed as the flat view hazes all of
+    // it, the visibility's 6.5km taking 63% - at 20km 95% against the
+    // land's 62% - and lay as a white strip under hills further off.
+    const float NEAR_HAZE = 2000, perFarV = 1 / std::max(30000.0f, pal.visibility);
+    const float nearOverV = NEAR_HAZE / pal.visibility;
     for (int y = 0; y < h; y++) {
         Vec3 dir = g.forward + g.down * ((y + 0.5f - g.cy) / g.f);
         float l = length(dir), distance = -1;
@@ -7818,7 +7836,14 @@ void prepareBegin(int w, int h, int bandRows, bool swapBytes, const Scene &scene
 #endif
         }
         if (distance > 0) {
-            float haze = 1 - expf(-distance * perVisibility);
+            float haze;
+            if (g.terrainOn) {
+                // In the land's 32 steps, as its samples have it.
+                float tau = distance * perFarV + nearOverV * (1 - expf(-distance / NEAR_HAZE));
+                haze = (float)std::min(31, (int)(32 * (1 - expf(-tau)))) / 32;
+            } else {
+                haze = 1 - expf(-distance * perVisibility);
+            }
             g.rowColor[y] = pair(mix(grass, pal.haze, haze), y);
             if (landRows) {
                 g.rowLand[y] = pair(mix(land, pal.haze, haze), y);
