@@ -87,6 +87,9 @@ constexpr float ROLLOUT_DECEL_KT_PER_S = 2.2f;  // as an airliner landing at Gla
 constexpr float TURN_OFF_KT = 20.0f;
 constexpr float TAXI_DECEL_KT_PER_S = 1.0f;  // from there to a stop
 constexpr float STOP_SHORT_NM = 0.1f;  // of the far end
+// On a runway too short for those, both harder - by up to this, 8.8kt/s
+// at most, about as hard as an airliner's brakes go.
+constexpr float ROLLOUT_HARDEST = 4.0f;
 // Lined up: pointing along the runway, and near its centreline - out on
 // final, or on it.
 constexpr float LINED_UP_DEG = 20.0f;
@@ -523,12 +526,26 @@ FollowEstimate landingFrom(const RunwayLine &r, float along, float gs, bool airb
         rollS = t - toTouchdownS;
     }
     float start = along;
-    float brakeS = std::min(rollS, gs > TURN_OFF_KT ? (gs - TURN_OFF_KT) / ROLLOUT_DECEL_KT_PER_S : 0.0f);
-    along += (gs * brakeS - ROLLOUT_DECEL_KT_PER_S * brakeS * brakeS / 2.0f) / 3600.0f;
-    float v = gs - ROLLOUT_DECEL_KT_PER_S * brakeS;
-    float slowS = std::min(rollS - brakeS, std::max(v, 0.0f) / TAXI_DECEL_KT_PER_S);
-    along += (v * slowS - TAXI_DECEL_KT_PER_S * slowS * slowS / 2.0f) / 3600.0f;
-    v -= TAXI_DECEL_KT_PER_S * slowS;
+    // Braked harder where the runway left is too short to stop on as it
+    // usually would - down at 140kt at Glasgow's aiming point, it needs
+    // 2.35km and has 2.15 - so it slows to a stop short of the far end,
+    // not cut off there at 37kt, or at 82 on Amsterdam's 04; but no harder
+    // than an airliner can.
+    float brakeA = ROLLOUT_DECEL_KT_PER_S, taxiA = TAXI_DECEL_KT_PER_S;
+    float hi = std::max(gs, TURN_OFF_KT), lo = std::min(gs, TURN_OFF_KT);
+    float need = ((hi * hi - TURN_OFF_KT * TURN_OFF_KT) / (2 * brakeA) + lo * lo / (2 * taxiA)) / 3600.0f;
+    float room = r.len - STOP_SHORT_NM - start;
+    if (room > 0.01f && need > room) {
+        float harder = std::min(need / room, ROLLOUT_HARDEST);
+        brakeA *= harder;
+        taxiA *= harder;
+    }
+    float brakeS = std::min(rollS, gs > TURN_OFF_KT ? (gs - TURN_OFF_KT) / brakeA : 0.0f);
+    along += (gs * brakeS - brakeA * brakeS * brakeS / 2.0f) / 3600.0f;
+    float v = gs - brakeA * brakeS;
+    float slowS = std::min(rollS - brakeS, std::max(v, 0.0f) / taxiA);
+    along += (v * slowS - taxiA * slowS * slowS / 2.0f) / 3600.0f;
+    v -= taxiA * slowS;
     if (along > r.len - STOP_SHORT_NM) {
         along = std::max(start, r.len - STOP_SHORT_NM);
         v = 0;
