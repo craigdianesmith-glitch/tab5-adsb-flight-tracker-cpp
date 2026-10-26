@@ -75,8 +75,8 @@ const char *const HELP[] = {
     "as it starts, the ground is flat, its hills along the skyline, and the pictures come twice as quick. Greyed "
     "with no pack, or away from the land it covers.",
     "- SOUND: its engines, as they sound from the camera - loud close by, muffled far off, the pitch dropping as it "
-    "passes one standing still. For now an A320's alone, A318 to A321neo; other aircraft are silent. The speaker's "
-    "mute silences them too.",
+    "passes one standing still. For now an A320's, A318 to A321neo, and a Eurofighter Typhoon's; other aircraft are "
+    "silent. The speaker's mute silences them too.",
     "- Tap another aircraft for its details. Back goes to the radar.",
     "- An airport's taxiways, stands, buildings and tower come from the airfield pack, airfields.bin, in the SD "
     "card's overhead folder - as does the tower on the zoom. Without it, or at an airport it hasn't got, the view "

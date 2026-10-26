@@ -21,6 +21,11 @@ The A320 never reads `reheat` or `EJ200`. `sizeof(Synth)` was 49,496 B and is no
 
 ## What the 3D view should set for a fighter (`view3d.cpp`, not changed here)
 
+Since done, in `include/engines3d.h`, which `engines3d_check.cpp` runs through each phase.
+What follows is what this build asked of the view, as it was written. The view now differs
+in places: full dry power (0.88) lined up on its brakes, power level and in a fast descent
+by equivalent airspeed rather than ground speed, and the engines 1.5 m up.
+
 - **`enginesOf()`**: `"EUFI"` gives `kind = LOW_BYPASS`, `engine = EJ200`, `engines = 2`.
   `size` comes from the look, as for any aircraft; the preview uses 15.96/37.57 = 0.425.
 - **`reheat`**: `afterburner ? 1 : 0`. The view knows only lit or not. The rule stays as it
