@@ -130,19 +130,21 @@ and `metrics.json`; the fitting scripts in `~/.cache/terrain-lab/sound/eufi-fit-
 - **The unplayed low band** at the big eddies' frequency x Doppler: its envelope moves the bank (0.12 low half,
   0.3 treble half); a 20 ms flutter on the treble half.
 - **Shocklets** at the low band's upward crossings: a self-exciting, bursty event process gated by the jet's
-  convective Mach number against the air (0.8 to 1.5), strength 7 x the roar's RMS x a flat-ish crackle lobe x a
-  formation-and-wear distance law; a 32-tap sawtooth kernel through a 64-float ring.
+  convective Mach number against the air (0.8 to 1.5), strength 8.5 x the roar's RMS x a crackle lobe (-5 dB ahead,
+  -10 behind) x a formation-and-wear distance law; a 32-tap sawtooth kernel through a 64-float ring. The roar's 4 and
+  6.3 kHz bands at 0.3 of their power, the shocks filling the top; at full power the air's treble loss as over 0.8
+  of the way (the jet's steepening).
 - **Low power**: an intake whine (BPF and 2 x BPF, ahead, gone above N1 0.75-0.9); the second engine 30 s after the
   first; the airbrake's buffet; the A320's touchdown squeal at half level. `reverse` never read.
 - **Propagation** on its own path: aspect and closing eased in 35 ms, closing clamp 0.8c, convective gain 0.5-2.5,
   the air's loss compensated over each band's width; the roar ridden down at its very loudest for the limiter.
 - **Fitted** on x-eufi-close-pass (vs ILA 2022, 10 passes), x-eufi-display-100m (vs fs69878, 14 passes) and
   x-eufi-zeltweg (vs all 11 pass clips), six realisations each, through the same chains (asymmetry before the
-  speaker against the references through hp180c, impulsiveness after it through hp180c + tab5): 96, 106 and 109
-  of 114 values within the references' 10th-90th percentiles.
-- **Level**: reheat take-off -15.3 LUFS, +2.3 LU over the A320's take-off (-17.6); limiter 0.06 % there, 0.09 %
-  at the 80 m reheat pass, 0 in the other scenes. +3 LU put the close pass's roar over 0.1 %.
-- **Cost**: 0.88-1.06 ms warm a block (the A320's take-off 1.23-1.27). sizeof(Synth) 50,968 B (+436 B on the base).
+  speaker against the references through hp180c, impulsiveness after it through hp180c + tab5): 99, 109 and 110
+  of 114 values within the references' 10th-90th percentiles (one realisation, the default render: 84, 103, 99).
+- **Level**: reheat take-off -15.5 LUFS, +2.1 LU over the A320's take-off (-17.6); limiter 0.045 % there, 0.096 %
+  at the 80 m reheat pass, under 0.03 % in the other scenes. +0.5 dB put the close pass's roar over 0.1 %.
+- **Cost**: 0.89-1.06 ms warm a block (the A320's take-off 1.23-1.27). sizeof(Synth) 50,968 B (+436 B on the base).
 - **A320**: a320_pccheck 106 identical; a320_bitcheck 7 of 7 as approved.
 - **For the 3D view, beyond the list above**: level-flight power should follow speed for fighters (at 0.65 the
   420-knot low pass is 16 LU quieter and crackle-free); no APU is played; a cut's one-frame speed jump in

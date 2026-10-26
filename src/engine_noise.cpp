@@ -1613,10 +1613,10 @@ namespace {
 // x-eufi-close-pass, x-eufi-display-100m) against the 18 recordings, six
 // realisations of each scene, through the same chains as the recordings
 // [M: tools/engine_preview/NOTES.md, renders/eufi-fit/metrics.json].
-//  Its level, dB, against the airliner's LEVEL: its reheat take-off 2.3LU
-//  over the airliner's in short-term loudness, its 80m reheat pass 1.8LU,
-//  the soft limiter rounding off 0.06% and 0.09% of their samples - a
-//  decibel more put the pass's over 0.1% (the roar's own peaks, not its
+//  Its level, dB, against the airliner's LEVEL: its reheat take-off 2.1LU
+//  over the airliner's in short-term loudness, its 80m reheat pass 1.9LU,
+//  the soft limiter rounding off 0.045% and 0.096% of their samples - half
+//  a decibel more put the pass's over 0.1% (the roar's own peaks, not its
 //  shocks', at that loudness).
 constexpr float TY_LEVEL_DB = -7.0f;
 //  The fine turbulence's level against the big eddies', dB, and its peak,
