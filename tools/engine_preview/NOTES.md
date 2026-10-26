@@ -192,3 +192,31 @@ What changed:
   - Worst cost: 329,450 model cycles against the A320 take-off's 402,514.
   - Stack: fighterRender 448 B, deepest chain 640 B (restart).
   - sizeof(Synth): 51,012 B (+4 B on v1).
+
+## Build "fit", final (v3: 918faef)
+
+- **The user heard v2** and said: "the typhoon sounds are all pretty good, but i think the crackle should be a
+  tad less in the final version". The other three questions keep their defaults.
+- **One change**: `TY_Q2_CRACKLE` 1 to 0.85, so each shock is 1.4 dB weaker. The shocks fire at the same
+  moments; only their sizes change, and the ride's answer to them.
+- **Renders and notes**: `renders/eufi-fit-f/` (`NOTES.md` there has every number before and after, and why
+  0.85).
+- **How measured**: over 7 airframes on the five reheat scenes, through the judges' chains.
+
+What it did:
+- **Crackle**: the derivative skewness is 24 % less at the passes' loudest 2 s and 29 % less over the passes.
+  - The 80 m pass's peak goes from 1.01 to 0.81, and the take-off's from 2.31 to 1.80.
+  - Its size through the Tab5 stand-in is 27 % less. The shocks' rates and sizes are 12 % less.
+  - 0.8 took 34-38 % off the skewness, and 0.9 took 18-19 %.
+- **It still crackles** at every reheat pass's peak, and there is none where there was none.
+- **Loudness**: the reheat passes are within 0.1 LU of v2.
+- **Shapes**: every pass peaks at the same moment. The close pass's ducking dip just after its peak is 0.6 dB
+  shallower. The other dips and fall-offs move by 0.4 dB or less in the medians. The one exception is
+  display-100m's third pass 5 s after its peak, -14.4 to -15.7 dB, where one airframe's 1.6 dB moves the median.
+- **Limiter**: the worst is static front at 0.089 % (v2 0.092 %). Every page scene is at most 0.034 %.
+- **Fitted figures**: 411 of 450 in range (v2 414), from the crackle figures moving away from the recordings.
+- **Checks on 918faef**:
+  - A320 PC: 106 identical. A320 P4: 7 of 7.
+  - Worst cost: 329,450 model cycles (taxi), against the A320 take-off's 402,514.
+  - Stack: deepest chain 640 B (restart).
+  - sizeof(Synth): 51,012 B.
