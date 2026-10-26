@@ -763,7 +763,12 @@ constexpr float TAXI_CARRY_S = 12.0f;
 
 bool lowReport(const FollowSample &s) { return s.ground || (s.hasAlt && s.altFt < ESTIMATE_MAX_FT); }
 
-bool taxiing(const FollowSample &s) { return s.ground && s.hasGs && s.gsKt >= STOPPED_KT && s.hasTrack; }
+// Taxiing, `track` the way: its report's, or, where it gave none, the way
+// its reports before have it going.
+bool taxiingAlong(const FollowSample &s, const SampleList &history, float &track) {
+    track = s.track;
+    return s.ground && s.hasGs && s.gsKt >= STOPPED_KT && (s.hasTrack || trackFromHistory(history, s, track));
+}
 
 // Its latest report on the ground in `history` from before `ms`, no more
 // than `withinMs` before it; null if there is none.
@@ -858,7 +863,8 @@ void RunwaySim::report(const FollowSample &s) {
     bool turnOff = advance(prev, hadPrev);
     easeStartMs_ = easeEndMs_ = s.ms;
     turning_ = false;
-    if (!hadPrev || (!wasSim && phase_ == NONE && !taxiing(s))) {
+    float alongTrack;
+    if (!hadPrev || (!wasSim && phase_ == NONE && !taxiingAlong(s, history_, alongTrack))) {
         return;  // the feed's, as it always was
     }
     // From where it was shown, to where this report puts it.
@@ -891,8 +897,11 @@ void RunwaySim::report(const FollowSample &s) {
             float toTouchdownS = (TOUCHDOWN_NM - along) / std::max((float)now.gsKt, EASE_MIN_KT) * 3600.0f;
             easeS = std::min(easeS, std::max(toTouchdownS - 1.0f, EASE_MIN_S));
         }
-        // Already handed back, and still easing: the feed's from here.
-        if (!wasUnderWay && phase_ == NONE) {
+        // Already handed back, and still easing: the feed's from here. Not
+        // taxiing, though: carried on along its track since its last report,
+        // one that has it slowing - turned off and down to taxiing speed -
+        // was eased back in three seconds whatever the distance.
+        if (!wasUnderWay && phase_ == NONE && !taxiingAlong(s, history_, alongTrack)) {
             easeS = EASE_MIN_S;
         }
     }
@@ -1041,9 +1050,10 @@ FollowEstimate RunwaySim::model(uint32_t ms, float maxAgeS) const {
     float t = (int32_t)(ms - s.ms) > 0 ? std::min((ms - s.ms) / 1000.0f, maxAgeS) : 0.0f;
     if (phase_ == NONE) {
         FollowEstimate e = estimateFollowed(s, t, history_);
-        if (taxiing(s) && e.lat == s.lat && e.lon == s.lon) {
+        float track;
+        if (taxiingAlong(s, history_, track) && e.lat == s.lat && e.lon == s.lon) {
             float d = s.gsKt * std::min(t, TAXI_CARRY_S) / 3600.0f;
-            float a = s.track * (float)M_PI / 180.0f;
+            float a = track * (float)M_PI / 180.0f;
             e.lat += cosf(a) * d / 60.0f;
             e.lon += sinf(a) * d / nmPerDegLonAt(s.lat);
             e.how = "taxiing";
