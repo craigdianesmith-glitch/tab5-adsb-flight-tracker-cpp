@@ -480,7 +480,14 @@ Aircraft type designators are checked against ICAO Doc 8643. Airline names and c
 
 ## Licence
 
-MIT - see [LICENSE](LICENSE). The libraries it builds on (M5Unified, M5GFX, ArduinoJson) are MIT too; note that the ESP32 Arduino core is LGPL, which is worth reading up on before distributing compiled binaries rather than source.
+Two licences, by part:
+
+- **MIT** - see [LICENSE](LICENSE) - for the app: everything not listed below.
+- **PolyForm Noncommercial 1.0.0** - see [LICENSE-POLYFORM.md](LICENSE-POLYFORM.md) - for the sound engine and the terrain engine new in 1.5.1: free to use, study, change and share for any noncommercial purpose; a commercial use needs the author's permission. Each of their files says so in its first lines:
+  - the sound engine: `include/engine_noise.h`, `src/engine_noise.cpp`, `include/engines3d.h`, `include/splash_takeoff.h` and `tools/engine_preview/`;
+  - the terrain engine: `src/scene3d_march.S`, `src/scene3d_terrain.S`, the marked terrain section of `src/scene3d.cpp`, `include/ground_pack.h`, `src/ground_pack.cpp`, `tools/make_ground_pack.py`, `tools/terrain_check/`, `tools/ground_pack_test/` and `tools/landing3d_preview/ground_pc.h`.
+
+Versions of those files published before 1.5.1 stay under the MIT licence they were published with. The libraries it builds on (M5Unified, M5GFX, ArduinoJson) are MIT too; note that the ESP32 Arduino core is LGPL, which is worth reading up on before distributing compiled binaries rather than source.
 
 ## Layout
 

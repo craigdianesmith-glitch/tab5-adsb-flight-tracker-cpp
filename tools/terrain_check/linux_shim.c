@@ -1,3 +1,7 @@
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+// Copyright (c) 2026 Craig Smith. Overhead's terrain engine: PolyForm Noncommercial 1.0.0
+// (LICENSE-POLYFORM.md), not the MIT licence of the rest of the repository.
+
 // Newlib's hooks for ESP's riscv32-esp-elf toolchain, as Linux riscv32 system
 // calls - so that a program built with it runs under qemu-riscv32 (user mode)
 // on the PC: the terrain's assembly checked against its C without the Tab5.

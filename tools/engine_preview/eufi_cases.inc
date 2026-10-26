@@ -1,3 +1,7 @@
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+// Copyright (c) 2026 Craig Smith. Overhead's sound engine: PolyForm Noncommercial 1.0.0
+// (LICENSE-POLYFORM.md), not the MIT licence of the rest of the repository.
+
 // The Typhoon's cost cases for eufi-tools/cost.sh: included into
 // qcost/harness.cpp's main() after the A320's, on the include path from
 // tools/engine_preview/. Each a fresh Synth in `room`, 250 blocks of 40ms

@@ -1,3 +1,7 @@
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+// Copyright (c) 2026 Craig Smith. Overhead's sound engine: PolyForm Noncommercial 1.0.0
+// (LICENSE-POLYFORM.md), not the MIT licence of the rest of the repository.
+
 // What the engine noise costs to make on this PC: the time for a 40ms block
 // (640 samples at 16kHz) in a few typical states, the Sound set once a block
 // as the device's sound task sets it - for scale only, the Tab5's RISC-V core

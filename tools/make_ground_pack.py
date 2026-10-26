@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+# Copyright (c) 2026 Craig Smith. Overhead's terrain engine: PolyForm Noncommercial 1.0.0
+# (LICENSE-POLYFORM.md), not the MIT licence of the rest of the repository.
 """Makes a ground pack - ground.bin, the land and its hills for Overhead's 3D
 view - for the part of the world you choose: your country, your state or
 region, or the country round your town.

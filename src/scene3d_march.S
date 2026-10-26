@@ -1,3 +1,7 @@
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+// Copyright (c) 2026 Craig Smith. Overhead's terrain engine: PolyForm Noncommercial 1.0.0
+// (LICENSE-POLYFORM.md), not the MIT licence of the rest of the repository.
+
 // The land at its height, marched in assembly: scene3d.cpp's marchColumn<>()
 // - a column of the 3D view's terrain, out from the eye - written for the
 // ESP32-P4's RV32IMAFC core by hand, both its passes, the whole column in

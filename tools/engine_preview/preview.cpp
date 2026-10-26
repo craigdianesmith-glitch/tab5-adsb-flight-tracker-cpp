@@ -1,3 +1,7 @@
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+// Copyright (c) 2026 Craig Smith. Overhead's sound engine: PolyForm Noncommercial 1.0.0
+// (LICENSE-POLYFORM.md), not the MIT licence of the rest of the repository.
+
 // Plays the 3D view's engine noise (src/engine_noise.cpp) on the PC: an
 // aircraft flown past a camera, the synthesiser set from it fifty times a
 // second as the 3D view sets it - where it is, which way it points, what its

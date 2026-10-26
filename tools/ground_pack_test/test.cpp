@@ -1,3 +1,7 @@
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+// Copyright (c) 2026 Craig Smith. Overhead's terrain engine: PolyForm Noncommercial 1.0.0
+// (LICENSE-POLYFORM.md), not the MIT licence of the rest of the repository.
+
 // Checks the ground pack's checks - checkHead() and checkIndex(), in
 // src/ground_pack.cpp, which the Tab5's ground task puts the card's
 // ground.bin through before its tiles take any memory, and the PC

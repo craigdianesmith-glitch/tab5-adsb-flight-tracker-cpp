@@ -1,3 +1,5 @@
+<!-- SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0 -->
+
 # The Typhoon's sound: the shared base (eufi-base)
 
 What every Eurofighter Typhoon build starts from, so all of them take the same inputs and
@@ -225,3 +227,5 @@ What it did:
   - Worst cost: 329,450 model cycles (taxi), against the A320 take-off's 402,514.
   - Stack: deepest chain 640 B (restart).
   - sizeof(Synth): 51,012 B.
+
+Copyright (c) 2026 Craig Smith. Part of Overhead's sound engine: PolyForm Noncommercial 1.0.0 ([LICENSE-POLYFORM.md](../../LICENSE-POLYFORM.md)), not the MIT licence of the rest of the repository.

@@ -115,8 +115,9 @@ const char *const HELP[] = {
 };
 
 const char *const ABOUT[] = {
-    "Overhead v" FIRMWARE_VERSION " - a live flight tracker for the M5Stack Tab5, by Craig Smith. Free software "
-    "under the MIT licence: github.com/craigdianesmith-glitch/tab5-adsb-flight-tracker-cpp",
+    "Overhead v" FIRMWARE_VERSION " - a live flight tracker for the M5Stack Tab5, by Craig Smith. Its source is at "
+    "github.com/craigdianesmith-glitch/tab5-adsb-flight-tracker-cpp: free software under the MIT licence, but for "
+    "its sound and terrain engines, free for noncommercial use under PolyForm Noncommercial 1.0.0.",
 
     "# Disclaimer",
     "For interest and entertainment only. Not for navigation, air traffic control, flight planning, or any "
@@ -125,7 +126,7 @@ const char *const ABOUT[] = {
     "incomplete, late or wrong: an aircraft can be missing, or shown where it isn't. Positions near the ground are "
     "partly estimated, take-offs and landings are simulated, and the spoken clearances are made up from them - "
     "they are not real air traffic control.",
-    "Provided as is, without warranty of any kind - see the licence. Please respect other people's privacy, and "
+    "Provided as is, without warranty of any kind - see the licences. Please respect other people's privacy, and "
     "the law where you use it.",
 
     "# Credits",

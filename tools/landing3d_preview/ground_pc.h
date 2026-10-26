@@ -1,3 +1,7 @@
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+// Copyright (c) 2026 Craig Smith. Overhead's terrain engine: PolyForm Noncommercial 1.0.0
+// (LICENSE-POLYFORM.md), not the MIT licence of the rest of the repository.
+
 // The ground pack, ground.bin, read on the PC into a groundpack::Window round
 // a place, as the Tab5's ground task fills the window it keeps - every tile's
 // level 4 and coarse heights, its levels 1 to 3 and finer heights, its level

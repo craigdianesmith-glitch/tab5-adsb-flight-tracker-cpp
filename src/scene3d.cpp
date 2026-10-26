@@ -1,3 +1,7 @@
+// SPDX-License-Identifier: MIT AND PolyForm-Noncommercial-1.0.0
+// MIT (LICENSE), but for the terrain engine's section, marked below, which is
+// PolyForm Noncommercial 1.0.0 (LICENSE-POLYFORM.md).
+
 #include "scene3d.h"
 
 #include <climits>
@@ -6433,6 +6437,11 @@ void skyline(const Scene &scene, float groundLight) {
     }
 }
 
+// ===== THE TERRAIN ENGINE: PolyForm Noncommercial 1.0.0 ==========================
+// From here to the end marker before "the landing and the traffic", this file is
+// licensed under the PolyForm Noncommercial License 1.0.0 (LICENSE-POLYFORM.md),
+// not the MIT licence that covers the rest of it. Copyright (c) 2026 Craig Smith.
+
 // --- the terrain -----------------------------------------------------------------------
 
 // The terrain's sums fused only where they say so - fmaf - and nowhere else.
@@ -10733,6 +10742,8 @@ bool skylineDrawn(Vec3 &eye, Vec3 &right, Vec3 &down, Vec3 &forward, float &f, f
     foot = range.to;
     return range.on && top != nullptr && foot != nullptr;
 }
+
+// ===== END OF THE TERRAIN ENGINE: the MIT licence again from here ================
 
 // --- the landing and the traffic ---------------------------------------------------
 

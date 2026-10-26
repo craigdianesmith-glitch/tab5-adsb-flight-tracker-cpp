@@ -1,4 +1,7 @@
 #!/bin/bash
+# SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+# Copyright (c) 2026 Craig Smith. Overhead's terrain engine: PolyForm Noncommercial 1.0.0
+# (LICENSE-POLYFORM.md), not the MIT licence of the rest of the repository.
 # The terrain check's frames: one preview binary's views, all at once, each
 # into a folder of its own - its log holding each frame's hash and march
 # digest (TERRAIN, TSTATS and NOSAVE set) - for compare.py:

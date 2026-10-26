@@ -1,3 +1,7 @@
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+// Copyright (c) 2026 Craig Smith. Overhead's terrain engine: PolyForm Noncommercial 1.0.0
+// (LICENSE-POLYFORM.md), not the MIT licence of the rest of the repository.
+
 // The land at its height, in assembly: the colours of the 3D view's
 // terrain, a band at a time (see scene3d.cpp's terrainBand(); the march
 // that works out its depths is scene3d_march.S's), written for the

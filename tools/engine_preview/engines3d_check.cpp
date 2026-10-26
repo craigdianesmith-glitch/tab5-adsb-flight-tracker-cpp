@@ -1,3 +1,7 @@
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+// Copyright (c) 2026 Craig Smith. Overhead's sound engine: PolyForm Noncommercial 1.0.0
+// (LICENSE-POLYFORM.md), not the MIT licence of the rest of the repository.
+
 // Checks on the PC what the 3D view asks of the one followed's engines -
 // include/engines3d.h, the code the view's engineSound() runs - through each
 // phase of a Eurofighter Typhoon's flight, with the look, the set-up and the

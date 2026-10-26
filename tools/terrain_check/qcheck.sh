@@ -1,4 +1,7 @@
 #!/bin/bash
+# SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+# Copyright (c) 2026 Craig Smith. Overhead's terrain engine: PolyForm Noncommercial 1.0.0
+# (LICENSE-POLYFORM.md), not the MIT licence of the rest of the repository.
 # The terrain's assembly checked against its C on the PC, without the Tab5.
 # The 3D preview is built twice for the Tab5's ESP32-P4 - the C alone, and
 # with the assembly (scene3d_terrain.S, scene3d_march.S; -DTERRAIN_ASM) -

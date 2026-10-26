@@ -1,4 +1,7 @@
 #!/bin/bash
+# SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+# Copyright (c) 2026 Craig Smith. Overhead's sound engine: PolyForm Noncommercial 1.0.0
+# (LICENSE-POLYFORM.md), not the MIT licence of the rest of the repository.
 # render_eufi.sh <worktree> <outdir>: the Typhoon's preview scenes (preview.cpp's
 # eufi-* and x-eufi-*, eufi-sources.md section 12) rendered from <worktree>'s
 # synth and preview into <outdir>, each as <scene>.wav and <scene>-tab5.wav,

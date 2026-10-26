@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+# Copyright (c) 2026 Craig Smith. Overhead's terrain engine: PolyForm Noncommercial 1.0.0
+# (LICENSE-POLYFORM.md), not the MIT licence of the rest of the repository.
 # Two of run.sh's sets of frames set against each other, folder by folder,
 # from their logs alone: each frame's image hash ("image NAME HASH") and
 # march digest ("tstats ... digest HASH"), and the march's own counts beside

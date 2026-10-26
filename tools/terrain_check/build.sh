@@ -1,4 +1,7 @@
 #!/bin/bash
+# SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+# Copyright (c) 2026 Craig Smith. Overhead's terrain engine: PolyForm Noncommercial 1.0.0
+# (LICENSE-POLYFORM.md), not the MIT licence of the rest of the repository.
 # The 3D preview (tools/landing3d_preview) built for the Tab5's ESP32-P4 -
 # RV32IMAFC, with PlatformIO's riscv32-esp-elf toolchain - to run on the PC
 # under qemu-riscv32-static, for qcheck.sh:
