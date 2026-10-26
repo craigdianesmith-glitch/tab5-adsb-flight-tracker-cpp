@@ -1735,7 +1735,7 @@ void Synth::fighterRestart() {
     j.doppler = SOUND_MS / (SOUND_MS - j.closing);
     j.convection = convectionTo_;
     float n1 = 0.5f * (n1_[0] + n1_[1]);
-    j.reheat = std::max(clamp01(s.reheat), s.afterburner ? 1.0f : 0.0f) * smoothstep(0.93f, 0.97f, n1);
+    j.reheat = j.reheatWas = std::max(clamp01(s.reheat), s.afterburner ? 1.0f : 0.0f) * smoothstep(0.93f, 0.97f, n1);
     j.spool2 = j.lit2 = s.running ? 1.0f : 0.0f;
     j.runS = s.running ? 60.0f : 0.0f;
     j.lowHz = -1;
