@@ -1841,6 +1841,7 @@ void prepareNext(const Followed &f, const std::vector<Aircraft> &traffic, uint32
         if (!g_follower.active()) {
             bool landed = f.movement == RunwaySim::Movement::LANDING;
             g_follower.begin(g_network, {g_shownAt.x, g_shownAt.y}, g_shownHeading, e.gsKt * 0.5144f, landed, in);
+            in.dt = 0;  // carried on this frame already, above: not again
         }
         g_follower.update(g_network, in);
         g_shownAt = {g_follower.at().x, g_follower.at().y, target.z};
