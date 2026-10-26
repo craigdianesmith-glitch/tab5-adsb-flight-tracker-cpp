@@ -441,8 +441,9 @@ class Synth {
         float lowB0 = 0, lowA1 = 0, lowA2 = 0, lowHz = 0;
         float lowY1 = 0, lowY2 = 0, lowZ1 = 0, lowZ2 = 0, lowX1 = 0, lowX2 = 0;
         float env = 0, envMean = 0.5f, envSum = 0, lowWas = 0;
-        // How deep the low band's envelope moves the bank's two halves.
-        float muLo = 0, muHi = 0;
+        // Its engines' dry level as heard, dB: the spools' sound lagging their
+        // speed - first set, not eased, at a restart.
+        float dryDb = -999;
         // The shocks: their chance at each compression's start this step,
         // their strength, the self-excitation after each one and its unit,
         // the 50ms burstiness's process; and the ring their shapes are added
@@ -454,8 +455,9 @@ class Synth {
         // Its intake's whine, as an amplitude: worked out each slow step.
         float whine = 0;
         // The roar's level, smoothed, and the gain it is ridden down by at
-        // its loudest.
-        float roarRms = 0, ride = 1;
+        // its loudest; the share of its samples lately over the limiter's
+        // threshold, and how far that has lowered the ride's ceiling.
+        float roarRms = 0, ride = 1, overShare = 0, ceilBy = 1;
         // The light-up: the reheat a step ago, the time since it caught, s;
         // its whoomp's loudness, its resonance's coefficients and states.
         float reheatWas = 0, lightS = 9, whoomp = 0;
