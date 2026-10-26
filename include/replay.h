@@ -74,10 +74,10 @@ String callsignOf(const String &hex);
 // recording as `t` is. Empty for one never followed.
 const std::vector<FollowSample> &followHeights(const String &hex);
 
-// Where the aircraft with ICAO `hex` is shown `t` ms in, from its reports
-// up to then - see RunwaySim - and `lostMs`, how long since the last of them
-// with a current position. False where it has none, or none for longer than
-// following would have waited for it.
+// Where the replay's radar puts the aircraft with ICAO `hex` `t` ms in,
+// from its reports up to then - see RunwaySim::plotAt() - and `lostMs`, how
+// long since the last of them with a current position. False where it has
+// none, or none for longer than following would have waited for it.
 bool estimateAt(const String &hex, uint32_t t, FollowEstimate &out, uint32_t &lostMs);
 // The aircraft followed at `t`, as the poll latest at `t` reported it - not
 // glided towards the next, so what is worked out from it changes at a poll,

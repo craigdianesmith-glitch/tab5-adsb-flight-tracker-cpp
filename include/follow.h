@@ -115,6 +115,10 @@ public:
     // Where it is shown at `ms`, no earlier than its last report - on the
     // same clock - taken no more than `maxAgeS` on from that report.
     FollowEstimate at(uint32_t ms, float maxAgeS = 1e9f) const;
+    // Where the radar, the zoom and their replays put it: at()'s, but a
+    // report behind where it was shown taken at once rather than eased -
+    // see plotAt() in follow.cpp.
+    FollowEstimate plotAt(uint32_t ms, float maxAgeS = 1e9f) const;
     // Whether a take-off or landing, or the ease out of one, is what at()
     // shows at `ms`, rather than estimateFollowed() from its last report.
     bool simulating(uint32_t ms) const;
@@ -159,5 +163,8 @@ private:
     // Landing, put back down the runway: the offset taken in over the
     // rollOverNm_ it rolls on from rollFromNm_ along it, rather than by time.
     float rollFromNm_ = 0, rollOverNm_ = 0;
+    // The ease a report began puts it back along its way by the clock, which
+    // the radar takes at once - see plotAt().
+    bool plotCut_ = false;
     float fromLat_ = 0, fromLon_ = 0, fromTrack_ = 0;  // the turn's start
 };
