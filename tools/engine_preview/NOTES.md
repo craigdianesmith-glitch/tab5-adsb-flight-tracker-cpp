@@ -152,4 +152,9 @@ and `metrics.json`; the fitting scripts in `~/.cache/terrain-lab/sound/eufi-fit-
   420-knot low pass is 16 LU quieter and crackle-free); no APU is played; a cut's one-frame speed jump in
   `airspeedMs` is clamped to 400 m/s.
 - **Scene notes**: x-eufi-close-pass's first 3.3 s of sound is its start position (1.1 km off, nothing arrived yet);
-  x-eufi-display-100m's legs start 1.3-1.8 km off after cuts. Neither changed.
+  x-eufi-display-100m's legs start 1.3-1.8 km off after cuts. Neither changed. x-eufi-display-100m's 100 m is
+  probably too close for r69878: the same passes rendered 300 m off (a copy of the scene) give its pass envelope
+  (-20 / -8 / -8 / -14 dB at -5 / -2 / +2 / +5 s against -15 / -9 / -8 / -11); at 100 m, -31 / -12 / -8 / -20.
+  "100 yards" in the recording's title is its altitude.
+- **Limiter across realisations**: these renders 0.096 % at the close pass; over six realisations 0.03-0.28 % (the
+  surges at its peak move it +-1.4 LU), the take-off 0.02-0.09 %.
