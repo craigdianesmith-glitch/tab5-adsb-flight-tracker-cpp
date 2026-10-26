@@ -116,3 +116,36 @@ open are in each scene's comment. In short:
   1.23-1.27 ms, and the fighter must stay under it.
 - After any change to shared code, run both A320 checks (`eufi-tools/a320_pccheck.sh`: 106
   identical; `a320_bitcheck.sh`: 7 of 7 as approved).
+
+## Build "fit" (branch eufi-fit): what was built on this base
+
+The full notes, every measured target and the renders: `~/.cache/terrain-lab/sound/renders/eufi-fit/NOTES.md`
+and `metrics.json`; the fitting scripts in `~/.cache/terrain-lab/sound/eufi-fit-work/`.
+
+- **The roar**: the A320's 8-band bank, each band Tam's big-eddy (F) plus fine-turbulence (G) spectrum with its own
+  lobe, at the band's frequency less 0.15 of the Doppler; level by the F404's sound power against thrust, the
+  flight effect, each engine's spool and fire; reheat +4 dB with the jet's speed x1.44.
+- **Surges**: two processes (the low end's, the treble's), each band moved by both as it is low or high (0 deg at
+  400 Hz to 70 deg from 3 kHz); each band's own shimmer.
+- **The unplayed low band** at the big eddies' frequency x Doppler: its envelope moves the bank (0.12 low half,
+  0.3 treble half); a 20 ms flutter on the treble half.
+- **Shocklets** at the low band's upward crossings: a self-exciting, bursty event process gated by the jet's
+  convective Mach number against the air (0.8 to 1.5), strength 7 x the roar's RMS x a flat-ish crackle lobe x a
+  formation-and-wear distance law; a 32-tap sawtooth kernel through a 64-float ring.
+- **Low power**: an intake whine (BPF and 2 x BPF, ahead, gone above N1 0.75-0.9); the second engine 30 s after the
+  first; the airbrake's buffet; the A320's touchdown squeal at half level. `reverse` never read.
+- **Propagation** on its own path: aspect and closing eased in 35 ms, closing clamp 0.8c, convective gain 0.5-2.5,
+  the air's loss compensated over each band's width; the roar ridden down at its very loudest for the limiter.
+- **Fitted** on x-eufi-close-pass (vs ILA 2022, 10 passes), x-eufi-display-100m (vs fs69878, 14 passes) and
+  x-eufi-zeltweg (vs all 11 pass clips), six realisations each, through the same chains (asymmetry before the
+  speaker against the references through hp180c, impulsiveness after it through hp180c + tab5): 96, 106 and 109
+  of 114 values within the references' 10th-90th percentiles.
+- **Level**: reheat take-off -15.3 LUFS, +2.3 LU over the A320's take-off (-17.6); limiter 0.06 % there, 0.09 %
+  at the 80 m reheat pass, 0 in the other scenes. +3 LU put the close pass's roar over 0.1 %.
+- **Cost**: 0.88-1.06 ms warm a block (the A320's take-off 1.23-1.27). sizeof(Synth) 50,968 B (+436 B on the base).
+- **A320**: a320_pccheck 106 identical; a320_bitcheck 7 of 7 as approved.
+- **For the 3D view, beyond the list above**: level-flight power should follow speed for fighters (at 0.65 the
+  420-knot low pass is 16 LU quieter and crackle-free); no APU is played; a cut's one-frame speed jump in
+  `airspeedMs` is clamped to 400 m/s.
+- **Scene notes**: x-eufi-close-pass's first 3.3 s of sound is its start position (1.1 km off, nothing arrived yet);
+  x-eufi-display-100m's legs start 1.3-1.8 km off after cuts. Neither changed.
