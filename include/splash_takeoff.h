@@ -27,6 +27,9 @@ namespace splash_takeoff {
 
 constexpr float LIFT_OFF_S = 1.26f, GEAR_UP_S = 2.1f, OVERHEAD_S = 3.25f;
 constexpr float LIFT_OFF_MS = 75, ROLL_ACCEL = 2.0f, CLIMB_ACCEL = 0.8f, CLIMB_DEG = 9;
+// Close, the user's pick by ear against 120m off: louder, and its limiter
+// rounding off 0.9% of samples as it passes, more than the 0.1% the 3D
+// view's aircraft keep - a few seconds at boot, not an aircraft followed.
 constexpr float EAR_SIDE_M = 40, EAR_UP_M = 14;
 constexpr float ENGINES_UP_M = 2.5f;  // over its wheels, as the 3D view has an A320's
 // Heard until then, and let go: fading out, as when the 3D view closes.
