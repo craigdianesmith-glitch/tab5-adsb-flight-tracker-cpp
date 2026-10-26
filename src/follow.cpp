@@ -892,6 +892,15 @@ void RunwaySim::report(const FollowSample &s) {
         fromLon_ = shown.lon;
         fromTrack_ = shown.track;
         easeS = std::min(std::max(d / TURN_TAXI_KT * 3600.0f, TURN_MIN_S), TURN_MAX_S);
+        // Off the runway behind where it was shown - found again on the exit
+        // it took, having braked harder than the simulation does: left
+        // facing the report, and taxied back to it - not swung round from
+        // the way it was going and driven back up the runway at 80 knots.
+        float toReport = atan2f((now.lon - shown.lon) * k, (now.lat - shown.lat) * 60.0f) * 180.0f / (float)M_PI;
+        if (angleOff(toReport, shown.track) > 90.0f) {
+            fromTrack_ = toReport;
+            easeS = std::max(d / TURN_TAXI_KT * 3600.0f, TURN_MIN_S);
+        }
     } else {
         if (d < 0.001f && shown.altFt == now.altFt) {
             return;  // nothing to ease
