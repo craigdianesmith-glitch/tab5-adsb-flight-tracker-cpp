@@ -87,6 +87,9 @@ constexpr float ROLLOUT_DECEL_KT_PER_S = 2.2f;  // as an airliner landing at Gla
 constexpr float TURN_OFF_KT = 20.0f;
 constexpr float TAXI_DECEL_KT_PER_S = 1.0f;  // from there to a stop
 constexpr float STOP_SHORT_NM = 0.1f;  // of the far end
+// On a runway too short for those, both harder - by up to this, 8.8kt/s
+// at most, about as hard as an airliner's brakes go.
+constexpr float ROLLOUT_HARDEST = 4.0f;
 // Lined up: pointing along the runway, and near its centreline - out on
 // final, or on it.
 constexpr float LINED_UP_DEG = 20.0f;
@@ -523,12 +526,26 @@ FollowEstimate landingFrom(const RunwayLine &r, float along, float gs, bool airb
         rollS = t - toTouchdownS;
     }
     float start = along;
-    float brakeS = std::min(rollS, gs > TURN_OFF_KT ? (gs - TURN_OFF_KT) / ROLLOUT_DECEL_KT_PER_S : 0.0f);
-    along += (gs * brakeS - ROLLOUT_DECEL_KT_PER_S * brakeS * brakeS / 2.0f) / 3600.0f;
-    float v = gs - ROLLOUT_DECEL_KT_PER_S * brakeS;
-    float slowS = std::min(rollS - brakeS, std::max(v, 0.0f) / TAXI_DECEL_KT_PER_S);
-    along += (v * slowS - TAXI_DECEL_KT_PER_S * slowS * slowS / 2.0f) / 3600.0f;
-    v -= TAXI_DECEL_KT_PER_S * slowS;
+    // Braked harder where the runway left is too short to stop on as it
+    // usually would - down at 140kt at Glasgow's aiming point, it needs
+    // 2.35km and has 2.15 - so it slows to a stop short of the far end,
+    // not cut off there at 37kt, or at 82 on Amsterdam's 04; but no harder
+    // than an airliner can.
+    float brakeA = ROLLOUT_DECEL_KT_PER_S, taxiA = TAXI_DECEL_KT_PER_S;
+    float hi = std::max(gs, TURN_OFF_KT), lo = std::min(gs, TURN_OFF_KT);
+    float need = ((hi * hi - TURN_OFF_KT * TURN_OFF_KT) / (2 * brakeA) + lo * lo / (2 * taxiA)) / 3600.0f;
+    float room = r.len - STOP_SHORT_NM - start;
+    if (room > 0.01f && need > room) {
+        float harder = std::min(need / room, ROLLOUT_HARDEST);
+        brakeA *= harder;
+        taxiA *= harder;
+    }
+    float brakeS = std::min(rollS, gs > TURN_OFF_KT ? (gs - TURN_OFF_KT) / brakeA : 0.0f);
+    along += (gs * brakeS - brakeA * brakeS * brakeS / 2.0f) / 3600.0f;
+    float v = gs - brakeA * brakeS;
+    float slowS = std::min(rollS - brakeS, std::max(v, 0.0f) / taxiA);
+    along += (v * slowS - taxiA * slowS * slowS / 2.0f) / 3600.0f;
+    v -= taxiA * slowS;
     if (along > r.len - STOP_SHORT_NM) {
         along = std::max(start, r.len - STOP_SHORT_NM);
         v = 0;
@@ -594,7 +611,12 @@ FollowEstimate estimateFollowed(const FollowSample &given, float ageS, const Sam
     bool lowEnough = last.ground || !last.hasAlt || last.altFt < ESTIMATE_MAX_FT;
     bool climbing = !last.ground && last.hasVs && last.vsFpm >= CLIMBING_FPM;
     bool fast = !last.ground && gs > LANDING_MAX_KT;
-    bool lined = runways && rolling && lowEnough && !climbing && !fast && findLineup(last, l);
+    // In the air with no speed, given or worked out - its first report, none
+    // before to go by - nothing to fly it in by: landed at nought, it was put
+    // down stopped at the touchdown point, and set back in the air 8km out
+    // at the next report.
+    bool still = !last.ground && gs <= 0;
+    bool lined = runways && rolling && lowEnough && !climbing && !fast && !still && findLineup(last, l);
     if (lined && !last.ground && last.hasAlt && !couldLand(last, l.along, (float)(aboveSeaFt(last) - l.fieldFt))) {
         lined = false;
     }
@@ -743,10 +765,18 @@ constexpr float TURN_MIN_S = 3.0f, TURN_MAX_S = 10.0f;
 // way; and each report is eased into, so it neither stops nor jumps between
 // them.
 constexpr float TAXI_CARRY_S = 12.0f;
+// A landing put back down the runway is eased by its roll, not the clock:
+// held this long, its stop included, unless a report comes first.
+constexpr uint32_t ROLL_EASE_MS = 600000;
 
 bool lowReport(const FollowSample &s) { return s.ground || (s.hasAlt && s.altFt < ESTIMATE_MAX_FT); }
 
-bool taxiing(const FollowSample &s) { return s.ground && s.hasGs && s.gsKt >= STOPPED_KT && s.hasTrack; }
+// Taxiing, `track` the way: its report's, or, where it gave none, the way
+// its reports before have it going.
+bool taxiingAlong(const FollowSample &s, const SampleList &history, float &track) {
+    track = s.track;
+    return s.ground && s.hasGs && s.gsKt >= STOPPED_KT && (s.hasTrack || trackFromHistory(history, s, track));
+}
 
 // Its latest report on the ground in `history` from before `ms`, no more
 // than `withinMs` before it; null if there is none.
@@ -838,10 +868,31 @@ void RunwaySim::report(const FollowSample &s) {
     if (!hadPrev) {
         phase_ = NONE;
     }
+    // Landing, and this report on final with no speed - one in a while, from
+    // some feeds - kept landing at the speed it was shown: ended there, it
+    // was carried on at a speed worked out from positions of different ages,
+    // 215 knots for one at 149, and slid back as much as a kilometre at the
+    // next report.
+    if (hadPrev && phase_ == LANDING && !s.ground && !s.hasGs && shown.gsKt > 0) {
+        fresh_.hasGs = true;
+        fresh_.gsKt = (int16_t)shown.gsKt;
+    }
     bool turnOff = advance(prev, hadPrev);
-    easeStartMs_ = easeEndMs_ = s.ms;
+    easeStartMs_ = easeEndMs_ = altEndMs_ = s.ms;
     turning_ = false;
-    if (!hadPrev || (!wasSim && phase_ == NONE && !taxiing(s))) {
+    rollOverNm_ = 0;
+    // In the air still by this report, though shown down already - put down
+    // a little early, the feed having lost it fast on final - and over the
+    // runway, not climbing away: kept down, not shown lifting off again to
+    // touch down twice.
+    heldDown_ = false;
+    if (hadPrev && phase_ == LANDING && !s.ground && shown.ground && !(s.hasVs && s.vsFpm >= CLIMBING_FPM)) {
+        float along, offset;
+        relate(rw_, s.lat, s.lon, along, offset);
+        heldDown_ = along >= 0;
+    }
+    float alongTrack;
+    if (!hadPrev || (!wasSim && phase_ == NONE && !taxiingAlong(s, history_, alongTrack))) {
         return;  // the feed's, as it always was
     }
     // From where it was shown, to where this report puts it.
@@ -855,6 +906,15 @@ void RunwaySim::report(const FollowSample &s) {
         fromLon_ = shown.lon;
         fromTrack_ = shown.track;
         easeS = std::min(std::max(d / TURN_TAXI_KT * 3600.0f, TURN_MIN_S), TURN_MAX_S);
+        // Off the runway behind where it was shown - found again on the exit
+        // it took, having braked harder than the simulation does: left
+        // facing the report, and taxied back to it - not swung round from
+        // the way it was going and driven back up the runway at 80 knots.
+        float toReport = atan2f((now.lon - shown.lon) * k, (now.lat - shown.lat) * 60.0f) * 180.0f / (float)M_PI;
+        if (angleOff(toReport, shown.track) > 90.0f) {
+            fromTrack_ = toReport;
+            easeS = std::max(d / TURN_TAXI_KT * 3600.0f, TURN_MIN_S);
+        }
     } else {
         if (d < 0.001f && shown.altFt == now.altFt) {
             return;  // nothing to ease
@@ -866,18 +926,46 @@ void RunwaySim::report(const FollowSample &s) {
         easeS = std::min(std::max(d / halfKt * 3600.0f, EASE_MIN_S), EASE_MAX_S);
         // Its height put right - gone around, or a report higher or lower
         // than it was shown - to be seen to settle rather than jump; but by
-        // the touchdown.
-        easeS = std::max(easeS, std::min(fabsf(dAlt_) / EASE_FPM * 60.0f, EASE_MAX_S));
-        if (phase_ == LANDING && !s.ground) {
+        // the touchdown. Its height alone: its place too, put right in the
+        // three seconds left - a report a few seconds old, behind where it
+        // was shown - went back faster than it flew.
+        float altS = std::max(easeS, std::min(fabsf(dAlt_) / EASE_FPM * 60.0f, EASE_MAX_S));
+        if (phase_ == LANDING && !s.ground && !heldDown_) {
             float along, offset;
             relate(rw_, s.lat, s.lon, along, offset);
             float toTouchdownS = (TOUCHDOWN_NM - along) / std::max((float)now.gsKt, EASE_MIN_KT) * 3600.0f;
-            easeS = std::min(easeS, std::max(toTouchdownS - 1.0f, EASE_MIN_S));
+            altS = std::min(altS, std::max(toTouchdownS - 1.0f, EASE_MIN_S));
         }
-        // Already handed back, and still easing: the feed's from here.
-        if (!wasUnderWay && phase_ == NONE) {
-            easeS = EASE_MIN_S;
+        // Landing, and put back down the runway - found again behind where
+        // the simulation had it, which brakes more gently than most: taken
+        // in as it goes on, not over so many seconds, so it is seen to slow
+        // and never to go back. Over eight times the distance where its roll
+        // leaves room - slowed by a fifth at most, so a few metres put right
+        // don't dip it under the 40 knots the taxiway follower takes it at -
+        // and one and a half at least, which keeps it going forwards;
+        // stopping first, it is left that little on from the report rather
+        // than slid back to it.
+        if (phase_ == LANDING) {
+            float nowAlong, shownAlong, stopAlong, offset;
+            relate(rw_, now.lat, now.lon, nowAlong, offset);
+            relate(rw_, shown.lat, shown.lon, shownAlong, offset);
+            FollowEstimate stop = model(s.ms + ROLL_EASE_MS, 1e9f);
+            relate(rw_, stop.lat, stop.lon, stopAlong, offset);
+            float roll = stopAlong - nowAlong;
+            if (shownAlong > nowAlong && roll > 0) {
+                rollFromNm_ = nowAlong;
+                rollOverNm_ = std::max(1.5f * d, std::min(8.0f * d, roll));
+            }
         }
+        // Already handed back, and still easing: the feed's from here. Not
+        // taxiing, though: carried on along its track since its last report,
+        // one that has it slowing - turned off and down to taxiing speed -
+        // was eased back in three seconds whatever the distance.
+        if (!wasUnderWay && phase_ == NONE && !taxiingAlong(s, history_, alongTrack)) {
+            easeS = altS = EASE_MIN_S;
+        }
+        altEndMs_ = s.ms + (uint32_t)(altS * 1000.0f);
+        easeS = rollOverNm_ > 0 ? ROLL_EASE_MS / 1000.0f : std::max(easeS, altS);
     }
     easeEndMs_ = s.ms + (uint32_t)(easeS * 1000.0f);
 }
@@ -926,7 +1014,7 @@ bool RunwaySim::advance(const FollowSample &prev, bool hadPrev) {
     case LANDING:
         if (!s.ground) {
             bool goingAround = s.hasVs && s.vsFpm >= GO_AROUND_FPM;
-            if (!goingAround && gs <= LANDING_MAX_KT && (!s.hasAlt || couldLand(s, along, aglFt)) &&
+            if (!goingAround && s.hasGs && gs <= LANDING_MAX_KT && (!s.hasAlt || couldLand(s, along, aglFt)) &&
                 along <= rw_.len && offset <= OFF_LINE_NM && off <= OFF_LINE_DEG) {
                 return false;
             }
@@ -962,7 +1050,11 @@ void RunwaySim::start(const FollowSample &prev, bool hadPrev) {
     float gs = s.hasGs ? (float)s.gsKt : 0.0f;
     Lineup l;
     if (!s.ground) {
-        if ((s.hasVs && s.vsFpm >= CLIMBING_FPM) || gs > LANDING_MAX_KT) {
+        // No speed given - a position worked out from when its signals
+        // reached the receivers, or some feeds' military contacts - nothing
+        // to fly it in by: a jet lined up 5nm out was put down stopped at
+        // the touchdown point and slid there. Its reports, as they are.
+        if ((s.hasVs && s.vsFpm >= CLIMBING_FPM) || gs > LANDING_MAX_KT || !s.hasGs) {
             return;
         }
         // On the ground a moment ago, it is not out on final, however it is
@@ -1024,9 +1116,10 @@ FollowEstimate RunwaySim::model(uint32_t ms, float maxAgeS) const {
     float t = (int32_t)(ms - s.ms) > 0 ? std::min((ms - s.ms) / 1000.0f, maxAgeS) : 0.0f;
     if (phase_ == NONE) {
         FollowEstimate e = estimateFollowed(s, t, history_);
-        if (taxiing(s) && e.lat == s.lat && e.lon == s.lon) {
+        float track;
+        if (taxiingAlong(s, history_, track) && e.lat == s.lat && e.lon == s.lon) {
             float d = s.gsKt * std::min(t, TAXI_CARRY_S) / 3600.0f;
-            float a = s.track * (float)M_PI / 180.0f;
+            float a = track * (float)M_PI / 180.0f;
             e.lat += cosf(a) * d / 60.0f;
             e.lon += sinf(a) * d / nmPerDegLonAt(s.lat);
             e.how = "taxiing";
@@ -1052,7 +1145,7 @@ FollowEstimate RunwaySim::model(uint32_t ms, float maxAgeS) const {
         break;
     }
     default:
-        e = landingFrom(rw_, along, gs, !s.ground, s.hasAlt, aboveSeaFt(s), t);
+        e = landingFrom(rw_, along, gs, !s.ground && !heldDown_, s.hasAlt, aboveSeaFt(s), t);
         break;
     }
     e.pressureFt = s.pressureFt;
@@ -1067,9 +1160,24 @@ FollowEstimate RunwaySim::at(uint32_t ms, float maxAgeS) const {
     }
     float u = smoothstep(since <= 0 ? 0.0f : (float)since / span);
     if (!turning_) {
+        // Its height over its own span, by the touchdown; its place by the
+        // clock, or by how far it has rolled on - see report().
+        int32_t altSpan = (int32_t)(altEndMs_ - easeStartMs_);
+        float ua = altSpan <= 0 || since >= altSpan ? 1.0f : smoothstep(since <= 0 ? 0.0f : (float)since / altSpan);
+        if (rollOverNm_ > 0) {
+            float along, offset;
+            relate(rw_, e.lat, e.lon, along, offset);
+            float r = std::min(std::max((along - rollFromNm_) / rollOverNm_, 0.0f), 1.0f);
+            u = smoothstep(r);
+            // And its speed the speed it is shown going, slower than the
+            // roll's while the offset is taken in: carried on at the roll's,
+            // the view ran on ahead of it, and back.
+            float d = hypotf(dLat_ * 60.0f, dLon_ * nmPerDegLonAt(e.lat));
+            e.gsKt = (int)lroundf(e.gsKt * std::max(0.0f, 1.0f - d * 6.0f * r * (1.0f - r) / rollOverNm_));
+        }
         e.lat += dLat_ * (1.0f - u);
         e.lon += dLon_ * (1.0f - u);
-        e.altFt += (int32_t)(dAlt_ * (1.0f - u));
+        e.altFt += (int32_t)(dAlt_ * (1.0f - ua));
         return e;
     }
     // Off the runway, along a curve leaving it the way it was going and

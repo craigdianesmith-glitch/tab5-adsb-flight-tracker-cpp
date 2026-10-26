@@ -152,7 +152,12 @@ private:
     // The ease from where it was shown as fresh_ came in to where fresh_ puts
     // it: an offset that shrinks to nothing, or a turn off the runway.
     uint32_t easeStartMs_ = 0, easeEndMs_ = 0;
+    uint32_t altEndMs_ = 0;  // the offset's height, over its own span
     bool turning_ = false;
+    bool heldDown_ = false;  // LANDING: fresh_ in the air, but taken as down - see report()
     float dLat_ = 0, dLon_ = 0, dAlt_ = 0;     // the offset
+    // Landing, put back down the runway: the offset taken in over the
+    // rollOverNm_ it rolls on from rollFromNm_ along it, rather than by time.
+    float rollFromNm_ = 0, rollOverNm_ = 0;
     float fromLat_ = 0, fromLon_ = 0, fromTrack_ = 0;  // the turn's start
 };

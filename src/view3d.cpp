@@ -1861,19 +1861,15 @@ void prepareNext(const Followed &f, const std::vector<Aircraft> &traffic, uint32
         e.vsFpm = 0;
     }
 
-    // Where it is shown. Taxiing between reports, which the estimate holds
-    // it still for, moved on along its track at its speed. And each jump
-    // the estimate makes - a report putting it right, on the ground or in a
-    // turn - not shown as a jump: the shown position carried on by its speed
-    // and eased towards the estimate over a second or so, and its heading
-    // likewise; on a straight steady path that is the estimate exactly.
-    double lat = e.lat, lon = e.lon;
-    if (e.ground && !f.simulating && e.gsKt >= STILL_KT && f.reportMs != 0) {
-        double d = e.gsKt * 0.5144 * std::min(8.0f, std::max<int32_t>(0, (int32_t)(g_nowMs - f.reportMs)) / 1000.0f);
-        lat += d * cos(e.track * M_PI / 180) / 111320.0;
-        lon += d * sin(e.track * M_PI / 180) / (111320.0 * cos(lat * M_PI / 180));
-    }
-    Vec3 target = place(lat, lon, e.altFt, e.ground);
+    // Where it is shown. Taxiing between reports, the estimate carries it on
+    // along its track (RunwaySim::model()) - not carried again here, which
+    // had it taxi at twice its speed and slide back at each report. And each
+    // jump the estimate makes - a report putting it right, on the ground or
+    // in a turn - not shown as a jump: the shown position carried on by its
+    // speed and eased towards the estimate over a second or so, and its
+    // heading likewise; on a straight steady path that is the estimate
+    // exactly.
+    Vec3 target = place(e.lat, e.lon, e.altFt, e.ground);
     if (rotor && !e.ground && g_where == Where::AIRFIELD) {
         target.z = std::max(target.z, ROTOR_LOWEST_M);
     }
@@ -1984,6 +1980,7 @@ void prepareNext(const Followed &f, const std::vector<Aircraft> &traffic, uint32
         if (!g_follower.active()) {
             bool landed = f.movement == RunwaySim::Movement::LANDING;
             g_follower.begin(g_network, {g_shownAt.x, g_shownAt.y}, g_shownHeading, e.gsKt * 0.5144f, landed, in);
+            in.dt = 0;  // carried on this frame already, above: not again
         }
         g_follower.update(g_network, in);
         g_shownAt = {g_follower.at().x, g_follower.at().y, target.z};
