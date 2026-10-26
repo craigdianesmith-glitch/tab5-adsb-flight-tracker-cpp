@@ -1613,10 +1613,12 @@ namespace {
 // x-eufi-close-pass, x-eufi-display-100m) against the 18 recordings, six
 // realisations of each scene, through the same chains as the recordings
 // [M: tools/engine_preview/NOTES.md, renders/eufi-fit/metrics.json].
-//  Its level, dB, against the airliner's LEVEL: its reheat take-off 2.4LU
-//  over the airliner's in short-term loudness, the soft limiter on under
-//  0.1% of samples but at the 80m reheat pass, 0.11%.
-constexpr float TY_LEVEL_DB = -8.0f;
+//  Its level, dB, against the airliner's LEVEL: its reheat take-off 2.3LU
+//  over the airliner's in short-term loudness, its 80m reheat pass 1.8LU,
+//  the soft limiter rounding off 0.06% and 0.09% of their samples - a
+//  decibel more put the pass's over 0.1% (the roar's own peaks, not its
+//  shocks', at that loudness).
+constexpr float TY_LEVEL_DB = -7.5f;
 //  The fine turbulence's level against the big eddies', dB, and its peak,
 //  octaves from theirs; the share of the Doppler the bank's spectrum moves
 //  by; the 250Hz band's power kept, the speaker playing next to none of it.
@@ -1641,7 +1643,7 @@ constexpr float TY_P0 = 1.0f, TY_THETA = 0.4f, TY_BURST_NP = 1.1f, TY_ALPHA = 0.
 constexpr float TY_G_CR = 7.0f, TY_CR_FAR = 1500.0f, TY_CR_DB = 0.0f, TY_MC_ON = 0.8f, TY_MC_ALL = 1.5f;
 //  The intake's whine idling, dB against the jet's level; the level the
 //  roar is ridden down to at its loudest, as samples go.
-constexpr float TY_WHINE_DB = -34.0f, TY_RIDE = 0.14f;
+constexpr float TY_WHINE_DB = -40.0f, TY_RIDE = 0.14f;
 
 // Its jet's roar against its fan's speed, dB against its full dry power's
 // (MIL) - as an installed F404's sound power, the EJ200's size, goes with
@@ -1691,8 +1693,8 @@ constexpr Lobe FST = {-4.0f, -3.5f, -3.0f, -2.0f, -1.0f, 0.0f, 0.0f, -2.0f, -4.0
 // and still there, weaker, coming [M: the passes' derivative skewness, through
 // the speaker's 180Hz high-pass, 0.3-1.0 coming, 0.8-1.0 at the peak, 0.5
 // going - not the 20-30dB swing of their source alone].
-constexpr Lobe CRACKLE_DRY = {-9.0f, -8.5f, -8.0f, -7.0f, -5.0f, -3.0f, -1.0f, 0.0f, -1.5f, -5.0f};
-constexpr Lobe CRACKLE_WET = {-8.0f, -7.5f, -7.0f, -6.0f, -4.0f, -1.5f, 0.0f, -0.5f, -2.0f, -5.0f};
+constexpr Lobe CRACKLE_DRY = {-6.0f, -5.5f, -5.0f, -4.5f, -3.5f, -2.5f, -1.0f, 0.0f, -1.5f, -5.0f};
+constexpr Lobe CRACKLE_WET = {-5.0f, -4.5f, -4.0f, -3.5f, -2.5f, -1.0f, 0.0f, -0.5f, -2.0f, -5.0f};
 
 // A shock's shape, as the real ones average at 16kHz [M: r69878's loud
 // passes, eufi-methods 1.2]: a slow fall into it, the rarefaction before
@@ -1972,6 +1974,18 @@ __attribute__((noinline)) void Synth::fighterSlowStep() {
     float airSin, airCos;
     sinCosTurns(0.5f * air_.hz / RATE, airSin, airCos);
     float airCot = airCos / std::max(1e-6f, airSin);
+    static float bandTanAt[BANDS][3];  // tan(pi f / rate) half an octave under each band's centre, at it, over it
+    static bool tangents = false;
+    if (!tangents) {
+        for (int b = 0; b < BANDS; b++) {
+            for (int k = 0; k < 3; k++) {
+                float sn, cs;
+                sinCosTurns(0.5f * std::min(BAND_HZ[b] * exp2Fast(0.5f * (k - 1)), 0.47f * RATE) / RATE, sn, cs);
+                bandTanAt[b][k] = sn / cs;
+            }
+        }
+        tangents = true;
+    }
     // The airbrake open on the landing roll, a low buffet as the square of the
     // speed - the airliner's spoilers' as a share of their ten panels - under
     // the approach's roar as it touches down, over the idling engines' till it
@@ -2000,8 +2014,16 @@ __attribute__((noinline)) void Synth::fighterSlowStep() {
         }
         float fl = flickerNp * smoothstep(cornerLog - 0.5f, cornerLog + 0.5f, bandLog_[b]);
         float sh = b < 4 ? SHIM_LO : SHIM_HI;
-        float w = bandTan_[b] * airCot, w2 = w * w;
-        float lowPassDb = 4.34294482f * 0.693147181f * log2Fast((1 - w2) * (1 - w2) + w2 * (1 / (0.6f * 0.6f)));
+        // The air's loss made exact over the band, as the airliner's is at
+        // its centre - but over its half-octaves either side too: the band is
+        // broad and the muffling steep, and from a kilometre the band's centre
+        // alone left its upper half, and the sound, 3-5dB too weak.
+        float through = 0;
+        for (int k = 0; k < 3; k++) {
+            float w = bandTanAt[b][k] * airCot, w2 = w * w;
+            through += 1 / ((1 - w2) * (1 - w2) + w2 * (1 / (0.6f * 0.6f)));
+        }
+        float lowPassDb = -4.34294482f * 0.693147181f * log2Fast(through * (1.0f / 3));
         float airDb = clampf(lowPassDb - bandAirDbKm_[b] * km, -30, 15);
         float ln = 2 * sh * (shimmer_[b] - sh) + 2 * fl * (flickerN - fl) + 0.230258509f * airDb;
         p *= exp2Fast(1.44269504f * ln);
