@@ -15,9 +15,9 @@
 // approach, reverse thrust just down - an airliner's. A fighter's - the
 // Typhoon's - where it is flown otherwise [eufi-sources.md 2.1, 4.2, 7, 11]:
 // full dry power on its brakes lined up, its reheat lit as it rolls; no
-// reversers, its engines idling all down its landing roll; and level, as
-// hard as its speed through the air needs, not an airliner's cruise power at
-// any speed.
+// reversers, its engines idling all down its landing roll; and level, or
+// coming down fast, as hard as its speed through the air needs, not an
+// airliner's cruise power at any speed, nor its idle.
 //
 // Header only, for the view's engineSound() and a PC check's alike
 // (tools/engine_preview/engines3d_check.cpp).
@@ -62,22 +62,34 @@ struct Doing {
     bool fighter = false;  // drawn as a fighter: not a trainer, an AWACS or a U-2
 };
 
+// How fast it is through the air, as far as the view can tell: its
+// equivalent airspeed - its speed, the ground's near enough the air's, by
+// the root of the air's density there against the sea's, as the standard
+// atmosphere has it. Low down the wind is a few tens of knots of a fighter's
+// hundreds; high up a jet stream's 150 can be as much of its speed over the
+// ground as its own cruise's - M0.85 at FL250 is 342 - so there no more
+// than 340 is believed: less and less of anything over it from 15,000ft to
+// 20,000ft, its cruise heard as its cruise whichever way the wind blows.
+inline float airKt(int kt, int altFt) {
+    float h = (float)std::max(0, altFt);
+    float density = h < 36089 ? powf(1 - 6.8756e-6f * h, 4.2559f) : 0.2971f * expf((36089 - h) / 20806.0f);
+    float eas = kt * sqrtf(density);
+    float believed = std::min(1.0f, std::max(0.0f, (20000 - h) / 5000));
+    return eas <= 340 ? eas : 340 + believed * (eas - 340);
+}
+
 // How hard a fighter's engines work level, by its speed through the air. An
 // airliner's 0.65 at any speed - its cruise's, some 85% of its fan's speed -
 // left a Typhoon's low pass at 420 knots crackle-free and 16LU quieter than
 // at 0.85 [M: eufi-fit's NOTES]. Its drag, and so the thrust it needs, goes
-// as the square of its speed through the air - equivalent airspeed: its
-// speed, the ground's near enough the air's, by the root of the air's
-// density there against the sea's, as the standard atmosphere has it. So
-// 0.65 to 340 knots - a display's 300, its cruise at M0.85 and FL250, which
-// is 342 - then 0.85 by 420, a low pass at 250ft [I: eufi-sources 2.2, 11.6:
-// 0.75 to 0.9], and full dry power, 0.88, from 480, as level passes at 350
-// to 500 knots nearly are [I: eufi-methods 9.1]. Never reheat: the view
-// gives that to a climb low down alone.
+// as the square of its speed through the air, airKt(). So 0.65 to 340
+// knots - a display's 300, its cruise high up - then 0.85 by 420, a low pass
+// at 250ft [I: eufi-sources 2.2, 11.6: 0.75 to 0.9], and full dry power,
+// 0.88, from 480, as level passes at 350 to 500 knots nearly are [I:
+// eufi-methods 9.1]. Never reheat: the view gives that to a climb low down
+// alone.
 inline float fighterLevelPower(int kt, int altFt) {
-    float h = (float)std::max(0, altFt);
-    float density = h < 36089 ? powf(1 - 6.8756e-6f * h, 4.2559f) : 0.2971f * expf((36089 - h) / 20806.0f);
-    float eas = kt * sqrtf(density);
+    float eas = airKt(kt, altFt);
     if (eas <= 340) {
         return 0.65f;
     }
@@ -122,8 +134,18 @@ inline void ask(engine_noise::Sound &s, const Doing &d) {
         }
     } else {
         s.power = d.vsFpm > 1200 ? 1.0f : d.vsFpm > 300 ? 0.88f : d.vsFpm < -400 ? (d.low ? 0.45f : 0.05f) : 0.65f;
-        if (jet && d.vsFpm <= 300 && d.vsFpm >= -400) {
-            s.power = fighterLevelPower(d.kt, d.altFt);
+        if (jet && d.vsFpm <= 300) {
+            // Level, as hard as its speed needs. Coming down fast - into a
+            // valley, letting down to run in - nearly as hard, its drag far
+            // more than its weight gives it on the way down: not idled, nor
+            // put on its approach, as an airliner's descent is, but by 340
+            // knots through the air [I: eufi-methods 9.1].
+            float level = fighterLevelPower(d.kt, d.altFt);
+            if (d.vsFpm >= -400) {
+                s.power = level;
+            } else {
+                s.power += std::min(1.0f, std::max(0.0f, (airKt(d.kt, d.altFt) - 340) / 80)) * (level - s.power);
+            }
         }
     }
     // Reheat only a fighter's: at take-off power on the ground or under
