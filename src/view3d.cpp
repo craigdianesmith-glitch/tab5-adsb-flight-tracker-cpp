@@ -1635,8 +1635,8 @@ engine_noise::Sound engineSound(const Followed &f, const FollowEstimate &e, int 
                     look.family == s3::Family::FIGHTER_SINGLE;
     engines3d::ask(s, doing);
     // Its engines about its middle, a little up - a Typhoon's lower.
-    float up = engines3d::enginesUpM(s, look.scale);
-    Vec3 to = camera.eye - (pose.at + Vec3{0, 0, up});
+    float up = engines3d::enginesUpPerScale(s, look.scale);
+    Vec3 to = camera.eye - (pose.at + Vec3{0, 0, up * look.scale});
     float d = length(to);
     s.distanceM = d;
     // How fast it is coming closer, from the distance a frame ago - a cut
@@ -1652,7 +1652,7 @@ engine_noise::Sound engineSound(const Followed &f, const FollowEstimate &e, int 
     // the three above, as one frame has them, can't: a fast jet's sound
     // arriving all at once as it passes, and a cut to another camera heard
     // as that camera hears it.
-    Vec3 engines = pose.at + Vec3{0, 0, up};
+    Vec3 engines = pose.at + Vec3{0, 0, up * look.scale};
     s.placed = true;
     s.at[0] = engines.x, s.at[1] = engines.y, s.at[2] = engines.z;
     s.nose[0] = nose.x, s.nose[1] = nose.y, s.nose[2] = nose.z;
@@ -1668,7 +1668,7 @@ engine_noise::Sound engineSound(const Followed &f, const FollowEstimate &e, int 
     // runway's or an apron's, grass and earth elsewhere.
     bool airfield = g_where == Where::AIRFIELD;
     Vec3 eye = camera.eye;
-    s.sourceUpM = airfield ? pose.at.z + up : e.altFt * 0.3048f;
+    s.sourceUpM = airfield ? pose.at.z + up * look.scale : e.altFt * 0.3048f;
     s.earUpM = airfield ? eye.z : eye.z + (eye.x * eye.x + eye.y * eye.y) / (2 * 6371000.0f);
     s.hardGround = airfield && (e.ground || aboveFt < 300);
     // Its tyres: rolling at its speed on the ground; touched down lately,

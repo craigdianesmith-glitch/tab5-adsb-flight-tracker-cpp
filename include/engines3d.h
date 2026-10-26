@@ -143,12 +143,13 @@ inline void airframe(engine_noise::Sound &s, bool gear, bool flaps, float spoile
 }
 
 // Its engines' height over where it is placed - its main wheels - for the
-// sound off the ground: an airliner's about its middle, a little up; a
-// Typhoon's jets' nozzles low in its tail, 1.5m up on its gear, where its
-// sound's scenes have them (tools/engine_preview/NOTES.md), not the 2.5m of
-// the airliner's rule at its size.
-inline float enginesUpM(const engine_noise::Sound &s, float scale) {
-    return s.kind == engine_noise::Kind::LOW_BYPASS ? 1.5f : 2.5f * scale;
+// sound off the ground, in metres for each of its look's scale, which the
+// view multiplies by as it always has, so an airliner's comes out exactly as
+// it did: 2.5, about its middle, a little up. A Typhoon's jets' nozzles are
+// low in its tail, 1.5m up on its gear whatever its scale, where its sound's
+// scenes have them (tools/engine_preview/NOTES.md).
+inline float enginesUpPerScale(const engine_noise::Sound &s, float scale) {
+    return s.kind == engine_noise::Kind::LOW_BYPASS ? 1.5f / scale : 2.5f;
 }
 
 }  // namespace engines3d

@@ -151,7 +151,7 @@ void unchanged() {
         Sound s = engines3d::enginesOf(type, 1);
         float was = 2.5f * look.scale;
         setUps++;
-        moved += !sameBits(engines3d::enginesUpM(s, look.scale), was);
+        moved += !sameBits(engines3d::enginesUpPerScale(s, look.scale) * look.scale, was);
     }
     printf("  gear, flaps, spoilers and engines' height: %ld cases, %ld differ\n", setUps, moved);
     check(moved == 0, "an airliner's set-up or engines' height changed");
@@ -239,10 +239,11 @@ void typhoon() {
            "A320's %.2fm)\n",
            kind.kind == Kind::LOW_BYPASS ? "LOW_BYPASS" : "?", kind.engine == Engine::EJ200 ? "EJ200" : "?",
            eufi.family == s3::Family::FIGHTER_DELTA ? "yes" : "no", s3::sizeOf(eufi),
-           engines3d::enginesUpM(kind, eufi.scale),
-           engines3d::enginesUpM(engines3d::enginesOf("A320", 1), a320.scale));
+           engines3d::enginesUpPerScale(kind, eufi.scale) * eufi.scale,
+           engines3d::enginesUpPerScale(engines3d::enginesOf("A320", 1), a320.scale) * a320.scale);
     check(kind.kind == Kind::LOW_BYPASS && kind.engine == Engine::EJ200, "EUFI's engines");
-    check(fabsf(engines3d::enginesUpM(kind, eufi.scale) - 1.5f) < 1e-6f, "the Typhoon's engines 1.5m up");
+    check(fabsf(engines3d::enginesUpPerScale(kind, eufi.scale) * eufi.scale - 1.5f) < 1e-6f,
+          "the Typhoon's engines 1.5m up");
     check(fabsf(s3::sizeOf(eufi) - 0.425f) < 0.002f, "the Typhoon's size as the preview's");
     printf("  %-44s  %-36s  %s\n", "", "Typhoon", "A320, for comparison");
     printf("  %-44s  %5s %-7s %-6s %5s %-5s  %5s %-7s %-5s\n", "phase", "power", "reverse", "reheat", "airbk", "flaps",
