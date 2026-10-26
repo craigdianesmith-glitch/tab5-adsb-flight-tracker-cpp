@@ -17,6 +17,7 @@
 #include "airfield_pack.h"
 #include "airports.h"
 #include "clock_zone.h"
+#include "engines3d.h"
 #include "ground_follow.h"
 #include "ground_route.h"
 #include "coast.h"
@@ -1598,29 +1599,11 @@ int g_runningWas = -1;
 bool g_engineSound = true;
 float g_engineDistance = -1;  // the camera's from the one followed, a frame ago
 
-// An aircraft's engines, by its type: for now the A320 family's alone - each
-// kind of aircraft made and heard in its turn - and any other silent. ADS-B
-// doesn't say which of two engines an A320 has, so they are picked by the
-// airframe, `who`, in the fleets' shares - a ceo's CFM56s or V2500s, a neo's
-// LEAPs or geared fans - and with them whether an older one's fuel vents
-// whistle on its approach: the same airframe always the same.
-engine_noise::Sound enginesOf(const String &type, uint32_t who) {
-    engine_noise::Sound s;
-    for (const char *t : {"A318", "A319", "A320", "A321", "A19N", "A20N", "A21N"}) {
-        if (type == t) {
-            s.kind = engine_noise::Kind::TURBOFAN;
-            s.engine = engine_noise::a320Engines(t, who);
-            s.fopp = engine_noise::a320Fopp(s.engine, who);
-        }
-    }
-    return s;
-}
-
 // The one followed's engines as the camera hears them: their kind, from its
-// type; how hard they are working, from what it is doing - idling as it
-// taxies, take-off power on its roll and in its climb, back on the approach,
-// reverse thrust just down; where it is from the camera - how far off, how
-// fast it is closing, which way it faces, and how high it and the camera
+// type - the A320 family's and the Typhoon's, any other silent; how hard
+// they are working, from what it is doing - see engines3d.h, which a PC
+// check runs through each phase; where it is from the camera - how far off,
+// how fast it is closing, which way it faces, and how high it and the camera
 // are over the ground, for the sound off it; and its tyres, rolling and
 // just down. See engine_noise.h for what the air does with it all.
 engine_noise::Sound engineSound(const Followed &f, const FollowEstimate &e, int shownKt, const s3::Look &look,
@@ -1633,38 +1616,27 @@ engine_noise::Sound engineSound(const Followed &f, const FollowEstimate &e, int 
     for (size_t i = 0; i < f.hex.length(); i++) {
         who = (who ^ (uint8_t)f.hex[i]) * 16777619u;
     }
-    engine_noise::Sound s = enginesOf(f.type, who);
+    engine_noise::Sound s = engines3d::enginesOf(f.type.c_str(), who);
     s.who = who;
     float aboveFt = g_where == Where::AIRFIELD ? pose.at.z / 0.3048f : 1e9f;
-    bool low = aboveFt < 3000;
-    if (s.kind == Kind::ROTOR) {
-        // Set down its rotor turning, idling; hovering the hardest it
-        // works; coming down at 30 to 90 knots - an approach - its blades
-        // slapping.
-        s.power = e.ground ? 0.25f : shownKt < 25 ? 0.95f : e.vsFpm > 300 ? 0.85f : e.vsFpm < -300 ? 0.45f : 0.65f;
-        if (!e.ground && e.vsFpm < -250) {
-            float speed = std::min(1.0f, std::max(0.0f, (shownKt - 30) / 20.0f)) *
-                          std::min(1.0f, std::max(0.0f, (90 - shownKt) / 20.0f));
-            s.slap = std::min(1.0f, (-e.vsFpm - 250) / 600.0f) * speed;
-        }
-    } else if (e.ground) {
-        if (f.movement == RunwaySim::Movement::TAKEOFF && (f.simulating || shownKt > 30)) {
-            s.power = 1;
-        } else if (f.movement == RunwaySim::Movement::LANDING && shownKt > 60) {
-            s.power = 0.7f;
-            s.reverse = true;
-        } else {
-            s.power = 0.05f + std::min(0.12f, shownKt / 150.0f);
-        }
-    } else {
-        s.power = e.vsFpm > 1200 ? 1.0f : e.vsFpm > 300 ? 0.88f : e.vsFpm < -400 ? (low ? 0.45f : 0.05f) : 0.65f;
-    }
-    // Reheat only a fighter's: not a trainer's, an AWACS's or a U-2's.
-    bool fighter = look.family == s3::Family::FIGHTER_DELTA || look.family == s3::Family::FIGHTER ||
-                   look.family == s3::Family::FIGHTER_SINGLE;
-    s.afterburner = s.kind == Kind::LOW_BYPASS && fighter && s.power >= 0.95f && (e.ground || low);
-    // Its engines about its middle, a little up.
-    Vec3 to = camera.eye - (pose.at + Vec3{0, 0, 2.5f * look.scale});
+    // What it is doing, for how hard its engines work and its reheat - a
+    // fighter's alone, not a trainer's, an AWACS's or a U-2's.
+    engines3d::Doing doing;
+    doing.ground = e.ground;
+    doing.takingOff = f.movement == RunwaySim::Movement::TAKEOFF;
+    doing.landing = f.movement == RunwaySim::Movement::LANDING;
+    doing.simulating = f.simulating;
+    doing.kt = shownKt;
+    doing.rollKt = e.gsKt;
+    doing.vsFpm = e.vsFpm;
+    doing.altFt = e.altFt;
+    doing.low = aboveFt < 3000;
+    doing.fighter = look.family == s3::Family::FIGHTER_DELTA || look.family == s3::Family::FIGHTER ||
+                    look.family == s3::Family::FIGHTER_SINGLE;
+    engines3d::ask(s, doing);
+    // Its engines about its middle, a little up - a Typhoon's lower.
+    float up = engines3d::enginesUpM(s, look.scale);
+    Vec3 to = camera.eye - (pose.at + Vec3{0, 0, up});
     float d = length(to);
     s.distanceM = d;
     // How fast it is coming closer, from the distance a frame ago - a cut
@@ -1680,7 +1652,7 @@ engine_noise::Sound engineSound(const Followed &f, const FollowEstimate &e, int 
     // the three above, as one frame has them, can't: a fast jet's sound
     // arriving all at once as it passes, and a cut to another camera heard
     // as that camera hears it.
-    Vec3 engines = pose.at + Vec3{0, 0, 2.5f * look.scale};
+    Vec3 engines = pose.at + Vec3{0, 0, up};
     s.placed = true;
     s.at[0] = engines.x, s.at[1] = engines.y, s.at[2] = engines.z;
     s.nose[0] = nose.x, s.nose[1] = nose.y, s.nose[2] = nose.z;
@@ -1696,7 +1668,7 @@ engine_noise::Sound engineSound(const Followed &f, const FollowEstimate &e, int 
     // runway's or an apron's, grass and earth elsewhere.
     bool airfield = g_where == Where::AIRFIELD;
     Vec3 eye = camera.eye;
-    s.sourceUpM = airfield ? pose.at.z + 2.5f * look.scale : e.altFt * 0.3048f;
+    s.sourceUpM = airfield ? pose.at.z + up : e.altFt * 0.3048f;
     s.earUpM = airfield ? eye.z : eye.z + (eye.x * eye.x + eye.y * eye.y) / (2 * 6371000.0f);
     s.hardGround = airfield && (e.ground || aboveFt < 300);
     // Its tyres: rolling at its speed on the ground; touched down lately,
@@ -1706,12 +1678,10 @@ engine_noise::Sound engineSound(const Followed &f, const FollowEstimate &e, int 
     s.touchdownS = since >= 0 && since < 3 ? since : -1;
     s.sinkMs = g_touchdownSinkMs;
     // Its airframe as the view has it set up: the air past it, its gear,
-    // flaps and spoilers.
+    // flaps and spoilers - see engines3d::airframe() for a Typhoon's.
     s.airspeedMs = shownKt * 0.5144f;
     s.size = s3::sizeOf(look);
-    s.gearDown = setUp.gear;
-    s.flapsOut = setUp.flaps;
-    s.spoilers = setUp.spoilerDeploy;
+    engines3d::airframe(s, setUp.gear, setUp.flaps, setUp.spoilerDeploy);
     // Its engines shut down at its stand - a minute after it parks there,
     // cooled at idle, or already when it was found parked, as at a gate -
     // and started again as it is pushed back or moves off, heard spooling up

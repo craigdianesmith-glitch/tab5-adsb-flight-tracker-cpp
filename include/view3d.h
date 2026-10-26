@@ -62,7 +62,7 @@ void benchCoverReport();
 void close();
 // Whether the one followed's engines are heard - the SOUND button's, which
 // saves it; this from the settings at boot. For now only the A320 family's
-// are made; any other aircraft is silent.
+// and the Eurofighter Typhoon's are made; any other aircraft is silent.
 void setEngineSound(bool on);
 // Whether the land is drawn at its height, where the card's ground pack has
 // it - the GROUND button's, which saves it; this from the settings at boot,
