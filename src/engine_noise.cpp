@@ -1647,6 +1647,11 @@ constexpr float TY_G_CR = 8.5f, TY_CR_FAR = 1500.0f, TY_CR_DB = 0.0f, TY_MC_ON =
 //  The intake's whine idling, dB against the jet's level; the level the
 //  roar is ridden down to at its loudest, as samples go.
 constexpr float TY_WHINE_DB = -40.0f, TY_RIDE = 0.14f;
+//  The light-up's whoomp, dB against the jet's level - its noise through a
+//  resonance an octave wide some 12dB under the roar in the speaker's band
+//  at nought, so some 6dB over it for its tenth of a second - and the shocks'
+//  self-excitation it starts.
+constexpr float TY_WHOOMP_DB = 18.0f, TY_CATCH = 2.0f;
 
 // Its jet's roar against its fan's speed, dB against its full dry power's
 // (MIL) - as an installed F404's sound power, the EJ200's size, goes with
@@ -1788,6 +1793,25 @@ __attribute__((noinline)) void Synth::fighterStep() {
         j.reheat = ease(j.reheat, want, REHEAT_OUT);
         j.reheatRate = 0;
     }
+    // The light-up, as it catches: a whoomp - the fire's pressure pulse,
+    // under the speaker's band itself, heard as a burst of noise at 320Hz
+    // as the Doppler has it, dying in a tenth of a second - and the shocks
+    // catching a sixth of a second on, a cluster of them [I: eufi-methods
+    // 6.2; M: a light-up's level steepest at 98dB/s over 100ms].
+    if (j.reheat > 0.02f && j.reheatWas <= 0.02f) {
+        j.lightS = 0;
+        float sn, cs, hz = std::min(320 * j.doppler, 1500.0f);
+        sinCosTurns(hz / RATE, sn, cs);
+        float alpha = sn / (2 * 1.4f), a0 = 1 + alpha;
+        j.whoompB0 = alpha / a0;
+        j.whoompA1 = -2 * cs / a0;
+        j.whoompA2 = (1 - alpha) / a0;
+    }
+    if (j.lightS < 0.15f && j.lightS + STEP_S >= 0.15f) {
+        j.hawkesAdded += TY_CATCH;
+    }
+    j.reheatWas = j.reheat;
+    j.lightS += STEP_S;
     // Its jet's speed [I: eufi-sources 1.3, 2.2]: 200m/s idling, 770 at full
     // dry power, half as fast again lit; and its big eddies' speed against
     // the air about it, 0.7 of the jet's less the aircraft's own, as a Mach
@@ -2041,6 +2065,8 @@ __attribute__((noinline)) void Synth::fighterSlowStep() {
         roar += (pL + pF) * surge;
         bandBy_[b] = (sqrtf(p) - bandGain_[b]) * (1.0f / (SLOW * STEP));
     }
+    // The whoomp as loud as the jet lit, a little more ahead and to the side.
+    j.whoomp = dbAmp(jetDb + TY_WHOOMP_DB + 3 * (1 - th));
     // The low band's envelope moving the bank.
     j.muLo = TY_MU_LO;
     j.muHi = TY_MU_HI;
@@ -2169,6 +2195,24 @@ __attribute__((noinline)) void Synth::fighterRender(float *mix, const float *lat
     j.ringAt = at;
     j.hawkesAdded += fired * ALPHA;
     j.ride = ride;
+    if (j.lightS < 0.6f) {
+        // the whoomp: noise through its resonance, its envelope a rise in
+        // 10ms and a fall in 100ms, carried across the step
+        float t0 = j.lightS - STEP_S, t1 = j.lightS;
+        auto envelope = [](float t) { return t <= 0 ? 0.0f : (1 - expFast(-t / 0.01f)) * expFast(-t / 0.1f); };
+        float e = j.whoomp * envelope(t0), eBy = (j.whoomp * envelope(t1) - e) * (1.0f / STEP);
+        float b0 = j.whoompB0, a1 = j.whoompA1, a2 = j.whoompA2;
+        float y1 = j.whoompY1, y2 = j.whoompY2, x1 = j.whoompX1, x2 = j.whoompX2;
+        for (int i = 0; i < n; i++) {
+            e += eBy;
+            float x = e * noiseB[i];
+            float y = b0 * (x - x2) - a1 * y1 - a2 * y2;
+            x2 = x1, x1 = x, y2 = y1, y1 = y;
+            mix[i] += y;
+        }
+        j.whoompY1 = fabsf(y1) < 1e-20f ? 0 : y1, j.whoompY2 = fabsf(y2) < 1e-20f ? 0 : y2;
+        j.whoompX1 = x1, j.whoompX2 = x2;
+    }
     {
         static const float UP = 1 - expf(-STEP_S / 0.2f), DOWN = 1 - expf(-STEP_S / 1.0f);
         float rms = sqrtf(power * (1.0f / STEP));

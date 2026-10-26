@@ -456,6 +456,10 @@ class Synth {
         // The roar's level, smoothed, and the gain it is ridden down by at
         // its loudest.
         float roarRms = 0, ride = 1;
+        // The light-up: the reheat a step ago, the time since it caught, s;
+        // its whoomp's loudness, its resonance's coefficients and states.
+        float reheatWas = 0, lightS = 9, whoomp = 0;
+        float whoompB0 = 0, whoompA1 = 0, whoompA2 = 0, whoompY1 = 0, whoompY2 = 0, whoompX1 = 0, whoompX2 = 0;
         float ring[64] = {};
         int ringAt = 0;
     };
