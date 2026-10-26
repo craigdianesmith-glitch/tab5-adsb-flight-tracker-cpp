@@ -5,9 +5,10 @@
 // The 3D view's engine noise: what the aircraft followed sounds like from
 // where the camera is - made as it plays, with no recording anywhere in it.
 // For now an airliner of the A320 family's: its CFM56s or V2500s, its LEAPs
-// or geared fans, its airframe, tyres and APU. A fighter's - the Eurofighter
-// Typhoon's two reheated EJ200s - is next: its inputs are here, its path in
-// engine_noise.cpp a stub, silent, for its builds to fill.
+// or geared fans, its airframe, tyres and APU. And a fighter's, the
+// Eurofighter Typhoon's two reheated EJ200s - its roar churning and tearing,
+// crackling behind it at high power - on a path of its own in
+// engine_noise.cpp (THE FIGHTER).
 //
 // What it is made of is noise, and what noise does through a resonance. A
 // tone heard from the ground is never a sine: a fan's blade-passing whine
@@ -75,7 +76,7 @@ constexpr int RATE = 16000;  // samples a second
 enum class Kind : uint8_t {
     NONE,        // nothing: fades out
     TURBOFAN,    // an airliner's: the fans' whine, the roar, the buzz-saw at full power
-    LOW_BYPASS,  // a fighter's, a trainer's: the Typhoon's EJ200s (Engine::EJ200) - a stub, silent
+    LOW_BYPASS,  // a fighter's, a trainer's: the Typhoon's EJ200s (Engine::EJ200)
     TURBOPROP,   // not made yet - silent
     PISTON,      // not made yet - silent
     ROTOR,       // not made yet - silent
@@ -239,15 +240,18 @@ class Synth {
     void combsStep();
     void huntStep();
     void tyresStep();
-    // The fighter's - Kind::LOW_BYPASS - a stub, silent, for its builds to
-    // fill: its controls each 2ms step and each 32ms one, after the way and
-    // the propagation's figures are worked out; its sources into the step's
-    // mix, before the air's muffling and the echo off the ground. See
-    // engine_noise.cpp's FIGHTER STUB.
+    // The fighter's - Kind::LOW_BYPASS, the Typhoon's: its controls each 2ms
+    // step and each 32ms one, after the way and the propagation's figures
+    // are worked out; its sources into the step's mix, before the air's
+    // muffling and the echo off the ground - from the bank's two noises,
+    // `lateA` and `lateB`, and the tones' two, `noiseA` for its unplayed low
+    // band, `noiseB` for its whine. See engine_noise.cpp's THE FIGHTER.
     void fighterStep();
     void fighterSlowStep();
+    void fighterRestart();
     struct Rng;
-    void fighterRender(float *mix, const float *noiseA, const float *noiseB, Rng &rng, int n);
+    void fighterRender(float *mix, const float *lateA, const float *lateB, const float *noiseA, const float *noiseB,
+                       Rng &rng, int n);
 
     // The noise as a step's samples have it: the seed in a register, copied
     // in and back once a step, not read from the synth - in the PSRAM - and
@@ -409,6 +413,53 @@ class Synth {
     float squealDueS_ = -1, squealSinkMs_ = 1, squealRollingMs_ = 0;  // due in, and as the frame that showed it had it
     float lightPhase_ = 0, thump_ = 0;
     Svf thumpBand_;
+
+    // The fighter's own (Kind::LOW_BYPASS) - what the airliner's sums don't
+    // have: see engine_noise.cpp's THE FIGHTER. It shares the airliner's
+    // bank (its coefficients, states and gains), its surges' and shimmer's
+    // states and its flicker, none of which an airliner's sound runs while
+    // a fighter's plays.
+    struct Jet {
+        // Heard: which way it faces, how fast it is closing - eased in 35ms,
+        // not the airliner's 0.2s - and the Doppler and convection from that.
+        float aspect = 0.5f, closing = 0, doppler = 1, convection = 1;
+        // Its engines: the reheat lit, 0 to 1, and how fast that is moving;
+        // the second engine's spool and fire - its start half a minute after
+        // the first's; how long the engines have been asked to run.
+        float reheat = 0, reheatRate = 0, spool2 = 1, lit2 = 1, runS = 0;
+        // Its jet: its speed, m/s, and its eddies' Mach number against the
+        // air about it - over 1, crackling.
+        float jetMs = 770, mc = 0;
+        // The slow processes the roar surges by, in their own spreads: the big
+        // eddies' roar's quick and slow parts, and the fine turbulence's.
+        float ltsQuick = 0, ltsSlow = 0, fstQuick = 0, fstSlow = 0, ltsSurge = 1;
+        // The unplayed low band - the big eddies' own sound, under the
+        // speaker's - a band-pass and a resonance on the same poles: its
+        // coefficients, its states, its noise's last two; its envelope, that
+        // envelope's mean over a second and the step's sum of it; and its
+        // last sample, for its compressions' starts.
+        float lowB0 = 0, lowA1 = 0, lowA2 = 0, lowHz = 0;
+        float lowY1 = 0, lowY2 = 0, lowZ1 = 0, lowZ2 = 0, lowX1 = 0, lowX2 = 0;
+        float env = 0, envMean = 0.5f, envSum = 0, lowWas = 0;
+        // How deep the low band's envelope moves the bank's two halves.
+        float muLo = 0, muHi = 0;
+        // The shocks: their chance at each compression's start this step,
+        // their strength, the self-excitation after each one and its unit,
+        // the 50ms burstiness's process; and the ring their shapes are added
+        // into ahead of the sample being made.
+        float shockP = 0, shockUnit = 0, shockAmp = 0, hawkes = 0, hawkesAdded = 0, burst = 0;
+        // The flutter: the whole roar's quick level, its process and its
+        // gain at the step's start and end.
+        float flutter = 0, flutterWas = 1, flutterTo = 1;
+        // Its intake's whine, as an amplitude: worked out each slow step.
+        float whine = 0;
+        // The roar's level, smoothed, and the gain it is ridden down by at
+        // its loudest.
+        float roarRms = 0, ride = 1;
+        float ring[64] = {};
+        int ringAt = 0;
+    };
+    Jet jet_;
 };
 
 }  // namespace engine_noise
