@@ -1668,10 +1668,10 @@ constexpr float TY_FLUT_S = 0.02f, TY_FLUT_NP = 0.10f, TY_ENV_HZ = 60.0f, TY_MU_
 //  wearing down halves them over, m; the eddies' Mach numbers their gate
 //  opens over.
 constexpr float TY_P0 = 0.35f, TY_THETA = 0.4f, TY_BURST_NP = 1.1f, TY_ALPHA = 0.35f, TY_LN_NP = 0.25f, TY_LOCK = 0.5f;
-constexpr float TY_G_CR = 8.5f * TY_Q2_CRACKLE, TY_CR_FAR = 1500.0f, TY_CR_DB = 0.0f, TY_MC_ON = 0.8f, TY_MC_ALL = 1.5f;
+constexpr float TY_G_CR = 9.25f * TY_Q2_CRACKLE, TY_CR_FAR = 1500.0f, TY_CR_DB = 0.0f, TY_MC_ON = 0.8f, TY_MC_ALL = 1.5f;
 //  The level the roar is ridden down to at its loudest, as samples go, and
 //  the most it is let be.
-constexpr float TY_RIDE = 0.2f, TY_CEIL = 0.3f;
+constexpr float TY_RIDE = 0.2f, TY_CEIL = 0.27f;
 //  The light-up's whoomp, dB against the jet's level - its noise through a
 //  resonance an octave wide some 12dB under the roar in the speaker's band
 //  at nought, so TY_Q4_THUMP_DB over it for its tenth of a second - and the
@@ -1743,13 +1743,15 @@ constexpr Lobe FST = {-4.0f, -3.5f, -3.0f, -2.0f, -1.0f, 0.0f, 0.0f, -2.0f, -4.0
 // The shocks', against the roar they ride on: most about the Mach angle,
 // and still there, weaker, coming [M: the passes' derivative skewness, through
 // the speaker's 180Hz high-pass, 0.3-1.0 coming, 0.8-1.0 at the peak, 0.5
-// going - not the 20-30dB swing of their source alone].
+// going - not the 20-30dB swing of their source alone]; 3dB weaker ahead
+// than v1's, which crackled 1.1 coming at the 80m pass where the ILA passes
+// give 0.43 [M: the judges], and down in the jet's cone of silence.
 // The intake's whine: out of its chin intake, ahead and to the side, and
 // gone behind - 20dB down at 140 degrees, 40 at the tail, the jet and the
 // airframe between [I: eufi-sources 11.1, 11.7, 11.8b: -10 to -20 behind].
 constexpr Lobe INTAKE = {0.0f, 0.0f, -1.0f, -3.0f, -6.0f, -12.0f, -20.0f, -28.0f, -34.0f, -40.0f};
-constexpr Lobe CRACKLE_DRY = {-9.0f, -8.5f, -8.0f, -7.0f, -5.0f, -3.0f, -1.0f, 0.0f, -5.0f, -22.0f};
-constexpr Lobe CRACKLE_WET = {-8.0f, -7.5f, -7.0f, -6.0f, -4.0f, -1.5f, 0.0f, -1.5f, -6.0f, -22.0f};
+constexpr Lobe CRACKLE_DRY = {-9.0f, -8.5f, -8.0f, -7.0f, -5.0f, -3.0f, -1.0f, 0.0f, -4.0f, -12.0f};
+constexpr Lobe CRACKLE_WET = {-8.0f, -7.5f, -7.0f, -6.0f, -4.0f, -1.5f, 0.0f, -1.5f, -5.0f, -12.0f};
 
 // A shock's shape, as the real ones average at 16kHz [M: r69878's loud
 // passes, eufi-methods 1.2]: a slow fall into it, the rarefaction before
@@ -2232,11 +2234,10 @@ __attribute__((noinline)) void Synth::fighterRender(float *mix, const float *lat
         float want = out > RIDE ? std::min(powFast(RIDE / out, 0.6667f), CEIL * j.ceilBy / out) : 1.0f;
         rideBy = (want - ride) * (1.0f / STEP);
     }
-    // No one shock near the soft limiter by itself, as heard: its jump no
-    // more than three quarters of the limiter's threshold - the giants, 15-18
-    // standard deviations where the recordings' reach 11, gone [M: v1, the
-    // judges].
-    float scale = std::max(1e-6f, gain_ * fade_ * duck_ * LEVEL), most = 0.45f / (SHOCK[15] * ride * scale);
+    // No one shock past the soft limiter by itself, as heard: its peak no
+    // more than the limiter's threshold - the giants, 15-18 standard
+    // deviations where the recordings' reach 11, gone [M: v1, the judges].
+    float scale = std::max(1e-6f, gain_ * fade_ * duck_ * LEVEL), most = 0.6f / (SHOCK[15] * ride * scale);
     float over = 0, threshold = 0.6f / (scale * (1 + 0.5f * echoGain_));  // the echo off the ground adding to it
     for (int i = 0; i < n; i++) {
         float x = noiseA[i];
