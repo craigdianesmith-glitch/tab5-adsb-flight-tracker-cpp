@@ -974,6 +974,7 @@ const char *const SOAK_NAMES[] = {
     "a Loganair ATR 72 landing on 23 at Glasgow, then taxiing in: a turboprop's approach and reverse",
     "a Loganair ATR 72 taking off from 23 at Glasgow: a turboprop at full power",
     "a Cessna cruising at 12,500ft round Zermatt, the Matterhorn above it: the title shot, with the Alps in the pack",
+    "a Typhoon taking off from 23 at Lossiemouth: its reheat lit as it rolls, cancelled at 3,000ft",
 };
 
 MadeUp circling(const char *hex, const char *callsign, const char *type, const char *category, bool military,
@@ -5024,6 +5025,14 @@ void startSoak(int n) {
     // tools/make_ground_pack.py - a light aircraft 700m above the valley's
     // ridges and 650m under the Matterhorn's top, 5km off.
     case 25: m = circling("aa0029", "OVRHD", "C172", "A1", false, 46.020, 7.749, 2500, 100, 12500); break;
+    // The Typhoon's sound, 26 October: a take-off in reheat - full dry
+    // power on its brakes as it waits lined up, its reheat lit as it rolls,
+    // held in its climb and cancelled at 3,000ft over the field.
+    case 26:
+        m = circling("aa002a", "TARTN21", "EUFI", "A6", true, 0, 0, 0, 0, 0);
+        m.pattern = Pattern::DEPART;
+        ok = onRunwayAt(m, "LMO", "23");
+        break;
     case 17:
         m = circling("aa0021", "EZY88HP", "A320", "A3", false, 0, 0, 0, 0, 0);
         m.pattern = Pattern::LAND;

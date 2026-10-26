@@ -57,6 +57,9 @@ has them:
        runway, its APU off as it lines up, the hills beyond
     m  a 767 at FL300 circling the Southern Uplands - its trails whole and
        grey, a widebody's fly past
+    q  a Typhoon taking off from 23 at Lossiemouth - full dry power on its
+       brakes as it waits lined up, its reheat lit as it rolls, held in its
+       climb and cancelled at 3,000ft over the field
     R  not a flight: the newest recording that follows an aircraft, replayed
        in 3D - played, 4x, a minute back and on, its bar, another aircraft
        picked, Back and 3D again
@@ -84,7 +87,7 @@ import serial
 
 ap = argparse.ArgumentParser()
 ap.add_argument("--minutes", type=float, default=60)
-ap.add_argument("--scenarios", default="0123456789abefghijklmnoR")
+ap.add_argument("--scenarios", default="0123456789abefghijklmnoqR")
 ap.add_argument("--port", default="/dev/ttyACM0")
 ap.add_argument("--out", default=time.strftime("soak-%Y%m%d-%H%M"))
 ap.add_argument("--sun", choices=["real", "day", "dusk", "night"], default="real",
