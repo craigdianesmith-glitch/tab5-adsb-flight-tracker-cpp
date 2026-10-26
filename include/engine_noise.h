@@ -123,10 +123,10 @@ struct Sound {
     // engine's own: an A320's CFM56s at 90% for take-off, 51% on the approach.
     float n1 = -1;
     // Its reversers out. A fighter's - an EJ200's - has none and doesn't
-    // hear it: the 3D view sets it on any landing roll above 60 knots, power
-    // 0.7, which for a Typhoon is wrong - it holds its nose high to 100
-    // knots, its engines idling, then brakes; quieter after touchdown, not
-    // louder.
+    // hear it; nor does the 3D view give a Typhoon them, as it gives an
+    // airliner on its landing roll above 60 knots, power 0.7: it holds its
+    // nose high to 100 knots, its engines idling, then brakes - quieter
+    // after touchdown, not louder (engines3d.h).
     bool reverse = false;
     // A fighter's reheat (Kind::LOW_BYPASS): `afterburner` lit or not, as
     // the 3D view has it today - at power 0.95 or more on the ground or under
@@ -158,8 +158,8 @@ struct Sound {
     // air tearing past them: on an approach, gear and flaps out and the
     // engines throttled back, as loud as the engines. A fighter's
     // `spoilers` is its airbrake, the one big panel behind a Typhoon's
-    // cockpit, 0 shut to 1 open - which the 3D view should give as open on
-    // its landing roll down to taxiing speed, else shut; it has no flaps to
+    // cockpit, 0 shut to 1 open - which the 3D view gives as open on its
+    // landing roll down to taxiing speed, else shut; it has no flaps to
     // speak of (flaperons), so flapsOut is never set for it.
     float airspeedMs = 0;
     bool gearDown = false, flapsOut = false;
