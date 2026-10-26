@@ -19,13 +19,25 @@
 // x-a320-intermediate, an approach at 210 knots, where an old A320's fuel
 // vents whistle.
 //
+// And the Eurofighter Typhoon's (Kind::LOW_BYPASS, Engine::EJ200), as
+// eufi-sources.md's section 12 has them: eufi-stand-start, eufi-taxi-past,
+// eufi-takeoff, eufi-climbout-overhead, eufi-display-pass, eufi-low-pass,
+// eufi-flypast, eufi-chase-cruise, eufi-approach-chase, eufi-landing; and
+// for measuring against real ones: x-eufi-zeltweg, x-eufi-close-pass,
+// x-eufi-display-100m. Each fed as the 3D view feeds a fighter - its power
+// and reheat as the table has them, the reversers left on above 60 knots
+// on its landing rolls, as the view sets them, for the fighter to ignore.
+// tools/engine_preview/render_eufi.sh renders them all; NOTES.md beside it.
+//
 // ENGINE=cfm56 (the default), v2500, leap or pw: the airframe's engines.
 // FOPP=1: its fuel vents unmodified, whistling. SYNC=1: the touchdown's
 // squeal and the reversers' coming on heard as the picture shows them -
 // engine_noise::g_transientsOnPicture. SUFFIX=-x: added to the files' names.
 // WHO=n: the airframe, for its own little differences. DEVICE=1: frames
 // 20ms apart give or take a third and the sound made in 40ms blocks, as the
-// device has it.
+// device has it. POWER=x: eufi-low-pass's power, 0.65 unless given (the 3D
+// view's level flight); 0.85 is more like a real one's. TRACE=1: what the
+// synthesiser is given, each second, on stderr.
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -58,8 +70,9 @@ struct Moment {
     V3 eye;
     bool hardGround = false;  // the ground between it and the camera a runway's, not grass
     bool gear = false, flaps = false;  // down, out
-    float spoilers = 0;               // up, 0 to 1
+    float spoilers = 0;               // up, 0 to 1 - a fighter's airbrake open
     bool running = true, apu = false;  // its engines, its APU
+    float reheat = 0;  // a fighter's reheat asked for, 0 dry to 1 full - afterburner set with it
 };
 
 struct Scene {
@@ -133,6 +146,285 @@ Moment landing(float t, V3 eye) {
     }
     m.eye = eye;
     return m;
+}
+
+// The Typhoon's scenes' figures.
+// Its length against an A320's: 15.96m against 37.57m.
+constexpr float EUFI_SIZE = 0.425f;
+// Its jets' nozzles about 1.5m over the ground on its gear - not an
+// airliner's engines' 3m.
+constexpr float EUFI_ENGINES_UP = 1.5f;
+// The 3D view gives a fighter reheat only below 3,000ft over the airfield.
+constexpr float FT3000 = 914.4f;
+float g_lowPassPower = 0.65f;  // POWER=
+
+// An angle-of-attack approach's power: 0.45, and a correction of up to 3
+// points every 3 to 5 seconds - the pilot holding the speed through the
+// gusts - the same each time. Not something the 3D view gives (it holds
+// 0.45 on a descent), but what the table asks for; hunting by its own
+// figures (eufi-sources 11.8) is the synthesiser's to add or not.
+float approachPower(float t) {
+    static const float AT[] = {0,     3.6f,  7.9f,  11.2f, 15.8f, 19.1f, 23.5f, 27.4f, 31.0f, 35.3f,
+                               39.0f, 43.6f, 47.2f, 51.5f, 55.0f, 59.4f, 63.0f, 67.5f, 71.1f, 75.6f};
+    static const float BY[] = {0,     0.03f,  -0.02f, 0.01f, -0.03f, 0.02f, 0,     -0.01f, 0.03f, -0.02f,
+                               0.01f, -0.03f, 0.02f,  -0.01f, 0.03f, 0,     -0.02f, 0.01f, -0.03f, 0.02f};
+    int k = 0;
+    while (k + 1 < (int)(sizeof(AT) / sizeof(AT[0])) && t >= AT[k + 1]) {
+        k++;
+    }
+    return 0.45f + BY[k];
+}
+
+// A Typhoon's landing: in on a three-degree glide at 70m/s (135 knots) from
+// x0, gear down, approach power, touching down at x = 300. Then no
+// reversers: its engines to idle at once, its nose held high - aerobraking
+// - from 70m/s to 51 (100 knots) at 1.6m/s2, then its wheel brakes at
+// 2.5m/s2 to 10m/s, taxiing [eufi-sources 4.2; the rates are mine]. The 3D
+// view's reverse = true left on above 60 knots, as it sets it on any
+// landing roll, for the fighter to ignore - but its power idle, as the
+// table has it, not the 0.7 the view gives with it today (NOTES.md). Its
+// airbrake open as it touches down, over 0.8s, and shut as it slows from
+// 60 knots to 40, as the 3D view's spoilers are; whether the RAF opens it on
+// the roll-out isn't published - the recipe's choice (eufi-methods 9.1).
+Moment fighterLanding(float t, float x0, V3 eye) {
+    Moment m;
+    float tTouch = (300 - x0) / 70;
+    m.heading = 0;
+    m.pitch = 0;
+    m.gear = true;
+    m.power = approachPower(t);
+    if (t < tTouch) {
+        float x = x0 + 70 * t;
+        m.at = {x, 0, std::max(0.0f, (300 - x) * 0.0524f)};
+    } else {
+        const float dA = (70 - 51.4f) / 1.6f, dB = (51.4f - 10) / 2.5f;
+        float d = t - tTouch, v, s;
+        if (d < dA) {
+            v = 70 - 1.6f * d;
+            s = 70 * d - 0.8f * d * d;
+        } else if (d < dA + dB) {
+            float e = d - dA;
+            v = 51.4f - 2.5f * e;
+            s = 70 * dA - 0.8f * dA * dA + 51.4f * e - 1.25f * e * e;
+        } else {
+            v = 10;
+            s = 70 * dA - 0.8f * dA * dA + 51.4f * dB - 1.25f * dB * dB + 10 * (d - dA - dB);
+        }
+        m.at = {300 + s, 0, 0};
+        m.power = 0.05f;
+        m.reverse = v > 60 * 0.5144f;
+        float rise = clamp01(d / 0.8f), slow = clamp01((v / 0.5144f - 40) / 20);
+        m.spoilers = rise * rise * (3 - 2 * rise) * slow * slow * (3 - 2 * slow);
+        m.hardGround = true;
+    }
+    m.eye = eye;
+    return m;
+}
+
+// A level pass along x at `speed`, abeam x = 0 at `atS`, `height` up and
+// `side` metres off the camera, which is `earUp` up.
+Moment levelPass(float t, float speed, float atS, float height, float side, float earUp) {
+    Moment m;
+    m.at = {speed * (t - atS), side, height};
+    m.heading = 0;
+    m.pitch = 0;
+    m.eye = {0, 0, earUp};
+    return m;
+}
+
+void eufiScenes(std::vector<Scene> &out) {
+    // 1. At its stand, heard from the front quarter 35m off: the APU on from
+    // the start, the engines started at 5s, idling, then taxiing away at 65s
+    // (power 0.14), straight ahead, past the camera 25m off. The table's
+    // second engine started at 35s isn't the caller's to say - Sound has one
+    // `running`, as the 3D view has, for both - so it is the synthesiser's
+    // own start sequence: the second engine 30s after the first. The APU:
+    // the 3D view gives one only to an airliner today, and the recipe has
+    // none; on here as the table has it, off as it taxies (NOTES.md).
+    out.push_back({"eufi-stand-start", 80, [](float t) {
+                       Moment m;
+                       float d = t < 65 ? 0 : 0.25f * (t - 65) * (t - 65);  // 0.5m/s2, 7.5m/s by 80s
+                       m.at = {d, 0, 0};
+                       m.heading = 0;
+                       m.pitch = 0;
+                       m.power = t < 65 ? 0.05f : 0.14f;
+                       m.gear = true;
+                       m.apu = t < 65;
+                       m.running = t >= 5;
+                       m.eye = {24.75f, 24.75f, 2};
+                       m.hardGround = true;
+                       return m;
+                   }});
+    // 2. Taxiing past at 8m/s, 35m off, on the apron: taxi power, and one
+    // breakaway burst - power 0.22, 50% N1 by the EJ200's row - from 9s to
+    // 12s, coming, the intake ahead of it towards the camera.
+    out.push_back({"eufi-taxi-past", 30, [](float t) {
+                       Moment m;
+                       m.at = {-120 + 8 * t, 0, 0};
+                       m.heading = 0;
+                       m.pitch = 0;
+                       m.power = t >= 9 && t < 12 ? 0.22f : 0.14f;
+                       m.gear = true;
+                       m.eye = {0, 35, 1.5f};
+                       m.hardGround = true;
+                       return m;
+                   }});
+    // 3. The 3D view's take-off, heard from 150m off the centreline and 500m
+    // from brake release, 4m up as the A320's: the brakes held at full dry
+    // power (0.88) for the first 3s, released with reheat lit; lift-off 8s
+    // after release - "brakes-off to lift-off < 8s", 1g, 80m/s after 320m -
+    // then a 13.5 degree climb, reheat held to 3,000ft (at 51s) and cancelled
+    // there, power 0.88, as the table has it. The gear up 3s after lift-off.
+    // So the camera hears it pass 43m up, 82m/s, its jets already climbing.
+    out.push_back({"eufi-takeoff", 60, [](float t) {
+                       Moment m;
+                       float speed, pitch;
+                       m.at = takeoffPath(t, 3, 10, 80, 13.5f, speed, pitch);
+                       m.heading = 0;
+                       m.pitch = pitch;
+                       bool lit = t >= 3 && m.at.z < FT3000;
+                       m.power = lit ? 1.0f : 0.88f;
+                       m.reheat = lit ? 1.0f : 0.0f;
+                       m.gear = t < 3 + 8 + 3;
+                       m.eye = {500, 150, 4};
+                       return m;
+                   }});
+    // 4. Under the climb 3km from brake release: past overhead at 22s, 600m
+    // up, 120m/s, climbing at 12.6 degrees (lift-off at 320m: 600m up 3km
+    // along), in reheat - and, past 3,000ft 12s later, cancelled as the 3D
+    // view would, power 0.88 as in eufi-takeoff. The microphone 1.5m up.
+    out.push_back({"eufi-climbout-overhead", 45, [](float t) {
+                       Moment m;
+                       float pitch = 12.6f * (float)M_PI / 180, s = 120 * (t - 22);
+                       m.at = {s * cosf(pitch), 0, 600 + s * sinf(pitch)};
+                       m.heading = 0;
+                       m.pitch = pitch;
+                       bool lit = m.at.z < FT3000;
+                       m.power = lit ? 1.0f : 0.88f;
+                       m.reheat = lit ? 1.0f : 0.0f;
+                       m.eye = {0, 0, 1.5f};
+                       return m;
+                   }});
+    // 5. A display pass along the runway, 30m up at 154m/s (300 knots), past
+    // the tower 230m off and 20m up, abeam at 20s: level at the 3D view's
+    // 0.65 before; reheat lit at the pass (power 1), and from 21s a 5g pull
+    // to 60 degrees (radius 483m, 3.3s), climbing on at 154m/s - and, as the
+    // 3D view would, the reheat cancelled at 3,000ft (29s), power 1 still,
+    // dry, as it gives a climb over 1,200ft a minute.
+    out.push_back({"eufi-display-pass", 40, [](float t) {
+                       Moment m;
+                       const float v = 154, pull = 21, r = v * v / (5 * 9.81f), most = (float)M_PI / 3;
+                       float x1 = v * (pull - 20);
+                       m.heading = 0;
+                       if (t < pull) {
+                           m.at = {v * (t - 20), 0, 30};
+                           m.pitch = 0;
+                       } else {
+                           float th = std::min(most, (t - pull) * v / r);
+                           float x = x1 + r * sinf(th), z = 30 + r * (1 - cosf(th));
+                           float after = std::max(0.0f, t - pull - most * r / v) * v;
+                           m.at = {x + after * cosf(most), 0, z + after * sinf(most)};
+                           m.pitch = th;
+                       }
+                       bool lit = t >= 20 && m.at.z < FT3000;
+                       m.power = t < 20 ? 0.65f : 1.0f;
+                       m.reheat = lit ? 1.0f : 0.0f;
+                       m.eye = {0, 230, 20};
+                       m.hardGround = true;
+                       return m;
+                   }});
+    // 6. A fast low pass: 76m (250ft) up at 216m/s (420 knots), over the
+    // ground 50m off the track, abeam at 15s; the 3D view's level 0.65, or
+    // POWER= (0.85 is more like it, eufi-sources 11.6). No reheat.
+    out.push_back({"eufi-low-pass", 30, [](float t) {
+                       Moment m = levelPass(t, 216, 15, 76, 50, 1.5f);
+                       m.power = g_lowPassPower;
+                       return m;
+                   }});
+    // 7. The 3D view's FLY PAST camera on a fast one high up: 3,962m (13,000ft)
+    // at 298m/s (579 knots, the old VANDAL22 case), the camera hung off to
+    // the side by 0.8s of its speed (238m) and a third of that below,
+    // set down afresh each 12s, as x-a320-intermediate's. The 3D view's level
+    // 0.65 - which the integration may raise with speed (NOTES.md).
+    out.push_back({"eufi-flypast", 36, [](float t) {
+                       const float speed = 298, height = 3962, off = speed * 0.8f, cycle = 12;
+                       int n = (int)(t / cycle);
+                       Moment m;
+                       m.at = {speed * t, 0, height};
+                       m.heading = 0;
+                       m.pitch = 0;
+                       m.power = 0.65f;
+                       m.eye = {speed * (n * cycle + 7), (n % 2 ? -1 : 1) * off, height - 0.3f * off};
+                       return m;
+                   }});
+    // 8. The chase at FL250 (7,620m), 263m/s (M0.85), the camera 54m behind
+    // and 10m above, moving with it: cruise power 0.65 for 15s, 0.05 for the
+    // descent's 15s, then 0.88 for 15s.
+    out.push_back({"eufi-chase-cruise", 45, [](float t) {
+                       Moment m;
+                       m.at = {263 * t, 0, 7620};
+                       m.heading = 0;
+                       m.pitch = 0;
+                       m.power = t < 15 ? 0.65f : t < 30 ? 0.05f : 0.88f;
+                       m.eye = {m.at.x - 54, 0, m.at.z + 10};
+                       return m;
+                   }});
+    // 9. The chase camera 54m behind and 10m above on the final approach,
+    // from 120m up as the A320's: 70m/s on three degrees, gear down, power
+    // 0.45 with its corrections; touched down at 32.7s, aerobraking to 50m/s
+    // by 45s, idle, the reversers' flag on throughout (all above 60 knots).
+    out.push_back({"eufi-approach-chase", 45, [](float t) {
+                       Moment m = fighterLanding(t, 300 - 120 / 0.0524f, {0, 0, 0});
+                       m.eye = {m.at.x - 54, 0, m.at.z + 10};
+                       return m;
+                   }});
+    // 10. Beside the touchdown zone, 60m off the centreline and 2m up, as
+    // a320-touchdown's: the approach heard coming from 3.6km, ahead of it -
+    // its whine - past, the tyres' chirp at 51.4s, the spool-down, the
+    // roll-out to taxiing by 79.6s. The approach's power hunting as in
+    // eufi-approach-chase: an angle-of-attack approach hunts whoever hears it.
+    out.push_back({"eufi-landing", 80, [](float t) { return fighterLanding(t, -3300, {320, 60, 2}); }});
+    // x1. Zeltweg's: a display pass at 154m/s (300 knots) in reheat, 50m up
+    // and 320m off a microphone 2.5m up over grass - 324m at the closest -
+    // abeam at 20s; for LAF,max (115dB(A) measured) and the third-octave
+    // shape.
+    out.push_back({"x-eufi-zeltweg", 40, [](float t) {
+                       Moment m = levelPass(t, 154, 20, 50, 320, 2.5f);
+                       m.power = 1;
+                       m.reheat = 1;
+                       return m;
+                   }});
+    // x2. A close pass, as ILA 2022's (640505): 150m/s, 40m up and 70m off -
+    // 80m at the closest - abeam at 7.5s. "High power": full, in reheat -
+    // its crackle measured at 3.8-5.0, which the research puts in reheat,
+    // not at full dry's 1-2 (eufi-sources 11.3, 11.4).
+    out.push_back({"x-eufi-close-pass", 15, [](float t) {
+                       Moment m = levelPass(t, 150, 7.5f, 40, 70, 1.5f);
+                       m.power = 1;
+                       m.reheat = 1;
+                       return m;
+                   }});
+    // x3. Display passes about 100m off, as r69878's: 60m up and 80m off a
+    // microphone 1.5m up, three passes 20s apart, turn about: at 300 knots
+    // (154m/s) left to right at full dry (0.88); at 350 knots (180m/s) back
+    // in reheat; at 250 knots (129m/s) left to right, dry, its reheat lit
+    // as it passes. Between passes it is cut from one end of a pass to the
+    // start of the next on the same side, 1.3-1.8km off, as a camera cut is -
+    // heard at once from there, as the synthesiser does with a jump.
+    out.push_back({"x-eufi-display-100m", 60, [](float t) {
+                       int leg = std::min(2, (int)(t / 20));
+                       float lt = t - 20 * leg;
+                       const float V[3] = {154, 180, 129};
+                       Moment m = levelPass(lt, V[leg], 10, 60, 80, 1.5f);
+                       if (leg == 1) {
+                           m.at.x = -m.at.x;
+                           m.heading = (float)M_PI;
+                       }
+                       bool lit = leg == 1 || (leg == 2 && lt >= 10);
+                       m.power = lit ? 1.0f : 0.88f;
+                       m.reheat = lit ? 1.0f : 0.0f;
+                       return m;
+                   }});
 }
 
 std::vector<Scene> scenes() {
@@ -314,6 +606,7 @@ std::vector<Scene> scenes() {
                        m.eye = {speed * (n * cycle + 7), (n % 2 ? -1 : 1) * off, height - 0.3f * off};
                        return m;
                    }});
+    eufiScenes(out);
     return out;
 }
 
@@ -419,10 +712,17 @@ int main(int argc, char **argv) {
     bool fopp = getenv("FOPP") != nullptr;
     uint32_t who = getenv("WHO") ? (uint32_t)strtoul(getenv("WHO"), nullptr, 0) : 0x406a3cu + (uint32_t)engine;
     std::string suffix = getenv("SUFFIX") ? getenv("SUFFIX") : "";
+    if (getenv("POWER")) {
+        g_lowPassPower = (float)atof(getenv("POWER"));
+    }
+    // The Typhoon's own airframe unless WHO= says.
+    uint32_t whoFighter = getenv("WHO") ? who : 0x43c6f1u;
+    bool trace = getenv("TRACE") != nullptr;
     for (const Scene &scene : scenes()) {
         if (argc > 2 && strcmp(argv[2], scene.name) != 0) {
             continue;
         }
+        bool fighter = strstr(scene.name, "eufi-") != nullptr;
         engine_noise::Synth synth;
         std::vector<int16_t> samples;
         const int BLOCK = engine_noise::RATE / 50;  // a frame's worth
@@ -443,6 +743,19 @@ int main(int argc, char **argv) {
             s.power = m.power;
             s.reverse = m.reverse;
             V3 mid = {m.at.x, m.at.y, m.at.z + 3};
+            if (fighter) {
+                // A Typhoon, as the 3D view will give one: its kind and
+                // engines from its type, EUFI; its size; its reheat, the view
+                // knowing only lit or not; its jets low on its gear.
+                s.kind = Kind::LOW_BYPASS;
+                s.engine = Engine::EJ200;
+                s.who = whoFighter;
+                s.fopp = false;
+                s.size = EUFI_SIZE;
+                s.reheat = m.reheat;
+                s.afterburner = m.reheat > 0;
+                mid.z = m.at.z + EUFI_ENGINES_UP;
+            }
             V3 to = m.eye - mid;
             float d = length(to);
             s.distanceM = d;
@@ -479,6 +792,15 @@ int main(int argc, char **argv) {
             lastAt = m.at;
             lastZ = m.at.z;
             s.ms = (uint32_t)lroundf(t * 1000);
+            if (trace && lroundf(t * 50) % 50 == 0) {
+                fprintf(stderr,
+                        "%5.1fs at %7.0f %5.0f %6.0f  %4.0fm aspect %.2f  %3.0fm/s power %.2f reheat %.0f%s%s%s%s "
+                        "air-brake %.2f rolling %.0f touchdown %.1f %s%s\n",
+                        t, s.at[0], s.at[1], s.at[2], d, s.aspect, s.airspeedMs, s.power, s.reheat,
+                        s.afterburner ? " lit" : "", s.reverse ? " reverse" : "", s.gearDown ? " gear" : "",
+                        s.hardGround ? " hard" : "", s.spoilers, s.rollingMs, s.touchdownS, s.running ? "" : "off",
+                        s.apu ? " apu" : "");
+            }
             synth.set(s);
             // As the device has it, DEVICE=1: frames 20ms apart give or take a
             // third, the sound made in 40ms blocks whenever one is due.

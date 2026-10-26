@@ -5,7 +5,9 @@
 // The 3D view's engine noise: what the aircraft followed sounds like from
 // where the camera is - made as it plays, with no recording anywhere in it.
 // For now an airliner of the A320 family's: its CFM56s or V2500s, its LEAPs
-// or geared fans, its airframe, tyres and APU.
+// or geared fans, its airframe, tyres and APU. A fighter's - the Eurofighter
+// Typhoon's two reheated EJ200s - is next: its inputs are here, its path in
+// engine_noise.cpp a stub, silent, for its builds to fill.
 //
 // What it is made of is noise, and what noise does through a resonance. A
 // tone heard from the ground is never a sine: a fan's blade-passing whine
@@ -73,7 +75,7 @@ constexpr int RATE = 16000;  // samples a second
 enum class Kind : uint8_t {
     NONE,        // nothing: fades out
     TURBOFAN,    // an airliner's: the fans' whine, the roar, the buzz-saw at full power
-    LOW_BYPASS,  // a fighter's, a trainer's: not made yet - silent
+    LOW_BYPASS,  // a fighter's, a trainer's: the Typhoon's EJ200s (Engine::EJ200) - a stub, silent
     TURBOPROP,   // not made yet - silent
     PISTON,      // not made yet - silent
     ROTOR,       // not made yet - silent
@@ -87,6 +89,11 @@ enum class Engine : uint8_t {
     V2500_A5,  // A319/A320/A321ceo: 22 blades, 5,650rpm; its turbine heard behind it
     LEAP_1A,   // A319/A320/A321neo: 18 blades, 3,856rpm
     PW1100G,   // A319/A320/A321neo: 20 blades, the fan geared down to 3,281rpm at most
+    // The Eurofighter Typhoon's (EUFI), Kind::LOW_BYPASS: two EJ200s side by
+    // side in its tail, low-bypass (0.4) and reheated - 60kN dry, 90kN with
+    // reheat - its jets supersonic at full power, dry or lit. No reversers.
+    // Its fan's blades and speeds aren't published.
+    EJ200,
 };
 
 struct Sound {
@@ -114,8 +121,22 @@ struct Sound {
     // nought, worked out from power and what the aircraft is doing, by the
     // engine's own: an A320's CFM56s at 90% for take-off, 51% on the approach.
     float n1 = -1;
+    // Its reversers out. A fighter's - an EJ200's - has none and doesn't
+    // hear it: the 3D view sets it on any landing roll above 60 knots, power
+    // 0.7, which for a Typhoon is wrong - it holds its nose high to 100
+    // knots, its engines idling, then brakes; quieter after touchdown, not
+    // louder.
     bool reverse = false;
+    // A fighter's reheat (Kind::LOW_BYPASS): `afterburner` lit or not, as
+    // the 3D view has it today - at power 0.95 or more on the ground or under
+    // 3,000ft at an airfield, so every take-off it shows is a reheat one -
+    // and `reheat` how much: 0 dry to 1 full, as asked for, the synthesiser
+    // lighting and cancelling at the engines' own pace. Heard, the larger of
+    // the two (afterburner as 1); for a caller that knows only lit or not,
+    // as the 3D view does, reheat = afterburner ? 1 : 0. An airliner's sound
+    // reads neither.
     bool afterburner = false;
+    float reheat = 0;
     float slap = 0;  // a helicopter's blade slap, 0 to 1: coming down, slowing
     // Where they are heard from.
     float distanceM = 50;
@@ -134,7 +155,11 @@ struct Sound {
     // Its airframe: how fast the air goes past it, m/s, and how it is set
     // up - the gear down, the flaps out, the spoilers up, 0 to 1 - for the
     // air tearing past them: on an approach, gear and flaps out and the
-    // engines throttled back, as loud as the engines.
+    // engines throttled back, as loud as the engines. A fighter's
+    // `spoilers` is its airbrake, the one big panel behind a Typhoon's
+    // cockpit, 0 shut to 1 open - which the 3D view should give as open on
+    // its landing roll down to taxiing speed, else shut; it has no flaps to
+    // speak of (flaperons), so flapsOut is never set for it.
     float airspeedMs = 0;
     bool gearDown = false, flapsOut = false;
     float spoilers = 0;
@@ -214,6 +239,15 @@ class Synth {
     void combsStep();
     void huntStep();
     void tyresStep();
+    // The fighter's - Kind::LOW_BYPASS - a stub, silent, for its builds to
+    // fill: its controls each 2ms step and each 32ms one, after the way and
+    // the propagation's figures are worked out; its sources into the step's
+    // mix, before the air's muffling and the echo off the ground. See
+    // engine_noise.cpp's FIGHTER STUB.
+    void fighterStep();
+    void fighterSlowStep();
+    struct Rng;
+    void fighterRender(float *mix, const float *noiseA, const float *noiseB, Rng &rng, int n);
 
     // The noise as a step's samples have it: the seed in a register, copied
     // in and back once a step, not read from the synth - in the PSRAM - and

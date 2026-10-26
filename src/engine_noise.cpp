@@ -200,7 +200,7 @@ struct EngineData {
     float turbine[2];
     float motorS;
 };
-const EngineData ENGINES[5] = {
+const EngineData ENGINES[6] = {
     // GENERIC: its shaft from Sound::fanHz, 24 blades assumed.
     {24, 125.0f, 0.22f, 0.27f, 0.51f, 0.82f, 0.85f, 0.90f, 0.70f, 0.67f, 0, 300, 0, 0, {0, 0}, 15},
     // CFM56-5B: idle 20-22%; final 49-55% (Zurich); take-off 85-94%; reverse 68%.
@@ -221,6 +221,17 @@ const EngineData ENGINES[5] = {
     // PW1100G: the fan's speed as a share of its 3,281rpm most; its turbine's
     // tones over 8kHz, the air's.
     {20, 54.6833f, 0.19f, 0.25f, 0.55f, 0.82f, 0.83f, 0.88f, 0.65f, 0.84f, -12, 250, -3, -1, {0, 0}, 30},
+    // EJ200 - the fighter's, for what of update() it shares: the start's
+    // motoring and the fan's speed from power (engines()); the airliner's
+    // sums don't run for it (see FIGHTER STUB). Estimates, none published
+    // [eufi-sources 1.2, 2.2]: 24 blades, 12,700rpm at 100%; idling at 30%
+    // on the ground, 35% in the air, 75% on the approach, 85% level, 100%
+    // dry for the climb and take-off; no reversers - their figure its
+    // idle, so the reversers asked for leave it idling whatever the power;
+    // no buzz-saw heard (its S-shaped chin intake); its jet 770m/s dry; its
+    // air starters motoring it 25s to a third of idle - some 23% of its HP
+    // spool's speed - and lit there.
+    {24, 211.667f, 0.30f, 0.35f, 0.75f, 0.85f, 1.00f, 1.00f, 0.30f, 2.0f, -60, 770, 0, 0, {0, 0}, 25},
 };
 
 // A hash's bits mixed, for an airframe's little differences from `who`.
@@ -800,6 +811,7 @@ void Synth::update() {
         sound_ = heard_;
     }
     bool on = same && sound_.kind == Kind::TURBOFAN;
+    bool fighter = same && sound_.kind == Kind::LOW_BYPASS;  // FIGHTER STUB: faded in as an airliner is
     static const float FADE_IN = 1 - expf(-STEP_S / 0.5f), FADE_OUT = 1 - expf(-STEP_S / 0.2f),
                        DUCK = 1 - expFast(-STEP_S / 0.12f), REVERSE = 1 - expFast(-STEP_S / 0.9f),
                        WHERE = 1 - expFast(-STEP_S / 0.12f), CLOSING = 1 - expFast(-STEP_S / 0.25f),
@@ -808,7 +820,7 @@ void Synth::update() {
                        AIRSPEED = 1 - expFast(-STEP_S / 0.5f), LIGHT = 1 - expFast(-STEP_S / 0.8f),
                        OUT = 1 - expf(-STEP_S / 0.3f), WIND_DOWN = expf(-STEP_S / 12), APU_DOWN = expf(-STEP_S / 5),
                        ECHO_WANDER = 1 - expf(-STEP_S / 0.6f);
-    fade_ = ease(fade_, on ? 1.0f : 0.0f, on ? FADE_IN : FADE_OUT);
+    fade_ = ease(fade_, on || fighter ? 1.0f : 0.0f, on || fighter ? FADE_IN : FADE_OUT);
     duck_ = ease(duck_, under_ ? 0.2f : 1.0f, DUCK);
     const Sound &s = sound_;
     const Sound &rev = g_transientsOnPicture ? target_ : s;
@@ -910,6 +922,9 @@ void Synth::update() {
         }
     }
     tyresStep();
+    if (fighter) {
+        fighterStep();
+    }
 }
 
 // Every sixteenth step, 32ms: the loudness as it spreads, the bands' and the
@@ -940,6 +955,10 @@ void Synth::slowStep() {
         gain_ *= std::max(0.6f, std::min(2.0f, powFast(convection_, 0.65f)));
     }
     air_.tune(mufflingHz(d * 0.001f), 0.6f);
+    if (s.kind == Kind::LOW_BYPASS) {
+        fighterSlowStep();  // FIGHTER STUB: none of the airliner's sums
+        return;
+    }
     huntStep();
     bandsStep();
     tonesStep();
@@ -1553,6 +1572,31 @@ void Synth::tyresStep() {
     thumpBand_.tune(300 * doppler_, 8);
 }
 
+// FIGHTER STUB - the Eurofighter Typhoon's sound (Kind::LOW_BYPASS,
+// Engine::EJ200), for its builds to replace. Silent: it adds nothing to the
+// mix. What it has to work with, worked out before it each step, as the
+// airliner's has: sound_ - what is heard, as asked as long ago as the
+// sound takes to come (placed: from where it was then); n1_[2], the
+// engines' fan speeds from power by the EJ200's row of ENGINES; spool_ and
+// lit_, its start; logDistance_, closing_, doppler_, aspect_ (0 dead ahead,
+// 1 dead astern), below_ and across_, eased; convection_; gain_ - the
+// spreading, the lateral attenuation and the convective gain, squeezed to
+// the 0.65th power, each slow step - and air_, the air's muffling, tuned to
+// the distance; echo, level, the 180Hz high-pass and the soft limiter after
+// it, as the airliner's. Its own level against the airliner's is its own,
+// set inside its own sums: LEVEL is the airliner's. Its builds ignore
+// `reverse` - none on an EJ200; n1_ already idles with it, whatever the
+// power the 3D view gives with it - and take the larger of `reheat` and
+// `afterburner`.
+// Every change for it stays on its own path: the airliner's must render
+// bit for bit as approved - eufi-tools' a320_pccheck.sh and
+// a320_bitcheck.sh.
+void Synth::fighterStep() {}
+void Synth::fighterSlowStep() {}
+void Synth::fighterRender(float *mix, const float *noiseA, const float *noiseB, Rng &rng, int n) {
+    (void)mix, (void)noiseA, (void)noiseB, (void)rng, (void)n;
+}
+
 bool Synth::render(int16_t *out, int count) {
     float mix[STEP], lateA[STEP], lateB[STEP], noiseA[STEP], noiseB[STEP];
     float level = gain_ * fade_ * duck_ * LEVEL;
@@ -1560,6 +1604,7 @@ bool Synth::render(int16_t *out, int count) {
         int n = std::min(STEP, count - done);
         update();
         bool on = sound_.kind == Kind::TURBOFAN;
+        bool fighter = sound_.kind == Kind::LOW_BYPASS;
         // The step's noises, all from the one generator in turn: the two the
         // tones and the buzz-saws are pushed by - each engine's - and the
         // bank's two, its zeros at nought and half the rate taken out once
@@ -1733,9 +1778,14 @@ bool Synth::render(int16_t *out, int count) {
                 q.zr = fabsf(qr) < 1e-20f ? 0 : qr, q.zi = fabsf(qi) < 1e-20f ? 0 : qi;
             }
         }
+        // FIGHTER STUB: the fighter's sources, into the mix before the air's
+        // muffling and the echo, as the airliner's broadband goes.
+        if (fighter) {
+            fighterRender(mix, noiseA, noiseB, rng, n);
+        }
         // The air's muffling of all that; then the echo off the ground, its
         // lateness stepped across the step too.
-        if (on) {
+        if (on || fighter) {
             float ic1 = air_.ic1, ic2 = air_.ic2, a1 = air_.a1, a2 = air_.a2, a3 = air_.a3;
             for (int i = 0; i < n; i++) {
                 float v3 = mix[i] - ic2;
