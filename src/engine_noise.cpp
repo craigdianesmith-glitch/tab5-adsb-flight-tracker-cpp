@@ -1610,7 +1610,8 @@ void Synth::tyresStep() {
 namespace {
 
 // The user's four open questions, each one figure, so an answer is a change
-// of one line [O: the brief's defaults, 26 Oct, till the user has heard it].
+// of one line [O: the brief's defaults, 26 Oct; the user heard them and asked
+// for a tad less crackle, Q2, the other three kept].
 //  Q1, the intake's whine: how loud it idles, dB against the jet's own
 //  level idling - heard ahead and to the side only, one line, under 3kHz as
 //  heard and gone by full dry power; from behind 20dB and more under the
@@ -1619,8 +1620,12 @@ namespace {
 constexpr float TY_Q1_WHINE_DB = -35.0f;
 //  Q2, the crackle: its shocks' strength, 1 as fitted - "sporadic", the
 //  derivative's skewness 1-2 through the speaker's 180Hz high-pass over a
-//  pass's loudest 2s, as the recordings' median.
-constexpr float TY_Q2_CRACKLE = 1.0f;
+//  pass's loudest 2s, as the recordings' median. Heard, "a tad less" [O:
+//  the user, 26 Oct]: 0.85, the shocks 1.4dB weaker - that skewness a
+//  quarter less at the passes' loudest 2s and over them (the 80m pass's
+//  peak 1.01 to 0.81, the take-off's 2.31 to 1.80), still crackling at
+//  every reheat pass's peak; 0.8 took a third or more off [M: 7 airframes].
+constexpr float TY_Q2_CRACKLE = 0.85f;
 //  Q3, the low powers' level: idling's, dB under full dry power, the whole
 //  law under it squeezed with it - as the airliner's distance is squeezed,
 //  for a small speaker. The physics' -38 left the stand 31LU and the taxi
