@@ -25,6 +25,9 @@
 // its link to the C6 is up, so that a request can be sent at all - see
 // askC6().
 extern "C" uint8_t is_transport_tx_ready(void);
+// How many of ESP-Hosted's receive buffers were given PSRAM for want of
+// internal DMA memory: see hosted_rx_rescue.c.
+extern "C" uint32_t hostedRxRescues(uint32_t *lastSize);
 
 #ifdef BENCH3D
 // ESP-Hosted 2.12.13's own, exported from its library though not in a header
@@ -256,7 +259,7 @@ void logEvent(arduino_event_t *ev) {
 // which fall back by design - are left alone.
 volatile uint32_t g_allocFails = 0, g_allocFailSize = 0, g_allocFailCaps = 0;
 char g_allocFailTask[configMAX_TASK_NAME_LEN] = "";
-uint32_t g_allocFailsSaid = 0;
+uint32_t g_allocFailsSaid = 0, g_rescuesSaid = 0, g_allocSaidMs = 0;
 
 void onAllocFailed(size_t size, uint32_t caps, const char *) {
     const char *name = pcTaskGetName(nullptr);
@@ -552,6 +555,9 @@ void forgetOldTimes(uint32_t now) {
     }
     if (g_gotIpSeenMs != 0 && now - g_gotIpSeenMs >= 3600000) {
         g_gotIpSeenMs = 0;
+    }
+    if (g_allocSaidMs != 0 && now - g_allocSaidMs >= 3600000) {
+        g_allocSaidMs = 0;
     }
     if (g_lastEpisodeEndMs != 0 && now - g_lastEpisodeEndMs >= RECUR_MS) {
         g_lastEpisodeEndMs = 0;
@@ -1125,15 +1131,25 @@ void sayWhatHappened() {
         g_transportFailuresSaid = n;
         Serial.println("[wifi] ESP-Hosted says its link to the C6 failed");
     }
+    // At most once a minute, with a count: short of internal DMA memory for
+    // long, ESP-Hosted can fail a packet's allocation many times a second.
     n = g_allocFails;
-    if (n != g_allocFailsSaid) {
+    uint32_t now = millis();
+    if (n != g_allocFailsSaid && (g_allocSaidMs == 0 || now - g_allocSaidMs >= 60000)) {
         uint32_t fresh = n - g_allocFailsSaid;
         g_allocFailsSaid = n;
+        g_allocSaidMs = now != 0 ? now : 1;
+        // Given PSRAM instead, by hosted_rx_rescue.c, or not.
+        uint32_t rescues = hostedRxRescues(nullptr);
+        bool rescued = rescues != g_rescuesSaid;
+        g_rescuesSaid = rescues;
         Serial.printf("[mem] ESP-Hosted's %s could not have %u bytes (caps 0x%x)%s; the largest block of internal DMA "
-                      "memory %uKB now - in its streaming reads this stops the Tab5 hearing the C6\n",
+                      "memory %uKB now - %s\n",
                       g_allocFailTask, (unsigned)g_allocFailSize, (unsigned)g_allocFailCaps,
                       fresh > 1 ? (", " + String(fresh) + " times since the last said").c_str() : "",
-                      (unsigned)(heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA) / 1024));
+                      (unsigned)(heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA) / 1024),
+                      rescued ? "given PSRAM instead, so the Tab5 still hears the C6"
+                              : "in its streaming reads this stops the Tab5 hearing the C6");
     }
     if (g_restartsInARow > 0 && adsbFeedHealth().answers != 0) {
         portENTER_CRITICAL(&g_mux);

@@ -19,7 +19,9 @@
 // log - and with nothing read, the C6's own WiFi stalls behind it. The
 // bench's "##!m" tries that for real and "##!z" makes the stall itself; see
 // benchCommand(). Only resetting both ends brings it back, and on this
-// version of ESP-Hosted that can only be done safely by restarting.
+// version of ESP-Hosted that can only be done safely by restarting. That
+// allocation is now never let fail - see hosted_rx_rescue.c - and this
+// watchdog stays for whatever else leaves the link stuck.
 //
 // So, from the poll task, two things that do not rely on the events:
 //
