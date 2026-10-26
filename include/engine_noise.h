@@ -5,7 +5,10 @@
 // The 3D view's engine noise: what the aircraft followed sounds like from
 // where the camera is - made as it plays, with no recording anywhere in it.
 // For now an airliner of the A320 family's: its CFM56s or V2500s, its LEAPs
-// or geared fans, its airframe, tyres and APU.
+// or geared fans, its airframe, tyres and APU. And a fighter's, the
+// Eurofighter Typhoon's two reheated EJ200s - its roar churning and tearing,
+// crackling behind it at high power - on a path of its own in
+// engine_noise.cpp (THE FIGHTER).
 //
 // What it is made of is noise, and what noise does through a resonance. A
 // tone heard from the ground is never a sine: a fan's blade-passing whine
@@ -73,7 +76,7 @@ constexpr int RATE = 16000;  // samples a second
 enum class Kind : uint8_t {
     NONE,        // nothing: fades out
     TURBOFAN,    // an airliner's: the fans' whine, the roar, the buzz-saw at full power
-    LOW_BYPASS,  // a fighter's, a trainer's: not made yet - silent
+    LOW_BYPASS,  // a fighter's, a trainer's: the Typhoon's EJ200s (Engine::EJ200)
     TURBOPROP,   // not made yet - silent
     PISTON,      // not made yet - silent
     ROTOR,       // not made yet - silent
@@ -87,6 +90,11 @@ enum class Engine : uint8_t {
     V2500_A5,  // A319/A320/A321ceo: 22 blades, 5,650rpm; its turbine heard behind it
     LEAP_1A,   // A319/A320/A321neo: 18 blades, 3,856rpm
     PW1100G,   // A319/A320/A321neo: 20 blades, the fan geared down to 3,281rpm at most
+    // The Eurofighter Typhoon's (EUFI), Kind::LOW_BYPASS: two EJ200s side by
+    // side in its tail, low-bypass (0.4) and reheated - 60kN dry, 90kN with
+    // reheat - its jets supersonic at full power, dry or lit. No reversers.
+    // Its fan's blades and speeds aren't published.
+    EJ200,
 };
 
 struct Sound {
@@ -114,8 +122,22 @@ struct Sound {
     // nought, worked out from power and what the aircraft is doing, by the
     // engine's own: an A320's CFM56s at 90% for take-off, 51% on the approach.
     float n1 = -1;
+    // Its reversers out. A fighter's - an EJ200's - has none and doesn't
+    // hear it: the 3D view sets it on any landing roll above 60 knots, power
+    // 0.7, which for a Typhoon is wrong - it holds its nose high to 100
+    // knots, its engines idling, then brakes; quieter after touchdown, not
+    // louder.
     bool reverse = false;
+    // A fighter's reheat (Kind::LOW_BYPASS): `afterburner` lit or not, as
+    // the 3D view has it today - at power 0.95 or more on the ground or under
+    // 3,000ft at an airfield, so every take-off it shows is a reheat one -
+    // and `reheat` how much: 0 dry to 1 full, as asked for, the synthesiser
+    // lighting and cancelling at the engines' own pace. Heard, the larger of
+    // the two (afterburner as 1); for a caller that knows only lit or not,
+    // as the 3D view does, reheat = afterburner ? 1 : 0. An airliner's sound
+    // reads neither.
     bool afterburner = false;
+    float reheat = 0;
     float slap = 0;  // a helicopter's blade slap, 0 to 1: coming down, slowing
     // Where they are heard from.
     float distanceM = 50;
@@ -134,7 +156,11 @@ struct Sound {
     // Its airframe: how fast the air goes past it, m/s, and how it is set
     // up - the gear down, the flaps out, the spoilers up, 0 to 1 - for the
     // air tearing past them: on an approach, gear and flaps out and the
-    // engines throttled back, as loud as the engines.
+    // engines throttled back, as loud as the engines. A fighter's
+    // `spoilers` is its airbrake, the one big panel behind a Typhoon's
+    // cockpit, 0 shut to 1 open - which the 3D view should give as open on
+    // its landing roll down to taxiing speed, else shut; it has no flaps to
+    // speak of (flaperons), so flapsOut is never set for it.
     float airspeedMs = 0;
     bool gearDown = false, flapsOut = false;
     float spoilers = 0;
@@ -214,6 +240,18 @@ class Synth {
     void combsStep();
     void huntStep();
     void tyresStep();
+    // The fighter's - Kind::LOW_BYPASS, the Typhoon's: its controls each 2ms
+    // step and each 32ms one, after the way and the propagation's figures
+    // are worked out; its sources into the step's mix, before the air's
+    // muffling and the echo off the ground - from the bank's two noises,
+    // `lateA` and `lateB`, and the tones' two, `noiseA` for its unplayed low
+    // band, `noiseB` for its whine. See engine_noise.cpp's THE FIGHTER.
+    void fighterStep();
+    void fighterSlowStep();
+    void fighterRestart();
+    struct Rng;
+    void fighterRender(float *mix, const float *lateA, const float *lateB, const float *noiseA, const float *noiseB,
+                       Rng &rng, int n);
 
     // The noise as a step's samples have it: the seed in a register, copied
     // in and back once a step, not read from the synth - in the PSRAM - and
@@ -375,6 +413,59 @@ class Synth {
     float squealDueS_ = -1, squealSinkMs_ = 1, squealRollingMs_ = 0;  // due in, and as the frame that showed it had it
     float lightPhase_ = 0, thump_ = 0;
     Svf thumpBand_;
+
+    // The fighter's own (Kind::LOW_BYPASS) - what the airliner's sums don't
+    // have: see engine_noise.cpp's THE FIGHTER. It shares the airliner's
+    // bank (its coefficients, states and gains), its surges' and shimmer's
+    // states and its flicker, none of which an airliner's sound runs while
+    // a fighter's plays.
+    struct Jet {
+        // Heard: which way it faces, how fast it is closing - eased in 35ms,
+        // not the airliner's 0.2s - and the Doppler and convection from that.
+        float aspect = 0.5f, closing = 0, doppler = 1, convection = 1;
+        // Its engines: the reheat lit, 0 to 1, and how fast that is moving;
+        // the second engine's spool and fire - its start half a minute after
+        // the first's; how long the engines have been asked to run.
+        float reheat = 0, reheatRate = 0, spool2 = 1, lit2 = 1, runS = 0;
+        // Its jet: its speed, m/s, and its eddies' Mach number against the
+        // air about it - over 1, crackling.
+        float jetMs = 770, mc = 0;
+        // The slow processes the roar surges by, in their own spreads: the big
+        // eddies' roar's quick and slow parts, and the fine turbulence's.
+        float ltsQuick = 0, ltsSlow = 0, fstQuick = 0, fstSlow = 0, ltsSurge = 1;
+        // The unplayed low band - the big eddies' own sound, under the
+        // speaker's - a band-pass and a resonance on the same poles: its
+        // coefficients, its states, its noise's last two; its envelope, that
+        // envelope's mean over a second and the step's sum of it; and its
+        // last sample, for its compressions' starts.
+        float lowB0 = 0, lowA1 = 0, lowA2 = 0, lowHz = 0;
+        float lowY1 = 0, lowY2 = 0, lowZ1 = 0, lowZ2 = 0, lowX1 = 0, lowX2 = 0;
+        float env = 0, envMean = 0.5f, envSum = 0, lowWas = 0;
+        // Its engines' dry level as heard, dB: the spools' sound lagging their
+        // speed - first set, not eased, at a restart.
+        float dryDb = -999;
+        // The shocks: their chance at each compression's start this step,
+        // their strength, the self-excitation after each one and its unit,
+        // the 50ms burstiness's process; and the ring their shapes are added
+        // into ahead of the sample being made.
+        float shockP = 0, shockUnit = 0, shockAmp = 0, hawkes = 0, hawkesAdded = 0, burst = 0;
+        // The flutter: the whole roar's quick level, its process and its
+        // gain at the step's start and end.
+        float flutter = 0, flutterWas = 1, flutterTo = 1;
+        // Its intake's whine, as an amplitude: worked out each slow step.
+        float whine = 0;
+        // The roar's level, smoothed, and the gain it is ridden down by at
+        // its loudest; the share of its samples lately over the limiter's
+        // threshold, and how far that has lowered the ride's ceiling.
+        float roarRms = 0, ride = 1, overShare = 0, ceilBy = 1;
+        // The light-up: the reheat a step ago, the time since it caught, s;
+        // its whoomp's loudness, its resonance's coefficients and states.
+        float reheatWas = 0, lightS = 9, whoomp = 0;
+        float whoompB0 = 0, whoompA1 = 0, whoompA2 = 0, whoompY1 = 0, whoompY2 = 0, whoompX1 = 0, whoompX2 = 0;
+        float ring[64] = {};
+        int ringAt = 0;
+    };
+    Jet jet_;
 };
 
 }  // namespace engine_noise

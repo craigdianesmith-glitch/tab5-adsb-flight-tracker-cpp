@@ -200,7 +200,7 @@ struct EngineData {
     float turbine[2];
     float motorS;
 };
-const EngineData ENGINES[5] = {
+const EngineData ENGINES[6] = {
     // GENERIC: its shaft from Sound::fanHz, 24 blades assumed.
     {24, 125.0f, 0.22f, 0.27f, 0.51f, 0.82f, 0.85f, 0.90f, 0.70f, 0.67f, 0, 300, 0, 0, {0, 0}, 15},
     // CFM56-5B: idle 20-22%; final 49-55% (Zurich); take-off 85-94%; reverse 68%.
@@ -221,6 +221,17 @@ const EngineData ENGINES[5] = {
     // PW1100G: the fan's speed as a share of its 3,281rpm most; its turbine's
     // tones over 8kHz, the air's.
     {20, 54.6833f, 0.19f, 0.25f, 0.55f, 0.82f, 0.83f, 0.88f, 0.65f, 0.84f, -12, 250, -3, -1, {0, 0}, 30},
+    // EJ200 - the fighter's, for what of update() it shares: the start's
+    // motoring and the fan's speed from power (engines()); the airliner's
+    // sums don't run for it (see THE FIGHTER). Estimates, none published
+    // [eufi-sources 1.2, 2.2]: 24 blades, 12,700rpm at 100%; idling at 30%
+    // on the ground, 35% in the air, 75% on the approach, 85% level, 100%
+    // dry for the climb and take-off; no reversers - their figure its
+    // idle, so the reversers asked for leave it idling whatever the power;
+    // no buzz-saw heard (its S-shaped chin intake); its jet 770m/s dry; its
+    // air starters motoring it 25s to a third of idle - some 23% of its HP
+    // spool's speed - and lit there.
+    {24, 211.667f, 0.30f, 0.35f, 0.75f, 0.85f, 1.00f, 1.00f, 0.30f, 2.0f, -60, 770, 0, 0, {0, 0}, 25},
 };
 
 // A hash's bits mixed, for an airframe's little differences from `who`.
@@ -546,6 +557,9 @@ void Synth::restart() {
     squealDueS_ = -1;
     thump_ = 0;
     thumpBand_.clear();
+    if (s.kind == Kind::LOW_BYPASS) {
+        fighterRestart();
+    }
 }
 
 // The sound's way, placed: back through what was asked, the moment that
@@ -800,6 +814,7 @@ void Synth::update() {
         sound_ = heard_;
     }
     bool on = same && sound_.kind == Kind::TURBOFAN;
+    bool fighter = same && sound_.kind == Kind::LOW_BYPASS;  // THE FIGHTER: faded in as an airliner is
     static const float FADE_IN = 1 - expf(-STEP_S / 0.5f), FADE_OUT = 1 - expf(-STEP_S / 0.2f),
                        DUCK = 1 - expFast(-STEP_S / 0.12f), REVERSE = 1 - expFast(-STEP_S / 0.9f),
                        WHERE = 1 - expFast(-STEP_S / 0.12f), CLOSING = 1 - expFast(-STEP_S / 0.25f),
@@ -808,7 +823,7 @@ void Synth::update() {
                        AIRSPEED = 1 - expFast(-STEP_S / 0.5f), LIGHT = 1 - expFast(-STEP_S / 0.8f),
                        OUT = 1 - expf(-STEP_S / 0.3f), WIND_DOWN = expf(-STEP_S / 12), APU_DOWN = expf(-STEP_S / 5),
                        ECHO_WANDER = 1 - expf(-STEP_S / 0.6f);
-    fade_ = ease(fade_, on ? 1.0f : 0.0f, on ? FADE_IN : FADE_OUT);
+    fade_ = ease(fade_, on || fighter ? 1.0f : 0.0f, on || fighter ? FADE_IN : FADE_OUT);
     duck_ = ease(duck_, under_ ? 0.2f : 1.0f, DUCK);
     const Sound &s = sound_;
     const Sound &rev = g_transientsOnPicture ? target_ : s;
@@ -910,6 +925,9 @@ void Synth::update() {
         }
     }
     tyresStep();
+    if (fighter) {
+        fighterStep();
+    }
 }
 
 // Every sixteenth step, 32ms: the loudness as it spreads, the bands' and the
@@ -940,6 +958,10 @@ void Synth::slowStep() {
         gain_ *= std::max(0.6f, std::min(2.0f, powFast(convection_, 0.65f)));
     }
     air_.tune(mufflingHz(d * 0.001f), 0.6f);
+    if (s.kind == Kind::LOW_BYPASS) {
+        fighterSlowStep();  // THE FIGHTER: none of the airliner's sums
+        return;
+    }
     huntStep();
     bandsStep();
     tonesStep();
@@ -1553,6 +1575,762 @@ void Synth::tyresStep() {
     thumpBand_.tune(300 * doppler_, 8);
 }
 
+// THE FIGHTER - the Eurofighter Typhoon's sound (Kind::LOW_BYPASS,
+// Engine::EJ200), as heard from where the camera is: beside the runway, at
+// the display line, under the climb, behind it in the chase.
+//
+// A fighter's roar shaped as noise alone was a gale, every time [O: four
+// blind builds, 23 Oct]: the speaker plays nothing much under 300Hz, and
+// steady noise in the band it does play is wind. What says "fighter" is in
+// how the roar moves, measured on 18 real recordings [M: targets/eufi.json]:
+//  - it churns, 2.5dB in 50ms as it passes, a third of that at 1-4Hz, all
+//    its bands surging together - 0.67 slow, 0.36 fast - where an airliner's
+//    move apart (0.23-0.37);
+//  - its envelopes are the spikier the higher - kurtosis 5.7, 7.0, 8.4 and
+//    15 at 0.5, 1, 2 and 4kHz - for it crackles: shocks, sharp compressions
+//    and slow expansions, its pressure's rate of change skewed 1-3 at 16kHz
+//    close by, coming thicker in its surges and thinning with distance;
+//  - and in the speaker's band it is dark, its centre at 700-850Hz coming
+//    and going alike - the big swing from bright to deep is under 300Hz.
+// So it is made of three things, as the airliner's resonator design is,
+// noise through filters, moved by a few shared random processes:
+//  - its roar: the airliner's bank of eight bands, each as loud as the
+//    jet's two noises - Tam's big eddies' and fine turbulence's spectra,
+//    each with its own directivity and its own surges - make it;
+//  - the big eddies' own sound under the speaker's band: a band of noise at
+//    their frequency, 100-250Hz, never played, its envelope moving the
+//    bank as it swells and drops - the roughness, the fast surging all the
+//    bands share - and its compressions timing the shocks;
+//  - the shocks: at the start of each of its compressions, now and then, a
+//    sawtooth's edge - a fall into it, a jump, a slow decay - as often as
+//    the jet's eddies run faster than sound in the air about them, the more
+//    so in its surges and just after another, and fewer the further off.
+// No recording in it; a table or two of figures.
+
+namespace {
+
+// The user's four open questions, each one figure, so an answer is a change
+// of one line [O: the brief's defaults, 26 Oct, till the user has heard it].
+//  Q1, the intake's whine: how loud it idles, dB against the jet's own
+//  level idling - heard ahead and to the side only, one line, under 3kHz as
+//  heard and gone by full dry power; from behind 20dB and more under the
+//  roar. In v1, 2dB under it with the airliner's lobe and a second line, it
+//  stood 24-31dB over its neighbours, behind too [M: v1, the judges].
+constexpr float TY_Q1_WHINE_DB = -35.0f;
+//  Q2, the crackle: its shocks' strength, 1 as fitted - "sporadic", the
+//  derivative's skewness 1-2 through the speaker's 180Hz high-pass over a
+//  pass's loudest 2s, as the recordings' median.
+constexpr float TY_Q2_CRACKLE = 1.0f;
+//  Q3, the low powers' level: idling's, dB under full dry power, the whole
+//  law under it squeezed with it - as the airliner's distance is squeezed,
+//  for a small speaker. The physics' -38 left the stand 31LU and the taxi
+//  27LU under the airliner's take-off, all but silent [M: v1].
+constexpr float TY_Q3_IDLE_DB = -14.5f;
+//  Q4, the light-up's thump: how far over the rising roar it peaks, dB, for
+//  its tenth of a second.
+constexpr float TY_Q4_THUMP_DB = 3.0f;
+
+// The figures fitted on the three measurement scenes (x-eufi-zeltweg,
+// x-eufi-close-pass, x-eufi-display-100m) against the 18 recordings, six
+// realisations of each scene, through the same chains as the recordings
+// [M: tools/engine_preview/NOTES.md, renders/eufi-fit/metrics.json].
+//  Its level, dB, against the airliner's LEVEL - its loudest held under the
+//  soft limiter by the ride (TY_RIDE, TY_CEIL), so this sets the rest: v1's
+//  -7 took its take-off to 2.2LU over the airliner's but rounded off 0.1-
+//  0.28% of the 80m pass's samples in 3 airframes of 7, and 1.1% standing
+//  lit 150m behind it [M: v1, the judges]; ridden, the loudest are as loud
+//  as 0.1% lets them be in every airframe, and the low powers 2dB louder.
+constexpr float TY_LEVEL_DB = -5.0f;
+//  The fine turbulence's level against the big eddies', dB, and its peak,
+//  octaves from theirs; the share of the Doppler the bank's spectrum moves
+//  by - v1's 0.15 left a fly-past brighter going than coming, 0.22 octave;
+//  half moves the 80m pass 0.28 octave, as the ILA passes' 0.29, and costs
+//  none of the fitted figures, where the whole Doppler cost 11 [M]; the
+//  250Hz band's power kept, the speaker playing next to none of it.
+constexpr float TY_FST_DB = -1.0f, TY_FST_OCT = -0.6f, TY_KAPPA = 0.5f, TY_BAND0 = 0.25f;
+//  The 4 and 6.3kHz bands' power kept, the shocks filling the rest of the
+//  top; the share of the air's treble loss the jet's steepening puts back.
+constexpr float TY_TOP = 0.3f, TY_NL = 0.2f;
+//  The big eddies' Strouhal number; the low band's sharpness.
+constexpr float TY_ST_L = 0.13f, TY_LOW_Q = 0.8f;
+//  The surges: their quick and slow parts' time constants, s, the quick
+//  part's weight, their spread, nepers; the angle, degrees, between the
+//  low end's process and the treble's; each band's own shimmer, nepers.
+constexpr float TY_SURGE_Q_S = 0.12f, TY_SURGE_S_S = 0.6f, TY_SURGE_QW = 0.6f, TY_SURGE_NP = 0.36f, TY_PHI = 70.0f;
+constexpr float TY_SHIM_LO = 0.15f, TY_SHIM_HI = 0.15f;
+//  The flutter's time constant, s, and spread, nepers; the low band's
+//  envelope's smoothing, Hz, and how deep it moves the bank's two halves.
+constexpr float TY_FLUT_S = 0.02f, TY_FLUT_NP = 0.10f, TY_ENV_HZ = 60.0f, TY_MU_LO = 0.12f, TY_MU_HI = 0.3f;
+//  The shocks: their chance at a compression's start and the envelope it
+//  must be over, as a share of its mean; their burstiness's spread,
+//  nepers; the self-excitation each adds; their strengths' spread,
+//  nepers; their strength against the roar's RMS; the distance their
+//  wearing down halves them over, m; the eddies' Mach numbers their gate
+//  opens over.
+constexpr float TY_P0 = 0.35f, TY_THETA = 0.4f, TY_BURST_NP = 1.1f, TY_ALPHA = 0.35f, TY_LN_NP = 0.25f, TY_LOCK = 0.5f;
+constexpr float TY_G_CR = 9.25f * TY_Q2_CRACKLE, TY_CR_FAR = 1500.0f, TY_CR_DB = 0.0f, TY_MC_ON = 0.8f, TY_MC_ALL = 1.5f;
+//  The level the roar is ridden down to at its loudest, as samples go, and
+//  the most it is let be.
+constexpr float TY_RIDE = 0.2f, TY_CEIL = 0.27f;
+//  The light-up's whoomp, dB against the jet's level - its noise through a
+//  resonance an octave wide some 12dB under the roar in the speaker's band
+//  at nought, so TY_Q4_THUMP_DB over it for its tenth of a second - and the
+//  shocks' self-excitation it starts.
+constexpr float TY_WHOOMP_DB = 12.0f + TY_Q4_THUMP_DB, TY_CATCH = 2.0f;
+//  The spools' sound lagging their speed as it rises and falls, s: the
+//  roar's swells and falls with the power over the seconds a fan and its
+//  jet take, not as a switch [I: eufi-sources 11.7, idle -15 to -20dB over
+//  3-5s; 11.9, 0 to -15dB over 3-8s - where the airliner's spool alone fell
+//  42dB in 0.6s, the law steep at the top: M, v1].
+constexpr float TY_SPOOL_UP_S = 0.3f, TY_SPOOL_DOWN_S = 2.0f;
+//  The tyres' squeal touching down against the airliner's: two small main
+//  wheels, and at the roar's level then [I: eufi-sources 11.9, 0dB; the
+//  airliner's half stood 23-30dB over it: M, v1].
+constexpr float TY_SQUEAL = 0.04f;
+
+// Its jet's roar against its fan's speed, dB against its full dry power's
+// (MIL) - as an installed F404's sound power, the EJ200's size, goes with
+// thrust: -35dB at 17% thrust, -22 at 36%, -8 at 58%, the jet going
+// supersonic between, then little more [M: Christian et al. 2023, JASA-EL
+// 3, 073601]; the EJ200's thrust from its fan speed as the cube and a half
+// [I: eufi-sources 2.2]. Idling, some -38 [I: the F404's power extrapolated
+// to idle, 120dB re 1pW an engine against 168-170, and its core's rumble and
+// the nozzle's hiss with it]; the approach at -20, between
+// the F404's law (-32 at 20% thrust) and the German noise model's landing
+// class, 18dB under its take-off [P: AzB 2007, S-MIL]. Reheat adds 4dB more,
+// most behind it - see the lobes. That law, -38, -30, -20, -13, -6 and 0dB,
+// left every low power all but silent on the speaker beside the airliner, so
+// it is squeezed - idling at TY_Q3_IDLE_DB, the rest in proportion, as a
+// share of that: the chase's cruise to idle 15dB, its cruise to full dry
+// some 6, the approach's touchdown to idle 13 [I: eufi-sources 11.7, 11.9].
+constexpr float JET_N1[6] = {0.30f, 0.52f, 0.75f, 0.85f, 0.93f, 1.0f};
+constexpr float JET_SQ[6] = {1.0f, 0.78f, 0.42f, 0.344f, 0.156f, 0.0f};
+
+// Tam's two similarity spectra, which every supersonic jet's mixing noise is
+// a sum of [P: Tam, Golebiowski & Seiner, AIAA 96-1716]: F, the big eddies'
+// - beamed aft, a sharp peak, falling 5.4dB an octave above it - and G, the
+// fine turbulence's - to the side and ahead, broad. As levels in
+// proportional bands, dB under each one's highest, every third of an octave
+// from four octaves under its peak frequency to seven over.
+constexpr float TAM_F[34] = {-32.3f, -29.5f, -26.6f, -23.8f, -20.9f, -18.1f, -15.2f, -12.4f, -9.5f,  -6.7f,  -4.1f,
+                             -2.0f,  -0.7f,  0.0f,   -0.1f,  -0.9f,  -2.2f,  -3.9f,  -5.7f,  -7.5f,  -9.3f,  -11.1f,
+                             -12.8f, -14.6f, -16.4f, -18.2f, -20.0f, -21.7f, -23.5f, -25.3f, -27.1f, -28.9f, -30.7f,
+                             -32.4f};
+constexpr float TAM_G[34] = {-22.8f, -20.6f, -18.3f, -16.0f, -13.8f, -11.8f, -10.0f, -8.4f,  -7.0f,  -5.7f,  -4.6f,
+                             -3.5f,  -2.5f,  -1.6f,  -0.9f,  -0.3f,  -0.0f,  0.0f,   -0.2f,  -0.8f,  -1.6f,  -2.8f,
+                             -4.4f,  -6.1f,  -8.0f,  -10.1f, -12.4f, -15.1f, -17.9f, -20.8f, -23.6f, -26.4f, -29.3f,
+                             -32.1f};
+float tam(const float *t, float octaves) {
+    float x = clampf((octaves + 4) * 3, 0, 32.999f);
+    int i = (int)x;
+    return t[i] + (t[i + 1] - t[i]) * (x - i);
+}
+
+//                             0     20    40    60    80   100   120   140   160   180
+// The big eddies' roar: most at the Mach waves' angle off the nose - 130
+// to 140 degrees dry, 115 to 125 lit, its jet the faster [I: eufi-sources
+// 1.3; P: the F-22A's 120-140, the F404's 150 at low power to 120 in
+// afterburner] - 20dB down ahead, and a little down right behind, in the
+// jet's cone of silence: flatter than the research's 30dB, which left the
+// passes 23dB under their peak two seconds before it where the recordings
+// are 9-12dB under [M].
+constexpr Lobe LTS_DRY = {-20.0f, -19.0f, -17.0f, -14.0f, -10.0f, -6.0f, -2.0f, 0.0f, -0.5f, -2.5f};
+constexpr Lobe LTS_WET = {-19.0f, -18.0f, -16.0f, -12.0f, -7.0f, -2.5f, 0.0f, -0.5f, -1.0f, -3.0f};
+// The fine turbulence's: broad, most to the side, 4dB down ahead - the front
+// of a pass, its in-band spectrum the same as behind [M: no forward hump in
+// 28 passes, so no shock-associated hump here].
+constexpr Lobe FST = {-4.0f, -3.5f, -3.0f, -2.0f, -1.0f, 0.0f, 0.0f, -2.0f, -4.0f, -6.0f};
+// The shocks', against the roar they ride on: most about the Mach angle,
+// and still there, weaker, coming [M: the passes' derivative skewness, through
+// the speaker's 180Hz high-pass, 0.3-1.0 coming, 0.8-1.0 at the peak, 0.5
+// going - not the 20-30dB swing of their source alone]; 3dB weaker ahead
+// than v1's, which crackled 1.1 coming at the 80m pass where the ILA passes
+// give 0.43 [M: the judges], and down in the jet's cone of silence.
+// The intake's whine: out of its chin intake, ahead and to the side, and
+// gone behind - 20dB down at 140 degrees, 40 at the tail, the jet and the
+// airframe between [I: eufi-sources 11.1, 11.7, 11.8b: -10 to -20 behind].
+constexpr Lobe INTAKE = {0.0f, 0.0f, -1.0f, -3.0f, -6.0f, -12.0f, -20.0f, -28.0f, -34.0f, -40.0f};
+constexpr Lobe CRACKLE_DRY = {-9.0f, -8.5f, -8.0f, -7.0f, -5.0f, -3.0f, -1.0f, 0.0f, -4.0f, -12.0f};
+constexpr Lobe CRACKLE_WET = {-8.0f, -7.5f, -7.0f, -6.0f, -4.0f, -1.5f, 0.0f, -1.5f, -5.0f, -12.0f};
+
+// A shock's shape, as the real ones average at 16kHz [M: r69878's loud
+// passes, eufi-methods 1.2]: a slow fall into it, the rarefaction before
+// it, over fourteen samples; a jump, as steep as a sample or two lets it
+// be; and a decay to half in five - a steepened wave's sawtooth; the fall
+// before it half as deep as would leave it no area, the rest of its
+// expansion - slower, longer - the speaker's 180Hz high-pass's to give it;
+// through two one-pole low-passes at 5kHz, critically damped, so nothing in
+// it aliases and nothing rings after the jump; its power one.
+constexpr int SHOCK_N = 32;
+constexpr float SHOCK[SHOCK_N] = {-0.01081f, -0.02465f, -0.03913f, -0.05372f, -0.06834f, -0.08297f, -0.09759f, -0.11221f,
+                                  -0.12684f, -0.14146f, -0.15609f, -0.17071f, -0.18533f, -0.19996f, 0.33965f,  0.42624f,
+                                  0.38556f,  0.32712f,  0.27373f,  0.22839f,  0.19045f,  0.15879f,  0.13239f,  0.11038f,
+                                  0.09203f,  0.07673f,  0.06398f,  0.05334f,  0.04447f,  0.03708f,  0.03091f,  0.02577f};
+
+}  // namespace
+
+#ifdef ENGINE_NOISE_DEBUG
+static int g_fired = 0;  // shocks fired, for the debug line
+#endif
+
+// Another fighter starting: as it is now, its reheat as asked, both engines
+// already turning if they run.
+void Synth::fighterRestart() {
+    const Sound &s = heard_;
+    Jet &j = jet_;
+    j = Jet();
+    j.aspect = clamp01(s.aspect);
+    j.closing = std::max(-SOUND_MS, std::min(0.8f * SOUND_MS, s.closingMs));
+    j.doppler = SOUND_MS / (SOUND_MS - j.closing);
+    j.convection = convectionTo_;
+    float n1 = 0.5f * (n1_[0] + n1_[1]);
+    j.reheat = j.reheatWas = std::max(clamp01(s.reheat), s.afterburner ? 1.0f : 0.0f) * smoothstep(0.93f, 0.97f, n1);
+    j.spool2 = j.lit2 = s.running ? 1.0f : 0.0f;
+    j.runS = s.running ? 60.0f : 0.0f;
+    j.lowHz = -1;
+}
+
+// Each 2ms: where it is heard from, quickly; its engines and reheat; its
+// jet; the low band's tuning and the shocks' chance.
+__attribute__((noinline)) void Synth::fighterStep() {
+    const Sound &s = sound_;
+    Jet &j = jet_;
+    const EngineData &e = ENGINES[(int)s.engine];
+    // Which way it faces and how fast it closes, eased in 35ms: at 200m/s
+    // past 50m the way the sound comes turns 230 degrees a second, and the
+    // airliner's 0.2s would lag it 45 degrees and smear the roar's arrival
+    // [I: eufi-methods 7.2]. Placed, the way is already smooth. Coming at up
+    // to 0.8 of the speed of sound - a factor of 5 - not the airliner's 0.7.
+    static const float QUICK = 1 - expf(-STEP_S / 0.035f), REHEAT_OUT = 1 - expf(-STEP_S / 0.25f),
+                       LIGHT = 1 - expFast(-STEP_S / 0.8f), OUT = 1 - expf(-STEP_S / 0.3f),
+                       WIND_DOWN = expf(-STEP_S / 12), MEAN = 1 - expf(-STEP_S / 1.0f),
+                       BURST = expf(-STEP_S / 0.05f), HAWKES = expf(-STEP_S / 0.03f);
+    j.aspect = ease(j.aspect, clamp01(s.aspect), QUICK);
+    float closing = s.placed ? std::max(-SOUND_MS, std::min(0.8f * SOUND_MS, s.closingMs))
+                             : std::max(-150.0f, std::min(150.0f, s.closingMs));
+    j.closing = ease(j.closing, closing, QUICK);
+    j.doppler = SOUND_MS / (SOUND_MS - j.closing);
+    if (s.placed) {
+        j.convection = ease(j.convection, convectionTo_, QUICK);
+    }
+    // The second engine started half a minute after the first, as the
+    // first's: motored to a third of idle, lit, on up to idle.
+    if (s.running) {
+        j.runS += STEP_S;
+    } else {
+        j.runS = 0;
+    }
+    if (s.running && j.runS >= 30) {
+        j.spool2 = std::min(1.0f, j.spool2 + (j.spool2 < 0.35f ? 0.35f / e.motorS : 0.65f / 14) * STEP_S);
+    } else if (!s.running) {
+        j.spool2 = j.spool2 < 0.002f ? 0 : j.spool2 * WIND_DOWN;
+    }
+    bool burning = s.running && j.spool2 >= 0.35f;
+    j.lit2 = ease(j.lit2, burning ? 1.0f : 0.0f, burning ? LIGHT : OUT);
+    // Reheat: lit only at full dry power, over some 0.6s - the nozzle
+    // opening, the fire catching - as a second-order rise with no overshoot
+    // [M: a light-up's level 10-90% in 0.72s, Farnborough]; cancelled
+    // quicker, in a quarter of a second. Whatever `reverse` says: an EJ200
+    // has none.
+    float n1 = 0.5f * (n1_[0] + n1_[1]);
+    float want = std::max(clamp01(s.reheat), s.afterburner ? 1.0f : 0.0f) * smoothstep(0.93f, 0.97f, n1) * lit_;
+    if (want > j.reheat) {
+        const float w = 5.5f;
+        j.reheatRate += (w * w * (want - j.reheat) - 2 * w * j.reheatRate) * STEP_S;
+        j.reheat = std::min(want, j.reheat + std::max(0.0f, j.reheatRate) * STEP_S);
+    } else {
+        j.reheat = ease(j.reheat, want, REHEAT_OUT);
+        j.reheatRate = 0;
+    }
+    // The light-up, as it catches: a whoomp - the fire's pressure pulse,
+    // under the speaker's band itself, heard as a burst of noise at 320Hz
+    // as the Doppler has it, dying in a tenth of a second - and the shocks
+    // catching a sixth of a second on, a cluster of them [I: eufi-methods
+    // 6.2; M: a light-up's level steepest at 98dB/s over 100ms].
+    if (j.reheat > 0.02f && j.reheatWas <= 0.02f) {
+        j.lightS = 0;
+        float sn, cs, hz = std::min(320 * j.doppler, 1500.0f);
+        sinCosTurns(hz / RATE, sn, cs);
+        float alpha = sn / (2 * 1.4f), a0 = 1 + alpha;
+        j.whoompB0 = alpha / a0;
+        j.whoompA1 = -2 * cs / a0;
+        j.whoompA2 = (1 - alpha) / a0;
+    }
+    if (j.lightS < 0.15f && j.lightS + STEP_S >= 0.15f) {
+        j.hawkesAdded += TY_CATCH;
+    }
+    j.reheatWas = j.reheat;
+    j.lightS += STEP_S;
+    // Its jet's speed [I: eufi-sources 1.3, 2.2]: 200m/s idling, 770 at full
+    // dry power, half as fast again lit; and its big eddies' speed against
+    // the air about it, 0.7 of the jet's less the aircraft's own, as a Mach
+    // number - over one, Mach waves and shocks: 1.6 at full dry power on the
+    // ground, 2.3 lit; a fast low pass at part power, the approach and the
+    // cruise under one.
+    float x = clamp01((n1 - 0.30f) / 0.70f);
+    j.jetMs = (200 + 570 * x * x) * (1 + 0.44f * j.reheat);
+    j.mc = 0.7f * std::max(0.0f, j.jetMs - std::min(airspeed_, 400.0f)) / SOUND_MS;
+    // The low band at the big eddies' frequency, a Strouhal number of 0.13 on
+    // the jet's speed and width - 200Hz at full dry, 230 lit [I] - as heard,
+    // the whole Doppler on it: its rhythm is the shocks'. Tuned again as it
+    // moves a percent, as loud at its centre as what goes in.
+    float dj = 0.49f + 0.14f * j.reheat;
+    float lowHz = clampf(TY_ST_L * j.jetMs / dj * j.doppler, 40, 1500);
+    if (fabsf(lowHz - j.lowHz) > 0.01f * j.lowHz) {
+        static const float Q = TY_LOW_Q;
+        float sn, cs, s2, c2;
+        sinCosTurns(lowHz / RATE, sn, cs);
+        float alpha = sn / (2 * Q), a0 = 1 + alpha, a1 = -2 * cs / a0, a2 = (1 - alpha) / a0;
+        sinCosTurns(2 * lowHz / RATE, s2, c2);
+        float re = 1 + a1 * cs + a2 * c2, im = a1 * sn + a2 * s2;
+        // the resonance's gain at the centre taken out of the band-pass's, and
+        // its width's: the noise through it as strong wherever it is tuned, so
+        // its envelope against its mean doesn't jump as the Doppler moves it -
+        // at a cut from going to coming, or past the peak of a pass
+        j.lowB0 = alpha / a0 * sqrtf(re * re + im * im) * sqrtf(100 / lowHz);
+        j.lowA1 = a1;
+        j.lowA2 = a2;
+        if (j.lowHz < 0) {
+            // its mean envelope as noise through it gives - a third's power, over
+            // some 0.85 of its width - till its own mean takes over
+            j.envMean = 0.8f * sqrtf((1.0f / 3) * 0.85f * 100 / (Q * 0.5f * RATE));
+        }
+        j.lowHz = lowHz;
+    }
+    j.envMean += (j.envSum * (1.0f / STEP) - j.envMean) * MEAN;
+    j.envSum = 0;
+    // The shocks' chance at each compression's start: as the eddies run
+    // faster than sound - none under Mach 1, all over 1.9 - the more in the
+    // big eddies' surges (as the root of them) and in a 50ms burstiness of
+    // their own, and after each shock for 30ms as much again for each one -
+    // a self-exciting process, clustering them [M: their counts in 50ms
+    // windows 1.5-5 times as varied as a steady rate's; P: Ffowcs Williams
+    // 1975, groups of ten in a tenth of a second].
+    Rng rng{slow_};
+    j.burst = j.burst * BURST + sqrtf(1 - BURST * BURST) * rng.gauss();
+    // The flutter: the whole roar's level, quickly, a twentieth of a second
+    // at a time - the passes' bands moving together at 4-50Hz [M: 0.36] -
+    // got to across the step.
+    static const float FLUTTER = expf(-STEP_S / TY_FLUT_S), FLUT_NP = TY_FLUT_NP;
+    j.flutter = j.flutter * FLUTTER + sqrtf(1 - FLUTTER * FLUTTER) * rng.gauss();
+    j.flutterWas = j.flutterTo;
+    j.flutterTo = exp2Fast(1.44269504f * FLUT_NP * (j.flutter - 0.5f * FLUT_NP));
+    slow_ = rng.s;
+    j.hawkes = j.hawkes * HAWKES + j.hawkesAdded;
+    j.hawkesAdded = 0;
+    static const float P0 = TY_P0, BURST_NP = TY_BURST_NP, MC_ON = TY_MC_ON,
+                       MC_ALL = TY_MC_ALL;
+    float gate = smoothstep(MC_ON, MC_ALL, j.mc) * lit_;
+    j.shockUnit = P0 * gate * powFast(j.ltsSurge, TY_LOCK) * exp2Fast(1.44269504f * BURST_NP * (j.burst - 0.5f * BURST_NP));
+    j.shockP = j.shockUnit * (1 + j.hawkes);
+    // Its intake's whine, the fan's blades passing - 24 blades assumed, none
+    // published [I: eufi-sources 1.2] - as heard, the Doppler on it, turned on
+    // each step: noise through a resonance 3Hz wide near, as the airliner's
+    // tones are; as loud as its slow step makes it. One line, not two - the
+    // pair a steady two-tone drone [O: the user]; and none heard over 3kHz,
+    // the dentist's drill the user heard in 3-4.8kHz [O: 23 Oct] - so the
+    // approach's whine, at 3.8kHz and more, is gone.
+    float spun = n1 * (spool_ < 1 ? powFast(std::max(spool_, 1e-3f), 0.7f) : 1.0f);
+    {
+        Tone &t = tones_[FAN_1];
+        float heard = e.blades * e.shaft100 * spun * j.doppler;
+        if (j.whine < 1e-7f || heard < 30 || heard > 3200) {
+            t.in = 0;
+            t.on = t.on && (t.zr * t.zr + t.zi * t.zi > 1e-14f);
+        } else {
+            float x = PI * (3.0f + 3.5f * expFast(logDistance_) * 0.001f) / RATE,
+                  r = 1 - x * (1 - x * (0.5f - x * (1.0f / 6)));
+            float sn, cs;
+            sinCosTurns(heard / RATE, sn, cs);
+            t.cr = cs * r;
+            t.ci = sn * r;
+            float amp = j.whine * (1 - smoothstep(2400, 3200, heard));
+            t.in = amp * sqrtf(6 * (1 - r * r));
+            t.stream = 1;
+            t.on = true;
+        }
+    }
+}
+
+// Each 32ms: the loudness as it spreads, its roar's surges and its bands'
+// sums, the shocks' strength.
+__attribute__((noinline)) void Synth::fighterSlowStep() {
+    const Sound &s = sound_;
+    Jet &j = jet_;
+    // Its distance as it is, not eased over the airliner's 0.12s: its way's
+    // other figures move in 35ms, and at a cut from a near camera hearing it
+    // go to a far one hearing it come, the near one's loudness carried over
+    // into the coming roar's was a thump of 10dB for a tenth of a second [M].
+    float d = std::max(5.0f, s.distanceM);
+    // The air takes less of its treble than of a quiet sound's: at full dry
+    // power and lit its waves steepen as they go, putting back high notes
+    // the air takes [P: Gee et al. 2008, near an F-22A far more high-
+    // frequency energy arriving than linear propagation gives; M: the passes
+    // 300m off keep their 4kHz octave 19dB under the band, where the air's
+    // loss alone left it 22] - as if the way were shorter, by up to TY_NL.
+    float steep = smoothstep(TY_MC_ON, TY_MC_ALL, j.mc), km = d * 0.001f * (1 - TY_NL * steep);
+    air_.tune(mufflingHz(km), 0.6f);
+    // Its own convective gain, with its quicker way: louder coming, by no
+    // more than 2.5 times, quieter going, by no more than half - in its
+    // sources' own levels, not the step's, so that at a camera's cut from
+    // going to coming it moves with the roar's lobes over the next 32ms, not
+    // at once while they still are going's: v1's cuts thumped 10-15dB for
+    // 30ms where the airliner's stay within 1.1 [M: the judges].
+    gain_ = powFast(35 / std::max(35.0f, d) * dbAmp(-heldDb_), 0.65f);
+    float conv = s.placed ? std::max(0.5f, std::min(2.5f, powFast(j.convection, 0.65f))) : 1.0f;
+    // The roar's surges. Its sound comes from all along the jet, its low
+    // notes from further down it than its high ones, and each stretch
+    // bursts in its own time [P: Olaveson & Gee 2024, the F404's lobes
+    // "occur intermittently and at different times from each other"]: so
+    // two processes, the low end's and the treble's, each a quick part and
+    // a slow part - noise smoothed over a tenth of a second and over half of
+    // one - and each band moved by the two as much as it is low or high, so
+    // the treble's octaves surge as one and the 500Hz octave only partly with
+    // them [M: the passes' octaves 0.55-0.7 together slowly with 500Hz, 0.7-
+    // 0.88 among 1-4kHz; their churn's correlation time 120-140ms, a third of
+    // it at 1-4Hz]; a fifth more lit. Each band's own shimmer too.
+    static const float SURGE_Q_S = TY_SURGE_Q_S, SURGE_S_S = TY_SURGE_S_S,
+                       SURGE_QW = TY_SURGE_QW, SURGE_NP = TY_SURGE_NP,
+                       SHIM_LO = TY_SHIM_LO, SHIM_HI = TY_SHIM_HI;
+    static const float SQ = expf(-SLOW_S / SURGE_Q_S), SS = expf(-SLOW_S / SURGE_S_S);
+    // each band's share of the low end's and the treble's: as the angle
+    // between them, nought up to 400Hz, PHI degrees from 3kHz up
+    static float lowW[BANDS], highW[BANDS];
+    static bool weighed = false;
+    if (!weighed) {
+        float most = TY_PHI / 360;
+        for (int b = 0; b < BANDS; b++) {
+            float sn, cs;
+            sinCosTurns(most * smoothstep(0, 2.907f, log2f(BAND_HZ[b] / 400)), sn, cs);
+            lowW[b] = cs;
+            highW[b] = sn;
+        }
+        weighed = true;
+    }
+    Rng rng{slow_};
+    j.ltsQuick = j.ltsQuick * SQ + sqrtf(1 - SQ * SQ) * rng.gauss();
+    j.ltsSlow = j.ltsSlow * SS + sqrtf(1 - SS * SS) * rng.gauss();
+    j.fstQuick = j.fstQuick * SQ + sqrtf(1 - SQ * SQ) * rng.gauss();
+    j.fstSlow = j.fstSlow * SS + sqrtf(1 - SS * SS) * rng.gauss();
+    float sg = SURGE_NP * (1 + 0.2f * j.reheat), qw = SURGE_QW, sw = sqrtf(1 - SURGE_QW * SURGE_QW);
+    float nLow = qw * j.ltsQuick + sw * j.ltsSlow, nHigh = qw * j.fstQuick + sw * j.fstSlow;
+    j.ltsSurge = exp2Fast(1.44269504f * sg * (0.7071f * (nLow + nHigh) - 0.7071f * sg));  // the shocks' share
+    for (int b = 0; b < BANDS; b++) {
+        shimmerQuick_[b] = shimmerQuick_[b] * shimmerKeep_[0] + shimmerKeep_[1] * rng.gauss();
+        shimmerSlow_[b] = shimmerSlow_[b] * shimmerKeep_[2] + shimmerKeep_[3] * rng.gauss();
+        shimmer_[b] = SHIMMER_QW * shimmerQuick_[b] + sqrtf(1 - SHIMMER_QW * SHIMMER_QW) * shimmerSlow_[b];
+    }
+    // The air's flicker, as the airliner's.
+    float kf = expFast(-SLOW_S * (across_ * FLICKER_ACROSS + FLICKER_BASE) * (1.0f / 5));
+    flickerA_ = flickerA_ * kf + sqrtf(1 - kf * kf) * rng.gauss();
+    flicker_ = flicker_ * kf + (1 - kf) * flickerA_;
+    float flickerN = flickerN_ = flicker_ * (1 + kf) * (1 / sqrtf(1 + kf * kf));
+    float flickerNp = std::min(6.0f, FLICKER_DB * sqrtf(km)) * (1 / 8.686f);
+    float cornerLog = log2Fast(9 / sqrtf(d));
+    slow_ = rng.s;
+    // Its jet's level: each engine's by its fan's speed - its spool, starting
+    // - and its fire, the two's powers summed; quieter as it flies, its
+    // jet's speed against the air the less [P: the flight effect, by no more
+    // than 10dB]; reheat's 4dB. Starting, before the fire: the air its
+    // starter drives through it, 18dB under idling as it is lit - the light-
+    // off a step of 8dB over that, then on up to idle with the spool [I:
+    // eufi-sources 11.1, +5 to +10dB over 2-3s], none of it silence. The two
+    // engines' sound lagging their spools' speed, rising and falling.
+    float n1 = std::max(0.0f, 0.5f * (n1_[0] + n1_[1]));
+    float power = 0;
+    static const float IDLE = TY_Q3_IDLE_DB, MOTOR = dbPower(TY_Q3_IDLE_DB - 18);
+    for (int g = 0; g < 2; g++) {
+        float sp = g == 0 ? spool_ : j.spool2, fire = g == 0 ? lit_ : j.lit2;
+        float n = n1 * (sp < 1 ? powFast(sp, 1.6f) : 1.0f), db = 0;
+        if (n <= JET_N1[0]) {
+            db = IDLE - 12 * (1 - n / JET_N1[0]);  // spooling up to idle
+        } else {
+            for (int i = 1; i < 6; i++) {
+                if (n <= JET_N1[i]) {
+                    db = IDLE * (JET_SQ[i - 1] + (JET_SQ[i] - JET_SQ[i - 1]) * (n - JET_N1[i - 1]) /
+                                                     (JET_N1[i] - JET_N1[i - 1]));
+                    break;
+                }
+            }
+        }
+        power += 0.5f * (dbPower(db) * fire * fire + MOTOR * sqrtf(std::min(1.0f, sp * (1 / 0.35f))));
+    }
+    static const float LEVEL_DB = TY_LEVEL_DB, FST_DB = TY_FST_DB, KAPPA = TY_KAPPA;
+    static const float SPOOL_UP = 1 - expf(-SLOW_S / TY_SPOOL_UP_S), SPOOL_DOWN = 1 - expf(-SLOW_S / TY_SPOOL_DOWN_S);
+    float dryDb = 10 * lg10(std::max(1e-9f, power));
+    j.dryDb = j.dryDb < -900 ? dryDb : j.dryDb + (dryDb - j.dryDb) * (dryDb > j.dryDb ? SPOOL_UP : SPOOL_DOWN);
+    float v = std::min(airspeed_, 400.0f);
+    float flight = std::max(-10.0f, 50 * lg10(std::max(0.01f, 1 - v / std::max(60.0f, j.jetMs))));
+    float jetDb = LEVEL_DB + j.dryDb + flight + 4 * j.reheat;
+    float th = j.aspect, r = j.reheat;
+    // The big eddies' beaming as deep as its jet is fast against the air: an
+    // idling jet's roar much the same all round - 5dB down ahead, not 20 [I:
+    // eufi-sources 11.1, 11.2].
+    float deep = 0.35f + 0.65f * smoothstep(0.4f, 1.2f, j.mc);
+    float ltsLobe = (lobe(LTS_DRY, th) + (lobe(LTS_WET, th) - lobe(LTS_DRY, th)) * r) * deep;
+    float ltsDb = jetDb + ltsLobe, fstDb = jetDb + FST_DB + lobe(FST, th);
+    // Its spectra's peaks, as it gives them out: the big eddies' at the low
+    // band's Strouhal number, the fine turbulence's 1.8 times higher; heard
+    // half the Doppler up or down - for in the speaker's band, the passes'
+    // spectra move less than it [M: centroid 844Hz coming, 710 going, where
+    // the whole Doppler of a display pass would move it more than an octave]:
+    // the rest of the swing from bright to deep is the roar's below 300Hz.
+    float dj = 0.49f + 0.14f * r;
+    float peak = log2Fast(std::max(20.0f, TY_ST_L * j.jetMs / dj) * 0.001f);
+    float shift = KAPPA * log2Fast(j.doppler);
+    float airSin, airCos;
+    sinCosTurns(0.5f * air_.hz / RATE, airSin, airCos);
+    float airCot = airCos / std::max(1e-6f, airSin);
+    static float bandTanAt[BANDS][3];  // tan(pi f / rate) half an octave under each band's centre, at it, over it
+    static bool tangents = false;
+    if (!tangents) {
+        for (int b = 0; b < BANDS; b++) {
+            for (int k = 0; k < 3; k++) {
+                float sn, cs;
+                sinCosTurns(0.5f * std::min(BAND_HZ[b] * exp2Fast(0.5f * (k - 1)), 0.47f * RATE) / RATE, sn, cs);
+                bandTanAt[b][k] = sn / cs;
+            }
+        }
+        tangents = true;
+    }
+    // The airbrake open on the landing roll, a low buffet as the square of the
+    // speed - the airliner's spoilers' as a share of their ten panels - under
+    // the approach's roar as it touches down, over the idling engines' till it
+    // slows [I: eufi-sources 11.9, aerobraking 15dB under the loudest].
+    float vr = std::max(0.05f, v / 70);
+    float buffetDb = spoilers_ > 0.001f ? LEVEL_DB - 28 + 40 * lg10(vr) + 20 * lg10(spoilers_) : -200;
+    // Its intake's whine, ahead of it, at low power only - from the starter's
+    // first turn, idling, taxiing - TY_Q1_WHINE_DB against the jet's level
+    // idling [I: eufi-sources 3.5, 11.1: no recording of one]; none at
+    // display power, where no recording has one [M: the strongest line in any
+    // 0.5s of 29 passes no more than noise's].
+    float spun = n1 * (spool_ < 1 ? powFast(std::max(spool_, 1e-3f), 0.7f) : 1.0f);
+    j.whine = spun > 0.01f ? dbAmp(LEVEL_DB + TY_Q3_IDLE_DB + TY_Q1_WHINE_DB + 30 * lg10(std::max(0.1f, spun / 0.3f)) +
+                                   lobe(INTAKE, th)) *
+                                 (1 - smoothstep(0.75f, 0.9f, spun)) * conv
+                           : 0.0f;
+    float roar = 0;
+    for (int b = 0; b < BANDS; b++) {
+        float lf = bandLog_[b] - shift;
+        float pL = dbPower(ltsDb + tam(TAM_F, lf - peak)), pF = dbPower(fstDb + tam(TAM_G, lf - peak - TY_FST_OCT));
+        float surge = exp2Fast(2.88539008f * sg * (lowW[b] * nLow + highW[b] * nHigh - sg));  // e^(2sn - 2s^2): mean one
+        float p = (pL + pF) * surge * (b == 0 ? TY_BAND0 : b >= 6 ? TY_TOP : 1.0f);
+        if (buffetDb > -150) {
+            float xb = lf + 1.59946f;  // octaves from 330Hz
+            p += dbPower(buffetDb - std::min(25.0f, 4 * xb * xb));
+        }
+        float fl = flickerNp * smoothstep(cornerLog - 0.5f, cornerLog + 0.5f, bandLog_[b]);
+        float sh = b < 4 ? SHIM_LO : SHIM_HI;
+        // The air's loss made exact over the band, as the airliner's is at
+        // its centre - but over its half-octaves either side too: the band is
+        // broad and the muffling steep, and from a kilometre the band's centre
+        // alone left its upper half, and the sound, 3-5dB too weak.
+        float through = 0;
+        for (int k = 0; k < 3; k++) {
+            float w = bandTanAt[b][k] * airCot, w2 = w * w;
+            through += 1 / ((1 - w2) * (1 - w2) + w2 * (1 / (0.6f * 0.6f)));
+        }
+        float lowPassDb = -4.34294482f * 0.693147181f * log2Fast(through * (1.0f / 3));
+        float airDb = clampf(lowPassDb - bandAirDbKm_[b] * km, -30, 15);
+        float ln = 2 * sh * (shimmer_[b] - sh) + 2 * fl * (flickerN - fl) + 0.230258509f * airDb;
+        p *= exp2Fast(1.44269504f * ln) * (conv * conv);
+        roar += (pL + pF) * surge;
+        bandBy_[b] = (sqrtf(p) - bandGain_[b]) * (1.0f / (SLOW * STEP));
+    }
+    // The whoomp as loud as the jet lit, a little more ahead and to the side.
+    j.whoomp = dbAmp(jetDb + TY_WHOOMP_DB + 3 * (1 - th)) * conv;
+    // The shocks as strong, against the roar they ride on, as the crackle's
+    // own directivity makes them; formed as the wave steepens over the
+    // first hundred metres or two - two thirds as strong 80m off as 300m -
+    // and worn down further off, the air's muffling taking their edges after
+    // them [P: Gee et al. 2013, the derivative skewness near an F-35A growing
+    // with distance; M: the passes' crackle much the same 80-300m off, 1.1-1.2
+    // through the 180Hz high-pass, half that 8-16dB quieter, none far off].
+    static const float G_CR = TY_G_CR, CR_FAR = TY_CR_FAR, CR_DB = TY_CR_DB;
+    float crLobe = lobe(CRACKLE_DRY, th) + (lobe(CRACKLE_WET, th) - lobe(CRACKLE_DRY, th)) * r;
+    float far = (0.6f + 0.4f * smoothstep(20, 200, d)) / (1 + d / CR_FAR);
+    float gate = sqrtf(smoothstep(TY_MC_ON, TY_MC_ALL, j.mc));
+    j.shockAmp = G_CR * sqrtf(roar) * dbAmp(crLobe + CR_DB) * far * gate * conv;
+#ifdef ENGINE_NOISE_DEBUG
+    static int debugIn = 0;
+    if (--debugIn < 0) {
+        debugIn = 31;
+        fprintf(stderr, "t %.2f d %.0f asp %.2f n1 %.3f rh %.2f mc %.2f dop %.2f | jet %.1f lts %.1f fst %.1f mu %.2f "
+                        "shockP %.3f amp %.4f low %.0fHz env %.4f fired %d gain %.3f held %.1f conv %.2f over %.5f ceil %.2f ride %.2f\n",
+                clock_ / (float)RATE, d, th, n1, r, j.mc, j.doppler, jetDb, ltsDb, fstDb, TY_MU_LO, j.shockP, j.shockAmp,
+                j.lowHz, j.envMean, g_fired, gain_, heldDb_, j.convection, j.overShare, j.ceilBy, j.ride);
+        g_fired = 0;
+    }
+#endif
+}
+
+// The step's samples: the bank, its two halves apart; the low band, its
+// envelope moving them; the shocks at its compressions.
+__attribute__((noinline)) void Synth::fighterRender(float *mix, const float *lateA, const float *lateB,
+                                                    const float *noiseA, const float *noiseB, Rng &rng, int n) {
+    Jet &j = jet_;
+    float half[2][STEP];
+    // The bank as the airliner's, four bands at a time: 250Hz-1kHz, where
+    // the big eddies' roar is, and 1.6-6.3kHz, summed apart.
+    for (int b = 0; b < BANDS; b += 4) {
+        float *out = half[b >> 2];
+        const float *B0 = bandB0_ + b, *A1 = bandA1_ + b, *A2 = bandA2_ + b;
+        float b0 = B0[0], b1 = B0[1], b2 = B0[2], b3 = B0[3];
+        float p0 = A1[0], p1 = A1[1], p2 = A1[2], p3 = A1[3];
+        float q0 = A2[0], q1 = A2[1], q2 = A2[2], q3 = A2[3];
+        float y0 = bandY1_[b], y1 = bandY1_[b + 1], y2 = bandY1_[b + 2], y3 = bandY1_[b + 3];
+        float z0 = bandY2_[b], z1 = bandY2_[b + 1], z2 = bandY2_[b + 2], z3 = bandY2_[b + 3];
+        float v0 = bandZ1_[b], v1 = bandZ1_[b + 1], v2 = bandZ1_[b + 2], v3 = bandZ1_[b + 3];
+        float w0 = bandZ2_[b], w1 = bandZ2_[b + 1], w2 = bandZ2_[b + 2], w3 = bandZ2_[b + 3];
+        float g0 = bandGain_[b], g1 = bandGain_[b + 1], g2 = bandGain_[b + 2], g3 = bandGain_[b + 3];
+        float d0 = bandBy_[b], d1 = bandBy_[b + 1], d2 = bandBy_[b + 2], d3 = bandBy_[b + 3];
+        for (int i = 0; i < n; i++) {
+            float x = lateA[i], u = lateB[i];
+            float u0 = (b0 * x - q0 * z0) - p0 * y0, u1 = (b1 * u - q1 * z1) - p1 * y1;
+            float u2 = (b2 * x - q2 * z2) - p2 * y2, u3 = (b3 * u - q3 * z3) - p3 * y3;
+            z0 = y0, z1 = y1, z2 = y2, z3 = y3;
+            y0 = u0, y1 = u1, y2 = u2, y3 = u3;
+            float r0 = (u0 - q0 * w0) - p0 * v0, r1 = (u1 - q1 * w1) - p1 * v1;
+            float r2 = (u2 - q2 * w2) - p2 * v2, r3 = (u3 - q3 * w3) - p3 * v3;
+            w0 = v0, w1 = v1, w2 = v2, w3 = v3;
+            v0 = r0, v1 = r1, v2 = r2, v3 = r3;
+            g0 += d0, g1 += d1, g2 += d2, g3 += d3;
+            out[i] = (g0 * r0 + g1 * r1) + (g2 * r2 + g3 * r3);
+        }
+        bandY1_[b] = y0, bandY1_[b + 1] = y1, bandY1_[b + 2] = y2, bandY1_[b + 3] = y3;
+        bandY2_[b] = z0, bandY2_[b + 1] = z1, bandY2_[b + 2] = z2, bandY2_[b + 3] = z3;
+        bandZ1_[b] = v0, bandZ1_[b + 1] = v1, bandZ1_[b + 2] = v2, bandZ1_[b + 3] = v3;
+        bandZ2_[b] = w0, bandZ2_[b + 1] = w1, bandZ2_[b + 2] = w2, bandZ2_[b + 3] = w3;
+        bandGain_[b] = std::max(0.0f, g0), bandGain_[b + 1] = std::max(0.0f, g1);
+        bandGain_[b + 2] = std::max(0.0f, g2), bandGain_[b + 3] = std::max(0.0f, g3);
+    }
+    // The low band, its envelope - smoothed to 60Hz, as its mean over a
+    // second - and at each of its compressions' starts, a shock or not; its
+    // shape added into the ring ahead, the ring's next sample out.
+    static const float ENV_K = 1 - expf(-2 * PI * TY_ENV_HZ / RATE), THETA = TY_THETA,
+                       LN_NP = TY_LN_NP, ALPHA = TY_ALPHA;
+    static const float LN_A = LN_NP * 1.44269504f, LN_B = 0.5f * LN_NP * LN_NP * 1.44269504f;
+    float b0 = j.lowB0, a1 = j.lowA1, a2 = j.lowA2;
+    float y1 = j.lowY1, y2 = j.lowY2, z1 = j.lowZ1, z2 = j.lowZ2, x1 = j.lowX1, x2 = j.lowX2;
+    float env = j.env, sum = 0, was = j.lowWas, inv = 1 / std::max(1e-9f, j.envMean);
+    static const float muLo = TY_MU_LO, muHi = TY_MU_HI;
+    float p = j.shockP, more = j.shockUnit * ALPHA, amp = j.shockAmp;
+    float *ring = j.ring;
+    int at = j.ringAt, fired = 0;
+    const float *lo = half[0], *hi = half[1];
+    float flutter = j.flutterWas, flutterBy = (j.flutterTo - j.flutterWas) * (1.0f / STEP);
+    // The roar and its shocks ridden down at their very loudest - a reheat
+    // pass 80m off, the take-off beside the runway, standing behind it lit -
+    // so they peak under the soft limiter: their level as it will leave, over
+    // a fifth of a second rising and a second falling, held to RIDE by a
+    // third of what it goes over, and never over CEIL [I: eufi-methods 9.8].
+    // Under that, as it is. The shocks ridden with the roar, not over it: in
+    // v1 they weren't, and standing behind it lit 1% of its samples reached
+    // the limiter [M: the judges' probe].
+    float ride = j.ride, rideBy = 0, power = 0;
+    {
+        static const float RIDE = TY_RIDE, CEIL = TY_CEIL;
+        float out = j.roarRms * gain_ * fade_ * duck_ * LEVEL;
+        float want = out > RIDE ? std::min(powFast(RIDE / out, 0.6667f), CEIL * j.ceilBy / out) : 1.0f;
+        rideBy = (want - ride) * (1.0f / STEP);
+    }
+    // No one shock past the soft limiter by itself, as heard: its peak no
+    // more than the limiter's threshold - the giants, 15-18 standard
+    // deviations where the recordings' reach 11, gone [M: v1, the judges].
+    float scale = std::max(1e-6f, gain_ * fade_ * duck_ * LEVEL), most = 0.6f / (SHOCK[15] * ride * scale);
+    float over = 0, threshold = 0.6f / (scale * (1 + 0.5f * echoGain_));  // the echo off the ground adding to it
+    for (int i = 0; i < n; i++) {
+        float x = noiseA[i];
+        float y = b0 * (x - x2) - a1 * y1 - a2 * y2;
+        x2 = x1, x1 = x, y2 = y1, y1 = y;
+        float z = y - a1 * z1 - a2 * z2;
+        z2 = z1, z1 = z;
+        env += ENV_K * (fabsf(z) - env);
+        sum += env;
+        float m = env * inv;
+        if (z > 0 && was <= 0 && p > 0 && rng.uniform() < p * (m - THETA)) {
+            float a = std::min(most, amp * m * exp2Fast(LN_A * rng.gauss() - LN_B));
+            for (int k = 0; k < SHOCK_N; k++) {
+                ring[(at + k) & 63] += a * SHOCK[k];
+            }
+            p += more;
+            fired++;
+        }
+        was = z;
+        flutter += flutterBy;
+        float jet = (lo[i] + muLo * (m - 1) * lo[i]) + (hi[i] + muHi * (m - 1) * hi[i]) * flutter;
+        jet += ring[at];
+        power += jet * jet;
+        ride += rideBy;
+        float heard = jet * ride;
+        over += fabsf(heard) > threshold ? 1.0f : 0.0f;
+        mix[i] += heard;
+        ring[at] = 0;
+        at = (at + 1) & 63;
+    }
+    j.lowY1 = fabsf(y1) < 1e-20f ? 0 : y1, j.lowY2 = fabsf(y2) < 1e-20f ? 0 : y2;
+    j.lowZ1 = fabsf(z1) < 1e-20f ? 0 : z1, j.lowZ2 = fabsf(z2) < 1e-20f ? 0 : z2;
+    j.lowX1 = x1, j.lowX2 = x2, j.lowWas = was;
+    j.env = env;
+    j.envSum = sum;
+    j.ringAt = at;
+    j.hawkesAdded += fired * ALPHA;
+    j.ride = ride;
+    if (j.lightS < 0.6f) {
+        // the whoomp: noise through its resonance, its envelope a rise in
+        // 10ms and a fall in 100ms, carried across the step
+        float t0 = j.lightS - STEP_S, t1 = j.lightS;
+        auto envelope = [](float t) { return t <= 0 ? 0.0f : (1 - expFast(-t / 0.01f)) * expFast(-t / 0.1f); };
+        float e = j.whoomp * envelope(t0), eBy = (j.whoomp * envelope(t1) - e) * (1.0f / STEP);
+        float b0 = j.whoompB0, a1 = j.whoompA1, a2 = j.whoompA2;
+        float y1 = j.whoompY1, y2 = j.whoompY2, x1 = j.whoompX1, x2 = j.whoompX2;
+        for (int i = 0; i < n; i++) {
+            e += eBy;
+            float x = e * noiseB[i];
+            float y = b0 * (x - x2) - a1 * y1 - a2 * y2;
+            x2 = x1, x1 = x, y2 = y1, y1 = y;
+            mix[i] += y;
+        }
+        j.whoompY1 = fabsf(y1) < 1e-20f ? 0 : y1, j.whoompY2 = fabsf(y2) < 1e-20f ? 0 : y2;
+        j.whoompX1 = x1, j.whoompX2 = x2;
+    }
+    {
+        static const float UP = 1 - expf(-STEP_S / 0.05f), DOWN = 1 - expf(-STEP_S / 1.0f);
+        float rms = sqrtf(power * (1.0f / STEP));
+        j.roarRms += (rms - j.roarRms) * (rms > j.roarRms ? (j.roarRms > 0 ? UP : 1.0f) : DOWN);
+        // The share of its samples over the limiter's threshold over the last
+        // few seconds, and the ceiling lowered 3dB a second while that is over
+        // 0.05%, raised 1dB a second under: as loud as the limiter's 0.1% lets
+        // it be wherever it is heard from, the longest loud scene - lit,
+        // standing behind it - as the shortest [O: the limiter's rule].
+        static const float SHARE = 1 - expf(-STEP_S / 5.0f);
+        j.overShare += (over * (1.0f / STEP) - j.overShare) * SHARE;
+        j.ceilBy = clampf(j.ceilBy * (j.overShare > 0.00035f ? 0.99862f : 1.00023f), 0.3f, 1.0f);
+    }
+    // The whine's two resonances, and the tyres' squeal touching down - the
+    // airliner's, as tyresStep() makes it, half as loud: two small main wheels.
+    static const int RINGING[4] = {FAN_1, FAN_1 + 1, SQUEAL_1, SQUEAL_1 + 1};
+    for (int k = 0; k < 4; k++) {
+        Tone &t = tones_[RINGING[k]];
+        if (!t.on) {
+            continue;
+        }
+        const float *push = t.stream ? noiseB : noiseA;
+        float pr = t.zr, pi = t.zi, pc = t.cr, ps = t.ci, pn = t.in * (k < 2 ? 1.0f : TY_SQUEAL);
+        for (int i = 0; i < n; i++) {
+            float a = (pn * push[i] - ps * pi) + pc * pr;
+            pi = ps * pr + pc * pi;
+            pr = a;
+            mix[i] += a;
+        }
+        t.zr = fabsf(pr) < 1e-20f ? 0 : pr, t.zi = fabsf(pi) < 1e-20f ? 0 : pi;
+    }
+#ifdef ENGINE_NOISE_DEBUG
+    g_fired += fired;
+#endif
+}
+
+
 bool Synth::render(int16_t *out, int count) {
     float mix[STEP], lateA[STEP], lateB[STEP], noiseA[STEP], noiseB[STEP];
     float level = gain_ * fade_ * duck_ * LEVEL;
@@ -1560,6 +2338,7 @@ bool Synth::render(int16_t *out, int count) {
         int n = std::min(STEP, count - done);
         update();
         bool on = sound_.kind == Kind::TURBOFAN;
+        bool fighter = sound_.kind == Kind::LOW_BYPASS;
         // The step's noises, all from the one generator in turn: the two the
         // tones and the buzz-saws are pushed by - each engine's - and the
         // bank's two, its zeros at nought and half the rate taken out once
@@ -1733,9 +2512,14 @@ bool Synth::render(int16_t *out, int count) {
                 q.zr = fabsf(qr) < 1e-20f ? 0 : qr, q.zi = fabsf(qi) < 1e-20f ? 0 : qi;
             }
         }
+        // The fighter's sources, into the mix before the air's muffling and
+        // the echo, as the airliner's broadband goes.
+        if (fighter) {
+            fighterRender(mix, lateA, lateB, noiseA, noiseB, rng, n);
+        }
         // The air's muffling of all that; then the echo off the ground, its
         // lateness stepped across the step too.
-        if (on) {
+        if (on || fighter) {
             float ic1 = air_.ic1, ic2 = air_.ic2, a1 = air_.a1, a2 = air_.a2, a3 = air_.a3;
             for (int i = 0; i < n; i++) {
                 float v3 = mix[i] - ic2;
