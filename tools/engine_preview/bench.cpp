@@ -7,8 +7,9 @@
 // as the device's sound task sets it - for scale only, the Tab5's RISC-V core
 // at 360MHz being a very different machine: the old synthesiser measured
 // 3.5% of one of its cores and 0.12-0.17% of one of this i7-1260P's, so the
-// Tab5's share is some 25 times the PC's. Build and run, from the repo's
-// root:
+// Tab5's share is some 25 times the PC's. The A320's cases, then the ATR's.
+// For the P4's own time, by its model under qemu, see eufi_cases.inc and
+// atr72_cases.inc beside this. Build and run, from the repo's root:
 //
 //   g++ -std=c++17 -O2 -Iinclude tools/engine_preview/bench.cpp src/engine_noise.cpp -o /tmp/engine_bench
 //   /tmp/engine_bench
@@ -72,6 +73,85 @@ int main() {
             s.sourceUpM = c.z + 3;
             s.earUpM = 1.5f;
             s.hardGround = true;
+            s.ms = (uint32_t)(t * 1000);
+            auto b0 = std::chrono::steady_clock::now();
+            synth.set(s);
+            synth.render(out.data(), BLOCK);
+            double us = std::chrono::duration<double, std::micro>(std::chrono::steady_clock::now() - b0).count();
+            if (b > 10) {
+                times.push_back(us);
+                total += us;
+                busy = std::max(busy, synth.busy());
+            }
+        }
+        std::sort(times.begin(), times.end());
+        double mean = total / times.size(), med = times[times.size() / 2], p99 = times[times.size() * 99 / 100];
+        printf("%-36s mean %6.1f us, median %6.1f, p99 %6.1f a 40ms block = %.3f%% of a PC core (%.0f ns a sample); "
+               "Tab5 ~%.1f%%; up to %d resonances and bands\n",
+               c.name, mean, med, p99, 100.0 * mean / 40000.0, 1000.0 * mean / BLOCK, 25 * 100.0 * mean / 40000.0,
+               busy);
+    }
+    // The ATR's (Kind::TURBOPROP), set as the 3D view sets one - its power
+    // and its propellers' speed as engines3d::ask() gives them for each
+    // phase, its propellers' axes 2.80m up, its spoilers none - and heard
+    // from where its scenes hear it (preview.cpp's atr72-*): its take-off roll
+    // from 120m off the runway; its approach from 300m off; its touchdown in
+    // reverse from beside the runway; taxiing past 35m off, the four-bladed
+    // ATR 72-200's too; at its stand in hotel mode, its engines started; and
+    // climbing at 82%, heard from the chase 40m behind. Placed, the ear
+    // `earY` m off its way and `earZ` up - or, earY nought, `earZ` behind it
+    // and 10m up.
+    struct Prop {
+        const char *name;
+        Engine engine;
+        float power, np, rolling, airspeed, x0, vx, z;
+        bool gear, flaps, reverse, apu;
+        float earY, earZ;
+    };
+    std::vector<Prop> props = {
+        {"ATR 72 take-off roll, 100%", Engine::PW127_568F, 1.0f, 1.00f, 45, 45, -600, 45, 0, true, true, false, false, 120, 4},
+        {"ATR 72 approach, 100%", Engine::PW127_568F, 0.22f, 1.00f, 0, 60, -1500, 60, 300, true, true, false, false, 300, 1.5f},
+        {"ATR 72 touchdown, reverse", Engine::PW127_568F, 0.70f, 1.00f, 50, 50, -100, 50, 0, true, true, true, false, 50, 2},
+        {"ATR 72 taxiing past, beta", Engine::PW127_568F, 0.15f, 0.71f, 8, 8, -100, 8, 0, true, false, false, false, 35, 1.5f},
+        {"ATR 72-200 taxiing past, beta", Engine::PW124_14SF, 0.15f, 0.71f, 8, 8, -100, 8, 0, true, false, false, false, 35, 1.5f},
+        {"ATR 72 at its stand, hotel mode", Engine::PW127_568F, 0.05f, 0.71f, 0, 0, 0, 0, 0, true, false, false, true, 35, 2},
+        {"ATR 72 climbing, 82%, the chase", Engine::PW127_568F, 0.886f, 0.82f, 0, 75, -1500, 75, 500, false, false, false, false, 0, 40},
+    };
+    for (const Prop &c : props) {
+        engine_noise::Synth synth;
+        std::vector<int16_t> out(BLOCK);
+        std::vector<double> times;
+        double total = 0;
+        int busy = 0;
+        const engine_noise::PropData &p = engine_noise::propData(c.engine);
+        for (int b = 0; b < BLOCKS; b++) {
+            float t = b * 0.04f;
+            Sound s;
+            s.kind = Kind::TURBOPROP;
+            s.engine = c.engine;
+            s.engines = p.engines;
+            s.size = 27.17f / 37.6f;
+            s.who = 0x406a3c;
+            s.power = c.power;
+            s.np = c.np;
+            s.reverse = c.reverse;
+            s.apu = c.apu;
+            s.rollingMs = c.rolling;
+            s.airspeedMs = c.airspeed;
+            s.gearDown = c.gear;
+            s.flapsOut = c.flaps;
+            s.placed = true;
+            float x = c.x0 + c.vx * fmodf(t, 40.0f);
+            s.at[0] = x, s.at[1] = 0, s.at[2] = c.z + p.axisUp;
+            s.nose[0] = 1, s.nose[1] = 0, s.nose[2] = 0;
+            if (c.earY > 0) {
+                s.ear[0] = 0, s.ear[1] = c.earY, s.ear[2] = c.earZ;
+            } else {
+                s.ear[0] = x - c.earZ, s.ear[1] = 0, s.ear[2] = s.at[2] + 10;
+            }
+            s.sourceUpM = s.at[2];
+            s.earUpM = s.ear[2];
+            s.hardGround = c.z < 91;
             s.ms = (uint32_t)(t * 1000);
             auto b0 = std::chrono::steady_clock::now();
             synth.set(s);

@@ -12,7 +12,9 @@
 // or geared fans, its airframe, tyres and APU. And a fighter's, the
 // Eurofighter Typhoon's two reheated EJ200s - its roar churning and tearing,
 // crackling behind it at high power - on a path of its own in
-// engine_noise.cpp (THE FIGHTER).
+// engine_noise.cpp (THE FIGHTER). And next a turboprop's, the ATR 72's and
+// ATR 42's: what it is asked as is here - Kind::TURBOPROP, its Engine
+// values, PropData, Sound::np - and its sound not made yet (THE TURBOPROP).
 //
 // What it is made of is noise, and what noise does through a resonance. A
 // tone heard from the ground is never a sine: a fan's blade-passing whine
@@ -81,7 +83,7 @@ enum class Kind : uint8_t {
     NONE,        // nothing: fades out
     TURBOFAN,    // an airliner's: the fans' whine, the roar, the buzz-saw at full power
     LOW_BYPASS,  // a fighter's, a trainer's: the Typhoon's EJ200s (Engine::EJ200)
-    TURBOPROP,   // not made yet - silent
+    TURBOPROP,   // a propeller airliner's: the ATR 72's and 42's (PropData) - its sound not made yet, silent
     PISTON,      // not made yet - silent
     ROTOR,       // not made yet - silent
 };
@@ -104,7 +106,86 @@ enum class Engine : uint8_t {
     GE90_94B,   // 777-200ER: 22 blades on a 3.12m fan, 2,261.5rpm at 100% N1
     GE90_115B,  // 777-300ER, -200LR, 777F: 22 blades on a 3.26m fan, 2,355rpm
     TRENT_800,  // 777-200/-200ER/-300: 26 blades on a 2.8m fan, 3,300rpm
+    // The ATR's, Kind::TURBOPROP: two Pratt & Whitney Canada PW100s, each
+    // turning a Hamilton Sundstrand propeller - a type's engines, propellers
+    // and airframe together, one row of PROPS each (see PropData).
+    PW127_568F,     // ATR 72-500/-600 (AT75, AT76): six-bladed 568Fs, 3.93m
+    PW124_14SF,     // ATR 72-200 (AT72): four-bladed 14SF-11s, 3.96m
+    PW127_247F,     // ATR 72-210 (AT73): four-bladed 247Fs
+    PW127_568F_42,  // ATR 42-400/-500/-600 (AT44, AT45, AT46): the 72-500's propellers, a smaller airframe
+    PW120_14SF,     // ATR 42-300/-320 (AT43): four-bladed 14SF-5s
 };
+
+// A propeller aircraft's figures: one row for each installation - a type's
+// engines, their propellers and the airframe they are on - in PROPS
+// (engine_noise.cpp), so another propeller aircraft is a value of Engine, a
+// row there and a type in engines3d::enginesOf(). Its figures are what is
+// known of the type, each with where it comes from in its row's comment -
+// published [P], measured [M] or inferred [I]: what the 3D view needs to ask
+// for its power and its propellers' speed (engines3d::ask()) and where its
+// propellers are, and what a synthesiser needs to put its lines where they
+// belong. How loud and how rich each line is, is the synthesiser's own to
+// make of them, by ear.
+//
+// A row for a Dash 8 Q400 (DH8D), say: two PW150As turning six-bladed Dowty
+// R408s 4.115m across at 1,020rpm for take-off [P: EASA TCDS P.002], 900
+// climbing and 850 cruising [P*], 1,020 on the approach or 850 under its
+// flight manual's supplement 39 [P: its noise certificate], about 660 in
+// beta on the ground [M: aboard, targets/atr72.md 4.1] - npClimb 0.88 and
+// npGround 0.65 of a rpm100 of 1,020 - its axes' spacing and height from its
+// drawings; its gas generator's whine at 7.44-7.46kHz on the climb [M:
+// targets/atr72.md 5.1]. A Saab 340 (SF34): two CT7s turning four-bladed Dowty
+// R354s [P], their speed and diameter still to be found, its low wing's
+// axes lower. A King Air 350 (B350): two PT6As turning four-bladed
+// Hartzells at 1,700rpm, 113Hz [M: a pass fitted on 23 Oct,
+// tools-old/kingair.txt]. Each then a value of Engine, appended, a neutral
+// row in ENGINES beside the ATR's, its row here and its type in
+// engines3d::enginesOf() - each researched in its own turn.
+struct PropData {
+    Engine engine;     // the row's own
+    const char *name;  // "ATR 72-500/-600": the preview's and the checks' lines
+    // Its engines, and each one's propeller: its blades, its speed at 100%,
+    // rpm - its governor's take-off setting - and its disc's diameter, m; how
+    // far each propeller's axis is from the centre line, m - nought for a
+    // single - and how high it stands on the aircraft's wheels, m.
+    uint8_t engines, blades;
+    float rpm100, diameter, halfSpan, axisUp;
+    // Its propellers' speeds as its crew set them, as shares of rpm100 -
+    // what engines3d::ask() gives as Sound::np: in beta on the ground (ground
+    // idle, taxiing, the landing roll out of reverse), where nothing governs
+    // them; climbing, cruising and coming down from height; for take-off; on
+    // the approach; and in reverse, ungoverned again.
+    float npGround, npClimb, npTakeoff, npApproach, npReverse;
+    // How fast they get from one to another, shares of rpm100 a second: up,
+    // as the levers go forward, and down, a steady glide.
+    float npRise, npGlide;
+    // Its two propellers held to one speed and phase while governed -
+    // synchrophased - or not; and in beta, where nothing holds them, how far
+    // apart in speed the two run, as a share.
+    bool synchro;
+    float splitBeta;
+    // Its shaft power as a share of its take-off's, by phase - what
+    // engines3d::ask() gives as Sound::power: climbing; cruising; level low
+    // down, about an airfield; coming down from height; on the approach; in
+    // reverse.
+    float climbPower, cruisePower, levelPower, descentPower, approachPower, reversePower;
+    // Its gas generator's high-pressure spool at 100%, rpm; and its whine as
+    // heard on the approach, Hz at the source (nought: not known). Its
+    // reduction gearbox's lines, as orders of the propeller's turning - the
+    // one heard outside first (nought: none known).
+    float nh100, whineHz, gearA, gearB;
+    // At its stand a propeller brake on its right engine instead of an APU:
+    // hotel mode, its gas generator running with its propeller held still,
+    // which the 3D view asks for as Sound::apu. And ground spoilers rising
+    // on its landing roll, or none.
+    bool hotel, groundSpoilers;
+};
+
+// A propeller installation's row - for any other engine a generic twin
+// turboprop's, its blades passing at Sound::bladeHz at 100%.
+const PropData &propData(Engine engine);
+// Whether an engine is a propeller installation with a row of its own.
+bool isProp(Engine engine);
 
 struct Sound {
     Kind kind = Kind::NONE;
@@ -114,10 +195,10 @@ struct Sound {
     // shade apart, which of its buzz-saw's lines are strongest, its nose
     // gear's and fuel vents' pitch - the same each time it is heard.
     uint32_t who = 0;
-    // The engines, from its type.
+    // The engines, from its type - a turboprop's from its row (PropData).
     uint8_t engines = 2;
     float fanHz = 3000;   // a turbofan's fan blades passing at full power - an Engine::GENERIC one's
-    float bladeHz = 120;  // a propeller's blades passing at full power; a helicopter's main rotor's
+    float bladeHz = 120;  // a propeller's blades passing at 100% - an Engine::GENERIC one's; a helicopter's main rotor's
     float tailHz = 110;   // a helicopter's tail rotor's blades passing
     bool tandem = false;  // two main rotors, fore and aft, passing in turn
     Engine engine = Engine::GENERIC;
@@ -131,11 +212,23 @@ struct Sound {
     // nought, worked out from power and what the aircraft is doing, by the
     // engine's own: an A320's CFM56s at 90% for take-off, 51% on the approach.
     float n1 = -1;
+    // A turboprop's propellers' speed as its crew set it, a share of their
+    // 100% (PropData::rpm100): its governor's setting - 100% for take-off and
+    // on the approach, 82% climbing and cruising, an ATR's - or in beta on
+    // the ground and in reverse, where nothing governs them, the speed they
+    // settle at. Its power is its shaft power as a share of its take-off's:
+    // how hard the blades bite, at whatever speed they turn. The 3D view
+    // gives both from what the aircraft is doing (engines3d::ask()); less
+    // than nought, not said, and the synthesiser makes its own guess from the
+    // power. Asked for, not reached: the propellers get there at their own
+    // pace (PropData::npRise, npGlide). Nothing else's sound reads it.
+    float np = -1;
     // Its reversers out. A fighter's - an EJ200's - has none and doesn't
     // hear it; nor does the 3D view give a Typhoon them, as it gives an
     // airliner on its landing roll above 60 knots, power 0.7: it holds its
     // nose high to 100 knots, its engines idling, then brakes - quieter
-    // after touchdown, not louder (engines3d.h).
+    // after touchdown, not louder (engines3d.h). A turboprop's: its
+    // propellers' blades turned past flat to reverse pitch.
     bool reverse = false;
     // A fighter's reheat (Kind::LOW_BYPASS): `afterburner` lit or not, as
     // the 3D view has it today - at power 0.95 or more on the ground or under
@@ -169,7 +262,8 @@ struct Sound {
     // `spoilers` is its airbrake, the one big panel behind a Typhoon's
     // cockpit, 0 shut to 1 open - which the 3D view gives as open on its
     // landing roll down to taxiing speed, else shut; it has no flaps to
-    // speak of (flaperons), so flapsOut is never set for it.
+    // speak of (flaperons), so flapsOut is never set for it. A turboprop
+    // without ground spoilers - an ATR - has `spoilers` nought.
     float airspeedMs = 0;
     bool gearDown = false, flapsOut = false;
     float spoilers = 0;
@@ -177,7 +271,11 @@ struct Sound {
     float size = 1;
     // Its engines running, or shut down - at its stand - and started again,
     // heard spooling up from nothing; and its APU, an airliner's, whining
-    // while it stands or taxies.
+    // while it stands or taxies. A turboprop with a propeller brake has no
+    // APU (PropData::hotel): for it `apu` is its hotel mode - its right
+    // engine's gas generator running, that propeller held still - alone
+    // while its engines are shut down, and with `running` the left one's
+    // propeller turning, the right one's held until hotel mode ends.
     bool running = true, apu = false;
     // Where its engines and the ear - the camera - are, in metres in a frame
     // of the caller's own, the same from one call to the next, and which way
@@ -268,6 +366,14 @@ class Synth {
     struct Rng;
     void fighterRender(float *mix, const float *lateA, const float *lateB, const float *noiseA, const float *noiseB,
                        Rng &rng, int n);
+    // The turboprop's - Kind::TURBOPROP: its four places, as the fighter's
+    // are, each empty for now - its sound not made yet - so it plays silence
+    // through the shared rest. See engine_noise.cpp's THE TURBOPROP.
+    void propStep();
+    void propSlowStep();
+    void propRestart();
+    void propRender(float *mix, const float *lateA, const float *lateB, const float *noiseA, const float *noiseB,
+                    Rng &rng, int n);
 
     // The noise as a step's samples have it: the seed in a register, copied
     // in and back once a step, not read from the synth - in the PSRAM - and

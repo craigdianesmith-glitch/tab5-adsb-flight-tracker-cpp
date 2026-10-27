@@ -74,3 +74,7 @@
         printf("case %s sound %08lx\n", c.name, (unsigned long)sum);
     }
 }
+// And the ATR's, after them.
+#if __has_include("atr72_cases.inc")
+#include "atr72_cases.inc"
+#endif

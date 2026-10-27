@@ -211,7 +211,9 @@ struct EngineData {
     float motorS;
     float jetScale, h2Db, buzzLo, buzzHi, spool, frameDb;
 };
-const EngineData ENGINES[9] = {
+// One row for each Engine, in its order - restart(), engines() and update()
+// read a turboprop's too.
+const EngineData ENGINES[] = {
     // GENERIC: its shaft from Sound::fanHz, 24 blades assumed.
     {24, 125.0f, 0.22f, 0.27f, 0.51f, 0.82f, 0.85f, 0.90f, 0.70f, 0.67f, 0, 300, 0, 0, {0, 0}, 15, 1, 0, 4, 18, 1, 0},
     // CFM56-5B: idle 20-22%; final 49-55% (Zurich); take-off 85-94%; reverse 68%.
@@ -268,7 +270,151 @@ const EngineData ENGINES[9] = {
     // weak; its take-off 88-100%, its reverse 70-80%; a smaller fan than a
     // GE90's - its jet's eddies a shade smaller, its harmonic less marked.
     {26, 55.0f, 0.23f, 0.28f, 0.73f, 0.86f, 0.90f, 0.95f, 0.75f, 0.61f, 2, 310, 6, -2, {0, 0}, 35, 1.9f, 2, 5, 16, 0.75f, 8},
+    // The ATR's PW100s, Kind::TURBOPROP, for what of update() a turboprop
+    // shares - its start's motoring and spool, and N1 from power by
+    // engines(), which for it is its gas generator's high-pressure spool's
+    // speed (NH) as a share of its 100%: some 66% idling on the ground, 72%
+    // in the air, 85% on the approach, 95% cruising, 97% climbing, 100% for
+    // take-off, 92% in reverse [I: none published]. Its spool's turning at
+    // 100% as `shaft100` - 34,360rpm on a PW127, 34,200 on a PW124B,
+    // 34,350 on a PW120 [P: EASA TCDS IM.E.041] - `blades` a placeholder; its
+    // start motoring 20s to a third of idle [I]; its spool 0.8 of a CFM56's
+    // [I]. No fan, no buzz-saw, no jet - the airliner's sums never run for
+    // it: its sound is its own, from PROPS.
+    {24, 572.667f, 0.66f, 0.72f, 0.85f, 0.95f, 0.97f, 1.00f, 0.92f, 2.0f, -60, 0, 0, 0, {0, 0}, 20, 1, 0, 4, 18, 0.8f, 0},
+    {24, 570.0f, 0.66f, 0.72f, 0.85f, 0.95f, 0.97f, 1.00f, 0.92f, 2.0f, -60, 0, 0, 0, {0, 0}, 20, 1, 0, 4, 18, 0.8f, 0},
+    {24, 572.667f, 0.66f, 0.72f, 0.85f, 0.95f, 0.97f, 1.00f, 0.92f, 2.0f, -60, 0, 0, 0, {0, 0}, 20, 1, 0, 4, 18, 0.8f, 0},
+    {24, 572.667f, 0.66f, 0.72f, 0.85f, 0.95f, 0.97f, 1.00f, 0.92f, 2.0f, -60, 0, 0, 0, {0, 0}, 20, 1, 0, 4, 18, 0.8f, 0},
+    {24, 572.5f, 0.66f, 0.72f, 0.85f, 0.95f, 0.97f, 1.00f, 0.92f, 2.0f, -60, 0, 0, 0, {0, 0}, 20, 1, 0, 4, 18, 0.8f, 0},
 };
+static_assert(sizeof ENGINES / sizeof ENGINES[0] == (size_t)Engine::PW120_14SF + 1, "a row in ENGINES for each Engine");
+
+// The propeller installations' figures - see PropData in engine_noise.h -
+// each with where it comes from: [P] published, [P*] in a secondary source,
+// [M] measured on the CC0 and CC BY recordings of the ATR research (in
+// ~/.cache/terrain-lab/sound/: research/atr72-sources.md,
+// research/turboprop-methods.md, targets/atr72.md), [I] inferred, [O] this
+// project's own. Shared by the five ATR rows:
+//  - Their propeller's speed at 100% 1,200rpm, the PW100's output shaft
+//    allowed 1,212 [P: EASA TCDS IM.E.041,
+//    https://www.easa.europa.eu/en/downloads/7725/en]; the governor's 100%
+//    for take-off and the approach and 82% climbing and cruising, ground
+//    idle in beta 71%, nothing governing it in beta or reverse - the
+//    overspeed governor at 118% on the ground [P: BEA, 9Y-TTC,
+//    https://bea.aero/fileadmin/user_upload/9y-c140505.en_22_03_22.pdf].
+//    Measured aboard an ATR 72-500/-600 at Kajaani [M: fs680325, CC0,
+//    targets 4.1]: 1,199.7rpm, 984.0 and 824-851; ground idle to take-off
+//    in 2.5-3.5s; take-off to climb a straight glide over 8.5s, 2.1-2.3% a
+//    second. On an approach to Schiphol 1,211-1,214rpm [M: fs315660, CC0].
+//  - Their two propellers synchrophased governed, the left the master -
+//    "± 1 RPM speed and ± 1° phase holding" [P: BEA; ATR at EWADE 2011,
+//    https://www.fzt.haw-hamburg.de/pers/Scholz/ewade/2011/Presentations/Workshop_Opening_Day_Conference/07_ATR_2_ORSI_EWADE_2011.pdf]:
+//    one line per harmonic in every governed stretch recorded [M]. In beta
+//    a taxiing Dash 8's two ran 4-5% apart [M: fs637148, CC0], an ATR's at
+//    ground idle some 0.25% [M, aboard]: half a percent between [I].
+//  - Their axes 8.10m apart and their tips 0.835m over the ground - so
+//    2.80m up - on the ATR 72-600's and 42-600's drawings, 0.82m under the
+//    -200's bigger 14SF-11 [P: ATR's fact sheets,
+//    https://www.atr-aircraft.com/wp-content/uploads/2020/07/Factsheets_-_ATR_72-600.pdf
+//    and Factsheets_-_ATR_42-600.pdf beside it].
+//  - Their power by phase from each type's ratings, take-off's against
+//    its maximum climb's and cruise's [P: the fact sheets]; level low down
+//    some half of an ATR 72-600's take-off power - level at 180 knots, its
+//    drag as the square of its equivalent airspeed and its power as its
+//    drag times its true airspeed, from its cruise's [I]; coming down at
+//    flight idle [P: the BEA; I: its share]; on the approach some 0.22 -
+//    the noise data's 1,050-1,290lb an engine at 117 knots against
+//    5,150-5,350lb near lift-off [P: EASA ANP v2.3,
+//    https://www.easa.europa.eu/en/downloads/138164/en; I: thrust as
+//    power at the same speed]; in reverse 0.7 - the 3D view's airliner's
+//    [O], the noise data's ATR 72 landing roll starting at 75.9, against
+//    an A320's 40 [P: ANP; I: shares of their static thrust].
+//  - Their gas generator's whine at 5,682Hz at the source on an ATR 72's
+//    approach, its interquartile 5,652-5,765 - 13dB clear, and far out two
+//    lines 2.4% apart, each engine's own [M: fs315660, fs166417 (CC BY 4.0),
+//    targets 5.1]; its impellers' blades not published, so no order of its
+//    spool's turning.
+//  - Their reduction gearbox's lines at 48.8 and 72.9 times the
+//    propeller's turning, locked to it within 0.2% at three speeds [M:
+//    aboard at Kajaani, turboprop-methods 1.6]; heard outside on the
+//    approach at 47.7 ± 0.6 - "probably the same line" as the first - and
+//    the second not at all, 450m off [M: targets 5.2].
+//  - Hotel mode on their right engine - "the propeller is held stationary
+//    by a hydraulically operated brake, allowing the right engine to
+//    operate as an auxiliary power unit" - and no APU in the type design
+//    [P: AAIB, G-CMFI, Bulletin 1/2024,
+//    https://assets.publishing.service.gov.uk/media/659d27a748baa2000ebbe381/ATR_72-212_A_G-CMFI_01-24.pdf;
+//    EASA TCDS A.084: APU "Not Applicable"]. No ground spoilers: its two
+//    spoilers worked by the control wheels, with the ailerons [P*:
+//    SmartCockpit, https://www.smartcockpit.com/wp_quiz/atr-72-flight-controls/;
+//    I: for roll alone].
+const PropData PROPS[] = {
+    // The ATR 72-500/-600 (AT75, AT76): PW127F/M/Ns, six-bladed 568Fs
+    // 3.93m across [P: the fact sheet; EASA TCDS A.084]; 2,475shp each for
+    // take-off, 2,192 its maximum climb, 2,132 its maximum cruise [P: the
+    // fact sheet]. Certified 82.5 / 80.5 / 92.2EPNdB lateral, flyover and
+    // approach, the A320's 93.6 / 86.4 / 95.3 [P: EASA's noise data sheets,
+    // atr72-sources 8.1]; 5-8dB under an A320 taking off and 4-6 on the
+    // approach, A-weighted [P: ANP].
+    {Engine::PW127_568F, "ATR 72-500/-600", 2, 6, 1200, 3.93f, 4.05f, 2.80f,
+     0.71f, 0.82f, 1.00f, 1.00f, 1.00f, 0.12f, 0.022f, true, 0.005f,
+     0.886f, 0.861f, 0.50f, 0.05f, 0.22f, 0.70f,
+     34360, 5682, 48.8f, 72.9f, true, false},
+    // The ATR 72-200 (AT72): PW124Bs, four-bladed 14SF-11s 3.96m across, the
+    // tips 0.82m up; 2,160shp each for take-off, 2,088 its maximum climb and
+    // cruise [P: the ATR 72-200's fact sheet, refs/atr72/tcds]. Certified
+    // 86.2 / 87.5 / 94.2EPNdB - 3.7, 7.0 and 2.0 over the -600 [P]. Its
+    // speeds by phase, its whine and its gearbox's lines as the -500's [I:
+    // none measured; the PW100s' reduction ratios run 15.4-17.16 (P*:
+    // Wikipedia's PW100), so its lines' orders may be others]; level and
+    // approach power as the -600's shaft power in its smaller take-off's
+    // shares [I].
+    {Engine::PW124_14SF, "ATR 72-200", 2, 4, 1200, 3.96f, 4.05f, 2.80f,
+     0.71f, 0.82f, 1.00f, 1.00f, 1.00f, 0.12f, 0.022f, true, 0.005f,
+     0.967f, 0.967f, 0.58f, 0.05f, 0.25f, 0.70f,
+     34200, 5682, 48.8f, 72.9f, true, false},
+    // The ATR 72-210 (AT73): PW127s - 2,475shp for take-off [P: EASA TCDS
+    // IM.E.041, 1,846kW] - turning four-bladed 247Fs [P: EASA TCDS A.084],
+    // their diameter not found, 3.93m [I]. Certified 84.7 / 80.9 /
+    // 92.5EPNdB [P]. The rest as the -500's [I].
+    {Engine::PW127_247F, "ATR 72-210", 2, 4, 1200, 3.93f, 4.05f, 2.80f,
+     0.71f, 0.82f, 1.00f, 1.00f, 1.00f, 0.12f, 0.022f, true, 0.005f,
+     0.886f, 0.861f, 0.50f, 0.05f, 0.22f, 0.70f,
+     34360, 5682, 48.8f, 72.9f, true, false},
+    // The ATR 42-400/-500/-600 (AT44, AT45, AT46): the 72-500's six-bladed
+    // 568Fs on PW121As or PW127E/Ms [P: TCDS A.084], its axes as far apart
+    // and as high [P: the ATR 42-600's fact sheet]; 2,160shp each for
+    // take-off and climbing alike, 2,132 cruising [P: the fact sheet] - so
+    // its climb at full power, its propellers at 82% none the less (np, not
+    // power, says which). Certified 80.7 / 76.6 / 92.4EPNdB, the -500 [P].
+    // Its speeds by phase as the 72's [I]; lighter - 18.6t at most against
+    // 22.8t - and its wing smaller, 54.5m2 against 61 [P: the fact sheets],
+    // so level and on the approach a shade under the 72's share [I].
+    {Engine::PW127_568F_42, "ATR 42-500/-600", 2, 6, 1200, 3.93f, 4.05f, 2.80f,
+     0.71f, 0.82f, 1.00f, 1.00f, 1.00f, 0.12f, 0.022f, true, 0.005f,
+     1.00f, 0.987f, 0.48f, 0.05f, 0.20f, 0.70f,
+     34360, 5682, 48.8f, 72.9f, true, false},
+    // The ATR 42-300/-320 (AT43): PW120s or PW121s - 1,342 and 1,454kW
+    // (1,800 and 1,950shp) for take-off, the PW120's maximum continuous
+    // 1,268kW [P: TCDS IM.E.041] - turning four-bladed 14SF-5s [P: TCDS
+    // A.084; M: four blades in the FedEx videos' frames], 3.96m across as
+    // the 14SF-11 [I]. Certified 84.5 / 77.1 / 96.8EPNdB [P]. On its approach
+    // seven FedEx ATR 42s' blades passed at 67-79Hz at the source, median
+    // 73Hz - 91% of 1,200rpm, not 100% [M: targets 4.2, camera sound, the
+    // fits unreliable]. Its climb and cruise ratings not found: 0.95 and
+    // 0.90 [I]; the rest as the 72's [I].
+    {Engine::PW120_14SF, "ATR 42-300/-320", 2, 4, 1200, 3.96f, 4.05f, 2.80f,
+     0.71f, 0.82f, 1.00f, 0.91f, 1.00f, 0.12f, 0.022f, true, 0.005f,
+     0.95f, 0.90f, 0.55f, 0.05f, 0.24f, 0.70f,
+     34350, 5682, 48.8f, 72.9f, true, false},
+};
+// A turboprop with no row of its own (Engine::GENERIC): a twin like an ATR
+// 72-600, its blades passing at Sound::bladeHz at 100% - 120Hz unless set,
+// six blades at 1,200rpm - no whine nor gearbox lines known, no hotel mode.
+const PropData PROP_GENERIC = {Engine::GENERIC, "a turboprop", 2, 6, 1200, 3.93f, 4.05f, 2.80f,
+                               0.71f, 0.82f, 1.00f, 1.00f, 1.00f, 0.12f, 0.022f, true, 0.005f,
+                               0.886f, 0.861f, 0.50f, 0.05f, 0.22f, 0.70f,
+                               34360, 0, 0, 0, false, false};
 
 // A hash's bits mixed, for an airframe's little differences from `who`.
 uint32_t mix(uint32_t x) {
@@ -610,6 +756,9 @@ void Synth::restart() {
     if (s.kind == Kind::LOW_BYPASS) {
         fighterRestart();
     }
+    if (s.kind == Kind::TURBOPROP) {
+        propRestart();
+    }
 }
 
 // The sound's way, placed: back through what was asked, the moment that
@@ -683,10 +832,13 @@ void Synth::placedWay() {
     float d = sqrtf(to[0] * to[0] + to[1] * to[1] + to[2] * to[2]), per = 1 / std::max(1.0f, d);
     heard_.distanceM = d;
     // Each engine's distance and height: 5.75m either side, along the wing
-    // - square to its nose and the vertical - from where it was.
+    // - square to its nose and the vertical - from where it was; a
+    // turboprop's propellers as far either side as its row has them (4.05m
+    // on an ATR, nought for a single).
     {
         float wx = nose[1], wy = -nose[0], wn = sqrtf(wx * wx + wy * wy);
-        float k = wn > 1e-3f ? 5.75f / wn : 0;
+        float half = target_.kind == Kind::TURBOPROP ? propData(target_.engine).halfSpan : 5.75f;
+        float k = wn > 1e-3f ? half / wn : 0;
         for (int g = 0; g < 2; g++) {
             float side = g == 0 ? k : -k;
             float ex = to[0] - wx * side, ey = to[1] - wy * side;
@@ -865,6 +1017,7 @@ void Synth::update() {
     }
     bool on = same && sound_.kind == Kind::TURBOFAN;
     bool fighter = same && sound_.kind == Kind::LOW_BYPASS;  // THE FIGHTER: faded in as an airliner is
+    bool prop = same && sound_.kind == Kind::TURBOPROP;      // THE TURBOPROP: likewise
     static const float FADE_IN = 1 - expf(-STEP_S / 0.5f), FADE_OUT = 1 - expf(-STEP_S / 0.2f),
                        DUCK = 1 - expFast(-STEP_S / 0.12f), REVERSE = 1 - expFast(-STEP_S / 0.9f),
                        WHERE = 1 - expFast(-STEP_S / 0.12f), CLOSING = 1 - expFast(-STEP_S / 0.25f),
@@ -873,7 +1026,7 @@ void Synth::update() {
                        AIRSPEED = 1 - expFast(-STEP_S / 0.5f), LIGHT = 1 - expFast(-STEP_S / 0.8f),
                        OUT = 1 - expf(-STEP_S / 0.3f), WIND_DOWN = expf(-STEP_S / 12), APU_DOWN = expf(-STEP_S / 5),
                        ECHO_WANDER = 1 - expf(-STEP_S / 0.6f);
-    fade_ = ease(fade_, on || fighter ? 1.0f : 0.0f, on || fighter ? FADE_IN : FADE_OUT);
+    fade_ = ease(fade_, on || fighter || prop ? 1.0f : 0.0f, on || fighter || prop ? FADE_IN : FADE_OUT);
     duck_ = ease(duck_, under_ ? 0.2f : 1.0f, DUCK);
     const Sound &s = sound_;
     const Sound &rev = g_transientsOnPicture ? target_ : s;
@@ -978,6 +1131,9 @@ void Synth::update() {
     if (fighter) {
         fighterStep();
     }
+    if (prop) {
+        propStep();
+    }
 }
 
 // Every sixteenth step, 32ms: the loudness as it spreads, the bands' and the
@@ -1010,6 +1166,10 @@ void Synth::slowStep() {
     air_.tune(mufflingHz(d * 0.001f), 0.6f);
     if (s.kind == Kind::LOW_BYPASS) {
         fighterSlowStep();  // THE FIGHTER: none of the airliner's sums
+        return;
+    }
+    if (s.kind == Kind::TURBOPROP) {
+        propSlowStep();  // THE TURBOPROP: nor its
         return;
     }
     huntStep();
@@ -2390,6 +2550,35 @@ __attribute__((noinline)) void Synth::fighterRender(float *mix, const float *lat
 #endif
 }
 
+// THE TURBOPROP - Kind::TURBOPROP, the ATR 72's and ATR 42's (PROPS) - its
+// sound not made yet: what it is asked as is settled, and where in the
+// synth it will be made, so every build of it starts from the same place
+// (tools/engine_preview/NOTES.md, the turboprop's shared base). Asked as: its
+// engines and propellers from its row (PropData), its propellers' speed as
+// its crew set it (Sound::np) and its shaft power (Sound::power), both from
+// what it is doing (engines3d::ask()); its reverse pitch; its hotel mode
+// (Sound::apu); and, as an airliner's, where it and the camera are, its
+// tyres, its gear and flaps. Shared already: its fade in and out, its way -
+// placed, its two propellers as far apart as its row has them - its start's
+// spool and its gas generator's speed (engines(), from its neutral row in
+// ENGINES), the tyres' timing (tyresStep()), the spreading and the air's
+// muffling's tuning (slowStep()), the muffling, the echo off the ground, the
+// level, the speaker's high-pass and the limiter (render()). Its four places,
+// each empty, so it plays silence:
+//  - propRestart(): another starting (restart());
+//  - propStep(): each 2ms step, once its way and engines are worked out
+//    (update());
+//  - propSlowStep(): each 32ms, once the spreading, the held-back and the
+//    muffling's tuning are, in place of the airliner's sums (slowStep());
+//  - propRender(): each step, its sources into the mix before the air's
+//    muffling and the echo (render()) - the bank's noises, `lateA` and
+//    `lateB`, and the tones' two, `noiseA` and `noiseB`, as the fighter has.
+__attribute__((noinline)) void Synth::propRestart() {}
+__attribute__((noinline)) void Synth::propStep() {}
+__attribute__((noinline)) void Synth::propSlowStep() {}
+__attribute__((noinline)) void Synth::propRender(float *, const float *, const float *, const float *, const float *,
+                                                 Rng &, int) {}
+
 
 bool Synth::render(int16_t *out, int count) {
     float mix[STEP], lateA[STEP], lateB[STEP], noiseA[STEP], noiseB[STEP];
@@ -2399,6 +2588,7 @@ bool Synth::render(int16_t *out, int count) {
         update();
         bool on = sound_.kind == Kind::TURBOFAN;
         bool fighter = sound_.kind == Kind::LOW_BYPASS;
+        bool prop = sound_.kind == Kind::TURBOPROP;
         // The step's noises, all from the one generator in turn: the two the
         // tones and the buzz-saws are pushed by - each engine's - and the
         // bank's two, its zeros at nought and half the rate taken out once
@@ -2577,9 +2767,13 @@ bool Synth::render(int16_t *out, int count) {
         if (fighter) {
             fighterRender(mix, lateA, lateB, noiseA, noiseB, rng, n);
         }
+        // And the turboprop's, likewise.
+        if (prop) {
+            propRender(mix, lateA, lateB, noiseA, noiseB, rng, n);
+        }
         // The air's muffling of all that; then the echo off the ground, its
         // lateness stepped across the step too.
-        if (on || fighter) {
+        if (on || fighter || prop) {
             float ic1 = air_.ic1, ic2 = air_.ic2, a1 = air_.a1, a2 = air_.a2, a3 = air_.a3;
             for (int i = 0; i < n; i++) {
                 float v3 = mix[i] - ic2;
@@ -2750,5 +2944,16 @@ Engine b777Engines(const char *type, uint32_t who) {
     }
     return Engine::GENERIC;
 }
+
+const PropData &propData(Engine engine) {
+    for (const PropData &p : PROPS) {
+        if (p.engine == engine) {
+            return p;
+        }
+    }
+    return PROP_GENERIC;
+}
+
+bool isProp(Engine engine) { return &propData(engine) != &PROP_GENERIC; }
 
 }  // namespace engine_noise

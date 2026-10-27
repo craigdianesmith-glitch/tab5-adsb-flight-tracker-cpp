@@ -1600,8 +1600,9 @@ bool g_engineSound = true;
 float g_engineDistance = -1;  // the camera's from the one followed, a frame ago
 
 // The one followed's engines as the camera hears them: their kind, from its
-// type - the A320 family's and the Typhoon's, any other silent; how hard
-// they are working, from what it is doing - see engines3d.h, which a PC
+// type - the A320 family's, the Typhoon's, the 777's and the ATR's, any
+// other silent; how hard they are working - and a turboprop's propellers'
+// speed - from what it is doing - see engines3d.h, which a PC
 // check runs through each phase; where it is from the camera - how far off,
 // how fast it is closing, which way it faces, and how high it and the camera
 // are over the ground, for the sound off it; and its tyres, rolling and
@@ -1703,9 +1704,14 @@ engine_noise::Sound engineSound(const Followed &f, const FollowEstimate &e, int 
     // The APU where an airliner runs it: at its stand; for a minute and a
     // half after its engines start there, its air and power handed over to
     // them; and taxiing in from a landing, started for the stand. Not
-    // taxiing out or lining up - shut down minutes before.
+    // taxiing out or lining up - shut down minutes before. A turboprop with
+    // a propeller brake - an ATR, no APU - its hotel mode there instead: its
+    // right engine's gas generator running, that propeller held still, as
+    // part of every start and shutdown [P: AAIB, G-CMFI] - and taxiing in on
+    // its left engine alone, as ATRs often do [P*: atr72-sources.md 7].
     bool startedLately = g_seconds - g_startedAt < 90, taxiingIn = g_touchdownAt > -100 && shownKt < 25;
-    s.apu = s.kind == Kind::TURBOFAN && e.ground && f.movement != RunwaySim::Movement::TAKEOFF &&
+    bool hotel = s.kind == Kind::TURBOPROP && engine_noise::propData(s.engine).hotel;
+    s.apu = (s.kind == Kind::TURBOFAN || hotel) && e.ground && f.movement != RunwaySim::Movement::TAKEOFF &&
             (parked || startedLately || taxiingIn);
     static bool wasRunning = true, wasApu = false;
     if (s.running != wasRunning || s.apu != wasApu) {

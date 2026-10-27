@@ -21,15 +21,19 @@
 // full dry power on its brakes lined up, its reheat lit as it rolls; no
 // reversers, its engines idling all down its landing roll; and level, or
 // coming down fast, as hard as its speed through the air needs, not an
-// airliner's cruise power at any speed, nor its idle.
+// airliner's cruise power at any speed, nor its idle. A turboprop's - an
+// ATR's - as its crew set it [atr72-sources.md 2.1, 9]: its propellers'
+// speed by phase, not by power - in beta on the ground, 100% for take-off
+// and on the approach, 82% climbing and cruising - and its power its
+// ratings' by phase, from its row (engine_noise::PropData).
 //
 // Header only, for the view's engineSound() and a PC check's alike
 // (tools/engine_preview/engines3d_check.cpp).
 namespace engines3d {
 
 // An aircraft's engines, by its type: the A320 family's, the Eurofighter
-// Typhoon's and the Boeing 777's - each kind of aircraft made and heard in
-// its turn - and any other silent. ADS-B doesn't say which of two engines an A320 has, so they
+// Typhoon's, the Boeing 777's and the ATR's - each kind of aircraft made and
+// heard in its turn - and any other silent. ADS-B doesn't say which of two engines an A320 has, so they
 // are picked by the airframe, `who`, in the fleets' shares - a ceo's CFM56s
 // or V2500s, a neo's LEAPs or geared fans - and with them whether an older
 // one's fuel vents whistle on its approach: the same airframe always the
@@ -54,6 +58,26 @@ inline engine_noise::Sound enginesOf(const char *type, uint32_t who) {
         if (strcmp(type, t) == 0) {
             s.kind = engine_noise::Kind::TURBOFAN;
             s.engine = engine_noise::b777Engines(t, who);
+        }
+    }
+    // An ATR by its ICAO type [P: ICAO Doc 8643, as the app's aircraft_db.cpp
+    // names them]: an ATR 72-500's or -600's six-bladed 568Fs, a -200's
+    // four-bladed 14SF-11s, a -210's four-bladed 247Fs; an ATR 42-400's,
+    // -500's or -600's 568Fs, a -300's or -320's 14SF-5s. Its engines and
+    // propellers from its row. (If an aircraft database files -500s and
+    // -600s as AT72, they are heard as -200s: four blades, 80Hz.)
+    using engine_noise::Engine;
+    static const struct {
+        const char *type;
+        Engine engine;
+    } ATRS[] = {{"AT75", Engine::PW127_568F},    {"AT76", Engine::PW127_568F},    {"AT72", Engine::PW124_14SF},
+                {"AT73", Engine::PW127_247F},    {"AT44", Engine::PW127_568F_42}, {"AT45", Engine::PW127_568F_42},
+                {"AT46", Engine::PW127_568F_42}, {"AT43", Engine::PW120_14SF}};
+    for (const auto &atr : ATRS) {
+        if (strcmp(type, atr.type) == 0) {
+            s.kind = engine_noise::Kind::TURBOPROP;
+            s.engine = atr.engine;
+            s.engines = engine_noise::propData(atr.engine).engines;
         }
     }
     return s;
@@ -112,10 +136,69 @@ inline float fighterLevelPower(int kt, int altFt) {
     return std::min(0.88f, 0.85f + 0.03f * (eas - 420) / 60);
 }
 
+// A turboprop's power and its propellers' speed, as its crew set them for
+// what it is doing [atr72-sources.md 2.1, 9; P: BEA, 9Y-TTC]:
+//  - on the ground in beta, the power levers setting the blades' pitch and
+//    nothing governing their speed - an ATR's ground idle 71% - and taxiing
+//    as an airliner idles, a little more power to get it rolling;
+//  - lined up and on its roll, take-off power and 100%, held as it climbs
+//    away to the runway simulation's hand-over at 1,500ft over the field,
+//    where its power management steps to the climb - as most do at
+//    800-1,500ft [P: ANP's 1,000ft; I] - its propellers gliding down to 82%
+//    over some 8.5s [M: aboard an ATR 72];
+//  - climbing, cruising and coming down from height at 82%, at its maximum
+//    climb's, its maximum cruise's and about flight idle's power;
+//  - on the approach - the runway simulation's landing, or coming down
+//    under 3,000ft over the field - 100% again [M: 1,211-1,214rpm on an
+//    approach to Schiphol; P: the BEA's "100 % OVRD"], its power low [P:
+//    ANP's thrust]; level low down about the field 82% and some half its
+//    take-off's power;
+//  - down, above 60 knots, its blades through flat to reverse pitch, as the
+//    view gives an airliner its reversers [O], its propellers ungoverned;
+//    then in beta to the end of its roll.
+// A go-around is heard as a climb: the view can't tell one from it, and
+// none was recorded. Each figure its row's (engine_noise::PropData).
+inline void askTurboprop(engine_noise::Sound &s, const Doing &d) {
+    const engine_noise::PropData &p = engine_noise::propData(s.engine);
+    if (d.ground) {
+        if (d.takingOff && (d.simulating || d.kt > 30)) {
+            s.power = 1;
+            s.np = p.npTakeoff;
+        } else if (d.landing && d.kt > 60) {
+            s.power = p.reversePower;
+            s.reverse = true;
+            s.np = p.npReverse;
+        } else {
+            s.power = 0.05f + std::min(0.12f, d.kt / 150.0f);
+            s.np = p.npGround;
+        }
+    } else if (d.takingOff) {
+        s.power = 1;
+        s.np = p.npTakeoff;
+    } else if (d.vsFpm > 300) {
+        s.power = p.climbPower;
+        s.np = p.npClimb;
+    } else if (d.landing || (d.low && d.vsFpm < -400)) {
+        s.power = p.approachPower;
+        s.np = p.npApproach;
+    } else if (d.vsFpm < -400) {
+        s.power = p.descentPower;
+        s.np = p.npClimb;
+    } else {
+        s.power = d.low ? p.levelPower : p.cruisePower;
+        s.np = p.npClimb;
+    }
+}
+
 // Its engines' power, its reversers and reheat - and a helicopter's blade
-// slap - into `s`, its kind already set from its type.
+// slap, a turboprop's propellers' speed - into `s`, its kind already set
+// from its type.
 inline void ask(engine_noise::Sound &s, const Doing &d) {
     using engine_noise::Kind;
+    if (s.kind == Kind::TURBOPROP) {
+        askTurboprop(s, d);
+        return;
+    }
     bool jet = s.kind == Kind::LOW_BYPASS;
     if (s.kind == Kind::ROTOR) {
         // Set down its rotor turning, idling; hovering the hardest it
@@ -170,11 +253,16 @@ inline void ask(engine_noise::Sound &s, const Doing &d) {
 
 // Its airframe as the view has it set up: its gear down, its flaps out, its
 // spoilers up, 0 to 1 - a Typhoon's spoilers its airbrake, up on its landing
-// roll as an airliner's are, and no flaps for it, only flaperons.
+// roll as an airliner's are, and no flaps for it, only flaperons. A
+// turboprop without ground spoilers - an ATR, its two spoilers for roll
+// alone - none on its roll, whatever the view draws.
 inline void airframe(engine_noise::Sound &s, bool gear, bool flaps, float spoilers) {
     s.gearDown = gear;
     s.flapsOut = flaps && s.kind != engine_noise::Kind::LOW_BYPASS;
     s.spoilers = spoilers;
+    if (s.kind == engine_noise::Kind::TURBOPROP && !engine_noise::propData(s.engine).groundSpoilers) {
+        s.spoilers = 0;
+    }
 }
 
 // Its engines' height over where it is placed - its main wheels - for the
@@ -182,8 +270,14 @@ inline void airframe(engine_noise::Sound &s, bool gear, bool flaps, float spoile
 // view multiplies by as it always has, so an airliner's comes out exactly as
 // it did: 2.5, about its middle, a little up. A Typhoon's jets' nozzles are
 // low in its tail, 1.5m up on its gear whatever its scale, where its sound's
-// scenes have them (tools/engine_preview/NOTES.md).
+// scenes have them (tools/engine_preview/NOTES.md). A turboprop's
+// propellers' axes as high as its row has them, whatever its scale: an
+// ATR's 2.80m under its high wing [P: its fact sheets' 0.835m under the
+// tips of a 3.93m disc].
 inline float enginesUpPerScale(const engine_noise::Sound &s, float scale) {
+    if (s.kind == engine_noise::Kind::TURBOPROP) {
+        return engine_noise::propData(s.engine).axisUp / scale;
+    }
     return s.kind == engine_noise::Kind::LOW_BYPASS ? 1.5f / scale : 2.5f;
 }
 

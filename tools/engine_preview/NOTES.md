@@ -251,4 +251,199 @@ The A320's turbofan voice on the 777's engines, from `b777-sources.md` - no new 
 - **To listen**: `~/.cache/terrain-lab/sound/review/b777-v1/` - each scene full-range and `-tab5`; `-as-a320` is the
   same flight with an A320's engines; `-trent800` the take-off with Trent 800s.
 
+
+# The ATR 72's sound: the shared base (atr72-base, 27 Oct)
+
+What every ATR build starts from, so all of them take the same inputs and are judged on the same scenes. The
+first turboprop, and the base for every propeller aircraft after it. Its sound is not made here: a turboprop
+plays silence. Research, all in `~/.cache/terrain-lab/sound/`:
+
+- `research/atr72-sources.md`: sources, physics, published numbers, the phase tables (section 14);
+- `research/turboprop-methods.md`: how to make it, the recipe (section 13), 25 validation targets (section 14);
+- `targets/atr72.md` and `.json`: the measured targets, the judging list (section 9), and where they disagree with
+  the other two (section 10.3).
+
+Tags as in the code: [P] published, [P*] secondary, [M] measured on CC0 or CC BY recordings, [I] inferred, [O] this
+project's own.
+
+## The interface (`include/engine_noise.h`)
+
+| What | Meaning |
+|---|---|
+| `Kind::TURBOPROP` | a propeller airliner's, the ATR 72's and 42's; silent until a build makes it |
+| `Engine::PW127_568F` ... `PW120_14SF` | five values appended after the 777's, one per installation: a type's engines, propellers and airframe together. The A320's, Typhoon's and 777's values are unchanged |
+| `struct PropData`, `propData(engine)`, `isProp(engine)` | the per-type table, public so the 3D view, the preview and the checks read the same figures. Any engine without a row gets a generic six-bladed 1,200 rpm twin (blades passing at `Sound::bladeHz`) |
+| `Sound::np` (new, default −1) | the propellers' speed as the crew set it, a share of `rpm100`: asked for, not reached; the synth moves there at `npRise` and `npGlide`. Below nought: not said, the synth guesses from power. `sizeof(Synth)` +1,036 B (259 copies of `Sound`, PSRAM) |
+| `Sound::power` | for a turboprop, its shaft power as a share of its take-off rating: how hard the blades bite, at whatever speed they turn |
+| `Sound::apu` | for a turboprop with a propeller brake (`hotel`), its hotel mode: the right engine's gas generator running with its propeller held still. With `running`, the left propeller turns and the right is held until hotel mode ends |
+| `Sound::spoilers` | nought for a turboprop without ground spoilers (`engines3d::airframe()`): an ATR's two spoilers work with the ailerons [P*][I] |
+| `Sound::reverse` | its blades turned past flat to reverse pitch |
+
+`PropData`, by group (each row's comment cites each figure):
+
+- **Propellers**: `engines`, `blades`, `rpm100` (the governor's 100 %), `diameter`, `halfSpan` (each axis from the
+  centre line; nought for a single), `axisUp` (axis height on the wheels).
+- **Speeds the crew set** (shares of `rpm100`): `npGround` (beta: ground idle, taxi, the roll out of reverse),
+  `npClimb` (climb, cruise, descent), `npTakeoff`, `npApproach`, `npReverse`; and how fast they move, `npRise` (up)
+  and `npGlide` (down), shares a second.
+- **Two propellers**: `synchro` (one speed and phase while governed), `splitBeta` (how far apart in beta).
+- **Power by phase**, shares of take-off: `climbPower`, `cruisePower`, `levelPower` (level low down about an
+  airfield), `descentPower`, `approachPower`, `reversePower`.
+- **Gas generator and gearbox**: `nh100` (HP spool rpm), `whineHz` (as heard on the approach, at the source),
+  `gearA`, `gearB` (gearbox lines as orders of the propeller's turning).
+- **Ground**: `hotel` (propeller brake, no APU), `groundSpoilers`.
+
+The rows (`src/engine_noise.cpp`, `PROPS`):
+
+| Type (ICAO) | Row | Blades | Ø m | BPF at 71 / 82 / 100 % | Power: climb / cruise / level / descent / approach / reverse |
+|---|---|---|---|---|---|
+| ATR 72-500/-600 (AT75, AT76) | `PW127_568F` | 6 | 3.93 | 85.2 / 98.4 / 120 Hz | 0.886 / 0.861 / 0.50 / 0.05 / 0.22 / 0.70 |
+| ATR 72-200 (AT72) | `PW124_14SF` | 4 | 3.96 | 56.8 / 65.6 / 80 Hz | 0.967 / 0.967 / 0.58 / 0.05 / 0.25 / 0.70 |
+| ATR 72-210 (AT73) | `PW127_247F` | 4 | 3.93 [I] | 56.8 / 65.6 / 80 Hz | as the -600's [I] |
+| ATR 42-400/-500/-600 (AT44, AT45, AT46) | `PW127_568F_42` | 6 | 3.93 | 85.2 / 98.4 / 120 Hz | 1.00 / 0.987 / 0.48 / 0.05 / 0.20 / 0.70 |
+| ATR 42-300/-320 (AT43) | `PW120_14SF` | 4 | 3.96 [I] | 56.8 / 65.6 / 80 Hz; the approach at 91 % [M], 72.8 Hz | 0.95 / 0.90 / 0.55 / 0.05 / 0.24 / 0.70 [I] |
+
+All five: 1,200 rpm at 100 %; axes 8.10 m apart and 2.80 m up [P: the fact sheets]; synchrophased, 0.5 % apart in
+beta [I]; up from beta at 0.12 a second, down 100 to 82 % at 0.022 a second [M: aboard]; whine 5,682 Hz [M: the
+PW127's, assumed for the others]; gearbox lines at orders 48.8 and 72.9 [M: aboard; assumed for the others]; hotel
+mode, no ground spoilers. The climb and cruise power are the ratings' shares [P: the fact sheets]: so the ATR
+42-600 climbs at its take-off power (2,160 shp both) with its propellers at 82 %, which is why the propellers'
+speed is its own input (`np`) rather than read from power.
+
+Things in the rows a build should know:
+
+- **The Kajaani clip (fs680325) was recorded aboard** [targets 10.3]. Its propeller speeds and the gearbox orders
+  hold either way, but its harmonic levels (turboprop-methods 1.3, "ATR static") are cabin spectra, not exterior
+  targets.
+- **Gearbox line B (72.9 orders) was not found outside**: at 450 m on the approach it is below the noise, while line
+  A is heard at 47.7 ± 0.6 orders, 6-16 dB prominent [targets 5.2]. Treat B as aboard-only until heard outside.
+- **The 0.95-1.1 kHz approach tone**: targets 5.2 read it as gearbox line A, locked to the propeller; atr72-sources
+  3.7 saw its ratio to the blade rate wander 7.74-7.85 and suspected the gas generator. Either reading is open.
+- **ATR 42-300 approach**: seven FedEx clips give 67-79 Hz at the source, median 73 Hz, so 91 % rather than 100 %
+  [targets 4.2; camera sound, fits unreliable]. Its row has `npApproach` 0.91.
+
+## What the 3D view sets (`include/engines3d.h`, `src/view3d.cpp`)
+
+- **`enginesOf()`**: AT75, AT76 → `PW127_568F`; AT72 → `PW124_14SF`; AT73 → `PW127_247F`; AT44, AT45, AT46 →
+  `PW127_568F_42`; AT43 → `PW120_14SF`. `kind = TURBOPROP`, `engines` from the row. AT72 is the four-bladed -200 by
+  ICAO Doc 8643 and by the app's own `aircraft_db.cpp`; if a database files -500s as AT72 they are heard with four
+  blades (open question).
+- **`ask()`** hands a turboprop to `askTurboprop()`, which sets `power`, `np` and `reverse` from the row:
+
+  | Phase (what the view knows) | power | np (ATR 72-600) |
+  |---|---|---|
+  | on the ground, not taking off (stand, taxi, the roll below 60 kt) | 0.05 + kt/150, at most 0.17 | 71 % (beta) |
+  | lined up or rolling (the runway simulation's take-off, or above 30 kt) | 1.0 | 100 % |
+  | landing roll above 60 kt | `reversePower` 0.70, `reverse` | `npReverse` 100 % |
+  | in the air, the simulation's take-off (to its hand-over at 1,500 ft over the field) | 1.0 | 100 % |
+  | climbing (> 300 ft/min) otherwise, a go-around too | `climbPower` | 82 % |
+  | the simulation's landing, or coming down (< −400 ft/min) under 3,000 ft over the field | `approachPower` | 100 % |
+  | coming down from height | `descentPower` | 82 % |
+  | level under 3,000 ft over the field / level higher | `levelPower` / `cruisePower` | 82 % |
+
+  The hand-over at 1,500 ft sits in the published 800-1,500 ft for the power reduction (ANP's default 1,000 ft); the
+  glide to 82 % then takes about 8.5 s at the synth's `npGlide`. A go-around is heard as a climb: the view cannot
+  tell one.
+- **`airframe()`**: `spoilers` nought for a turboprop without ground spoilers.
+- **`enginesUpPerScale()`**: the row's `axisUp` whatever the look's scale (2.80 m; the view's 2.5 × scale gave an
+  ATR 72 2.50 m and an ATR 42 2.08 m).
+- **`view3d.cpp`**: `apu` (hotel mode) for a turboprop with `hotel`, by the airliner's rule: at its stand, for 90 s
+  after its engines start, and taxiing in.
+- **A view quirk, not changed**: after the runway simulation hands a take-off back at 1,500 ft, scene3d's
+  `configFor()` treats the climb as an arrival and puts the gear down again from there to 600 m (any type). The
+  preview's scenes copy it (`viewConfig()`), so a build hears what the device would.
+
+## The stub (`src/engine_noise.cpp`, search for THE TURBOPROP)
+
+- **Four places, each empty**, in the same spots as the fighter's:
+  - `propRestart()` from `restart()`;
+  - `propStep()` every 2 ms from `update()`;
+  - `propSlowStep()` every 32 ms from `slowStep()`, in place of the airliner's sums, after `gain_`, `heldDb_` and
+    `air_` are worked out;
+  - `propRender(mix, lateA, lateB, noiseA, noiseB, rng, n)` from `render()`, before the air's muffling.
+- **Shared already**: the fade in and out; the placed way, with the propellers `halfSpan` either side (4.05 m, not
+  5.75); `engines()` (N1 is the gas generator's NH share here, from the neutral `ENGINES` rows); the start's spool;
+  `tyresStep()`'s timing; the muffling, echo, level, high-pass and limiter.
+- **Left for each build to decide**:
+  - `engines()` still holds N1 at 50 % for 2 s before take-off power on the ground, the A320's procedure. For a
+    turboprop's NH that is wrong; gate it by kind if `n1_` is used.
+  - The airliner's render loops (bank, combs, tones, thump, squeal) run only for `on` (`TURBOFAN`). Widen them to
+    `on || prop` (the recipe's 13.6), or copy what is needed into `propRender()`, as the fighter does. The squeal's
+    and the thump's levels are the A320's, so set your own.
+  - The closing speed's 0.25 s easing (the recipe wants 35-60 ms, as the fighter's) and the echo clamp (±6 dB below
+    400 Hz, recipe 11).
+  - **History for a far source**: `Synth::HEARD` keeps 256 snapshots, about 5 s at 50 sets a second. The cruise
+    flyover from the ground (5.2 km, 15 s late overhead) is heard from where it was 5 s ago, its pass about 10 s
+    early. Only that scene and the TOWER camera under a high aircraft reach it.
+
+## The scenes (`preview.cpp`, `atrScenes()`)
+
+Each is fed as the 3D view feeds a turboprop: power, `np` and `reverse` from `engines3d::ask()` on the path's
+speed and climb and the scene's runway movement; gear and flaps as the view's set-up gives them; spoilers through
+`engines3d::airframe()`; `size` 27.17/37.6 (ATR 72) or 22.67/37.6 (ATR 42); axes `axisUp` up. The phase tables are
+atr72-sources section 14.
+
+| Scene | s | Geometry | What the view gives |
+|---|---|---|---|
+| atr72-start-idle | 90 | apron, 35 m at the front quarter, 2 m up | hotel mode 0-60 s; `running` from 8 s; idle in beta (the view keeps hotel mode 90 s after a start; 52 s here, to hear the brake come off) |
+| atr72-taxi-past | 30 | 8 m/s, 35 m off, abeam at 15 s, 1.5 m up | beta, power 0.15, 71 % |
+| atr72-takeoff | 75 | beside the runway 700 m from the line-up, 120 m off, 4 m up | beta until 4 s; lined up 4 s (power 1, 100 %); rolls at 6 s, 1.8 m/s²; past the camera at 34 s, 50 m/s; off at 38 s, 57 m/s; climbing at 6° |
+| atr72-climbout-flyover | 50 | under the climb, overhead at 22 s, 400 m up, 75 m/s, 6° | take-off power and 100 % until 1,500 ft at 29 s; then 0.886 and 82 % going away |
+| atr72-cruise-flyover | 70 | FL170 (5,182 m) at 141 m/s (275 kt), overhead a microphone 1.5 m up at 35 s | cruise 0.861, 82 % (see History above) |
+| atr72-approach-side | 75 | 300 m up and 300 m off at the closest (424 m), 3° at 60 m/s (117 kt), abeam at 40 s: fs315660's geometry | approach 0.22, 100 %, gear and flaps |
+| atr72-approach-behind | 55 | the CHASE camera: 39.7 m back (55 sizes), 10° up from its middle; from 120 m up, touchdown 38 s | approach; reverse 0.7 at 100 % to 60 kt (50 s); beta |
+| atr72-touchdown-reverse | 75 | beside the touchdown zone, 50 m off, 2 m up; from 2.4 km out, touchdown 40 s | approach; reverse to 60 kt (52 s); braking 2.5 m/s² to taxiing by 61 s |
+| atr42-takeoff | 75 | ATR 42-500/-600: 600 m from the line-up, 120 m off | as atr72-takeoff; off at 54 m/s after 810 m, climbing at 8.5° (1,800 ft/min [P]), its take-off power 1.0 |
+| atr72-cruise-cinema | 45 | the view's CINEMA high up: chase (70 sizes), wide (230), from below (120), 10 s each, at FL170 | cruise 30 s, then down at 2,000 ft/min, flight idle, 82 % |
+
+`ENGINE=` for these: `atr72-600` (the default; `atr42-500` in atr42-takeoff), `atr72-200`, `atr72-210`, `atr42-500`,
+`atr42-300`. A turbofan's name leaves them alone, as an ATR's leaves the airliners' scenes alone. `TRACE=1` adds a
+line a second with the row and the propellers' speed asked.
+
+## Tools
+
+- `render_atr72.sh <worktree> <outdir>`: the ten scenes, `-atr72-200` take-off and taxi, `-atr42-300` take-off, and
+  the A320's take-off in `ref/` (26 WAVs and 2), built with `ENGINE_NOISE_DEBUG`; `summary.txt` has dBFS every 2 s
+  and each scene's limiter share (keep it under 0.1 %).
+- `render_same.sh <worktree> <reference tree or commit> <outdir>`: every scene the reference makes, in 15 runs (no
+  ENGINE=, each turbofan, FOPP, SYNC, DEVICE, WHO=7, POWER=0.85), compared byte for byte with the worktree's, the
+  loudness lines too. Run it against `atr72-base` (or 28518ba) after any change to shared code. About 20 s; KEEP=1
+  keeps the WAVs (4 GB).
+- `bench.cpp`: seven ATR cases after the A320's (PC time).
+- `atr72_cases.inc`: seven ATR cases for `eufi-tools/cost.sh` (the P4's time by its model), included at the end of
+  `eufi_cases.inc`, so `cost.sh <worktree> <out>` runs them after the A320's and the Typhoon's.
+- `engines3d_check.cpp`: now also every ATR type's row, axes height and size, and power, `np` and reverse through 19
+  phases for the ATR 72-600, 42-600 and 72-200. Its baseline for the unchanged types now includes the 777's engines,
+  which the 777's build had left failing (1 check).
+
+## Checks on this base
+
+- **render_same.sh against 28518ba** (the 777's): 960 identical, 0 differ, 0 missing - every A320, Typhoon and 777
+  scene and the splash, full range and `-tab5`, in all 15 runs, with identical loudness lines. A deliberate 0.02 %
+  change to `LEVEL` made all 960 differ, so the comparison is not empty.
+- **a320_pccheck**: 106 identical against the approved 9d83380 renders.
+- **a320_bitcheck (P4 under qemu)**: 5 of 7, the same seven checksums as 28518ba's. **The 777's build itself
+  changed the A320's P4 sound for the V2500 and LEAP-1A take-off cases** (c5a233e2 and 6991f2b0, approved eff345bf
+  and 6c1a8df4); v1.5.1-dev (c9db0de) gives 7 of 7. The PC renders stayed identical, so most likely the P4's
+  fused multiply-adds were rearranged by the 777's new per-engine terms [I]. Not changed here.
+- **cost.sh (P4 model)**: the 17 cases both trees run (A320, device, Typhoon) give identical checksums. The silent
+  turboprop costs 0.45-0.47 ms warm a block (the shared noise draws, way, echo, muffling, high-pass and limiter),
+  against the A320 take-off's 1.24-1.27 ms. `sizeof(Synth)` 52,084 B (the 777's 51,048).
+- **engines3d_check**: 349 checks, 0 failed.
+- **Firmware**: `view3d.cpp`, `sound.cpp` and `engine_noise.cpp` compile with the firmware's own commands, and the
+  release image builds: 12,180,064 B (the 777's 12,178,208; the partition holds 14,680,064).
+
+## Open questions carried for the user
+
+From turboprop-methods 16, with the base's own:
+
+1. The speaker lift for the missing fundamental (`vbDb` in the recipe): physics only, Moliner's bounds, or more.
+2. AT72 from the aircraft database: four-bladed -200s, as ICAO says, or -500s filed under it.
+3. Hotel mode at the stand: as wired (the view's `apu`), or skipped by the synth.
+4. The gearbox line's level, and whether line B (aboard only) is used at all.
+5. After take-off: the 100 → 82 % glide at the hand-over (1,500 ft), as wired, or earlier.
+6. Reverse: power and speed inferred (none recorded cleanly).
+7. When crews select 100 % on the approach: wired from 3,000 ft over the field on the way down; measured at about
+   1,000 ft (Schiphol); ANP's approach class looks like 82 %.
+
 Copyright (c) 2026 Craig Smith. Part of Overhead's sound engine: PolyForm Noncommercial 1.0.0 ([LICENSE-POLYFORM.md](../../LICENSE-POLYFORM.md)), not the MIT licence of the rest of the repository.

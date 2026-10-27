@@ -39,8 +39,20 @@
 // And the Boeing 777's: b777-takeoff; for measuring against real ones,
 // x-b777-approach-side, x-b777-approach-overhead, x-b777-touchdown-side.
 //
+// And the ATR's (Kind::TURBOPROP), as atr72-sources.md's phase tables (14)
+// have them: atr72-start-idle, atr72-taxi-past, atr72-takeoff,
+// atr72-climbout-flyover, atr72-cruise-flyover, atr72-approach-side,
+// atr72-approach-behind, atr72-touchdown-reverse, atr42-takeoff and
+// atr72-cruise-cinema - each fed as the 3D view feeds a turboprop, its power
+// and its propellers' speed by engines3d::ask() itself. Its sound not made
+// yet, they are silent; tools/engine_preview/render_atr72.sh renders them
+// all, NOTES.md beside it.
+//
 // ENGINE=cfm56 (the default), v2500, leap or pw: the airframe's engines; for
-// a 777's scenes ge90 (the default there), ge90-94 or trent.
+// a 777's scenes ge90 (the default there), ge90-94 or trent; for the ATR's,
+// atr72-600 (the default there, atr42-500 in atr42-takeoff), atr72-200,
+// atr72-210, atr42-500 or atr42-300 - each kind's name leaving the other
+// kind's scenes as they are.
 // FOPP=1: its fuel vents unmodified, whistling. SYNC=1: the touchdown's
 // squeal and the reversers' coming on heard as the picture shows them -
 // engine_noise::g_transientsOnPicture. SUFFIX=-x: added to the files' names.
@@ -48,7 +60,8 @@
 // 20ms apart give or take a third and the sound made in 40ms blocks, as the
 // device has it. POWER=x: eufi-low-pass's power, 0.65 unless given (the 3D
 // view's level flight); 0.85 is more like a real one's. TRACE=1: what the
-// synthesiser is given, each second, on stderr.
+// synthesiser is given, each second, on stderr - for a turboprop its
+// propellers' speed asked too.
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -60,6 +73,7 @@
 #include <vector>
 
 #include "engine_noise.h"
+#include "engines3d.h"
 #include "splash_takeoff.h"
 
 using engine_noise::Engine;
@@ -76,15 +90,19 @@ float length(V3 a) { return sqrtf(a.x * a.x + a.y * a.y + a.z * a.z); }
 // from +x, and nose up), its engines' doing, and where the camera is.
 struct Moment {
     V3 at;
-    float heading, pitch;
-    float power;
+    float heading = 0, pitch = 0;
+    float power = 0;
     bool reverse = false;
     V3 eye;
     bool hardGround = false;  // the ground between it and the camera a runway's, not grass
     bool gear = false, flaps = false;  // down, out
     float spoilers = 0;               // up, 0 to 1 - a fighter's airbrake open
-    bool running = true, apu = false;  // its engines, its APU
+    bool running = true, apu = false;  // its engines, its APU - a turboprop's hotel mode
     float reheat = 0;  // a fighter's reheat asked for, 0 dry to 1 full - afterburner set with it
+    // The runway simulation's take-off (lined up counts) or landing, for a
+    // turboprop's scenes, whose power and propellers' speed the 3D view's
+    // own engines3d::ask() works out from it and the path - `power` unread.
+    int movement = 0;  // 0 neither, 1 taking off, 2 landing
 };
 
 struct Scene {
@@ -439,6 +457,221 @@ void eufiScenes(std::vector<Scene> &out) {
                    }});
 }
 
+// The ATR's scenes' figures - see the phase tables of atr72-sources.md 14
+// and ATR's fact sheets. Its length against an A320's as the 3D view's
+// sizeOf() has it: an ATR 72's 27.17m, an ATR 42's 22.67m, over 37.6m.
+float propSize(Engine e) {
+    return e == Engine::PW127_568F_42 || e == Engine::PW120_14SF ? 22.67f / 37.6f : 27.17f / 37.6f;
+}
+// The 3D view's height under which the ground about it is hard - the
+// airfield's runways and aprons: on it, or under 300ft over it.
+bool viewHard(float z) { return z < 300 * 0.3048f; }
+
+// A turboprop's take-off along x from x = 0, its roll from `rollAt` at
+// `accel`, off at `liftMs`, then climbing at `climbDeg` and gathering speed
+// at `speedUp` to `topMs`; its speed and pitch out.
+V3 propTakeoffPath(float t, float rollAt, float accel, float liftMs, float climbDeg, float speedUp, float topMs,
+                   float &speed, float &pitch) {
+    float tr = t - rollAt;
+    speed = 0;
+    pitch = 0;
+    if (tr <= 0) {
+        return {0, 0, 0};
+    }
+    float tLift = liftMs / accel;
+    if (tr < tLift) {
+        speed = accel * tr;
+        return {accel * tr * tr / 2, 0, 0};
+    }
+    float a = tr - tLift, aTop = (topMs - liftMs) / speedUp, s;
+    if (a < aTop) {
+        speed = liftMs + speedUp * a;
+        s = liftMs * a + speedUp * a * a / 2;
+    } else {
+        speed = topMs;
+        s = liftMs * aTop + speedUp * aTop * aTop / 2 + topMs * (a - aTop);
+    }
+    pitch = climbDeg * (float)M_PI / 180;
+    return {liftMs * liftMs / (2 * accel) + s * cosf(pitch), 0, s * sinf(pitch)};
+}
+
+// A turboprop taking off from x = 0 as the 3D view has it: on the runway's
+// end at ground idle in beta until `lineUp`, then lined up - the runway
+// simulation's take-off, its power and its propellers' speed coming up -
+// rolling two seconds on; the simulation's take-off until 1,500ft over the
+// field, where it is handed back to the feed, and a climb's from there.
+Moment propTakeoff(float t, float lineUp, float accel, float liftMs, float climbDeg, V3 eye) {
+    Moment m;
+    float speed, pitch;
+    m.at = propTakeoffPath(t, lineUp + 2, accel, liftMs, climbDeg, 0.5f, 80, speed, pitch);
+    m.heading = 0;
+    m.pitch = pitch;
+    m.movement = t >= lineUp && m.at.z < 1500 * 0.3048f ? 1 : 0;
+    m.eye = eye;
+    m.hardGround = viewHard(m.at.z);
+    return m;
+}
+
+// A turboprop's landing as the 3D view has it: in on a three-degree glide at
+// `approachMs` from x0 - the runway simulation's landing from there, within
+// its 8nm - touching down at x = 300, the threshold at nought; then braking
+// at `brake` to taxiing at 8m/s on along the runway. Its reverse pitch
+// above 60 knots, and beta below, as engines3d::ask() gives them.
+Moment propLanding(float t, float x0, float approachMs, float brake, V3 eye) {
+    Moment m;
+    float tTouch = (300 - x0) / approachMs;
+    m.heading = 0;
+    m.pitch = 0;
+    m.movement = 2;
+    if (t < tTouch) {
+        float x = x0 + approachMs * t;
+        m.at = {x, 0, std::max(0.0f, (300 - x) * 0.0524f)};
+    } else {
+        float d = t - tTouch, dStop = (approachMs - 8) / brake;
+        float s = d < dStop ? approachMs * d - brake * d * d / 2
+                            : approachMs * dStop - brake * dStop * dStop / 2 + 8 * (d - dStop);
+        m.at = {300 + s, 0, 0};
+        // the spoilers the view draws - for a turboprop without ground
+        // spoilers, engines3d::airframe() hears none
+        float v = std::max(8.0f, approachMs - brake * d);
+        float rise = clamp01(d / 0.8f), slow = clamp01((v / 0.5144f - 40) / 20);
+        m.spoilers = rise * rise * (3 - 2 * rise) * slow * slow * (3 - 2 * slow);
+    }
+    m.eye = eye;
+    m.hardGround = viewHard(m.at.z);
+    return m;
+}
+
+// The ATR's, as the phase tables of atr72-sources.md 14 have them - an ATR
+// 72-500/-600 unless ENGINE= says, an ATR 42-500/-600 in atr42-takeoff -
+// each fed as the 3D view feeds a turboprop: its power and propellers'
+// speed from engines3d::ask(), its gear and flaps as the view's set-up
+// gives them, its spoilers through engines3d::airframe(), its propellers'
+// axes 2.80m up on its wheels.
+void atrScenes(std::vector<Scene> &out) {
+    // 1. At its stand, heard from the apron 35m off at the front quarter (14.1):
+    // hotel mode from the start - its right engine's gas generator running,
+    // that propeller braked - its engines started at 8s, the left propeller
+    // turning, then the brake released at 60s, the right one let go - the
+    // view keeps hotel mode for 90s after a start (view3d.cpp), here 52s, to
+    // hear the brake come off - and both idling in beta to the end.
+    out.push_back({"atr72-start-idle", 90, [](float t) {
+                       Moment m;
+                       m.at = {0, 0, 0};
+                       m.heading = 0;
+                       m.pitch = 0;
+                       m.running = t >= 8;
+                       m.apu = t < 60;
+                       m.eye = {24.75f, 24.75f, 2};
+                       m.hardGround = true;
+                       return m;
+                   }});
+    // 2. Taxiing out past the camera at 8m/s (16 knots), 35m off, abeam at
+    // 15s, on the apron (14.2): beta, both propellers turning, no hotel mode.
+    out.push_back({"atr72-taxi-past", 30, [](float t) {
+                       Moment m;
+                       m.at = {-120 + 8 * t, 0, 0};
+                       m.heading = 0;
+                       m.pitch = 0;
+                       m.eye = {0, 35, 1.5f};
+                       m.hardGround = true;
+                       return m;
+                   }});
+    // 3. The take-off from beside the runway, 700m from where it lines up and
+    // 120m off it, 4m up as the A320's (14.3): lined up at 4s, rolling at
+    // 6s at 1.8m/s2, off at 57m/s (111 knots) after 900m - V2 116 knots,
+    // 1,279m to 35ft at its heaviest [P: the fact sheet] - so past the
+    // camera at 50m/s 28s into its roll, then climbing at 6 degrees, 1,320ft
+    // a minute at 64m/s (1,355 at its heaviest [P]), gathering speed to
+    // 80m/s; its take-off power and 100% to 1,500ft, some 100s in - beyond
+    // this scene, 5km off.
+    out.push_back({"atr72-takeoff", 75, [](float t) { return propTakeoff(t, 4, 1.8f, 57, 6, {700, 120, 4}); }});
+    // 4. Under its climb (14.4), past overhead at 22s, 400m (1,310ft) up at
+    // 75m/s, climbing at 6 degrees - its take-off power held till 1,500ft,
+    // at 29s, then its climb's, its propellers gliding from 100% to 82% as
+    // it goes away. The microphone 1.5m up, on grass.
+    out.push_back({"atr72-climbout-flyover", 50, [](float t) {
+                       Moment m;
+                       float pitch = 6 * (float)M_PI / 180, s = 75 * (t - 22);
+                       m.at = {s * cosf(pitch), 0, 400 + s * sinf(pitch)};
+                       m.heading = 0;
+                       m.pitch = pitch;
+                       m.movement = m.at.z < 1500 * 0.3048f ? 1 : 0;
+                       m.eye = {0, 0, 1.5f};
+                       return m;
+                   }});
+    // 5. Cruising overhead high (14.5): FL170 (5,182m) at 275 knots (141m/s)
+    // [P: the fact sheet's cruise], overhead at 35s, heard from the ground
+    // 1.5m up - its cruise's power at 82%. Its sound 15s late overhead, more
+    // than the synth's five seconds of what was asked (Synth::HEARD): heard
+    // from where it was five seconds ago, its pass some ten seconds early
+    // (NOTES.md).
+    out.push_back({"atr72-cruise-flyover", 70, [](float t) {
+                       Moment m;
+                       m.at = {141 * (t - 35), 0, 5182};
+                       m.heading = 0;
+                       m.pitch = 0;
+                       m.eye = {0, 0, 1.5f};
+                       return m;
+                   }});
+    // 6. Its approach beside the camera (14.6): 300m up and 300m off at the
+    // closest - as the Schiphol recording's uploader has it (fs315660, the
+    // targets' main ATR measurement) - on a three-degree glide at 117 knots
+    // (60m/s) [P: ANP's ATR 72 approach], abeam at 40s, its gear and flaps
+    // out: 100% and its approach's power.
+    out.push_back({"atr72-approach-side", 75, [](float t) {
+                       Moment m;
+                       float s = 60 * (t - 40);
+                       m.at = {s, 0, 300 - s * 0.0524f};
+                       m.heading = 0;
+                       m.pitch = 0;
+                       m.movement = 2;
+                       m.eye = {0, 300, 1.5f};
+                       m.hardGround = viewHard(m.at.z);
+                       return m;
+                   }});
+    // 7. Its approach from behind (14.6): the 3D view's CHASE camera, 55 of
+    // its sizes back - 39.7m for an ATR 72 - and 10 degrees up from its
+    // middle, 3.5m over its wheels; down a three-degree glide at 60m/s from
+    // 120m up, touching down at 38s, its reverse pitch to 60 knots and on
+    // to taxiing.
+    out.push_back({"atr72-approach-behind", 55, [](float t) {
+                       Moment m = propLanding(t, 300 - 120 / 0.0524f, 60, 2.5f, {0, 0, 0});
+                       float back = 55 * propSize(Engine::PW127_568F), el = 10 * (float)M_PI / 180;
+                       m.eye = {m.at.x - back * cosf(el), 0, m.at.z + 3.5f + back * sinf(el)};
+                       return m;
+                   }});
+    // 8. Its touchdown and reverse beside the touchdown zone (14.7), 50m off
+    // the centreline and 2m up: in from 2.4km out at 60m/s, touching down at
+    // 40s; its reverse pitch above 60 knots - 12s - braking at 2.5m/s2 to
+    // taxiing by 61s, in beta.
+    out.push_back({"atr72-touchdown-reverse", 75, [](float t) { return propLanding(t, -2100, 60, 2.5f, {320, 50, 2}); }});
+    // 9. An ATR 42-500/-600's take-off from beside the runway, 600m from
+    // where it lines up and 120m off: V2 112 knots, 1,107m to 35ft at its
+    // heaviest, 1,851ft a minute climbing [P: its fact sheet] - so off at
+    // 54m/s (105 knots) after 810m and climbing at 8.5 degrees.
+    out.push_back({"atr42-takeoff", 75, [](float t) { return propTakeoff(t, 4, 1.8f, 54, 8.5f, {600, 120, 4}); }});
+    // 10. Cruising as the 3D view shows one high up (view3d.cpp's CINEMA,
+    // away from an airfield): close behind, then wide, then from below, ten
+    // seconds each - each its orbit about its middle, 70, 230 and 120 of its
+    // sizes off - at FL170 and 275 knots, level for 30s, then coming down at
+    // 2,000ft a minute at flight idle, its propellers at 82% throughout.
+    out.push_back({"atr72-cruise-cinema", 45, [](float t) {
+                       Moment m;
+                       float sink = t < 30 ? 0 : (t - 30) * 2000 * 0.00508f;
+                       m.at = {141 * t, 0, 5182 - sink};
+                       m.heading = 0;
+                       m.pitch = t < 30 ? 0 : -asinf(2000 * 0.00508f / 141);
+                       float phase = fmodf(t, 30), size = propSize(Engine::PW127_568F);
+                       float az = phase < 10 ? 25 : phase < 20 ? 140 : 215, el = phase < 10 ? 9 : phase < 20 ? 22 : -18;
+                       float far = (phase < 10 ? 70 : phase < 20 ? 230 : 120) * size;
+                       float bearing = (float)M_PI + az * (float)M_PI / 180, e = el * (float)M_PI / 180;
+                       m.eye = {m.at.x + cosf(e) * cosf(bearing) * far, cosf(e) * sinf(bearing) * far,
+                                m.at.z + 3.5f + sinf(e) * far};
+                       return m;
+                   }});
+}
+
 std::vector<Scene> scenes() {
     std::vector<Scene> out;
     out.push_back({"a320-takeoff", 70, [](float t) { return takeoffSeen(t, 1200, 120, 75); }});
@@ -653,6 +886,9 @@ std::vector<Scene> scenes() {
                    }});
     out.push_back({"x-b777-touchdown-side", 90, [](float t) { return landing(t, {700, 350, 2}); }});
     eufiScenes(out);
+    // Last, so every scene before them - and DEVICE=1's frames' jitter,
+    // drawn scene after scene - is as it was.
+    atrScenes(out);
     return out;
 }
 
@@ -715,6 +951,26 @@ struct Biquad {
     }
 };
 
+// The 3D view's set-up for it, as scene3d's configFor() gives it: taking off,
+// its flaps out on the ground and under 900m, its gear under 15m; on the
+// ground otherwise, its flaps out over 40 knots, its gear down; coming in,
+// its gear down under 600m and 210 knots, its flaps out under 1,200m and 230
+// knots - which, the take-off handed back to the feed at 1,500ft, puts a
+// climb's gear down again from there to 600m, as the view has it.
+void viewConfig(float heightM, float kt, bool ground, bool departing, bool &gear, bool &flaps) {
+    gear = true;
+    flaps = false;
+    if (departing) {
+        flaps = ground || heightM < 900;
+        gear = ground || heightM < 15;
+    } else if (ground) {
+        flaps = kt > 40;
+    } else {
+        gear = heightM < 600 && kt < 210;
+        flaps = heightM < 1200 && kt < 230;
+    }
+}
+
 // The Tab5's speaker, near enough: a fourth-order Butterworth high-pass at
 // 300Hz - two second-order sections - and a gentle presence lift, 3dB at
 // 3kHz, an octave and a bit wide.
@@ -751,7 +1007,24 @@ Engine engineNamed(const char *name) {
     if (strcmp(name, "trent") == 0) {
         return Engine::TRENT_800;
     }
-    fprintf(stderr, "ENGINE=%s: cfm56, v2500, leap, pw, ge90, ge90-94 or trent\n", name);
+    // A turboprop's installation, for the ATR's scenes.
+    if (strcmp(name, "atr72-600") == 0) {
+        return Engine::PW127_568F;
+    }
+    if (strcmp(name, "atr72-200") == 0) {
+        return Engine::PW124_14SF;
+    }
+    if (strcmp(name, "atr72-210") == 0) {
+        return Engine::PW127_247F;
+    }
+    if (strcmp(name, "atr42-500") == 0) {
+        return Engine::PW127_568F_42;
+    }
+    if (strcmp(name, "atr42-300") == 0) {
+        return Engine::PW120_14SF;
+    }
+    fprintf(stderr, "ENGINE=%s: cfm56, v2500, leap, pw, ge90, ge90-94, trent, atr72-600, atr72-200, atr72-210, "
+                    "atr42-500 or atr42-300\n", name);
     exit(1);
 }
 
@@ -763,7 +1036,13 @@ int main(int argc, char **argv) {
     std::string dir = argv[1];
     bool device = getenv("DEVICE") != nullptr;
     engine_noise::g_transientsOnPicture = getenv("SYNC") != nullptr;
-    Engine engine = engineNamed(getenv("ENGINE"));
+    // ENGINE= a turbofan's for the airliners' scenes, a propeller
+    // installation's for the turboprops' - each kind's own default for the
+    // other's.
+    Engine named = engineNamed(getenv("ENGINE"));
+    bool namedProp = engine_noise::isProp(named);
+    Engine engine = namedProp ? Engine::CFM56_5B : named;
+    bool engineSet = getenv("ENGINE") != nullptr && !namedProp;
     bool fopp = getenv("FOPP") != nullptr;
     uint32_t who = getenv("WHO") ? (uint32_t)strtoul(getenv("WHO"), nullptr, 0) : 0x406a3cu + (uint32_t)engine;
     std::string suffix = getenv("SUFFIX") ? getenv("SUFFIX") : "";
@@ -778,6 +1057,13 @@ int main(int argc, char **argv) {
             continue;
         }
         bool fighter = strstr(scene.name, "eufi-") != nullptr;
+        // A turboprop's scenes: an ATR 72-500/-600's, an ATR 42-500/-600's
+        // in atr42-*, unless ENGINE= names another propeller installation.
+        bool prop = strncmp(scene.name, "atr", 3) == 0;
+        Engine propEngine = namedProp                             ? named
+                            : strncmp(scene.name, "atr42", 5) == 0 ? Engine::PW127_568F_42
+                                                                   : Engine::PW127_568F;
+        uint32_t whoProp = getenv("WHO") ? who : 0x406a3cu + (uint32_t)propEngine;
         engine_noise::Synth synth;
         std::vector<int16_t> samples;
         const int BLOCK = engine_noise::RATE / 50;  // a frame's worth
@@ -791,7 +1077,7 @@ int main(int argc, char **argv) {
             Sound s;
             s.kind = Kind::TURBOFAN;
             // A 777's scenes its GE90-115Bs unless ENGINE= says.
-            s.engine = strstr(scene.name, "b777-") && !getenv("ENGINE") ? Engine::GE90_115B : engine;
+            s.engine = strstr(scene.name, "b777-") && !engineSet ? Engine::GE90_115B : engine;
             s.fanHz = 3000;
             s.engines = 2;
             s.who = who;
@@ -811,6 +1097,19 @@ int main(int argc, char **argv) {
                 s.reheat = m.reheat;
                 s.afterburner = m.reheat > 0;
                 mid.z = m.at.z + EUFI_ENGINES_UP;
+            }
+            if (prop) {
+                // A turboprop, as the 3D view gives one: its kind, engines
+                // and propellers from its type; its size; its propellers'
+                // axes as high as its row has them.
+                const engine_noise::PropData &p = engine_noise::propData(propEngine);
+                s.kind = Kind::TURBOPROP;
+                s.engine = propEngine;
+                s.engines = p.engines;
+                s.who = whoProp;
+                s.fopp = false;
+                s.size = propSize(propEngine);
+                mid.z = m.at.z + p.axisUp;
             }
             V3 to = m.eye - mid;
             float d = length(to);
@@ -841,6 +1140,29 @@ int main(int argc, char **argv) {
             s.spoilers = m.spoilers;
             s.running = m.running;
             s.apu = m.apu;
+            if (prop) {
+                // ...and what it is doing, as the view works it out: its power,
+                // propellers' speed and reverse pitch by engines3d::ask(), from
+                // the speed and climb its path gives and the runway
+                // simulation's take-off or landing; its gear and flaps as the
+                // view's set-up gives them, and its spoilers - none on an ATR -
+                // through engines3d::airframe().
+                engines3d::Doing doing;
+                doing.ground = onGround;
+                doing.takingOff = m.movement == 1;
+                doing.landing = m.movement == 2;
+                doing.simulating = m.movement != 0;
+                doing.kt = (int)lroundf(speed / 0.5144f);
+                doing.rollKt = doing.kt;
+                doing.vsFpm = t > 0 ? (int)lroundf((m.at.z - lastZ) * 50 / 0.00508f) : 0;
+                doing.altFt = (int)lroundf(m.at.z / 0.3048f);
+                doing.low = m.at.z < 3000 * 0.3048f;
+                s.reverse = false;
+                engines3d::ask(s, doing);
+                bool gear, flaps;
+                viewConfig(m.at.z, (float)doing.kt, onGround, doing.takingOff, gear, flaps);
+                engines3d::airframe(s, gear, flaps, m.spoilers);
+            }
             s.placed = true;
             s.at[0] = mid.x, s.at[1] = mid.y, s.at[2] = mid.z;
             s.nose[0] = nose.x, s.nose[1] = nose.y, s.nose[2] = nose.z;
@@ -856,6 +1178,10 @@ int main(int argc, char **argv) {
                         s.afterburner ? " lit" : "", s.reverse ? " reverse" : "", s.gearDown ? " gear" : "",
                         s.hardGround ? " hard" : "", s.spoilers, s.rollingMs, s.touchdownS, s.running ? "" : "off",
                         s.apu ? " apu" : "");
+                if (prop) {
+                    fprintf(stderr, "        %s: propellers asked %.0f%%%s\n", engine_noise::propData(s.engine).name,
+                            100 * s.np, s.flapsOut ? ", flaps" : "");
+                }
             }
             synth.set(s);
             // As the device has it, DEVICE=1: frames 20ms apart give or take a
