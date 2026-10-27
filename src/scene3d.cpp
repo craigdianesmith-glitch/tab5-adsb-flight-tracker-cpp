@@ -11380,32 +11380,40 @@ const AirlinePaint AIRLINE_PAINT[] = {
 
 }  // namespace
 
-Look lookFor(const char *type, uint32_t tail, bool military, const char *category) {
-    models();
-    const TypeShape *shape = nullptr;
+namespace {
+// Its type's shape - or, a type not known, its emitter category's.
+const TypeShape *shapeOf(const char *type, bool military, const char *category) {
     for (const TypeShape &t : TYPES) {
         if (type != nullptr && strcmp(type, t.type) == 0) {
+            return &t;
+        }
+    }
+    const TypeShape *shape = &BY_CATEGORY[0];
+    for (const TypeShape &t : BY_CATEGORY) {
+        if (category != nullptr && strcmp(category, t.type) == 0) {
             shape = &t;
-            break;
         }
     }
-    if (shape == nullptr) {
-        shape = &BY_CATEGORY[0];
-        for (const TypeShape &t : BY_CATEGORY) {
-            if (category != nullptr && strcmp(category, t.type) == 0) {
-                shape = &t;
-            }
-        }
-        // A military aircraft of a type not known: a heavy one an airlifter
-        // rather than an airliner, a rotorcraft one with wheels.
-        if (military && shape->family == F::WIDEBODY) {
-            static const TypeShape HEAVY = {"", F::AIRLIFTER, 53.0f};
-            shape = &HEAVY;
-        } else if (military && shape->family == F::HELICOPTER_LIGHT) {
-            static const TypeShape ROTOR = {"", F::HELICOPTER, 15.0f};
-            shape = &ROTOR;
-        }
+    // A military aircraft of a type not known: a heavy one an airlifter
+    // rather than an airliner, a rotorcraft one with wheels.
+    if (military && shape->family == F::WIDEBODY) {
+        static const TypeShape HEAVY = {"", F::AIRLIFTER, 53.0f};
+        shape = &HEAVY;
+    } else if (military && shape->family == F::HELICOPTER_LIGHT) {
+        static const TypeShape ROTOR = {"", F::HELICOPTER, 15.0f};
+        shape = &ROTOR;
     }
+    return shape;
+}
+}  // namespace
+
+Family familyOf(const char *type, bool military, const char *category) {
+    return shapeOf(type, military, category)->family;
+}
+
+Look lookFor(const char *type, uint32_t tail, bool military, const char *category) {
+    models();
+    const TypeShape *shape = shapeOf(type, military, category);
     Look look;
     look.family = shape->family;
     look.scale = shape->length / designs()[(int)shape->family].length;
@@ -11482,41 +11490,22 @@ constexpr float STEEPEST_GLIDE = 5.5f * DEG;
 // Its main wheels down, the nose held up this long, then lowered onto its
 // wheel over this.
 constexpr float NOSE_HELD_S = 1.5f, NOSE_LOWERED_S = 3;
-// Taking off, the nose raised no quicker than a pilot rotates, to the
-// attitude it lifts off at: an airliner's, a fast jet's.
-constexpr float ROTATE_RATE = 3 * DEG, LIFT_PITCH = 8 * DEG, FAST_LIFT_PITCH = 11 * DEG;
+// Taking off, the nose raised at its kind's rate over its rotation, all but
+// the last moment of it - takeoff.h's rotateS - to the attitude it leaves
+// the runway at: an A320's 2.8 degrees a second, a 777's 2.4, an A380's 2.1
+// [Airbus: 3; Boeing: 2-2.5 for a 777]. Behind a rotation brought forward
+// - a report having it off sooner - up to twice that.
+constexpr float ROTATE_LEAD_S = 0.3f, ROTATE_CATCH_UP = 2.0f;
+// And climbing away with its flaps out for take-off - below configFor()'s
+// height for them - at an angle of attack of about 5.5 degrees, which an
+// initial climb's 5 to 7 are: 15 degrees nose up at 2700ft a minute and
+// 145kt; in the cruise, 2.5 - the one going over to the other over the
+// last of that height, from this. By its climbing away, not by the runway
+// simulation having its take-off: handed back to the feed at 1,500ft, its
+// nose went down 3 degrees in a few seconds.
+constexpr float TAKEOFF_ALPHA = 5.5f * DEG, CRUISE_ALPHA = 2.5f * DEG, TAKEOFF_FLAPS_M = 900, FLAPS_IN_FROM_M = 600;
 
 namespace {
-// The speed it rotates at, by its kind, over the ground as the feed has it -
-// a little under the airspeed, into the wind: a light aircraft's 55 knots,
-// a narrowbody's 135, a jumbo's 155. The runway simulation lifts every one
-// off at 145, by when a narrowbody, rotating at three degrees a second, has
-// its nose up.
-float rotateKt(Family family) {
-    switch (family) {
-    case F::LIGHT_HIGH:
-    case F::LIGHT_LOW: return 55;
-    case F::TURBOPROP_LOW: return 95;
-    case F::TURBOPROP:
-    case F::TACTICAL_TWIN:
-    case F::HERCULES:
-    case F::ATLAS: return 105;
-    case F::BUSINESS_JET:
-    case F::JET_TRAINER:
-    case F::QUAD_HIGH: return 115;
-    case F::REGIONAL_JET:
-    case F::AIRLIFTER: return 125;
-    case F::FIGHTER_DELTA:
-    case F::FIGHTER:
-    case F::FIGHTER_SINGLE: return 140;
-    case F::WIDEBODY:
-    case F::WIDEBODY_4:
-    case F::SUPERJUMBO: return 145;
-    case F::JUMBO: return 155;
-    default: return 135;
-    }
-}
-
 // Coming down to land, by its descent - or, in the last few metres, by its not
 // climbing: the flare itself all but stops the descent, and a report in it -
 // 180ft a minute at 8m - would put the nose down onto the runway.
@@ -11545,13 +11534,38 @@ float landingPitch(Family family, float speedKt, float climbFpm, float heightM, 
     return pitch + (std::max(pitch, touch) - pitch) * u * u * (3 - 2 * u);
 }
 
-float liftOffPitch(Family family) {
-    bool fast = family == F::FIGHTER_DELTA || family == F::FIGHTER || family == F::FIGHTER_SINGLE;
-    return fast ? FAST_LIFT_PITCH : LIFT_PITCH;
+TakeoffKind takeoffKindOf(Family family, const char *type) {
+    auto is = [type](const char *t) { return type != nullptr && strcmp(type, t) == 0; };
+    auto from = [type](const char *t) { return type != nullptr && strncmp(type, t, strlen(t)) == 0; };
+    switch (family) {
+    case F::NARROWBODY:
+        return is("A321") || is("A21N") || is("B739") || is("B39M") || is("B753") ? TakeoffKind::NARROW_LONG
+                                                                                  : TakeoffKind::NARROW;
+    case F::WIDEBODY: return from("B77") || from("B78") ? TakeoffKind::WIDE_LONG : TakeoffKind::WIDE;
+    case F::SUPERJUMBO: return TakeoffKind::SUPERJUMBO;
+    case F::TURBOPROP: return TakeoffKind::TURBOPROP;
+    case F::LIGHT_HIGH:
+    case F::LIGHT_LOW: return TakeoffKind::LIGHT;
+    case F::TURBOPROP_LOW: return TakeoffKind::TURBOPROP_LOW;
+    case F::TACTICAL_TWIN:
+    case F::HERCULES:
+    case F::ATLAS: return TakeoffKind::TURBOPROP_HEAVY;
+    case F::BUSINESS_JET: return TakeoffKind::BUSINESS;
+    case F::JET_TRAINER: return TakeoffKind::TRAINER;
+    case F::QUAD_HIGH: return TakeoffKind::QUAD_HIGH;
+    case F::REGIONAL_JET: return TakeoffKind::REGIONAL;
+    case F::AIRLIFTER: return TakeoffKind::AIRLIFTER;
+    case F::FIGHTER_DELTA:
+    case F::FIGHTER:
+    case F::FIGHTER_SINGLE: return TakeoffKind::FIGHTER;
+    case F::WIDEBODY_4: return TakeoffKind::WIDE_4;
+    case F::JUMBO: return TakeoffKind::JUMBO;
+    default: return TakeoffKind::NARROW;  // the 707s, an AWACS: an airliner's
+    }
 }
 
 void Pilot::fly(float dt, Family family, float turnRate, float speedKt, float climbFpm, bool onGround,
-                float heightM, bool departing) {
+                float heightM, bool departing, float liftoffInS, TakeoffKind kind) {
     if (dt <= 0) {
         return;
     }
@@ -11594,6 +11608,14 @@ void Pilot::fly(float dt, Family family, float turnRate, float speedKt, float cl
     // left, which is a roll the other way to a Pose's.
     float target = onGround || v < 15 ? 0 : -atanf(v * turnRate / 9.81f);
     target = std::max(-maxBank, std::min(maxBank, target));
+    // Flown for the first time - a new flight shown, already turning or
+    // climbing away - set as it is flying, not levelled and brought round
+    // from nought while it is seen.
+    if (!flown_) {
+        roll = target;
+        rollRate_ = 0;
+        lastKt_ = speedKt;
+    }
     // Rolling towards it no faster than its kind can, the rate easing in and
     // out as a pilot's hands do.
     float want = std::max(-maxRate, std::min(maxRate, (target - roll) * 1.2f));
@@ -11617,24 +11639,47 @@ void Pilot::fly(float dt, Family family, float turnRate, float speedKt, float cl
     float gamma = v > 5 && !rotor ? atanf(climbFpm * 0.00508f / v) : 0;
     float load = 1 / std::max(0.5f, cosf(roll));
     float flare = std::max(-6.0f, std::min(10.0f, -accel_ * 3)) * DEG;
-    float alpha = onGround ? 0 : rotor ? -std::min(9.0f, speedKt / 15) * DEG + flare : 2.5f * DEG * load;
+    bool takingOff = departing && !rotor;
+    if (onGround || rotor || !(heightM < TAKEOFF_FLAPS_M) || comingIn(climbFpm, heightM)) {
+        climbingOut_ = false;
+    } else if (takingOff) {
+        climbingOut_ = true;
+    }
+    float flapsOut = climbingOut_ ? clamp01((TAKEOFF_FLAPS_M - heightM) / (TAKEOFF_FLAPS_M - FLAPS_IN_FROM_M)) : 0;
+    float alpha = onGround ? 0
+                  : rotor  ? -std::min(9.0f, speedKt / 15) * DEG + flare
+                           : (CRUISE_ALPHA + (TAKEOFF_ALPHA - CRUISE_ALPHA) * flapsOut) * load;
     pitchTarget_ = gamma + alpha;
-    if (!onGround && !rotor) {
+    if (!onGround && !rotor && !takingOff) {
         pitchTarget_ = landingPitch(family, speedKt, climbFpm, heightM, pitchTarget_);
     }
-    // Taking off: rotated at its kind's speed for it, the nose raised to the
-    // attitude it lifts off at while its main wheels still roll - it stayed
-    // level till the feed had it off the ground - and held up there at
-    // least as it climbs away, till its climb as reported catches up: a
-    // climb's first reports lag it, and the nose dipped as it left.
-    bool rotating = departing && !rotor && onGround && speedKt >= rotateKt(family) && accel_ > -1;
-    if (rotating || (departing && !rotor && !onGround)) {
-        pitchTarget_ = std::max(pitchTarget_, liftOffPitch(family));
+    // Taking off: rotated over the last of its roll as the runway
+    // simulation has it - its seconds till it leaves the runway, not its
+    // speed, which a stale report can step back and drop the nose with -
+    // its nose raised at its kind's rate to the attitude it leaves at while
+    // its main wheels still roll, and never let down on the runway again
+    // while it is taking off. Away, the nose goes on up to the climb's
+    // attitude, never below the one it left at.
+    const TakeoffProfile &tk = takeoffProfile(kind);
+    float liftPitch = tk.pitchDeg * DEG, rotateS = std::max(0.5f, tk.rotateS - ROTATE_LEAD_S);
+    if (!takingOff) {
+        rotated_ = false;
+    } else if (onGround && liftoffInS <= tk.rotateS) {
+        rotated_ = true;
+    }
+    bool rotating = takingOff && onGround && rotated_;
+    if (rotating) {
+        float done = std::isnan(liftoffInS) ? 1.0f : clamp01((tk.rotateS - liftoffInS) / rotateS);
+        pitchTarget_ = std::max(pitch, liftPitch * done);
+    } else if (takingOff && !onGround) {
+        pitchTarget_ = std::max(pitchTarget_, liftPitch);
     }
     float was = pitch;
     // Landed: its main wheels on, the nose held up, then lowered onto its
-    // wheel - not dropped with the rest of its pitch.
-    if (onGround && !wasGround_ && !rotor && speedKt > 40) {
+    // wheel - not dropped with the rest of its pitch. Not taking off: back
+    // on the runway as it leaves - the simulation's lift-off and the
+    // feed's at odds - it held its nose up 1.5 s and lowered it at 160kt.
+    if (onGround && !wasGround_ && !rotor && speedKt > 40 && !takingOff) {
         touchPitch_ = std::max(0.0f, pitch);
         sinceTouch_ = 0;
     }
@@ -11642,19 +11687,28 @@ void Pilot::fly(float dt, Family family, float turnRate, float speedKt, float cl
     if (!onGround) {
         sinceTouch_ = -1;
     }
-    if (sinceTouch_ >= 0) {
+    if (!flown_) {
+        // Set as it is flying, a rotation part done included: a guest shown
+        // climbing away is nose up from its first frame.
+        pitch = was = pitchTarget_;
+        sinceTouch_ = -1;
+    } else if (sinceTouch_ >= 0) {
         sinceTouch_ += dt;
         float u = clamp01((sinceTouch_ - NOSE_HELD_S) / NOSE_LOWERED_S);
         pitch = touchPitch_ * (1 - u * u * (3 - 2 * u));
         if (u >= 1) {
             sinceTouch_ = -1;
         }
+    } else if (rotating || (takingOff && !onGround && pitch < liftPitch)) {
+        // Rotating - or off the runway before its nose was seen to come up,
+        // found climbing away: brought up as briskly to where it leaves.
+        pitch = std::max(pitch, std::min(pitchTarget_, pitch + ROTATE_CATCH_UP * liftPitch / rotateS * dt));
     } else {
         // Quicker in the flare: it has only a few seconds.
         bool flaring = !onGround && heightM < FLARE_M && comingIn(climbFpm, heightM);
-        float eased = pitch + (pitchTarget_ - pitch) * (1 - expf(-dt / (flaring ? 0.6f : 1.2f)));
-        pitch = rotating ? std::min(eased, pitch + ROTATE_RATE * dt) : eased;
+        pitch += (pitchTarget_ - pitch) * (1 - expf(-dt / (flaring ? 0.6f : 1.2f)));
     }
+    flown_ = true;
     float pitchRate = (pitch - was) / dt;
     elevator = std::max(-1.0f, std::min(1.0f, pitchRate / (4 * DEG) + (load - 1) * 1.5f));
 }

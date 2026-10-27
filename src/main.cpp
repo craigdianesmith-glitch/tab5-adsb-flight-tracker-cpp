@@ -2802,12 +2802,50 @@ void endRecordingForRestart() {
     }
 }
 
+void leave3d();
+
+// How long the restart's word is held before the screen goes dark.
+constexpr uint32_t RESTART_NOTICE_MS = 1500;
+
+// The watchdog's restart shown for what it is: a word saying why, held long
+// enough to read, then the screen dark before the C6's power is cut - not the
+// panel losing its picture part way through a frame as the Tab5 reset, with
+// ESP-Hosted's own restart racing it, which looked like a crash. The 3D view
+// closed first, and its drawing core with it.
+void showRestarting() {
+    if (g_screen == Screen::VIEW3D) {
+        leave3d();
+    }
+    auto &canvas = screen::canvas();
+    const char *text = "Restarting to bring the WiFi back";
+    canvas.setFont(&fonts::Font0);
+    canvas.setTextSize(3);
+    int w = canvas.textWidth(text) + 56, h = 64;
+    int x = (canvas.width() - w) / 2, y = (canvas.height() - h) / 2;
+    canvas.fillRoundRect(x, y, w, h, 10, M5.Display.color565(10, 10, 16));
+    canvas.setTextColor(M5.Display.color565(210, 206, 220));
+    canvas.setTextDatum(MC_DATUM);
+    canvas.drawString(text, canvas.width() / 2, canvas.height() / 2);
+    canvas.setTextDatum(TL_DATUM);
+    canvas.setTextSize(1);
+    screen::markDirty(x, y, w, h);
+    screen::flush();
+    delay(RESTART_NOTICE_MS);
+    M5.Display.setBrightness(0);
+}
+
 // Adds a report to the telemetry's history, dropping what has scrolled off
 // the chart.
 void noteHeight(const Aircraft &ac) {
     uint32_t now = millis();
     std::vector<FollowSample> &h = g_follow.heights;
-    h.push_back(followSampleOf(ac, now));
+    // Timed by its position, a report can be older than the one before it,
+    // and the chart only runs forwards.
+    FollowSample s = followSampleOf(ac, now);
+    if (!h.empty() && (int32_t)(s.ms - h.back().ms) < 0) {
+        return;
+    }
+    h.push_back(s);
     while (!h.empty() && now - h.front().ms > TELEMETRY_WINDOW_MS) {
         h.erase(h.begin());
     }
@@ -4527,6 +4565,7 @@ void handleSettingsTouch(int x, int y, bool pressed, bool clicked) {
             Serial.println("[wifi] watchdog: restarting before the WiFi screen opens, its answers from the C6 "
                            "perhaps out of step; the screen opens after");
             endRecordingForRestart();
+            showRestarting();
             wifiwatch::restartNow(true);
         }
         if (xSemaphoreTake(g_dataMutex, portMAX_DELAY) == pdTRUE) {
@@ -4712,6 +4751,7 @@ void checkWifiGaveUp() {
         Serial.println("[wifi] watchdog: restarting rather than opening the WiFi screen, its answers from the C6 "
                        "perhaps out of step");
         endRecordingForRestart();
+        showRestarting();
         wifiwatch::restartNow();
     }
     Serial.printf("[wifi] giving up on %s - opening the WiFi screen\n", ssid.c_str());
@@ -4793,6 +4833,7 @@ void checkWatchdogRestart() {
         return;
     }
     endRecordingForRestart();
+    showRestarting();
     wifiwatch::restartNow();
 }
 
@@ -5018,6 +5059,11 @@ void setup() {
         g_wifiReturnTo = Screen::MAIN;
         g_screen = Screen::WIFI;
         wifiScreenEnter();
+    }
+    // Back from the watchdog's restart: said so, for the screen gone dark a
+    // moment ago to be no mystery.
+    if (quietBoot && g_screen == Screen::MAIN) {
+        displayShowNotice("Restarted to bring the WiFi back");
     }
 }
 

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "ground_pack.h"
+#include "takeoff.h"
 #include <math.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -88,6 +89,9 @@ struct Look {
 // "A3" large, "A5" heavy, "A6" fast and agile, "A7" a rotorcraft - and failing
 // that is an A320.
 Look lookFor(const char *type, uint32_t tail, bool military = false, const char *category = nullptr);
+// Its family alone, as lookFor() has it - without building the models, for
+// code that runs whether the 3D view has been opened or not.
+Family familyOf(const char *type, bool military = false, const char *category = nullptr);
 
 // An airline's basic colours, where it is one known by its callsign - BAW,
 // EZY, KLM, FDX... - on its body above and below, its tail and its engines;
@@ -144,9 +148,12 @@ class Pilot {
     // `turnRate` in radians a second, positive to the left - as a heading
     // goes - over `dt` seconds since the last; `heightM` above the ground
     // under it, NAN when that isn't known; `departing` on its take-off roll
-    // and climb-out, rotated for.
+    // and climb-out, rotated for: `liftoffInS` the seconds till it leaves
+    // the runway (see FollowEstimate), its nose coming up over the last of
+    // them as its kind's (takeoff.h) does.
     void fly(float dt, Family family, float turnRate, float speedKt, float climbFpm, bool onGround,
-             float heightM = NAN, bool departing = false);
+             float heightM = NAN, bool departing = false, float liftoffInS = NAN,
+             TakeoffKind kind = TakeoffKind::NARROW);
     float roll = 0, pitch = 0;  // radians, as a Pose has them
     float aileron = 0, elevator = 0, rudder = 0;
 
@@ -155,11 +162,19 @@ class Pilot {
     float lastKt_ = 0, accel_ = 0;  // how fast it is speeding up, knots a second, smoothed
     bool wasGround_ = true;
     float touchPitch_ = 0, sinceTouch_ = -1;  // the nose as the wheels touched, and how long since
+    bool rotated_ = false;  // taking off, its nose come up on the runway: not let down on it again
+    bool flown_ = false;    // flown once since it was made: before that, set as it is flying
+    // Climbing away from its take-off, its flaps out still - the take-off
+    // handed back to the feed or not - for its wing's angle: see fly().
+    bool climbingOut_ = false;
 };
 
-// The nose as it lifts off, taking off, rotated to: an airliner's 8
-// degrees, a fast jet's 11.
-float liftOffPitch(Family family);
+// How it takes off, as takeoff.h's table has its kind - one table for the
+// pilot's rotation and the runway simulation's roll and climb alike (see
+// followSampleOf()): by its family, and among the narrowbodies and
+// widebodies by its type, an A321 or a 777 leaving faster than an A320 or
+// an A330.
+TakeoffKind takeoffKindOf(Family family, const char *type);
 
 // The nose of one coming in to land, given `pitch` along its way down and a
 // few degrees above it: higher on the approach - slow, its flaps out, its

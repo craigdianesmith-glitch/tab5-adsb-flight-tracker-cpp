@@ -48,7 +48,7 @@ static PsramAllocator g_psram;
 // document.
 static void fillFilter(JsonObject ac) {
     for (const char *key : {"hex", "flight", "t", "dbFlags", "alt_baro", "gs", "lat", "lon", "r", "squawk",
-                            "category", "track", "alt_geom", "baro_rate", "geom_rate"}) {
+                            "category", "track", "alt_geom", "baro_rate", "geom_rate", "seen_pos"}) {
         ac[key] = true;
     }
     JsonObject last = ac["lastPosition"].to<JsonObject>();
@@ -278,6 +278,7 @@ struct FeedAircraft {
     FeedString<16> hex, flight, type, squawk, category;
     FeedString<24> reg;
     FeedNumber altBaro, gs, lat, lon, dbFlags, track, altGeom, baroRate, geomRate;
+    FeedNumber seenPos;  // how old lat and lon are, in seconds
     bool hasLast = false;  // lastPosition, an object
     FeedNumber lastLat, lastLon, lastSeen;
 };
@@ -388,6 +389,7 @@ static bool buildAircraft(const FeedAircraft &f, const AdsbEndpoint &ep, bool mi
     // dimmed, rather than having it vanish until a receiver picks it up
     // taxiing.
     a.posStale = false;
+    a.posAgeS = 0;
     const FeedNumber *latV = &f.lat, *lonV = &f.lon;
     if (latV->kind == FeedNumber::NONE || lonV->kind == FeedNumber::NONE) {
         if (f.hasLast && f.lastLat.kind != FeedNumber::NONE && f.lastLon.kind != FeedNumber::NONE &&
@@ -404,6 +406,7 @@ static bool buildAircraft(const FeedAircraft &f, const AdsbEndpoint &ep, bool mi
         a.hasPos = true;
         a.lat = (float)acLat;
         a.lon = (float)acLon;
+        a.posAgeS = std::min(std::max((a.posStale ? f.lastSeen : f.seenPos).asFloatOr(0.0f), 0.0f), 120.0f);
         if (ep.global && a.distNm > radiusNm) {
             return false;
         }
@@ -631,7 +634,10 @@ class FeedScanner {
             if (strcmp(key, "lastPosition") == 0) return lastPosition(c, out);
             break;
         case 'r': if (key[1] == 0) return text(c, out.reg); break;
-        case 's': if (strcmp(key, "squawk") == 0) return text(c, out.squawk); break;
+        case 's':
+            if (strcmp(key, "squawk") == 0) return text(c, out.squawk);
+            if (strcmp(key, "seen_pos") == 0) return number(c, out.seenPos);
+            break;
         case 'c': if (strcmp(key, "category") == 0) return text(c, out.category); break;
         case 'b': if (strcmp(key, "baro_rate") == 0) return number(c, out.baroRate); break;
         }
@@ -1017,6 +1023,7 @@ static void feedFromJson(JsonObjectConst ac, FeedAircraft &f) {
     feedNumber(ac["alt_geom"], f.altGeom);
     feedNumber(ac["baro_rate"], f.baroRate);
     feedNumber(ac["geom_rate"], f.geomRate);
+    feedNumber(ac["seen_pos"], f.seenPos);
     JsonObjectConst last = ac["lastPosition"];
     f.hasLast = !last.isNull();
     if (f.hasLast) {
