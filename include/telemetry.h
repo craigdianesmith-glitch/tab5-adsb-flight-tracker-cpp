@@ -29,10 +29,18 @@ struct FollowSample {
     int16_t gsKt;
     bool hasPos;
     bool posStale;  // the feed's last position rather than a current one
+    // How old its position was when it was heard, in hundredths of a second:
+    // `ms` is the position's time, and it was heard this long after.
+    uint16_t ageCs;
     float lat, lon;
     bool hasTrack;
     float track;
     bool rotorcraft;  // a helicopter: see isRotorcraft()
+    // Its take-off by its kind, for the runway simulation's roll and climb
+    // (scene3d::takeoffOf()): the speed it lifts off at, in knots, how fast it
+    // gathers speed down the runway, in tenths of a knot a second, and its
+    // climb away, in hundreds of feet a minute. Nought, an airliner's.
+    uint8_t liftoffKt, accelTenths, climbHundreds;
 };
 
 // Its height above the sea, as near as the feed says: its pressure altitude

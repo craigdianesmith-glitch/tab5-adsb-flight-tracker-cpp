@@ -11380,32 +11380,40 @@ const AirlinePaint AIRLINE_PAINT[] = {
 
 }  // namespace
 
-Look lookFor(const char *type, uint32_t tail, bool military, const char *category) {
-    models();
-    const TypeShape *shape = nullptr;
+namespace {
+// Its type's shape - or, a type not known, its emitter category's.
+const TypeShape *shapeOf(const char *type, bool military, const char *category) {
     for (const TypeShape &t : TYPES) {
         if (type != nullptr && strcmp(type, t.type) == 0) {
+            return &t;
+        }
+    }
+    const TypeShape *shape = &BY_CATEGORY[0];
+    for (const TypeShape &t : BY_CATEGORY) {
+        if (category != nullptr && strcmp(category, t.type) == 0) {
             shape = &t;
-            break;
         }
     }
-    if (shape == nullptr) {
-        shape = &BY_CATEGORY[0];
-        for (const TypeShape &t : BY_CATEGORY) {
-            if (category != nullptr && strcmp(category, t.type) == 0) {
-                shape = &t;
-            }
-        }
-        // A military aircraft of a type not known: a heavy one an airlifter
-        // rather than an airliner, a rotorcraft one with wheels.
-        if (military && shape->family == F::WIDEBODY) {
-            static const TypeShape HEAVY = {"", F::AIRLIFTER, 53.0f};
-            shape = &HEAVY;
-        } else if (military && shape->family == F::HELICOPTER_LIGHT) {
-            static const TypeShape ROTOR = {"", F::HELICOPTER, 15.0f};
-            shape = &ROTOR;
-        }
+    // A military aircraft of a type not known: a heavy one an airlifter
+    // rather than an airliner, a rotorcraft one with wheels.
+    if (military && shape->family == F::WIDEBODY) {
+        static const TypeShape HEAVY = {"", F::AIRLIFTER, 53.0f};
+        shape = &HEAVY;
+    } else if (military && shape->family == F::HELICOPTER_LIGHT) {
+        static const TypeShape ROTOR = {"", F::HELICOPTER, 15.0f};
+        shape = &ROTOR;
     }
+    return shape;
+}
+}  // namespace
+
+Family familyOf(const char *type, bool military, const char *category) {
+    return shapeOf(type, military, category)->family;
+}
+
+Look lookFor(const char *type, uint32_t tail, bool military, const char *category) {
+    models();
+    const TypeShape *shape = shapeOf(type, military, category);
     Look look;
     look.family = shape->family;
     look.scale = shape->length / designs()[(int)shape->family].length;
@@ -11487,36 +11495,6 @@ constexpr float NOSE_HELD_S = 1.5f, NOSE_LOWERED_S = 3;
 constexpr float ROTATE_RATE = 3 * DEG, LIFT_PITCH = 8 * DEG, FAST_LIFT_PITCH = 11 * DEG;
 
 namespace {
-// The speed it rotates at, by its kind, over the ground as the feed has it -
-// a little under the airspeed, into the wind: a light aircraft's 55 knots,
-// a narrowbody's 135, a jumbo's 155. The runway simulation lifts every one
-// off at 145, by when a narrowbody, rotating at three degrees a second, has
-// its nose up.
-float rotateKt(Family family) {
-    switch (family) {
-    case F::LIGHT_HIGH:
-    case F::LIGHT_LOW: return 55;
-    case F::TURBOPROP_LOW: return 95;
-    case F::TURBOPROP:
-    case F::TACTICAL_TWIN:
-    case F::HERCULES:
-    case F::ATLAS: return 105;
-    case F::BUSINESS_JET:
-    case F::JET_TRAINER:
-    case F::QUAD_HIGH: return 115;
-    case F::REGIONAL_JET:
-    case F::AIRLIFTER: return 125;
-    case F::FIGHTER_DELTA:
-    case F::FIGHTER:
-    case F::FIGHTER_SINGLE: return 140;
-    case F::WIDEBODY:
-    case F::WIDEBODY_4:
-    case F::SUPERJUMBO: return 145;
-    case F::JUMBO: return 155;
-    default: return 135;
-    }
-}
-
 // Coming down to land, by its descent - or, in the last few metres, by its not
 // climbing: the flare itself all but stops the descent, and a report in it -
 // 180ft a minute at 8m - would put the nose down onto the runway.
@@ -11548,6 +11526,46 @@ float landingPitch(Family family, float speedKt, float climbFpm, float heightM, 
 float liftOffPitch(Family family) {
     bool fast = family == F::FIGHTER_DELTA || family == F::FIGHTER || family == F::FIGHTER_SINGLE;
     return fast ? FAST_LIFT_PITCH : LIFT_PITCH;
+}
+
+Takeoff takeoffOf(Family family) {
+    // The speed its nose comes up at, over the ground as the feed has it - a
+    // little under the airspeed, into the wind - how quickly it gathers speed
+    // on its roll, and its climb away. Airliners' as thirteen departures from
+    // Heathrow's 27R gave them on 27 Oct 2026 [M: adsb.fi, every 5 s]: A320s
+    // off at about 141 knots after 26 to 35 s, gathering speed at about 4
+    // knots a second, climbing at 2700ft a minute; 777s, 787s and A330s off
+    // at about 161 after 32 to 55 s, 3.6 knots a second, 2500ft a minute.
+    // Turboprops rotating at 95 to 105; a Cessna's or a Cherokee's 55, 700ft
+    // a minute [POH]; a fighter with its reheat lit gone in a few seconds.
+    Takeoff t = {135, 0, 4.0f, 2700};
+    switch (family) {
+    case F::LIGHT_HIGH:
+    case F::LIGHT_LOW: t = {55, 0, 2.5f, 700}; break;
+    case F::TURBOPROP_LOW: t = {95, 0, 3.3f, 1800}; break;
+    case F::TURBOPROP:
+    case F::TACTICAL_TWIN:
+    case F::HERCULES:
+    case F::ATLAS: t = {105, 0, 3.3f, 1700}; break;
+    case F::BUSINESS_JET: t = {115, 0, 4.5f, 3500}; break;
+    case F::JET_TRAINER: t = {115, 0, 5.0f, 4000}; break;
+    case F::QUAD_HIGH: t = {115, 0, 3.3f, 1800}; break;
+    case F::REGIONAL_JET: t = {125, 0, 4.0f, 2800}; break;
+    case F::AIRLIFTER: t = {125, 0, 3.3f, 2000}; break;
+    case F::FIGHTER_DELTA:
+    case F::FIGHTER:
+    case F::FIGHTER_SINGLE: t = {140, 0, 12.0f, 6000}; break;
+    case F::WIDEBODY: t = {150, 0, 3.6f, 2500}; break;
+    case F::WIDEBODY_4: t = {150, 0, 3.0f, 1800}; break;
+    case F::SUPERJUMBO: t = {145, 0, 3.2f, 2000}; break;
+    case F::JUMBO: t = {160, 0, 3.3f, 2000}; break;
+    default: break;
+    }
+    // Off the runway once its nose is up - the rotation's few seconds at
+    // ROTATE_RATE - gathering speed all the while: a narrowbody at 146
+    // knots. A fighter rotates in less, its speed coming up faster.
+    t.liftoffKt = t.rotateKt + std::min(20.0f, t.accelKtS * liftOffPitch(family) / ROTATE_RATE);
+    return t;
 }
 
 void Pilot::fly(float dt, Family family, float turnRate, float speedKt, float climbFpm, bool onGround,
@@ -11627,7 +11645,7 @@ void Pilot::fly(float dt, Family family, float turnRate, float speedKt, float cl
     // level till the feed had it off the ground - and held up there at
     // least as it climbs away, till its climb as reported catches up: a
     // climb's first reports lag it, and the nose dipped as it left.
-    bool rotating = departing && !rotor && onGround && speedKt >= rotateKt(family) && accel_ > -1;
+    bool rotating = departing && !rotor && onGround && speedKt >= takeoffOf(family).rotateKt && accel_ > -1;
     if (rotating || (departing && !rotor && !onGround)) {
         pitchTarget_ = std::max(pitchTarget_, liftOffPitch(family));
     }

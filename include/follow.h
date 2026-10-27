@@ -157,6 +157,10 @@ private:
     // it: an offset that shrinks to nothing, or a turn off the runway.
     uint32_t easeStartMs_ = 0, easeEndMs_ = 0;
     uint32_t altEndMs_ = 0;  // the offset's height, over its own span
+    // A take-off's offset, taken in over climbLenS_ seconds and then
+    // settling, its place and height together - see report().
+    bool climbEase_ = false;
+    float climbLenS_ = 0;
     bool turning_ = false;
     bool heldDown_ = false;  // LANDING: fresh_ in the air, but taken as down - see report()
     float dLat_ = 0, dLon_ = 0, dAlt_ = 0;     // the offset

@@ -1043,6 +1043,7 @@ struct Polled {
     float heading;  // its track, radians anticlockwise from east
     float speed;    // metres a second
     float heightM;
+    float ageS;     // how old its position was when polled
     int16_t known;  // its entry in g_known
     bool moves;     // carried on along its track between polls
     Info info;
@@ -1085,6 +1086,7 @@ void pollTraffic(const std::vector<Aircraft> &list, const String &followed) {
         p.speed = s.gsKt * 0.5144f;
         p.heightM = s.ground ? 0 : g_where == Where::AIRFIELD ? p.at.z : aboveSeaFt(s) * 0.3048f;
         p.moves = (!s.ground || s.gsKt >= STILL_KT) && s.hasGs && s.hasTrack && !s.posStale;
+        p.ageS = ac.posAgeS;
         if (p.moves) {
             // The way it goes, in this frame: to a point a kilometre along its
             // track, placed the same way.
@@ -1146,9 +1148,12 @@ void fillTraffic(const std::vector<Aircraft> &list, uint32_t polledMs, const Str
         // Taxiing among real taxiways: carried on along them below, from
         // where it was reported, rather than straight across the grass.
         bool along = taxiways && p.moves;
+        // Carried on from when it was where its position puts it - the poll's
+        // age and the position's own.
+        float aged = std::min(30.0f, age + p.ageS);
         Vec3 at = p.at;
         if (p.moves && !along) {
-            at = at + p.way * (p.speed * age);
+            at = at + p.way * (p.speed * aged);
         }
         float dx = at.x - from.x, dy = at.y - from.y;
         if (dx * dx + dy * dy > reach * reach) {
@@ -1168,7 +1173,7 @@ void fillTraffic(const std::vector<Aircraft> &list, uint32_t polledMs, const Str
         if (along && g_network.snap({at.x, at.y}, heading, 40, onLine)) {
             float line = g_network.heading(onLine);
             float way = fabsf(remainderf(line - heading, 2 * (float)M_PI)) < (float)M_PI / 2 ? line : line + (float)M_PI;
-            g_network.ahead(onLine, way, p.speed * std::min(age, 20.0f), ahead, aheadKinds);
+            g_network.ahead(onLine, way, p.speed * std::min(aged, 20.0f), ahead, aheadKinds);
             ground::Vec2 q = ahead.back();
             heading = way;
             size_t n = ahead.size();
@@ -1186,7 +1191,7 @@ void fillTraffic(const std::vector<Aircraft> &list, uint32_t polledMs, const Str
                 at = there;
             }
         } else if (along) {
-            at = at + p.way * (p.speed * age);  // off the lines: straight on, as anywhere
+            at = at + p.way * (p.speed * aged);  // off the lines: straight on, as anywhere
         }
         // Parked at a stand: its stop, which the follower tells the stands
         // taken by.

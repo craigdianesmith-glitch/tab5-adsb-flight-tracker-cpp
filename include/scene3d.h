@@ -88,6 +88,9 @@ struct Look {
 // "A3" large, "A5" heavy, "A6" fast and agile, "A7" a rotorcraft - and failing
 // that is an A320.
 Look lookFor(const char *type, uint32_t tail, bool military = false, const char *category = nullptr);
+// Its family alone, as lookFor() has it - without building the models, for
+// code that runs whether the 3D view has been opened or not.
+Family familyOf(const char *type, bool military = false, const char *category = nullptr);
 
 // An airline's basic colours, where it is one known by its callsign - BAW,
 // EZY, KLM, FDX... - on its body above and below, its tail and its engines;
@@ -160,6 +163,17 @@ class Pilot {
 // The nose as it lifts off, taking off, rotated to: an airliner's 8
 // degrees, a fast jet's 11.
 float liftOffPitch(Family family);
+
+// Its take-off by its kind - one table for the pilot's rotation and the
+// runway simulation's roll and climb-out alike (see followSampleOf()), so its
+// nose comes up as it nears the speed it leaves the runway at: rotated at
+// `rotateKt`, off at `liftoffKt`, gathering speed down the runway at
+// `accelKtS` knots a second, climbing away at `climbFpm`.
+struct Takeoff {
+    float rotateKt, liftoffKt, accelKtS;
+    int climbFpm;
+};
+Takeoff takeoffOf(Family family);
 
 // The nose of one coming in to land, given `pitch` along its way down and a
 // few degrees above it: higher on the approach - slow, its flaps out, its

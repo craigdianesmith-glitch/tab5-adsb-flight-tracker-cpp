@@ -376,12 +376,14 @@ void addFrame(const std::vector<Aircraft> &aircraft, const String &view, const c
         if (a.hasVertRate) snprintf(vrate, sizeof(vrate), "%.0f", a.vertRate);
         if (a.hasAltGeom) snprintf(altGeom, sizeof(altGeom), "%d", a.altGeom);
         if (a.hasDist) snprintf(dist, sizeof(dist), "%.1f", a.distNm);
+        char age[12] = "";
+        if (a.hasPos && a.posAgeS > 0) snprintf(age, sizeof(age), "%.1f", a.posAgeS);
         int flags = (a.military ? 1 : 0) | (a.dbInteresting ? 2 : 0) | (a.posStale ? 4 : 0);
-        snprintf(line, sizeof(line), "A %s|%s|%s|%s|%s|%s|%d|%d|%s|%s|%s|%s|%s|%s|%s|%s|%s\n",
+        snprintf(line, sizeof(line), "A %s|%s|%s|%s|%s|%s|%d|%d|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s\n",
                  field(a.hex, 8).c_str(), field(a.callsign, 12).c_str(), field(a.type, 8).c_str(),
                  field(a.altStr, 12).c_str(), field(a.speedStr, 8).c_str(), field(a.status, 12).c_str(), flags,
                  a.alert, track, lat, lon, field(a.squawk, 6).c_str(), field(a.reg, 12).c_str(),
-                 field(a.category, 4).c_str(), vrate, altGeom, dist);
+                 field(a.category, 4).c_str(), vrate, altGeom, dist, age);
         out += line;
     }
     size_t written = g_file.write((const uint8_t *)out.c_str(), out.length());
@@ -557,7 +559,9 @@ bool parseAircraftLine(char *line, Aircraft &a) {
     if (line[0] != 'A' || line[1] != ' ') {
         return false;
     }
-    constexpr int FIELDS = 17;
+    // The position's age last, where a recording has it: older builds read
+    // seventeen fields and pass over the rest.
+    constexpr int FIELDS = 18, NEEDED = 17;
     char *f[FIELDS];
     int n = 0;
     f[n++] = line + 2;
@@ -572,7 +576,7 @@ bool parseAircraftLine(char *line, Aircraft &a) {
             break;
         }
     }
-    if (n < FIELDS) {
+    if (n < NEEDED) {
         return false;
     }
     a.hex = f[0];
@@ -598,6 +602,7 @@ bool parseAircraftLine(char *line, Aircraft &a) {
     a.vertRate = a.hasVertRate ? strtof(f[14], nullptr) : 0;
     a.hasAltGeom = f[15][0] != 0;
     a.altGeom = a.hasAltGeom ? atoi(f[15]) : 0;
+    a.posAgeS = n > 17 && f[17][0] != 0 ? strtof(f[17], nullptr) : 0;
     a.hasDist = f[16][0] != 0;
     a.distNm = a.hasDist ? strtof(f[16], nullptr) : 0;
     // Recorded standing still in the air, before the poll left that out: its

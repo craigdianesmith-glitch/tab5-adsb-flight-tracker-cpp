@@ -33,6 +33,14 @@ float rwHeading() { float h = atan2f(UX, UY) * 180 / M_PI; return h < 0 ? h + 36
 
 bool g_rotor = false;  // the reports a rotorcraft's
 bool g_noGs = false;   // the reports without a ground speed, as some feeds' military contacts are
+// The reports' take-off figures, as followSampleOf() gives them by its kind
+// (scene3d::takeoffOf()): nought, an airliner's.
+uint8_t g_liftoffKt = 0, g_accelTenths = 0, g_climbHundreds = 0;
+// A report's position taken from this many seconds before it was given, as
+// the feed's can be near the ground; and whether it is timed by the
+// position, as followSampleOf() does, or by when it was given.
+std::function<float(float)> g_ageS = [](float) { return 0.0f; };
+bool g_timedByPosition = true;
 
 FollowSample sampleOf(const Truth &t, uint32_t ms, int baroBias) {
     FollowSample s = {};
@@ -40,6 +48,7 @@ FollowSample sampleOf(const Truth &t, uint32_t ms, int baroBias) {
     s.ms = ms; s.ground = t.ground; s.hasAlt = true; s.altFt = t.ground ? FIELD : (int)t.alt + baroBias;
     s.hasGs = !g_noGs; s.gsKt = (int16_t)lroundf(t.gs); s.hasPos = true; place(t.along, t.cross, s.lat, s.lon);
     s.hasTrack = true; s.track = t.track; s.hasVs = !t.ground; s.vsFpm = 0;
+    s.liftoffKt = g_liftoffKt; s.accelTenths = g_accelTenths; s.climbHundreds = g_climbHundreds;
     return s;
 }
 
@@ -56,6 +65,10 @@ void run(const char *name, std::function<Truth(float)> truth, std::function<bool
     // at the ground's height but not on it, moving: skimming along it.
     float plat = NAN, plon = NAN, ptrack = 0;
     float back = 0, backT = 0, skimS = 0;
+    // The steepest it was shown climbing over a second, and where it was
+    // shown leaving the ground.
+    float palt = NAN, steepest = 0, steepestT = 0, offAlong = NAN;
+    bool pground = true;
     const char *lastHow = "";
     bool wasSim = false;
     for (float t = t0; t <= t1 + 1e-3f; t += 0.5f) {
@@ -63,9 +76,12 @@ void run(const char *name, std::function<Truth(float)> truth, std::function<bool
         if (t >= nextReport - 1e-3f) {
             nextReport += 10;
             if (reported(t)) {
-                Truth tr = truth(t);
-                FollowSample s = sampleOf(tr, ms, baroBias);
-                Truth tp = truth(t - 1); s.vsFpm = (int16_t)((tr.alt - tp.alt) * 60) ; s.hasVs = !tr.ground;
+                float age = g_ageS(t);
+                Truth tr = truth(t - age);
+                uint32_t at = g_timedByPosition ? ms - (uint32_t)lroundf(age * 1000) : ms;
+                FollowSample s = sampleOf(tr, at, baroBias);
+                s.ageCs = (uint16_t)(ms - at) / 10;
+                Truth tp = truth(t - age - 1); s.vsFpm = (int16_t)((tr.alt - tp.alt) * 60) ; s.hasVs = !tr.ground;
                 sim.report(s);
                 if (dupes) { FollowSample d = s; d.ms += 2000; sim.report(d); }
                 printf("  t=%6.1f REPORT along=%.3f cross=%.3f alt=%d gs=%d %s  -> phase %s\n", t, tr.along, tr.cross,
@@ -85,6 +101,10 @@ void run(const char *name, std::function<Truth(float)> truth, std::function<bool
             if (-forward > back) { back = -forward; backT = t; }
         }
         if (!e.ground && e.gsKt > 5 && e.altFt <= FIELD + 5) skimS += 0.5f;
+        float alt = e.ground ? FIELD : e.altFt;
+        if (!std::isnan(palt) && (alt - palt) * 120 > steepest) { steepest = (alt - palt) * 120; steepestT = t; }
+        if (!e.ground && pground && std::isnan(offAlong) && vsSign > 0) offAlong = a;
+        palt = alt; pground = e.ground;
         plat = e.lat; plon = e.lon; ptrack = e.track;
         bool simNow = sim.simulating(ms);
         if (strcmp(lastHow, e.how) != 0 || simNow != wasSim || fmodf(t - t0, 10) < 0.25f) {
@@ -97,6 +117,10 @@ void run(const char *name, std::function<Truth(float)> truth, std::function<bool
     }
     printf("  worst speed excess over 1.6x truth: %.0f kt at t=%.1f\n", worst, worstT);
     printf("  worst backwards: %.0f m in half a second at t=%.1f; skimming the ground %.1f s\n", back, backT, skimS);
+    if (vsSign > 0) {
+        printf("  steepest shown climb: %.0f fpm at t=%.1f; shown off the ground at along=%.3f nm (runway %.2f nm)\n",
+               steepest, steepestT, offAlong, LEN);
+    }
 }
 
 // On a base leg five miles out, across the extended centreline at 160kt,
@@ -141,6 +165,33 @@ Truth takeoff(float t) {
     if (t < 50) { r.ground = true; r.alt = FIELD; r.gs = 3 * t; r.along = 0.02f + 1.5f * t * t / 3600; return r; }
     float a = t - 50;
     r.along = 0.02f + 1.5f * 2500 / 3600 + (150 * a + a * a / 2) / 3600; r.gs = 150 + a; r.alt = FIELD + 2200 * a / 60;
+    return r;
+}
+
+// A widebody's take-off on 23, as a Qatar 777's at Heathrow: lined up and
+// stopped until t=0, rolling at 3kt/s, off at 160kt at t=53, its climb
+// built to 2500fpm over the next five seconds, gathering speed at 1kt/s.
+Truth heavyTakeoff(float t) {
+    Truth r = {};
+    r.track = rwHeading();
+    const float offT = 160.0f / 3;
+    if (t < 0) { r.ground = true; r.alt = FIELD; r.along = 0.02f; return r; }
+    if (t < offT) { r.ground = true; r.alt = FIELD; r.gs = 3 * t; r.along = 0.02f + 1.5f * t * t / 3600; return r; }
+    float a = t - offT, u = std::min(a / 5, 1.0f);
+    r.along = 0.02f + 1.5f * offT * offT / 3600 + (160 * a + a * a / 2) / 3600; r.gs = 160 + a;
+    r.alt = FIELD + 2500 * (a < 5 ? 5 * u * u * u * (1 - u / 2) : a - 2.5f) / 60;
+    return r;
+}
+
+// A Cessna 172's on 23: from a stop at t=0, 2.5kt/s, off at 60kt, 700fpm.
+Truth lightTakeoff(float t) {
+    Truth r = {};
+    r.track = rwHeading();
+    if (t < 0) { r.ground = true; r.alt = FIELD; r.along = 0.02f; return r; }
+    if (t < 24) { r.ground = true; r.alt = FIELD; r.gs = 2.5f * t; r.along = 0.02f + 1.25f * t * t / 3600; return r; }
+    float a = t - 24;
+    r.along = 0.02f + 1.25f * 576 / 3600 + (60 * a + 0.5f * a * a / 2) / 3600; r.gs = 60 + 0.5f * std::min(a, 30.0f);
+    r.alt = FIELD + 700 * a / 60;
     return r;
 }
 
@@ -211,6 +262,27 @@ int main() {
     run("crossing the runway", crossing, [](float t) { return true; }, -60, 40, 0, 1);
     run("take-off, every report", takeoff, [](float t) { return true; }, -40, 110, 100, 1);
     run("rolling take-off, in the air by the feed from 40kt", rollingTakeoff, [](float t) { return true; }, -30, 90, 0, 1);
+    // A widebody - its kind's take-off figures, as scene3d::takeoffOf() has
+    // a 777's - picked up as QTR30C was at Heathrow: lined up, lost on its
+    // roll, found again at 1800ft; then with its last report on the runway
+    // ten seconds into its roll still saying it was stopped there - a
+    // position fifteen seconds old - taken as new, as reports were before
+    // they were timed by their positions; and timed by its position.
+    g_liftoffKt = 160; g_accelTenths = 36; g_climbHundreds = 25;
+    auto lostRolling = [](float t) { Truth r = heavyTakeoff(t); return t <= 0 || (!r.ground && r.alt > 1800); };
+    run("widebody take-off, lost on its roll, found at 1800ft", heavyTakeoff, lostRolling, -40, 180, 0, 1);
+    g_ageS = [](float t) { return t > 5 && t < 15 ? 15.0f : 0.0f; };
+    auto staleToo = [](float t) { Truth r = heavyTakeoff(t); return t <= 10 || (!r.ground && r.alt > 1800); };
+    g_timedByPosition = false;
+    run("the same, its last report on the runway 15s old, taken as new", heavyTakeoff, staleToo, -40, 180, 0, 1);
+    g_timedByPosition = true;
+    run("the same, that report timed by its position", heavyTakeoff, staleToo, -40, 180, 0, 1);
+    g_ageS = [](float) { return 0.0f; };
+    run("widebody take-off, every report", heavyTakeoff, [](float t) { return true; }, -40, 130, 0, 1);
+    g_liftoffKt = 62; g_accelTenths = 25; g_climbHundreds = 7;
+    run("Cessna 172 take-off, lost when it rolls, found at 400ft", lightTakeoff,
+        [](float t) { Truth r = lightTakeoff(t); return t <= 0 || (!r.ground && r.alt > 400); }, -40, 110, 0, 1);
+    g_liftoffKt = g_accelTenths = g_climbHundreds = 0;
     // A helicopter lined up with the runway coming in: none of it simulated.
     g_rotor = true;
     run("helicopter, in along the runway to a spot beside it, down, off again", helicopter, [](float t) { return true; },

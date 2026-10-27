@@ -39,6 +39,9 @@ struct Aircraft {
     // The position is the last one the feed had rather than a current one:
     // drawn dimmed. See STALE_POSITION_MAX_S.
     bool posStale = false;
+    // How old the position was when the feed answered, in seconds: near the
+    // ground a current one can be most of a minute old.
+    float posAgeS = 0;
 };
 
 // Fetches aircraft near (lat, lon) within radiusNm from `source`, asking that

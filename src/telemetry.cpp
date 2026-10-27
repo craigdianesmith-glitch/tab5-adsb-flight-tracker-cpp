@@ -6,6 +6,7 @@
 #include "airports.h"
 #include "geoid.h"
 #include "runways.h"
+#include "scene3d.h"
 
 namespace {
 
@@ -104,7 +105,13 @@ void notePressure(const std::vector<Aircraft> &list) {
 
 FollowSample followSampleOf(const Aircraft &ac, uint32_t ms, DayPressureFn dayPressure) {
     FollowSample s = {};
-    s.ms = ms;
+    // When it was where its position puts it, not when the feed was asked:
+    // near the ground a position can be tens of seconds old, and a take-off
+    // roll taken as where it is now was shown that far behind - lifting off
+    // past the runway's end, and climbing like a rocket to catch up.
+    uint32_t ageMs = std::min((uint32_t)lroundf(ac.posAgeS * 1000.0f), ms);
+    s.ms = ms - ageMs;
+    s.ageCs = (uint16_t)std::min(ageMs / 10, (uint32_t)UINT16_MAX);
     s.ground = (ac.status == "GROUND" || ac.status == "TAXI" || ac.altStr == "GND");
     if (s.ground) {
         s.hasAlt = true;
@@ -122,6 +129,12 @@ FollowSample followSampleOf(const Aircraft &ac, uint32_t ms, DayPressureFn dayPr
     // altitude, put right by the day's pressure, as the aircraft about have
     // it.
     s.rotorcraft = isRotorcraft(ac.type, ac.category);
+    // A Cessna's take-off, a turboprop's or a widebody's, not every one an
+    // airliner's: rolled to 145 knots and climbing at 2000ft a minute.
+    scene3d::Takeoff k = scene3d::takeoffOf(scene3d::familyOf(ac.type.c_str(), ac.military, ac.category.c_str()));
+    s.liftoffKt = (uint8_t)lroundf(k.liftoffKt);
+    s.accelTenths = (uint8_t)lroundf(k.accelKtS * 10);
+    s.climbHundreds = (uint8_t)(k.climbFpm / 100);
     int32_t pressure;
     if (s.rotorcraft && !s.ground && ac.hasPos) {
         if (ac.hasAltGeom) {
