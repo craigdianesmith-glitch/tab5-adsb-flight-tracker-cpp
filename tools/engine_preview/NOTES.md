@@ -305,7 +305,8 @@ The rows (`src/engine_noise.cpp`, `PROPS`):
 
 All five: 1,200 rpm at 100 %; axes 8.10 m apart and 2.80 m up [P: the fact sheets]; synchrophased, 0.5 % apart in
 beta [I]; up from beta at 0.12 a second, down 100 to 82 % at 0.022 a second [M: aboard]; whine 5,682 Hz [M: the
-PW127's, assumed for the others]; gearbox lines at orders 48.8 and 72.9 [M: aboard; assumed for the others]; hotel
+PW127's, assumed for the others]; gearbox lines at orders 48.8 and 72.9 [M: aboard; assumed for the others] (line A
+47.7 since the recipe build, below); hotel
 mode, no ground spoilers. The climb and cruise power are the ratings' shares [P: the fact sheets]: so the ATR
 42-600 climbs at its take-off power (2,160 shp both) with its propellers at 82 %, which is why the propellers'
 speed is its own input (`np`) rather than read from power.
@@ -445,5 +446,95 @@ From turboprop-methods 16, with the base's own:
 6. Reverse: power and speed inferred (none recorded cleanly).
 7. When crews select 100 % on the approach: wired from 3,000 ft over the field on the way down; measured at about
    1,000 ft (Schiphol); ANP's approach class looks like 82 %.
+
+## Build "recipe" (atr72-recipe, 27 Oct, first version for review)
+
+turboprop-methods 13 followed on the A320's resonator design, every figure fitted to `targets/atr72.md` and `.json`
+and tagged in the code; where the two differ the outside recordings win (the harmonic series' shapes, the steady
+line's K, the gearbox's order, line B unplayed). Renders: `~/.cache/terrain-lab/sound/renders/atr72-recipe/` (the ten scenes and
+the three four-bladed ones, full range and `-tab5`); the fitting scripts in
+`~/.cache/terrain-lab/sound/atr72-recipe-work/scripts/` (`round.sh` renders, measures and judges; `multi.sh` does
+seven airframes; `judge.py` scores the judging list, targets 9).
+
+What it is (`src/engine_noise.cpp`, THE TURBOPROP; nothing replayed):
+
+- **Harmonics 1-6**: each a resonance on noise, 0.2 and 0.4 Hz wide for the first two, 0.85 Hz and 0.35 more a
+  harmonic above, 2.2 times that standing [M: targets 4.4]. Governed, the fundamental has a steady line under it
+  (K = 4, as heard outside: the cabin's 5.6-10.6 was measured aboard) and the first two swell and fade with the two
+  propellers' path difference and the synchrophaser's phase (one per airframe). In beta the two propellers run at
+  their own speeds: two resonances for each harmonic heard at 300 Hz or more, one, widened, under it.
+- **From the 7th up**: one comb (the buzz-saw's delay line), only while its 7th line is within 10 dB of the rush in
+  its band: on the ground and at take-off power, never in clean flight.
+- **The series' shape by phase**: five envelope tables (clean flight, climb, standing at take-off power, beta,
+  reverse), blended by power, the static share (1 standing, 0 by 40 m/s), governed or beta, and reverse; two lobe
+  pairs (the first two, the rest) narrowing ahead and behind at low power, broader at high power and standing.
+- **The speaker lift** (`PR_LIFT` 1, the recipe's `vbDb` default): the first four harmonics heard at 300 Hz or more,
+  up to the 6th, raised to the fundamental's level less 10 dB an octave of harmonic number, never past less 3, with
+  the harmonic's own lobe.
+- **Propeller speed**: `Sound::np` followed up from beta critically damped (2.2 s 10-90 %) and down in a straight
+  glide at `npGlide`; in beta ungoverned, wandering 1 % over 0.8 s, the right 0.5 % off; governed, hunting 0.12 %
+  together. Feathered on shutdown, the line 20 % down in a second; hotel mode plays the right gas generator alone.
+- **Lines**: the gearbox's line A at 47.7 shaft orders, 22 dB under the fundamental on the approach (line B,
+  aboard only, not played); two gas-generator whines at 5,682 Hz x NH, 1-3 % apart and wandering, and a 250 Hz
+  haystack at 5.9 kHz in the air.
+- **Broadband**: the A320's eight bands and a ninth at 140 Hz (the low rush, the only sound under 250 Hz besides
+  the harmonics): the loading rush (power cubed, 450 Hz), the blades' edges (speed to the fifth, 1.2 kHz), exhaust,
+  intakes, the reverse roar (630 Hz), the A320's airframe 7 dB down. Each source on the A320's surge processes at
+  its own depth and pace, the rush's surge deeper as the bearing turns; shimmer at 0.67 and flicker at 0.6 of the
+  A320's (a turboprop churns more and its octaves move together more).
+- **Its way to the ear**: Doppler eased in 35 ms; each tone's ground echo free to swing 6 dB at 300 Hz and under,
+  2 dB from 1.5 kHz; the squeal at 0.3 and the nose wheel's thump at 0.5 of the A320's.
+- **Shared code**: one call added in `render()` (`propTones()` after the echo); everything else is in the
+  turboprop's noinline functions. The rows' `gearA` is 47.7 for all five (was 48.8, the aboard figure). Preview:
+  `NOREVERSE=1` rolls a landing out in beta, to set beside the reverse.
+
+Measured (each render through the targets' own `measure_atr72.measure()`, pass centres and blade-rate track as the
+references were cut):
+
+- **Judging list: 25 of 29 rows in range** (`judge.py`, its tolerances beside each row). The four out are the
+  approach's harmonic excess with the lift on: the 3rd-5th stand 7-11 dB over the rush where the recording's stand
+  0-4.5. With `PR_LIFT` 0 the same four rows are in range (coming: 14.5 / 8.6 / 3.6 / 3.6 / 2.0 / -0.6 dB).
+- **Inside the references' own figures**: blade rate 119.7 Hz at the source on the approach; propeller speed 850 to
+  1,199 rpm in 2.2 s 10-90 % (about 3 s in all), overshoot 0.8 %, and the glide 1,199 to 982 rpm at 2.4 %/s,
+  linear (r -0.987); one line a harmonic while governed; the take-off roll from ahead 14.7 / 11.2 / 6.9 / 7.1 / 6.0
+  / 3.7 dB over the rush (references 15 / 12 / 9 / 8 / 8 / 3); the gearbox line at 7.97 x the blade rate, 11.4 dB
+  prominent (median); the whine at 5,661 Hz, 13.6 dB, two lines 2.2 % apart in 71 % of frames; ground fading
+  4.8-5.4 dB (amplitude SD over mean 0.47-0.52), the governed fundamental 3.3-3.4 dB (0.35-0.38); harmonics fading
+  independently (r -0.07 to 0.04); pitch wander 0.35-0.52 % governed; churn on the approach 1.5-1.8 dB (far out
+  1.3), climb 1.8-2.1, taxi 0.8; approach centroid 953 Hz at -7.0 dB/oct, climb 703 Hz at -9.3; the shutdown line
+  21 % down in 1.05 s.
+- **In by the judge's tolerance only**: Doppler x1.41 (145.6 to 103.3 Hz; x1.33 at 450 m, this scene 424 m and
+  faster); the slow taxi six harmonics over 6 dB (7-11), up to 681 Hz (535-620: the Dash 8s' slower blade rates),
+  the fundamental -3.5 dB (0-5); take-off power 8.6 dB over the approach at the same slant (ANP 9-12; 9.8 with the
+  lift off, which leaves the climb as it is); reverse +4.1 dB over the same roll in beta (+8, one far camera) and
+  SEL +0.8 dB (+1.4).
+- **Over seven airframes** (`multi.sh`): 261 of 513 per-phase medians inside the references' ranges (most phases
+  have one or two reference clips).
+- **Levels** (Tab5 band, loudest 2 s, seven airframes, against the A320 from the same place): take-off 6.1 dB under
+  (5.5-6.9; ANP 5-8); approach 3.1 under (1.5-5.0; ANP 4-6), 1.0 dB of it the lift (4.3 under with it off); taxi 0.8
+  over (0.3-2.0). Limiter: nothing rounded off in any scene but the reverse's 0.0013 %.
+- **Cost** (`cost.sh`, P4 model, a 40 ms block): take-off roll 392,679 cycles, 1.20-1.24 ms warm (the A320's
+  take-off 402,864, 1.24-1.27); approach 391,591; the worst, the taxi in beta, 427,261, 1.31-1.35 ms, the A320's
+  touchdown with reversers 428,965, 1.32-1.35. `sizeof(Synth)` 52,872 B (+788 on the base).
+- **Unchanged elsewhere**: `render_same.sh` against 28518ba 960 identical, 0 differ; a320_pccheck 106 identical;
+  a320_bitcheck 5 of 7, the same checksums as the base (the 777's V2500 and LEAP difference, above); `cost.sh`'s 17
+  A320, device and Typhoon checksums identical to the base's. engines3d_check 349 checks, 0 failed. The release
+  image builds, 12,204,880 B (+24,816).
+
+To listen: `renders/atr72-recipe/` as above; `checks/lift-off/` the same 26 with `PR_LIFT` 0, to hear the lift;
+`checks/` the standing scene (x-atr72-static, 300 m and 50 m: ground idle, take-off, climb, idle, shutdown) and the
+landing without reverse; `checks/airframes/` the five matched scenes for seven airframes.
+
+Open questions for the user, by ear on the Tab5:
+
+1. **The lift**: on (the recipe's default) gives the propeller's low pitch on the speaker, at the price of the
+   approach's 3rd-5th standing 7-11 dB over the rush (the recording's 0-4.5) and 1 dB of loudness; off is the
+   physics.
+2. **The fundamental through the speaker**: the shared output high-pass (Butterworth, 180 Hz) takes 7.8 dB off a
+   120 Hz fundamental and 13 dB off beta's 85 Hz, in the full-range renders too; left as it is so the other aircraft
+   stay byte-identical, and the envelopes fitted through it.
+3. **Still as the base left them**: the cruise flyover heard from 5 s back (`Synth::HEARD`); AT72 as the four-bladed
+   -200; hotel mode as wired; the 100 to 82 % glide at 1,500 ft; reverse power and speed inferred; 100 % from 3,000 ft
+   on the way down.
 
 Copyright (c) 2026 Craig Smith. Part of Overhead's sound engine: PolyForm Noncommercial 1.0.0 ([LICENSE-POLYFORM.md](../../LICENSE-POLYFORM.md)), not the MIT licence of the rest of the repository.

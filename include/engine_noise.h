@@ -12,9 +12,13 @@
 // or geared fans, its airframe, tyres and APU. And a fighter's, the
 // Eurofighter Typhoon's two reheated EJ200s - its roar churning and tearing,
 // crackling behind it at high power - on a path of its own in
-// engine_noise.cpp (THE FIGHTER). And next a turboprop's, the ATR 72's and
-// ATR 42's: what it is asked as is here - Kind::TURBOPROP, its Engine
-// values, PropData, Sound::np - and its sound not made yet (THE TURBOPROP).
+// engine_noise.cpp (THE FIGHTER). And a turboprop's, the ATR 72's and ATR
+// 42's: its propellers' blades passing - their harmonics each a resonance,
+// their speed stepping as its crew set it and gliding between, the two
+// propellers locked together in the air and apart on the ground - its
+// gearbox's line near a kilohertz, its gas generators' whine, its
+// propellers' rush, on a path of its own too (THE TURBOPROP), asked as
+// Kind::TURBOPROP, its Engine values, PropData and Sound::np.
 //
 // What it is made of is noise, and what noise does through a resonance. A
 // tone heard from the ground is never a sine: a fan's blade-passing whine
@@ -83,7 +87,7 @@ enum class Kind : uint8_t {
     NONE,        // nothing: fades out
     TURBOFAN,    // an airliner's: the fans' whine, the roar, the buzz-saw at full power
     LOW_BYPASS,  // a fighter's, a trainer's: the Typhoon's EJ200s (Engine::EJ200)
-    TURBOPROP,   // a propeller airliner's: the ATR 72's and 42's (PropData) - its sound not made yet, silent
+    TURBOPROP,   // a propeller airliner's: the ATR 72's and 42's (PropData)
     PISTON,      // not made yet - silent
     ROTOR,       // not made yet - silent
 };
@@ -366,14 +370,19 @@ class Synth {
     struct Rng;
     void fighterRender(float *mix, const float *lateA, const float *lateB, const float *noiseA, const float *noiseB,
                        Rng &rng, int n);
-    // The turboprop's - Kind::TURBOPROP: its four places, as the fighter's
-    // are, each empty for now - its sound not made yet - so it plays silence
-    // through the shared rest. See engine_noise.cpp's THE TURBOPROP.
+    // The turboprop's - Kind::TURBOPROP: its places, as the fighter's are -
+    // its controls each 2ms step and each 32ms one; its broadband, its
+    // propellers' comb and its wheels' thumps and squeal into the step's mix
+    // before the air's muffling and the echo off the ground; and its tones
+    // after them, each with the air's loss and the echo worked out for its
+    // own pitch, as the airliner's are. See engine_noise.cpp's THE TURBOPROP.
     void propStep();
     void propSlowStep();
+    void propDoing();
     void propRestart();
     void propRender(float *mix, const float *lateA, const float *lateB, const float *noiseA, const float *noiseB,
                     Rng &rng, int n);
+    void propTones(float *mix, const float *noiseA, const float *noiseB, int n);
 
     // The noise as a step's samples have it: the seed in a register, copied
     // in and back once a step, not read from the synth - in the PSRAM - and
@@ -589,6 +598,51 @@ class Synth {
         int ringAt = 0;
     };
     Jet jet_;
+
+    // The turboprop's own (Kind::TURBOPROP) - what the airliner's sums don't
+    // have: see engine_noise.cpp's THE TURBOPROP. It shares the airliner's
+    // bank, its surges', shimmer's and flicker's states, the first of its
+    // buzz-saws' combs and its place - both propellers' comb of blade
+    // harmonics here - and the tyres' squeal and the nose wheel's thump, none
+    // of which an airliner's sound runs while a turboprop's plays.
+    struct Prop {
+        // Heard: which way it faces, how fast it is closing - eased in 35ms,
+        // the fighter's, not the airliner's quarter second - and the Doppler
+        // from that.
+        float aspect = 0.5f, closing = 0, doppler = 1;
+        // Its two propellers, the left - the master - and the right: each
+        // one's speed as a share of its 100% (PropData::rpm100) and how fast
+        // that is changing; how far its blades have come out of feather, 0
+        // feathered to 1 biting; and, ungoverned in beta, how far its speed
+        // wanders - a slow process each - and the right one's off the left's.
+        float np[2] = {0.71f, 0.71f}, npRate[2] = {}, pitch[2] = {1, 1}, wander[2] = {}, split = 0;
+        // Governed, 1, or in beta on the ground, 0, eased; the static share,
+        // 1 standing to 0 by 40m/s, and its reverse pitch, 0 to 1; its shaft
+        // power as a share of its take-off's, lagged; the governor's own
+        // hunting, both propellers together; and on the ground, 1, or in the
+        // air, 0.
+        float governed = 1, stat = 0, reverse = 0, torque = 0, hunt = 0, ground = 0;
+        // Its two gas generators, the left and the right: each one's spool,
+        // 0 stopped to 1 idling or above, its fire, its speed (NH) as a share
+        // of its 100%, and its whine's own offset and wander.
+        float spool[2] = {1, 1}, lit[2] = {1, 1}, nh[2] = {0.66f, 0.66f}, whineBy[2] = {}, whineX[2] = {};
+        // The synchrophaser's phase between the two propellers, as a share of
+        // a blade's passing - the airframe's own; and the harmonics' shared
+        // surge, its quick and slow parts.
+        float psi = 0, surgeQ = 0, surgeS = 0;
+        // The low band under the bank's: its two stages' last two outputs,
+        // its loudness now and its change each sample.
+        float lowY1 = 0, lowY2 = 0, lowZ1 = 0, lowZ2 = 0, lowGain = 0, lowBy = 0;
+    };
+    Prop prop_;
+    // Its tones after the air's muffling and the echo: its blade harmonics
+    // k = 1-6 - the right propeller's apart only in beta, where the two run at
+    // their own speeds, and only where the speaker plays them - the
+    // fundamental's steady line while governed, the gearbox's line, each gas
+    // generator's whine and the haystack about them - see engine_noise.cpp's
+    // PropSlot.
+    static constexpr int PROP_TONES = 16;
+    Tone propTones_[PROP_TONES];
 };
 
 }  // namespace engine_noise

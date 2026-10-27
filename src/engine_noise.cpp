@@ -334,11 +334,13 @@ static_assert(sizeof ENGINES / sizeof ENGINES[0] == (size_t)Engine::PW120_14SF +
 //    lines 2.4% apart, each engine's own [M: fs315660, fs166417 (CC BY 4.0),
 //    targets 5.1]; its impellers' blades not published, so no order of its
 //    spool's turning.
-//  - Their reduction gearbox's lines at 48.8 and 72.9 times the
-//    propeller's turning, locked to it within 0.2% at three speeds [M:
-//    aboard at Kajaani, turboprop-methods 1.6]; heard outside on the
-//    approach at 47.7 ± 0.6 - "probably the same line" as the first - and
-//    the second not at all, 450m off [M: targets 5.2].
+//  - Their reduction gearbox's lines: the first as heard outside, 47.7
+//    times the propeller's turning - 7.94 times the blades' passing on
+//    an ATR 72's approach, ± 0.6, 6-16dB over its neighbours 450m off and
+//    12-25 close [M: fs315660, fs166417, targets 5.2] - aboard at Kajaani
+//    48.8, "probably the same line" [M: turboprop-methods 1.6, locked to
+//    the propeller within 0.2% at three speeds]; the second at 72.9,
+//    heard aboard only - not outside, 450m off [M: targets 5.2].
 //  - Hotel mode on their right engine - "the propeller is held stationary
 //    by a hydraulically operated brake, allowing the right engine to
 //    operate as an auxiliary power unit" - and no APU in the type design
@@ -359,7 +361,7 @@ const PropData PROPS[] = {
     {Engine::PW127_568F, "ATR 72-500/-600", 2, 6, 1200, 3.93f, 4.05f, 2.80f,
      0.71f, 0.82f, 1.00f, 1.00f, 1.00f, 0.12f, 0.022f, true, 0.005f,
      0.886f, 0.861f, 0.50f, 0.05f, 0.22f, 0.70f,
-     34360, 5682, 48.8f, 72.9f, true, false},
+     34360, 5682, 47.7f, 72.9f, true, false},
     // The ATR 72-200 (AT72): PW124Bs, four-bladed 14SF-11s 3.96m across, the
     // tips 0.82m up; 2,160shp each for take-off, 2,088 its maximum climb and
     // cruise [P: the ATR 72-200's fact sheet, refs/atr72/tcds]. Certified
@@ -372,7 +374,7 @@ const PropData PROPS[] = {
     {Engine::PW124_14SF, "ATR 72-200", 2, 4, 1200, 3.96f, 4.05f, 2.80f,
      0.71f, 0.82f, 1.00f, 1.00f, 1.00f, 0.12f, 0.022f, true, 0.005f,
      0.967f, 0.967f, 0.58f, 0.05f, 0.25f, 0.70f,
-     34200, 5682, 48.8f, 72.9f, true, false},
+     34200, 5682, 47.7f, 72.9f, true, false},
     // The ATR 72-210 (AT73): PW127s - 2,475shp for take-off [P: EASA TCDS
     // IM.E.041, 1,846kW] - turning four-bladed 247Fs [P: EASA TCDS A.084],
     // their diameter not found, 3.93m [I]. Certified 84.7 / 80.9 /
@@ -380,7 +382,7 @@ const PropData PROPS[] = {
     {Engine::PW127_247F, "ATR 72-210", 2, 4, 1200, 3.93f, 4.05f, 2.80f,
      0.71f, 0.82f, 1.00f, 1.00f, 1.00f, 0.12f, 0.022f, true, 0.005f,
      0.886f, 0.861f, 0.50f, 0.05f, 0.22f, 0.70f,
-     34360, 5682, 48.8f, 72.9f, true, false},
+     34360, 5682, 47.7f, 72.9f, true, false},
     // The ATR 42-400/-500/-600 (AT44, AT45, AT46): the 72-500's six-bladed
     // 568Fs on PW121As or PW127E/Ms [P: TCDS A.084], its axes as far apart
     // and as high [P: the ATR 42-600's fact sheet]; 2,160shp each for
@@ -393,7 +395,7 @@ const PropData PROPS[] = {
     {Engine::PW127_568F_42, "ATR 42-500/-600", 2, 6, 1200, 3.93f, 4.05f, 2.80f,
      0.71f, 0.82f, 1.00f, 1.00f, 1.00f, 0.12f, 0.022f, true, 0.005f,
      1.00f, 0.987f, 0.48f, 0.05f, 0.20f, 0.70f,
-     34360, 5682, 48.8f, 72.9f, true, false},
+     34360, 5682, 47.7f, 72.9f, true, false},
     // The ATR 42-300/-320 (AT43): PW120s or PW121s - 1,342 and 1,454kW
     // (1,800 and 1,950shp) for take-off, the PW120's maximum continuous
     // 1,268kW [P: TCDS IM.E.041] - turning four-bladed 14SF-5s [P: TCDS
@@ -406,7 +408,7 @@ const PropData PROPS[] = {
     {Engine::PW120_14SF, "ATR 42-300/-320", 2, 4, 1200, 3.96f, 4.05f, 2.80f,
      0.71f, 0.82f, 1.00f, 0.91f, 1.00f, 0.12f, 0.022f, true, 0.005f,
      0.95f, 0.90f, 0.55f, 0.05f, 0.24f, 0.70f,
-     34350, 5682, 48.8f, 72.9f, true, false},
+     34350, 5682, 47.7f, 72.9f, true, false},
 };
 // A turboprop with no row of its own (Engine::GENERIC): a twin like an ATR
 // 72-600, its blades passing at Sound::bladeHz at 100% - 120Hz unless set,
@@ -2550,35 +2552,1263 @@ __attribute__((noinline)) void Synth::fighterRender(float *mix, const float *lat
 #endif
 }
 
-// THE TURBOPROP - Kind::TURBOPROP, the ATR 72's and ATR 42's (PROPS) - its
-// sound not made yet: what it is asked as is settled, and where in the
-// synth it will be made, so every build of it starts from the same place
-// (tools/engine_preview/NOTES.md, the turboprop's shared base). Asked as: its
-// engines and propellers from its row (PropData), its propellers' speed as
-// its crew set it (Sound::np) and its shaft power (Sound::power), both from
-// what it is doing (engines3d::ask()); its reverse pitch; its hotel mode
-// (Sound::apu); and, as an airliner's, where it and the camera are, its
-// tyres, its gear and flaps. Shared already: its fade in and out, its way -
-// placed, its two propellers as far apart as its row has them - its start's
-// spool and its gas generator's speed (engines(), from its neutral row in
-// ENGINES), the tyres' timing (tyresStep()), the spreading and the air's
-// muffling's tuning (slowStep()), the muffling, the echo off the ground, the
-// level, the speaker's high-pass and the limiter (render()). Its four places,
-// each empty, so it plays silence:
-//  - propRestart(): another starting (restart());
-//  - propStep(): each 2ms step, once its way and engines are worked out
-//    (update());
-//  - propSlowStep(): each 32ms, once the spreading, the held-back and the
-//    muffling's tuning are, in place of the airliner's sums (slowStep());
-//  - propRender(): each step, its sources into the mix before the air's
-//    muffling and the echo (render()) - the bank's noises, `lateA` and
-//    `lateB`, and the tones' two, `noiseA` and `noiseB`, as the fighter has.
-__attribute__((noinline)) void Synth::propRestart() {}
-__attribute__((noinline)) void Synth::propStep() {}
-__attribute__((noinline)) void Synth::propSlowStep() {}
-__attribute__((noinline)) void Synth::propRender(float *, const float *, const float *, const float *, const float *,
-                                                 Rng &, int) {}
+// THE TURBOPROP - the ATR 72's and ATR 42's sound (Kind::TURBOPROP, PROPS),
+// as heard from where the camera is: at its stand, beside the taxiway and
+// the runway, under the climb and the approach, behind it in the chase.
+//
+// Made as turboprop-methods.md's recipe (section 13) has it, on the A320's
+// resonator design - every tone noise through a resonance, the broadband a
+// few bands moved by a few shared slow processes, nothing replayed - its
+// figures fitted to what CC0 and CC BY recordings of ATRs and their kin
+// measure (targets/atr72.md). Every figure below says where it comes from:
+// [P] published, [M] measured on those recordings, [I] inferred, [O] this
+// project's own. What makes an ATR an ATR, on a speaker that plays nothing
+// much below 300Hz [M: targets 0.2-0.3]:
+//  - its propellers' blades passing, 85 to 120Hz and their harmonics: each
+//    harmonic up to the sixth a resonance of its own. At the distances the
+//    cameras sit a propeller's harmonics above the second fade and swell
+//    apart, each as narrow-band noise does - their level wandering 3.6 to
+//    5.2dB, their phases all but free of each other's, no band swelling
+//    once a blade's passing [M: turboprop-methods 1.3, 1.4] - which a pulse
+//    a blade, or any one waveform, can't do: that is a buzzer, its
+//    harmonics locked (coherence 0.96-1.00), every band chopping [M: its
+//    prototype B]. The fundamental steadier while governed, a steady line
+//    under it - heard outside, its level wandering 2.4-5.1dB against
+//    narrow-band noise's 5.4 [M: targets 4.4] - and the first two swelling
+//    and fading together as the bearing to the two propellers turns. From
+//    the seventh up a comb: a delay of one blade's passing fed back, a line
+//    at every harmonic, each fading on its own [M: its option 4, coherence
+//    0.17-0.46], played where those harmonics stand: on the ground and at
+//    take-off power.
+//  - how strong each harmonic is by what the blades are doing: falling
+//    steeply in flight - 6-18dB from the first to the third, nothing from the
+//    fourth up standing over 4dB 270-450m off - richer at take-off power, its
+//    third to fifth still 8-9dB over the rush heard from ahead - and flat and
+//    long in beta on the ground, the second to the eighth all standing, the
+//    first the weakest [M: targets 4.3].
+//    RP-1258 has it: standing, high levels "that tend to dominate the
+//    higher sound harmonics ... disappears quickly when a small amount of
+//    forward speed is attained" [P: NASA RP-1258 vol. 1, ch. 1,
+//    https://ntrs.nasa.gov/citations/19920001380];
+//  - its propellers' speed as its crew set it, not following the power: 71%
+//    on the ground in beta, 100% for take-off and the approach, 82% climbing
+//    and cruising [P: BEA, 9Y-TTC] - up from beta in some 2.5s and down from
+//    take-off to climb in a straight glide of 8.5s, every propeller line on
+//    the aircraft moving together [M: targets 4.1];
+//  - its two propellers locked together while governed - one line each
+//    harmonic, no beat [P: ATR at EWADE 2011; M] - their steady parts
+//    swelling and fading as the bearing to them changes, two sources 8.10m
+//    apart; and in beta, where nothing governs them, each its own speed, a
+//    few tenths of a percent to a few percent apart and wandering [M: a
+//    taxiing Dash 8's 4-5%, targets 3.6's pitch wander 1.1-2.4%];
+//  - the missing fundamental: the harmonics the speaker plays, the third to
+//    the sixth, carry the low pitch the ear supplies - resolved harmonics
+//    give it whatever their phases [P: Houtsma & Smurzynski 1990,
+//    https://doi.org/10.1121/1.399297] - so in flight, where the measured
+//    fall leaves them 15-26dB under the first climbing and 24-38 on the
+//    approach, the first one the speaker can't play, they are lifted to no
+//    less than its level less 10dB an octave of harmonic number and no more
+//    than less 3, as Moliner et al. bound theirs [P: DAFx 2020,
+//    https://acris.aalto.fi/ws/portalfiles/portal/51973173/Eloi2020_Virtual_bass_DAFx2020.pdf]
+//    - PR_LIFT, the user's to judge;
+//  - its gearbox's line near a kilohertz, locked to the propeller, loudest
+//    ahead [M: targets 5.2], where the speaker is good and the blades'
+//    harmonics have died away;
+//  - its gas generators' whine near 5.7kHz on the approach, far out two
+//    lines a couple of percent apart - each engine's own speed, where the
+//    governed propellers' lines are one [M: targets 5.1] - and a haystack
+//    about it around overhead [M: turboprop-methods 1.7];
+//  - its propellers' rush, darker than an airliner's at power and churning
+//    livelier, its octaves moving together more [M: targets 3.1, 3.5]; and
+//    at its stand in hotel mode its right gas generator alone, no propeller
+//    turning [P: AAIB, G-CMFI].
+// And its way to the ear as the airliner's, with three things of its own: its
+// Doppler eased in 35ms, as the fighter's - a pass sweeps a whole harmonic
+// series and the gearbox's line together, and the airliner's 0.25s left a
+// close pass's pitch 1.2 semitones late [I: turboprop-methods 10]; each of
+// its tones' echo off the ground let swell and fade by up to 6dB at 300Hz
+// and under, 2 from 1.5kHz, where the airliner's is held to 2 - a
+// propeller's harmonics phasing in and out as it passes overhead is the
+// ground's, and the reflection is coherent that low [I: turboprop-methods
+// 11]; and its two propellers 4.05m either side of it, not the airliner's
+// engines' 5.75m (placedWay()).
 
+namespace {
+
+// Its level: its two propellers' fundamental at take-off power and 100%,
+// abeam, dB as the airliner's sources are reckoned - set so that its
+// take-off beside the runway is some 6dB under the A320's in the speaker's
+// band, and its approach some 5dB under the A320's from the same place, as
+// the noise data puts them 5-8 and 4-6dB apart, A-weighted [P: EASA ANP
+// v2.3, https://www.easa.europa.eu/en/downloads/138164/en] - over seven
+// airframes the renders' take-off 6.1dB under, their approach 3.1 under with
+// the lift (PR_LIFT) on and 4.3 with it off (tools/engine_preview/NOTES.md).
+constexpr float PR_LEVEL_DB = -2.0f;
+// Its harmonics' level with its shaft power and its propellers' speed: as
+// the power, 10dB a decade of it - the noise data's approach to full power
+// 9-12dB at 100% [P: ANP], loading noise as the thrust [I: turboprop-methods
+// 4.3]; and as the speed's 2.5th power, some 4.3dB from 100% down to 82% [I:
+// Gutin's Bessel terms an upper bound, turboprop-methods 4.3].
+constexpr float PR_TORQUE_LAW = 10.0f, PR_SPEED_LAW = 50.0f;
+// In beta, the blades flat - their power next to nothing, as the 3D view
+// asks it, 0.05 to 0.17 - the propellers' harmonics and rush as their power
+// makes them, the harmonics PR_BETA_TONE_DB and the rush PR_BETA_RUSH_DB
+// more: what the ground's vortices and the distorted inflow add [P:
+// RP-1258, "high levels of unsteady-loading noise" standing], set so that a
+// taxi past 35m off is as loud in the speaker's band as the A320's - quiet
+// for its size in the air, not on the ground [I: atr72-sources 10] - and
+// its harmonics stand 6-12dB over the rush, as the taxiing Dash 8s' do [M:
+// targets 3.6].
+constexpr float PR_BETA_TONE_DB = -13.5f, PR_BETA_RUSH_DB = -6.0f;
+// The harmonics' envelope, dB under the strongest, for harmonics 1 to 8 -
+// and the slope on from there, dB an octave of harmonic number - fitted to
+// the outside recordings, not the Kajaani clip, which was recorded aboard
+// [M: targets 10.3]:
+//  - in clean flight at low power, the approach: the second 10dB under the
+//    first, the third 24 - fitted to the ATR 72 at 450m, its first standing
+//    13-16dB over the rush, its second 7-10, its third 0-4.5 and the rest
+//    lost in it [M: targets 3.1, 9], with the lift (PR_LIFT) off - then 14dB
+//    an octave;
+//  - in flight at high power, the climb: the second 10dB under, the third
+//    15 - the Q400 climb-outs' second 5-9dB under the first and their third
+//    8-13 as received [M: targets 3.5], the second fitted to their 5-12dB
+//    over the rush, their camera's and recorder's low end the weaker [I] -
+//    then 11dB an octave;
+//  - standing at take-off power: the second 7dB under the first, the third
+//    to the fifth 9.5, 12 and 14 - so that through the speaker's 180Hz
+//    high-pass, which takes 7.8dB off a 120Hz first and 1.2 off its second,
+//    they come out as the Q400's roll heard from ahead was received, its
+//    first two equal and its third to fifth 1.5, 4 and 6dB under [M: targets
+//    3.4], a camera's soundtrack, its low end the weaker [I] - then falling
+//    10dB an octave; on the ground at take-off power, rolling at any
+//    speed, half way to it from clean flight's, the propeller still taking
+//    in the ground's disturbed air [I: that roll's harmonics strong at
+//    70m/s];
+//  - in beta standing: the first weak, some 12dB under, the second to the
+//    sixth within 3dB of each other, falling 8dB an octave on [M: the two
+//    taxiing Dash 8s, targets 3.6 - the 7-11 harmonics standing 6-18dB to
+//    535-620Hz, the fundamental 0-5dB];
+//  - in reverse, flatter still, 6dB an octave [I: turboprop-methods 8].
+constexpr float PR_E_FLIGHT[8] = {0.0f, -10.0f, -24.0f, -31.0f, -35.0f, -38.0f, -41.0f, -44.0f};
+constexpr float PR_E_CLIMB[8] = {0.0f, -10.0f, -15.0f, -20.0f, -23.0f, -26.0f, -28.5f, -31.0f};
+constexpr float PR_E_TAKEOFF[8] = {0.0f, -7.0f, -9.5f, -12.0f, -14.0f, -20.0f, -24.0f, -27.0f};
+constexpr float PR_E_BETA[8] = {-12.0f, 0.0f, 0.0f, -1.0f, -2.5f, -3.5f, -6.0f, -8.5f};
+constexpr float PR_E_REVERSE[8] = {-6.0f, -2.0f, 0.0f, -1.0f, -2.0f, -3.0f, -4.0f, -5.0f};
+constexpr float PR_SLOPE_FLIGHT = -14.0f, PR_SLOPE_CLIMB = -11.0f, PR_SLOPE_TAKEOFF = -10.0f, PR_SLOPE_BETA = -11.0f,
+                PR_SLOPE_REVERSE = -6.0f;
+// The lift for the speaker - 0 the physics alone, 1 Moliner's bounds (see
+// above) - over the first four harmonics heard at 300Hz or more, up to the
+// sixth [I: turboprop-methods 7.3; the user's ear to judge].
+constexpr float PR_LIFT = 1.0f;
+// Each harmonic's width, Hz, as its fading's pace has it: 0.85Hz for the
+// third and 0.35Hz more for each harmonic on, in clean flight; 2.2 times
+// that standing, a fifth more in beta, 6Hz more in reverse [I]; and the
+// airliner's widening far off on top [M: the harmonics' amplitude moving at
+// 0.5-1.5Hz in flight, 1.6-2.3Hz standing, turboprop-methods 1.3; targets
+// 4.4: a governed fundamental's fading's correlation time 150ms, the
+// harmonics above it 85ms, on the ground 60ms]. The first two narrower
+// still, 0.2 and 0.4Hz: a governed fundamental is a line within 0.01Hz
+// standing [M: turboprop-methods 1.3], and so narrow a resonance's level
+// wanders slowly, a 2s mean's worth - steadier, as a governed one measures,
+// 2.4-5.1dB and 0.26-0.46 of its mean against narrow-band noise's 5.4dB and
+// 0.52 [M: targets 4.4] - its steady part's lobes, below, on its level.
+constexpr float PR_WIDTH_1 = 0.2f, PR_WIDTH_2 = 0.4f, PR_WIDTH_3 = 0.85f, PR_WIDTH_BY = 0.35f, PR_WIDTH_STATIC = 1.2f,
+                PR_WIDTH_REVERSE = 6.0f;
+// The steady part of the first two harmonics while governed: K, its power
+// over the random part's - the fundamental's 4, the second's 0.8 - as heard
+// outside: a governed fundamental's amplitude wandering 0.26-0.46 of its
+// mean, its level 2.4-5.1dB, the harmonics above it 0.38-0.68 [M: targets
+// 4.4, the ATR 72's approach and the Q400's roll and climbs]; K 1 to 5 makes
+// 0.45 to 0.27 alone, the ground's echo and the two propellers' lobes
+// adding to it. The fundamental's steady part a line of its own; the
+// second's only its share of the level the two propellers' lobes move.
+// (The 5.6-10.6 of turboprop-methods 1.3 was measured aboard [M: targets
+// 10.3]: the cabin's, steadier.) None in beta, where the first is as random
+// as the rest.
+constexpr float PR_K1 = 4.0f, PR_K2 = 0.8f;
+// Ungoverned in beta, each propeller's speed wandering 1%, over most of a
+// second [M: the strongest harmonic's pitch wandering 1.1-2.4% taxiing,
+// targets 4.4, its resonance's own wander adding to it]; the right running
+// half a percent off the left (its row's splitBeta). Governed, the two
+// hunting together a tenth of a percent, the propeller control holding
+// them to a rpm or so [P: ATR at EWADE 2011; M: governed 0.13-0.83%, the
+// resonances' own wander most of it].
+constexpr float PR_WANDER = 0.010f, PR_WANDER_S = 0.8f, PR_HUNT = 0.0012f, PR_HUNT_S = 0.7f;
+// The harmonics' shared surge: all of them, and the steady line, a little
+// together - their 50ms wanders correlated -0.2 to +0.3 between harmonics,
+// so not much [M: turboprop-methods 6] - nepers, and its two parts' time
+// constants, s.
+constexpr float PR_TONE_SURGE_NP = 0.10f, PR_TONE_SURGE_Q_S = 0.4f, PR_TONE_SURGE_S_S = 1.15f;
+// The comb's lines, from the seventh harmonic up: each as wide as 2.5Hz in
+// clean flight, twice that standing [I: turboprop-methods 6, 2-3 and 4-6Hz],
+// and the airliner's widening far off.
+constexpr float PR_COMB_WIDTH = 2.5f;
+// The gearbox's line [M: targets 5.2; aboard, turboprop-methods 1.6]: at
+// its row's gearA times the propeller's turning, 22dB under the fundamental
+// on the approach - 26 by the order spectrum at 450m, -19 to -21 by its
+// heterodyne - 6-16dB over its neighbours there, 12-25 close; as the root of
+// the shaft power and the speed's 1.5th power [I: a gear mesh's whine];
+// 0.4Hz wide, wandering slowly, as measured aboard [M: 2.5-3.7dB,
+// 0.65-0.75Hz]. Its second line, gearB, heard aboard only - under the rush
+// 450m off [M: targets 5.2] - is not played.
+constexpr float PR_GEAR_A_DB = -22.0f, PR_GEAR_WIDTH = 0.4f;
+// The gas generators [M: targets 5.1; turboprop-methods 1.7]: each one's
+// whine at its row's whineHz at the approach's speed (NH 85% [I]), as the
+// speed goes; its level, dB under the fundamental at take-off power, and
+// as the speed's fourth power [I: a compressor's tone]; the two engines a
+// couple of percent apart, each wandering a quarter of a percent over three
+// seconds [M: far out two lines 2.4% apart; I: the torque trimmed on the
+// approach]; and a haystack about them, 250Hz wide at 5.9kHz on the
+// approach, heard around overhead [M: turboprop-methods 1.7].
+constexpr float PR_WHINE_DB = -36.0f, PR_WHINE_APART = 0.012f, PR_WHINE_WANDER = 0.0025f, PR_WHINE_S = 3.0f;
+constexpr float PR_HAY_HZ = 5900, PR_HAY_WIDTH = 250, PR_HAY_DB = -36.0f;
+// The broadband, each source's level, dB as the harmonics' are, and its
+// peak, Hz, before the air's loss [M: targets 3.1-3.6, the octaves' shapes;
+// I: what makes each]:
+//  - the propellers' loading rush: the turbulence through the discs and the
+//    blades' unsteady loading - as the power's cube and the speed's
+//    third, most at 450Hz at 100%, rising 3dB an octave under it, falling
+//    6dB an octave over: a climb-out's dark, low-weighted band [M: the Q400
+//    climb-outs' centroid 600-895Hz, their 250 and 500Hz octaves the
+//    loudest]; 6dB more standing at take-off power, and behind it at its
+//    start of roll as Doc 29 has it, up to 10dB over the side [P: ECAC Doc
+//    29 4th ed. vol. 2, eq. 4-24b];
+//  - the blades' own edges and tips: as the speed's fifth power, little
+//    with the power, most at 1.2kHz at 100%, rising 12dB an octave under,
+//    falling 2dB over - the approach's hump at a kilohertz over a weaker
+//    500Hz [M: the ATR 72 at 450m, its octaves 500Hz to 4kHz -7.0, -3.3,
+//    -7.0 and -14.9dB against the band, the 1kHz the loudest];
+//  - its gas generators' exhaust, hot and slow, from the nacelles' sides:
+//    weak, aft, most at 400Hz [I: atr72-sources 4];
+//  - its gas generators' compressors, out of the intakes: most at 2.2kHz,
+//    as a Dash 8's gas generator alone, and loud on the ground - beta
+//    taxiing only 4-7dB over the gas generator alone [M: its 2-2.5kHz bands
+//    the loudest, atr72-sources 4, 14.2] - the taxi's brightness [M: the
+//    taxiing Dash 8s' centroid 1.7kHz, their 4kHz octave 7dB under the
+//    band];
+//  - its blades in reverse pitch: a roar most at 630Hz falling 11dB an
+//    octave over a kilohertz, 8dB over the roll-out before it [M: the ATR
+//    42-500 at London City, targets 3.3];
+//  - its airframe as the A320's, PR_FRAME_DB under: its gear and flaps at
+//    113 knots against an A320's 136, and smaller [I: turboprop-methods 13.2];
+//  - the propellers' low rush, most at 170Hz at 100% - the turbulence they
+//    take in broadening their first harmonics, the blades' leading edges -
+//    falling 9dB an octave over it, as the speed's fifth power and little
+//    with the power: under the bank's bands, a ninth of its own at 140Hz -
+//    the speaker plays none of it, a full-range one all - as loud in the
+//    250Hz octave as the whole 300Hz-6kHz band on the approach 450m off,
+//    under the first two harmonics 10-12dB down, a hertz-fine floor [M:
+//    fs315660, targets/atr72.json; the noise data's approach spectrum, its
+//    160Hz third-octave 8.5dB over its 1kHz one, P: ANP class 240].
+constexpr float PR_LOAD_DB = -12.0f, PR_LOAD_HZ = 450, PR_LOAD_STATIC_DB = 6.0f;
+constexpr float PR_LOW_DB = -15.0f, PR_LOW_HZ = 170, PR_LOW_BAND_HZ = 140;
+constexpr float PR_EDGE_DB = -19.0f, PR_EDGE_HZ = 1200;
+constexpr float PR_EXHAUST_DB = -27.0f, PR_EXHAUST_HZ = 400;
+constexpr float PR_GG_DB = -24.0f, PR_GG_HZ = 2200;
+constexpr float PR_REVERSE_DB = -17.0f, PR_REVERSE_HZ = 630;
+constexpr float PR_FRAME_DB = -7.0f;
+// The tyres' squeal touching down against the A320's - four main wheels on
+// a third of its weight, "a short, light chirp" [I: atr72-sources 6] - and
+// the nose wheel's thump over each centreline light.
+constexpr float PR_SQUEAL = 0.3f, PR_THUMP = 0.5f;
+// The broadband sources' surges, each as the airliner's are - how far, in
+// nepers of its loudness, its quick and slow parts' time constants, s, and
+// the quick part's weight - by the airliner's Source places: its loading
+// rush in OF_FAN's, its blades' edges in OF_FAN_AFT's, its exhaust in
+// OF_JET's, its compressors in OF_CORE's; its airframe, reverse and combs
+// in theirs. Livelier than an airliner's - a turboprop's level churns
+// 1.5-2.7dB on the approach where an A320's churns 1.0-1.6, its octaves
+// moving together 0.29-0.73 against 0.23-0.37 [M: targets 0.7], surging some
+// once a second by 2.5dB, its fluctuation's correlation time 130-150ms [M:
+// the approach passes, targets/atr72.json] - its two propeller sources on one
+// surge, so the whole band moves with them, quickly.
+constexpr float PR_SURGE_NP[Synth::SOURCES] = {0.15f, 0.36f, 0.26f, 0.10f, 0.24f, 0.25f, 0.20f, 0.10f, 0.20f};
+constexpr float PR_SURGE_QUICK_S[Synth::SOURCES] = {0.35f, 0.15f, 0.25f, 0.30f, 0.40f, 0.12f, 0.25f, 0.30f, 0.30f};
+constexpr float PR_SURGE_SLOW_S[Synth::SOURCES] = {1.15f, 0.5f, 1.0f, 1.3f, 1.15f, 0.50f, 1.0f, 1.7f, 1.15f};
+constexpr float PR_SURGE_QUICK_W[Synth::SOURCES] = {0.5f, 0.75f, 0.5f, 0.6f, 0.4f, 0.8f, 0.5f, 0.6f, 0.4f};
+// ...and standing, its rush as steady as a taxiing Dash 8's - 0.65-0.86dB, at
+// 1-4Hz a tenth of it [M: targets 3.6] - nepers. Each band's own shimmer
+// two thirds of the airliner's, so the octaves move together as much as a
+// turboprop's do.
+constexpr float PR_RUSH_STILL_NP = 0.12f, PR_RUSH_LOW_NP = 0.10f, PR_RUSH_FAR_NP = 0.2f, PR_SHIMMER = 0.67f;
+// The air's flicker, as the airliner's but 0.6 of its depth: far off an
+// approaching turboprop churns 0.9-1.2dB [M: targets 3.1, 1.4-2km], where the
+// airliner's 1.25dB at a kilometre, more further, left it 1.6.
+constexpr float PR_FLICKER = 0.6f;
+
+//                             0     20    40    60    80   100   120   140   160   180
+// The blade tones, most near the propellers' plane, a little ahead of it in
+// flight - at low power the first two -12dB at 30-40 degrees, nought at
+// 60-70, -18 to -23dB at 110-140 [M: the ATR 72's approach,
+// turboprop-methods 1.9, targets 4.6]; at high power far less deep ahead,
+// -7 to -10dB at 20 degrees, -5 at 40-60 [M: the two Q400 climb-outs,
+// targets 4.6; and its take-off roll's harmonics strong heard from ahead,
+// targets 3.4] - its loading's thrust term radiating forward [P: Gutin, NACA
+// TM 1195, https://ntrs.nasa.gov/citations/20030068996]; behind, 7-32dB down
+// beyond 110 degrees, typically 19, at either. The higher harmonics at low
+// power narrower toward the axis - its steady loading's harmonics nothing
+// there, the Bessel terms falling steeply with the harmonic's number, the
+// axis filled only by unsteady loading and scattering [P: Gutin; I] - -26 to
+// -30dB ahead and behind, as an approach 1.5-2km out has its third and up
+// lost in the rush where its first still stands 9dB [M: fs315660, targets
+// 3.1]; at high power as broad as the first two. Between the two by the
+// power (PROP_TONE and PROP_HIGH, their _POWER twins). Standing, broader
+// still - the distorted inflow's unsteady loading radiating all round - a
+// third as deep (PR_STATIC_LOBE).
+constexpr Lobe PROP_TONE = {-18.0f, -17.0f, -10.0f, -2.0f, 0.0f, -2.0f, -13.0f, -19.0f, -22.0f, -25.0f};
+constexpr Lobe PROP_HIGH = {-28.0f, -26.0f, -15.0f, -4.0f, 0.0f, -3.0f, -15.0f, -22.0f, -27.0f, -30.0f};
+constexpr Lobe PROP_TONE_POWER = {-10.0f, -8.5f, -5.5f, -4.0f, -1.0f, -3.5f, -12.0f, -19.0f, -23.0f, -26.0f};
+constexpr Lobe PROP_HIGH_POWER = {-12.0f, -10.0f, -7.0f, -4.0f, -1.0f, -4.0f, -13.0f, -20.0f, -24.0f, -27.0f};
+constexpr float PR_STATIC_LOBE = 0.65f;
+// The gearbox's line, loudest ahead, 8dB down abeam, 4 behind [M: targets
+// 5.2; turboprop-methods 1.6].
+constexpr Lobe GEARBOX = {0.0f, 0.0f, -4.0f, -6.5f, -7.6f, -7.7f, -6.5f, -4.0f, -3.0f, -3.0f};
+// The propellers' rush: within some 5dB from 20 to 130 degrees, 7-15dB down
+// by 150-160 [M: targets 4.6, three passes - the ATR 72's approach -7 to -11
+// at 120-140 degrees, the two Q400 climb-outs nought to -6]; standing at
+// take-off power, behind it as Doc 29's start of roll has it [P: Doc 29 eq.
+// 4-24b: +6.9dB at 150 degrees, +10.1 at 180, against the side].
+constexpr Lobe PROP_BROAD = {-6.0f, -5.0f, -2.0f, 0.0f, -1.0f, -1.0f, -2.0f, -5.0f, -11.0f, -16.0f};
+constexpr Lobe PROPWASH = {-6.0f, -5.0f, -2.0f, 0.0f, -1.0f, -1.0f, -2.0f, 2.0f, 7.0f, 10.0f};
+// Its exhaust, to the side and aft; its compressors and their whine, out of
+// the intakes ahead and to the side; the haystack, ahead and below, gone
+// behind [I: atr72-sources 14.1-14.6; M: turboprop-methods 1.7].
+constexpr Lobe EXHAUST = {-12.0f, -11.0f, -9.0f, -7.0f, -4.0f, -2.0f, 0.0f, 0.0f, -1.0f, -3.0f};
+constexpr Lobe INTAKES = {0.0f, 0.0f, -1.0f, -2.0f, -3.0f, -4.0f, -6.0f, -9.0f, -12.0f, -15.0f};
+constexpr Lobe WHINES = {-4.0f, -2.0f, -1.0f, 0.0f, 0.0f, -1.0f, -3.0f, -7.0f, -11.0f, -15.0f};
+constexpr Lobe HAYSTACK = {-8.0f, -5.0f, -2.0f, 0.0f, 0.0f, -1.0f, -4.0f, -10.0f, -16.0f, -20.0f};
+
+// The turboprop's tones' places in propTones_.
+enum PropSlot {
+    PR_HARM = 0,     // the harmonics 1-6 - both propellers' governed, the left's in beta - 0-5
+    PR_HARM_R = 6,   // the right propeller's 2-6 in beta, those heard at 300Hz or more, 6-10
+    PR_STEADY = 11,  // the fundamental's steady line, governed
+    PR_GEAR = 12,    // the gearbox's line
+    PR_WHINE = 13,   // each gas generator's whine, 13-14
+    PR_HAY = 15,     // the haystack about them
+};
+
+}  // namespace
+
+// The propellers' low band, under the bank's: a band-pass and a resonance on
+// the same poles at PR_LOW_BAND_HZ, as each of the bank's bands is (see
+// Synth()), scaled for a noise of unit power to come out of it at unit power.
+struct LowBand {
+    float b0, a1, a2;
+    LowBand() {
+        float s, c;
+        sinCosTurns(PR_LOW_BAND_HZ / RATE, s, c);
+        float alpha = s / (2 * BAND_Q), a0 = 1 + alpha;
+        b0 = alpha / a0, a1 = -2 * c / a0, a2 = (1 - alpha) / a0;
+        float y1 = 0, y2 = 0, z1 = 0, z2 = 0, sum = 0;
+        for (int i = 0; i < 16000; i++) {
+            float x = i == 0 ? 1.0f : i == 2 ? -1.0f : 0.0f;
+            float y = b0 * x - a1 * y1 - a2 * y2;
+            float z = y - a1 * z1 - a2 * z2;
+            y2 = y1, y1 = y, z2 = z1, z1 = z;
+            sum += z * z;
+        }
+        b0 = -b0 / sqrtf(sum / 3);  // turned over: its neighbour on the same noise is the bank's 400Hz band
+    }
+};
+const LowBand &lowBand() {
+    static const LowBand band;
+    return band;
+}
+
+// Another turboprop starting: as it is now - its propellers turning at the
+// speed asked if its engines run, its hotel mode's right engine running if
+// asked - its own little differences from who it is.
+__attribute__((noinline)) void Synth::propRestart() {
+    const Sound &s = heard_;
+    const PropData &p = propData(s.engine);
+    const EngineData &e = ENGINES[(int)s.engine];
+    Prop &q = prop_;
+    q = Prop();
+    q.aspect = clamp01(s.aspect);
+    q.closing = std::max(-SOUND_MS, std::min(0.8f * SOUND_MS, s.closingMs));
+    q.doppler = SOUND_MS / (SOUND_MS - q.closing);
+    uint32_t h = mix(traits_ ^ 0x70726f70u);
+    auto next = [&]() {
+        h = mix(h + 0x9e3779b9u);
+        return unit(h);
+    };
+    // The synchrophaser's phase between its two propellers, the airframe's
+    // own [I: the ATR's setting not published]; its gas generators' whines
+    // a percent or so either side of their mean, the right's the higher or
+    // the lower by who it is [M: 2.4% apart far out].
+    q.psi = next();
+    lowBand();  // worked out once, before its first sums
+    float apart = PR_WHINE_APART * (0.6f + 0.8f * next()) * (next() < 0.5f ? -1 : 1);
+    q.whineBy[0] = -apart;
+    q.whineBy[1] = apart;
+    // Its propellers as they are now: their speed asked, or the synth's own
+    // guess from its power; governed or in beta; its power; its engines.
+    bool onGround = s.rollingMs > 0.5f || (s.sourceUpM < 12 && s.airspeedMs < 35);
+    bool beta = onGround && (s.reverse || s.power < 0.2f);
+    float np = s.np >= 0 ? s.np : beta ? (s.reverse ? p.npReverse : p.npGround) : p.npClimb;
+    q.governed = beta ? 0.0f : 1.0f;
+    q.reverse = s.reverse ? 1.0f : 0.0f;
+    q.torque = clamp01(s.power);
+    q.stat = onGround ? 1 - smoothstep(15, 40, std::max(0.0f, s.airspeedMs)) : 0.0f;
+    for (int g = 0; g < 2; g++) {
+        bool runs = s.running || (g == 1 && s.apu && p.hotel);
+        bool turns = s.running && (g == 0 || !s.apu || !p.hotel);
+        q.spool[g] = q.lit[g] = runs ? 1.0f : 0.0f;
+        float idle = onGround ? e.groundIdle : e.flightIdle;
+        q.nh[g] = !runs                      ? 0.0f
+                  : g == 1 && s.apu && p.hotel ? 0.70f
+                  : s.reverse                  ? e.reverse
+                  : beta                       ? idle + 0.03f * clamp01((clamp01(s.power) - 0.05f) * (1 / 0.12f))
+                                               : idle + (1 - idle) * sqrtf(std::max(0.0f, clamp01(s.power) - 0.05f) * (1 / 0.95f));
+        q.pitch[g] = turns ? 1.0f : 0.0f;
+        q.np[g] = turns ? np : 0.0f;
+    }
+    for (Tone &t : propTones_) {
+        t = Tone();
+    }
+    // Its broadband's surges at its own paces and depths (PR_SURGE_*), in
+    // place of the airliner's setSurges() has just set.
+    for (int c = 0; c < SOURCES; c++) {
+        float kq = expf(-SLOW_S / PR_SURGE_QUICK_S[c]), ks = expf(-SLOW_S / PR_SURGE_SLOW_S[c]);
+        surgeKeep_[c][0] = kq;
+        surgeKeep_[c][1] = sqrtf(1 - kq * kq);
+        surgeKeep_[c][2] = ks;
+        surgeKeep_[c][3] = sqrtf(1 - ks * ks);
+        surgeKeep_[c][4] = sqrtf(1 - PR_SURGE_QUICK_W[c] * PR_SURGE_QUICK_W[c]);
+        surgeNp_[c] = PR_SURGE_NP[c];
+    }
+}
+
+// Each 2ms: its tones' pitches moved on toward their next, as the airliner's
+// are in update(); the rest of what it does moves no faster than its 32ms
+// step needs it to (propSlowStep()).
+__attribute__((noinline)) void Synth::propStep() {
+    for (Tone &t : propTones_) {
+        if (t.on && t.di != 0) {
+            float cr = t.cr * t.dr - t.ci * t.di;
+            t.ci = t.cr * t.di + t.ci * t.dr;
+            t.cr = cr;
+        }
+    }
+}
+
+// Each 32ms, before the sums: where it is heard from, quickly; its power, its
+// gas generators, its propellers' pitch and speed - none of which moves
+// faster than its tones' sums each 32ms can follow.
+__attribute__((noinline)) void Synth::propDoing() {
+    const Sound &s = sound_;
+    const PropData &p = propData(s.engine);
+    const EngineData &e = ENGINES[(int)s.engine];
+    Prop &q = prop_;
+    static const float QUICK = 1 - expf(-SLOW_S / 0.035f), LIGHT = 1 - expf(-SLOW_S / 0.8f),
+                       OUT = 1 - expf(-SLOW_S / 0.3f), WIND_DOWN = expf(-SLOW_S / 12), UP = 1 - expf(-SLOW_S / 0.5f),
+                       DOWN = 1 - expf(-SLOW_S / 1.0f), GOVERN = 1 - expf(-SLOW_S / 2.0f),
+                       UNGOVERN = 1 - expf(-SLOW_S / 0.3f), REVERSE = 1 - expf(-SLOW_S / 0.8f),
+                       NH_UP = 1 - expf(-SLOW_S / 1.2f), NH_DOWN = 1 - expf(-SLOW_S / 2.0f),
+                       SPIN_DOWN = expf(-SLOW_S / 8.0f), BRAKE = expf(-SLOW_S / 1.5f);
+    // Which way it faces and how fast it closes, eased in 35ms: a pass
+    // sweeps its whole harmonic series and its gearbox's line together, and
+    // the airliner's 0.25s left a close pass's pitch drop late by up to 1.2
+    // semitones [I: turboprop-methods 10]. Placed, the way is already smooth;
+    // the tones' pitches glide from one 32ms step's to the next's.
+    q.aspect = ease(q.aspect, clamp01(s.aspect), QUICK);
+    float closing = s.placed ? std::max(-SOUND_MS, std::min(0.8f * SOUND_MS, s.closingMs))
+                             : std::max(-150.0f, std::min(150.0f, s.closingMs));
+    q.closing = ease(q.closing, closing, QUICK);
+    q.doppler = SOUND_MS / (SOUND_MS - q.closing);
+    // What it is doing: on the ground; in beta - on the ground, its power
+    // levers under flight idle or in reverse - where nothing governs its
+    // propellers; its power, eased; its static share, 1 standing, nought by
+    // 40m/s, where the harmonics standing's richness has gone [P: RP-1258].
+    bool onGround = s.rollingMs > 0.5f || (s.sourceUpM < 12 && s.airspeedMs < 35);
+    bool beta = onGround && (s.reverse || s.power < 0.2f);
+    float power = clamp01(s.power);
+    q.torque = ease(q.torque, power, power > q.torque ? UP : DOWN);
+    q.governed = ease(q.governed, beta ? 0.0f : 1.0f, beta ? UNGOVERN : GOVERN);
+    q.reverse = ease(q.reverse, s.reverse ? 1.0f : 0.0f, REVERSE);
+    q.stat = onGround ? 1 - smoothstep(15, 40, airspeed_) : 0.0f;  // the ground's disturbed air, on the ground only
+    q.ground = onGround ? 1.0f : 0.0f;
+    // Its gas generators: the left's running with its engines, the right's
+    // too - or alone, in hotel mode, its propeller braked [P: AAIB, G-CMFI].
+    // Each started as the airliner's is - motored to a third of idle, lit,
+    // on up to idle in 14s more - and shut down, its fire out at once, its
+    // spool winding down over some 12s [M: a Dash 8's whine an octave down
+    // in 7s, targets 3.7]. Its speed (NH) from its power: 66% idling on the
+    // ground, 72% in the air, 85% on the approach, 100% at take-off power [I:
+    // none published; its ENGINES row], as the root of the power over idle;
+    // 70% in hotel mode, its bleed and generator loaded [I].
+    for (int g = 0; g < 2; g++) {
+        bool runs = s.running || (g == 1 && s.apu && p.hotel);
+        bool hotel = g == 1 && s.apu && p.hotel;
+        float &sp = q.spool[g];
+        if (runs) {
+            sp = std::min(1.0f, sp + (sp < 0.35f ? 0.35f / e.motorS : 0.65f / 14) * SLOW_S);
+        } else {
+            sp = sp < 0.002f ? 0 : sp * WIND_DOWN;
+        }
+        bool burning = runs && sp >= 0.35f;
+        q.lit[g] = ease(q.lit[g], burning ? 1.0f : 0.0f, burning ? LIGHT : OUT);
+        float idle = onGround ? e.groundIdle : e.flightIdle;
+        float want = hotel              ? 0.70f
+                     : q.reverse > 0.5f ? e.reverse
+                     : beta             ? idle + 0.03f * clamp01((power - 0.05f) * (1 / 0.12f))
+                                        : idle + (1 - idle) * sqrtf(std::max(0.0f, power - 0.05f) * (1 / 0.95f));
+        want *= sp < 1 ? powFast(std::max(sp, 1e-3f), 0.7f) : 1.0f;
+        q.nh[g] = ease(q.nh[g], want, want > q.nh[g] ? NH_UP : NH_DOWN);
+    }
+    // Its propellers' speed asked: as the 3D view gives it, or the synth's
+    // own guess from its power where it doesn't [I: turboprop-methods 13.4].
+    float ask = s.np;
+    if (ask < 0) {
+        ask = beta ? (s.reverse ? p.npReverse : p.npGround)
+              : power >= 0.95f || (onGround && power >= 0.6f) ? p.npTakeoff
+              : s.flapsOut && s.gearDown                       ? p.npApproach
+                                                               : p.npClimb;
+    }
+    // Each propeller: out of feather once its engine idles - the left as its
+    // engines run, the right once hotel mode has let its brake go - over 4s,
+    // its speed rising from a feathered windmill's to what is asked, swelling
+    // as it comes [I: atr72-sources 14.1]; feathered as its engine is shut
+    // down, in a second, its speed falling a fifth as its blades unload, and
+    // then gone, spinning down unheard [M: a Dash 8's line 17-23% down in
+    // 1.0-1.2s, targets 3.7]; braked, stopped in a couple of seconds. Moved
+    // toward the speed asked as measured aboard an ATR 72: up from beta in
+    // some 2.5s, critically damped, at no more than npRise; down from
+    // take-off to the climb's in a straight glide at npGlide [M: targets 4.1]
+    // - its control limiting the change [P: BEA] - and into beta, nothing
+    // governing it, in a second and a half [I: atr72-sources 14.7].
+    for (int g = 0; g < 2; g++) {
+        bool braked = g == 1 && s.apu && p.hotel;
+        bool free = s.running && !braked && q.spool[g] > 0.97f;
+        q.pitch[g] = clampf(q.pitch[g] + (free ? 0.25f : -0.9f) * SLOW_S, 0, 1);
+        float &n = q.np[g], &rate = q.npRate[g];
+        if (braked) {
+            n *= BRAKE;
+            rate = 0;
+        } else if (q.lit[g] < 0.5f && q.pitch[g] < 0.01f) {
+            n *= SPIN_DOWN;  // shut down, feathered: unheard
+            rate = 0;
+        } else {
+            float want = ask * q.pitch[g] + 0.25f * (1 - q.pitch[g]);
+            if (want > n) {
+                const float w = 2.0f;
+                rate += (w * w * (want - n) - 2 * w * rate) * SLOW_S;
+                rate = clampf(rate, 0, 1.25f * p.npRise);
+                n = std::min(want, n + rate * SLOW_S);
+            } else {
+                rate = 0;
+                float glide = q.pitch[g] < 0.99f ? 0.15f : q.governed > 0.5f && !beta ? p.npGlide : 0.2f;
+                n = std::max(want, n - glide * SLOW_S);
+            }
+        }
+    }
+    q.split = p.splitBeta * (1 - q.governed);
+}
+
+// Each 32ms: its surges and the air's flicker; its harmonics', the steady
+// line's, the comb's, the gearbox's, the whines' and the haystack's levels,
+// widths and pitches as heard; its broadband's bands.
+__attribute__((noinline)) void Synth::propSlowStep() {
+    propDoing();
+    const Sound &s = sound_;
+    const PropData &p = propData(s.engine);
+    Prop &q = prop_;
+    float d = expFast(logDistance_), km = d * 0.001f;
+    float th = q.aspect;
+    // The surges, each a quick part and a slow part, and each band's shimmer
+    // and the air's flicker - the airliner's, run here as its bandsStep()
+    // would - and the harmonics' own shared surge.
+    Rng rng{slow_};
+    float *surge = surge_;
+    for (int c = 0; c < SOURCES; c++) {
+        const float *k = surgeKeep_[c];
+        surgeQuick_[c] = surgeQuick_[c] * k[0] + k[1] * rng.gauss();
+        surgeSlow_[c] = surgeSlow_[c] * k[2] + k[3] * rng.gauss();
+        float n = k[4] * surgeSlow_[c] + PR_SURGE_QUICK_W[c] * surgeQuick_[c];
+        float np = surgeNp_[c];
+        if (c == OF_FAN) {
+            // the propellers' rush: the more the quicker the bearing to it
+            // turns - its unsteady loading's lumpy directivity [P: RP-1258,
+            // "lobes ... unrelated to the number of blades"] sweeping by as it
+            // passes, still far off, an approach 1.5-2km out churning
+            // 0.9-1.2dB where it churns 1.5-2.7 passing [M: targets 3.1]; more
+            // at low power, a climb's 1.2-2.1 [M: targets 0.7]; standing, in
+            // the still air of the ground, steadier
+            float turning = across_ / std::max(50.0f, d);  // radians a second
+            np = PR_RUSH_FAR_NP + (np - PR_RUSH_FAR_NP) * smoothstep(0.008f, 0.05f, turning);
+            np += PR_RUSH_LOW_NP * (1 - smoothstep(0.25f, 0.85f, q.torque));
+            np += (PR_RUSH_STILL_NP - np) * q.stat;
+        }
+        surge[c] = exp2Fast(2.88539008f * np * (n - np));
+    }
+    for (int b = 0; b < BANDS; b++) {
+        shimmerQuick_[b] = shimmerQuick_[b] * shimmerKeep_[0] + shimmerKeep_[1] * rng.gauss();
+        shimmerSlow_[b] = shimmerSlow_[b] * shimmerKeep_[2] + shimmerKeep_[3] * rng.gauss();
+        shimmer_[b] = SHIMMER_QW * shimmerQuick_[b] + sqrtf(1 - SHIMMER_QW * SHIMMER_QW) * shimmerSlow_[b];
+    }
+    float kf = expFast(-SLOW_S * (across_ * FLICKER_ACROSS + FLICKER_BASE) * (1.0f / 5));
+    flickerA_ = flickerA_ * kf + sqrtf(1 - kf * kf) * rng.gauss();
+    flicker_ = flicker_ * kf + (1 - kf) * flickerA_;
+    float flickerN = flickerN_ = flicker_ * (1 + kf) * (1 / sqrtf(1 + kf * kf));
+    float flickerNp = PR_FLICKER * std::min(6.0f, FLICKER_DB * sqrtf(km)) * (1 / 8.686f);
+    static const float TQ = expf(-SLOW_S / PR_TONE_SURGE_Q_S), TS = expf(-SLOW_S / PR_TONE_SURGE_S_S);
+    q.surgeQ = q.surgeQ * TQ + sqrtf(1 - TQ * TQ) * rng.gauss();
+    q.surgeS = q.surgeS * TS + sqrtf(1 - TS * TS) * rng.gauss();
+    // Ungoverned in beta, each propeller's speed wandering on its own, the
+    // right off the left by its row's split; governed, the two hunting
+    // together; each gas generator's whine wandering - slow processes, each
+    // a unit spread.
+    static const float WANDER = expf(-SLOW_S / PR_WANDER_S), HUNT = expf(-SLOW_S / PR_HUNT_S),
+                       WHINE = expf(-SLOW_S / PR_WHINE_S);
+    static const float WANDER_IN = sqrtf(1 - WANDER * WANDER), HUNT_IN = sqrtf(1 - HUNT * HUNT),
+                       WHINE_IN = sqrtf(1 - WHINE * WHINE);
+    for (int g = 0; g < 2; g++) {
+        q.wander[g] = q.wander[g] * WANDER + WANDER_IN * 0.57735f * rng.gauss();
+        q.whineX[g] = q.whineX[g] * WHINE + WHINE_IN * 0.57735f * rng.gauss();
+    }
+    q.hunt = q.hunt * HUNT + HUNT_IN * 0.57735f * rng.gauss();
+    slow_ = rng.s;
+    float toneSurgeDb = 8.68589f * PR_TONE_SURGE_NP * (0.6f * q.surgeQ + 0.8f * q.surgeS - PR_TONE_SURGE_NP);
+
+    // What its propellers are doing: each one's speed as heard - its
+    // governor's hunting governed, its own wander in beta - and how far its
+    // blades bite, 0 feathered or standing still to 1; how static it is, how
+    // governed, how far in reverse.
+    float gv = q.governed, st = q.stat, rv = q.reverse;
+    float np[2], bite[2];
+    for (int g = 0; g < 2; g++) {
+        float drift = gv * PR_HUNT * q.hunt + (1 - gv) * (PR_WANDER * q.wander[g] + (g == 1 ? p.splitBeta : 0.0f));
+        np[g] = q.np[g] * (1 + drift);
+        bite[g] = smoothstep(0, 0.25f, q.pitch[g]) * smoothstep(0.08f, 0.45f, q.np[g]);
+    }
+    // In reverse the harmonics no stronger for the reverse's power - its
+    // blades stalled, their noise mostly a roar - but as an approach's [I:
+    // the CAA's turboprops 1.4dB louder by SEL landing with reverse above
+    // idle, against an A320's 10.9, atr72-sources 6].
+    float torque = q.torque + (std::min(q.torque, p.approachPower) - q.torque) * rv;
+    float high = smoothstep(0.25f, 0.85f, q.torque);
+    float bpf = p.blades * (s.engine == Engine::GENERIC ? s.bladeHz / p.blades : p.rpm100 / 60);  // at 100%
+    // The harmonics' envelope now: clean flight's, by the power from the
+    // approach's to the climb's; standing, beta's or take-off's as governed;
+    // between, as the static share; and reverse's as its blades turn.
+    float env[8], slope;
+    {
+        float sF = PR_SLOPE_FLIGHT + (PR_SLOPE_CLIMB - PR_SLOPE_FLIGHT) * high;
+        float sS = PR_SLOPE_BETA + (PR_SLOPE_TAKEOFF - PR_SLOPE_BETA) * gv;
+        slope = sF + (sS - sF) * std::max(st, q.ground * 0.5f * high * gv);
+        slope += (PR_SLOPE_REVERSE - slope) * rv;
+        float rich = std::max(st, q.ground * 0.5f * high * gv);
+        for (int k = 0; k < 8; k++) {
+            float f = PR_E_FLIGHT[k] + (PR_E_CLIMB[k] - PR_E_FLIGHT[k]) * high;
+            float t = PR_E_BETA[k] + (PR_E_TAKEOFF[k] - PR_E_BETA[k]) * gv;
+            float v = f + (t - f) * rich;
+            env[k] = v + (PR_E_REVERSE[k] - v) * rv;
+        }
+    }
+    // The way's figures for the tones: the ground's echo, its lateness from
+    // each propeller and from between them, how coherent; the flicker's
+    // corner; the widening far off.
+    float gamma = echoGamma_, mean = 1 + gamma * gamma;
+    float lateOf[3] = {echoLate_[0] / RATE, echoLate_[1] / RATE, 0.5f * (echoLate_[0] + echoLate_[1]) / RATE};
+    float coherent = 1 / clampf(std::min(2000 * sqrtf(150 / std::max(10.0f, d)),
+                                         SOUND_MS * d / (16 * std::max(1.0f, s.earUpM))),
+                                400, 3000);
+    float cornerLog = log2Fast(9000 / sqrtf(d)), widen = 3.5f * km;
+    // A tone's loudness as heard: its level, the air's absorption at its
+    // pitch, its flicker over the corner, and the echo off the ground as a
+    // sum - held within 6dB of the powers' sum at 300Hz and under, 2dB from
+    // 1.5kHz, between as the log of the pitch - as an RMS.
+    auto heardAmp = [&](float heard, float db, int from) {
+        float lh = log2Fast(heard);
+        float o = clampf(lh - 5.97728f, 0, 6.999f);  // octaves from 63Hz
+        int i = (int)o;
+        float absorbs = exp2Fast(ABSORPTION_LOG2[i] + (ABSORPTION_LOG2[i + 1] - ABSORPTION_LOG2[i]) * (o - i));
+        float u = clamp01(lh - cornerLog + 0.5f), w = u * u * (3 - 2 * u) * flickerNp;  // its shelf an octave wide
+        float amp = dbAmp(db - absorbs * km + 8.68589f * (w * flickerN - w * w));
+        if (heard > TOP_HZ - TOP_FADE_HZ) {
+            amp *= (TOP_HZ - heard) * (1 / TOP_FADE_HZ);
+        }
+        if (gamma > 0) {
+            float x = heard * coherent, x2 = x * x, coh = 1 / (1 + x2 + 0.5f * x2 * x2), gc = gamma * coh;
+            float turns = heard * lateOf[from] + 0.25f;  // its cosine, as a sine a quarter turn on
+            turns -= (float)(int)turns;
+            float cs = sinTurn(turns > 0.5f ? turns - 1 : turns);
+            float pw = 1 + gc * gc + 2 * gc * cs + gamma * gamma * (1 - coh * coh);
+            float held = 6 - 4 * clamp01((lh - 8.22882f) * (1 / 2.32193f));  // dB: 6 to 300Hz, 2 from 1.5kHz
+            float least = dbPower(-held);
+            amp *= sqrtf(clampf(pw / mean, least, 1 / least) * mean);
+        }
+        return amp;
+    };
+    // A resonance: off; or its pitch as heard, its loudness as an RMS, its
+    // width, its noise - set as the airliner's tonesStep() sets one.
+    auto off = [](Tone &t) {
+        t.in = 0;
+        t.dr = 1, t.di = 0;
+        t.on = t.on && (t.zr * t.zr + t.zi * t.zi > 1e-14f);
+        t.turn = t.on ? t.turn : 0;
+    };
+    auto tune = [&](Tone &t, float heard, float r) {
+        // sinCosTurns' pairs a unit to a few parts in a million: not
+        // renormalised, as the airliner's tones are
+        float turn = heard * (1.0f / RATE), was = t.on && t.turn > 0 ? t.turn : turn;
+        float sn, cs;
+        sinCosTurns(was, sn, cs);
+        t.cr = cs * r;
+        t.ci = sn * r;
+        sinCosTurns((turn - was) * (1.0f / SLOW), sn, cs);
+        t.dr = cs;
+        t.di = sn;
+        t.turn = turn;
+        t.hz = heard;
+        t.on = true;
+    };
+    auto set = [&](Tone &t, float hz, float db, float width, int stream, int from) {
+        float heard = hz * q.doppler;
+        if (heard < 30 || heard > TOP_HZ || db < -110) {
+            off(t);
+            return;
+        }
+        float amp = heardAmp(heard, db, from);
+        float x = PI * width / RATE, r = 1 - x * (1 - x * (0.5f - x * (1.0f / 6)));
+        tune(t, heard, r);
+        t.in = amp * sqrtf(6 * (1 - r * r));
+        t.stream = (uint8_t)stream;
+        t.wide = width > 20;
+    };
+    // The propellers' harmonics. Each propeller's level: its power and speed
+    // (PR_TORQUE_LAW, PR_SPEED_LAW), how far its blades bite, the two
+    // propellers' together PR_LEVEL_DB, each alone 3dB under; its harmonics'
+    // shared surge.
+    float levelDb[2], lobeFlat = 1 - PR_STATIC_LOBE * st;
+    for (int g = 0; g < 2; g++) {
+        levelDb[g] = PR_LEVEL_DB - 3.0103f + (1 - gv) * PR_BETA_TONE_DB + PR_TORQUE_LAW * lg10(std::max(0.05f, torque)) +
+                     PR_SPEED_LAW * lg10(std::max(0.05f, np[g])) + 20 * lg10(std::max(1e-7f, bite[g])) + toneSurgeDb;
+    }
+    float tone12 = (lobe(PROP_TONE, th) + (lobe(PROP_TONE_POWER, th) - lobe(PROP_TONE, th)) * high) * lobeFlat;
+    float tone3 = (lobe(PROP_HIGH, th) + (lobe(PROP_HIGH_POWER, th) - lobe(PROP_HIGH, th)) * high) * lobeFlat;
+    // Each harmonic's level by its envelope and its lobe, and the lift for the
+    // speaker (PR_LIFT): over the first four heard at 300Hz or more, up to the
+    // sixth, each raised to the first's level less 10dB an octave of harmonic
+    // number if under it, never past less 3 - the first's level as this
+    // harmonic's lobe would have it: the series' shape put back, not a
+    // directivity the physics doesn't have.
+    auto harmonicDb = [&](int g, int k, float heardBpf, int &lifted) {
+        float lk = levelDb[g] + env[k - 1] + (k <= 2 ? tone12 : tone3);
+        if (PR_LIFT > 0 && k >= 2 && lifted < 4 && k * heardBpf >= 300) {
+            lifted++;
+            static const float OCTAVES[8] = {0, 0, 1, 1.5849625f, 2, 2.3219281f, 2.5849625f, 2.8073549f};
+            float l1 = levelDb[g] + env[0] + (k <= 2 ? tone12 : tone3), oct = OCTAVES[k];
+            float floor = l1 - 10 * oct, ceiling = l1 - 3 * oct;
+            if (lk < floor) {
+                lk += PR_LIFT * (std::min(floor, ceiling) - lk);
+            }
+        }
+        return lk;
+    };
+    // Governed - in the air and on its take-off roll - the two propellers on
+    // one line each harmonic: one resonance each, both propellers' power;
+    // the first two's steady part - K of their power in K + 1 - the two
+    // propellers' sum as the ear hears it, their path's difference, 8.10m
+    // apart, and the synchrophaser's phase, its lobes sweeping by as the
+    // bearing changes [I: turboprop-methods 5], on their level. In beta each
+    // propeller its own speed: two resonances each harmonic heard at 300Hz
+    // or more, each on its own noise; under it, where the speaker plays
+    // nothing, one for both, as wide as their speeds' spread.
+    float k1 = PR_K1 * gv, k2 = PR_K2 * gv;
+    float pathTurns = (engineM_[0] - engineM_[1]) * (1 / SOUND_MS);
+    float widthStatic = 1 + PR_WIDTH_STATIC * st;
+    bool apart = gv < 0.98f && rv < 0.5f;  // in reverse both near their top speed: as one, widened
+    float spread = (1 - gv) * (p.splitBeta + PR_WANDER);  // the two's speeds apart in beta, a share
+    int lifted[2] = {0, 0};
+    for (int k = 1; k <= 6; k++) {
+        float width = ((k == 1 ? PR_WIDTH_1 : k == 2 ? PR_WIDTH_2 : PR_WIDTH_3 + PR_WIDTH_BY * (k - 3)) * widthStatic +
+                       widen + PR_WIDTH_REVERSE * rv) *
+                      (1 + 0.2f * (1 - gv));
+        float heardL = k * bpf * np[0] * q.doppler;
+        Tone &t = propTones_[PR_HARM + k - 1];
+        if (apart && heardL >= 300) {
+            for (int g = 0; g < 2; g++) {
+                float bpfG = bpf * np[g];
+                set(g == 0 ? t : propTones_[PR_HARM_R + k - 2], k * bpfG, harmonicDb(g, k, bpfG * q.doppler, lifted[g]),
+                    width, g, g);
+            }
+            continue;
+        }
+        if (k >= 2) {
+            off(propTones_[PR_HARM_R + k - 2]);
+        }
+        float bpfM = 0.5f * bpf * (np[0] + np[1]);
+        float db = harmonicDb(0, k, bpfM * q.doppler, lifted[0]) + 3.0103f;  // both propellers' power, as one
+        float kk = k == 1 ? k1 : k == 2 ? k2 : 0.0f;
+        float pair = 1;  // the two propellers' steady parts' sum as heard, against their powers'
+        if (kk > 0.01f) {
+            float phase = k * (bpfM * q.doppler * pathTurns + q.psi);
+            phase -= (float)(int)phase;
+            float cs = sinTurn((phase > 0.5f ? phase - 1 : phase) * 0.5f + 0.25f);  // cos(pi x)
+            // never quite equal at the ear nor exactly opposed - the fuselage
+            // between them, their blades' small differences [I] - so never
+            // cancelling to nothing
+            pair = 0.3f + 1.4f * cs * cs;
+        }
+        if (k == 1) {
+            // the fundamental's steady part its own line - a resonance with
+            // no noise, its pointer's radius moved to its loudness over the
+            // next 32ms by its own shrinking or growing - its noise-driven part
+            // the resonance; so its phase holds through the resonance's fades,
+            // as a governed fundamental's does [M: its pitch wandering 0.13-0.83%,
+            // targets 4.4]
+            Tone &u = propTones_[PR_STEADY];
+            float heard = bpfM * q.doppler, want = kk > 0.01f && heard >= 30
+                                                       ? 1.41421356f * heardAmp(heard, db + 10 * lg10(kk / (1 + kk) * pair + 1e-6f), 2)
+                                                       : 0.0f;
+            float now = sqrtf(u.zr * u.zr + u.zi * u.zi);
+            if (want > 1e-9f || now > 1e-7f) {
+                if (!u.on || now < 1e-9f) {
+                    u.zr = want, u.zi = 0;
+                    now = std::max(want, 1e-9f);
+                }
+                float r = want > 1e-9f ? clampf(exp2Fast(log2Fast(want / now) * (1.0f / (SLOW * STEP))), 0.996f, 1.004f)
+                                       : 0.996f;
+                tune(u, heard, r);
+                u.in = 0;
+                u.stream = 0;
+            } else {
+                u = Tone();
+            }
+            db -= 10 * lg10(1 + kk);  // the resonance the rest
+        } else if (kk > 0.01f) {
+            db += 10 * lg10(std::max(1e-3f, (kk * pair + 1) / (kk + 1)));
+        }
+        set(t, k * bpfM, db, width + k * bpfM * spread, 0, apart ? 0 : 2);
+    }
+    // The gearbox's line, locked to the left propeller's turning (both, as
+    // one, governed) - PR_GEAR_A_DB under its fundamental on the approach -
+    // as the root of the power and the speed's 1.5th power, wider in beta by
+    // the two propellers' split, loudest ahead. (Its row's second line,
+    // gearB, heard aboard only, is not played.)
+    {
+        float shaft = (s.engine == Engine::GENERIC ? s.bladeHz / p.blades : p.rpm100 / 60) * np[0];
+        float biting = 0.5f * (bite[0] * bite[0] + bite[1] * bite[1]);
+        float db = PR_LEVEL_DB + PR_TORQUE_LAW * lg10(0.22f) + 5 * lg10(std::max(0.05f, torque / 0.22f)) +
+                   30 * lg10(std::max(0.05f, np[0])) + lobe(GEARBOX, th) + 10 * lg10(std::max(1e-8f, biting));
+        float width = PR_GEAR_WIDTH + widen + shaft * 48 * q.split;
+        if (p.gearA > 0) {
+            set(propTones_[PR_GEAR], p.gearA * shaft, db + PR_GEAR_A_DB, width, 1, 2);
+        } else {
+            off(propTones_[PR_GEAR]);
+        }
+    }
+    // The gas generators' whines - each engine's line at its own speed, a
+    // couple of percent from the other's and wandering - as the speed's
+    // fourth power, from the starter's first turn; and the haystack about
+    // them, wide, through the air's muffling with the broadband.
+    float whineHz = p.whineHz > 0 ? p.whineHz : 5682;
+    float nhMean = 0.5f * (q.nh[0] + q.nh[1]), hay = 0;
+    for (int g = 0; g < 2; g++) {
+        float nh = q.nh[g];
+        float db = nh > 0.02f ? PR_LEVEL_DB + PR_WHINE_DB + 40 * lg10(nh / 0.85f) + lobe(WHINES, th) +
+                                    10 * lg10(std::max(1e-3f, 0.2f + 0.8f * q.lit[g]))
+                              : -200;
+        hay += nh > 0.02f ? dbPower(40 * lg10(nh / 0.85f)) * (0.2f + 0.8f * q.lit[g]) : 0.0f;
+        float hz = whineHz * (nh / 0.85f) * (1 + q.whineBy[g] + PR_WHINE_WANDER * q.whineX[g]);
+        set(propTones_[PR_WHINE + g], hz, db, 2.0f + widen, g, g);
+    }
+    // The haystack, as wide as 250Hz, with the narrow tones after the
+    // muffling and the echo: its air's loss exact at its pitch; in the air
+    // only, heard about an approach's pass [M: turboprop-methods 1.7].
+    {
+        float db = hay > 1e-6f && q.ground < 0.5f ? PR_LEVEL_DB + PR_HAY_DB + 10 * lg10(0.5f * hay) + lobe(HAYSTACK, th)
+                                                  : -200.0f;
+        Tone &t = propTones_[PR_HAY];
+        float heard = PR_HAY_HZ * (nhMean / 0.85f) * q.doppler;
+        if (db < -110 || heard > TOP_HZ || heardAmp(heard, db, 2) < 1e-6f) {
+            off(t);
+        } else {
+            set(t, PR_HAY_HZ * (nhMean / 0.85f), db, PR_HAY_WIDTH, 0, 2);
+        }
+    }
+
+    // The broadband: each band as loud as its sources in it - each source's
+    // spectrum at the frequency the band is heard at, the Doppler moving it,
+    // its loudness by what the propellers and engines are doing, its lobe,
+    // its surges - then the band's shimmer, flicker and the air's loss, as the
+    // airliner's bandsStep() has them.
+    float biteSum = 0.5f * (bite[0] * bite[0] + bite[1] * bite[1]);
+    float npMean = std::max(0.05f, 0.5f * (np[0] + np[1]));
+    float biteDb = 10 * lg10(std::max(1e-8f, biteSum));
+    float washLobe = lobe(PROP_BROAD, th) + st * high * gv * (lobe(PROPWASH, th) - lobe(PROP_BROAD, th));
+    float loadDb = PR_LEVEL_DB + PR_LOAD_DB + 30 * lg10(std::max(0.03f, torque)) + 30 * lg10(npMean) +
+                   PR_LOAD_STATIC_DB * st * high + washLobe + biteDb + (1 - gv) * PR_BETA_RUSH_DB;
+    float edgeDb = PR_LEVEL_DB + PR_EDGE_DB + 50 * lg10(npMean) + 3 * lg10(std::max(0.05f, torque)) +
+                   lobe(PROP_BROAD, th) + biteDb + (1 - gv) * PR_BETA_RUSH_DB;
+    float lowDb = PR_LEVEL_DB + PR_LOW_DB + 50 * lg10(npMean) + 3 * lg10(std::max(0.05f, torque)) +
+                  lobe(PROP_BROAD, th) + biteDb + (1 - gv) * PR_BETA_RUSH_DB;
+    float exhaust = 0, intakes = 0;
+    for (int g = 0; g < 2; g++) {
+        float nh = std::max(1e-3f, q.nh[g] / 0.85f);
+        exhaust += dbPower(30 * lg10(nh)) * (q.lit[g] * q.lit[g] + 0.02f * q.spool[g]);
+        intakes += dbPower(40 * lg10(nh)) * (0.2f + 0.8f * q.lit[g]) * (q.nh[g] > 0.02f);
+    }
+    float exhaustDb = exhaust > 1e-9f ? PR_LEVEL_DB + PR_EXHAUST_DB + 10 * lg10(0.5f * exhaust) + lobe(EXHAUST, th) : -200;
+    float intakeDb = intakes > 1e-9f ? PR_LEVEL_DB + PR_GG_DB + 10 * lg10(0.5f * intakes) + lobe(INTAKES, th) : -200;
+    float revDb = rv > 0.001f ? PR_LEVEL_DB + PR_REVERSE_DB + 20 * lg10(rv) + 10 * lg10(std::max(0.05f, q.torque / 0.7f)) +
+                                    lobe(REVERSE, th) + biteDb
+                              : -200;
+    // Its airframe as the A320's - see bandsStep() - PR_FRAME_DB under; its
+    // tyres rolling.
+    float v = airspeed_, vr = std::max(0.05f, v / 70);
+    float thin = -0.00102f * std::max(0.0f, s.sourceUpM);
+    float rush = 60 * lg10(std::min(vr, 1.6f)) + thin + PR_FRAME_DB;
+    float airframe = lobe(AIRFRAME, th);
+    float gearDb = gear_ > 0.001f ? -29.5f + rush + 10 * lg10(gear_) + airframe + 1.5f * below_ -
+                                        5 * std::max(0.0f, -below_)
+                                  : -200;
+    float flapDb = flaps_ > 0.001f ? -32 + rush + 10 * lg10(flaps_) + lobe(FLAPS, th) : -200;
+    float cleanDb = -36 + rush + airframe;
+    float roll = s.rollingMs;
+    float rollDb = roll > 0.5f ? -32 + 30 * lg10(std::max(0.05f, roll / 70)) + PR_FRAME_DB : -200;
+    bool moving = v > 20 || roll > 20;
+    float logDoppler = log2Fast(q.doppler);
+    float loadPeak = log2Fast(PR_LOAD_HZ * 0.001f * npMean), edgePeak = log2Fast(PR_EDGE_HZ * 0.001f * npMean),
+          lowPeak = log2Fast(PR_LOW_HZ * 0.001f * npMean);
+    constexpr float L5000 = 2.32193f, L180 = -2.47393f, L600 = -0.736966f, L700 = -0.514573f, L1250 = 0.321928f,
+                    LEXHAUST = -1.32193f, LGG = 1.13750f, LREVERSE = -0.666576f;
+    float surgeEdge = surge[OF_FAN];  // the loading rush's own: the whole band moving with it
+    float airSin, airCos;
+    sinCosTurns(0.5f * air_.hz / RATE, airSin, airCos);
+    float airCot = airCos / std::max(1e-6f, airSin);
+    float shimmerFar = SHIMMER_FAR_NP * std::min(1.0f, sqrtf(km)) + SHIMMER_PASS_NP * smoothstep(10, 80, across_);
+    float cornerBand = log2Fast(9 / sqrtf(d));
+    float rushOf[BANDS];  // each band's propellers' rush, unsurged: the comb's measure
+#ifdef ENGINE_NOISE_DEBUG
+    static int debugIn = 0;
+    if (--debugIn < 0) {
+        debugIn = 31;
+        fprintf(stderr, "t %.2f d %.0f asp %.2f np %.3f/%.3f gv %.2f st %.2f rv %.2f tq %.2f nh %.2f/%.2f | lvl %.1f "
+                        "load %.1f edge %.1f exh %.1f gg %.1f rev %.1f gear %.1f | dop %.3f\n",
+                clock_ / (float)RATE, d, th, np[0], np[1], gv, st, rv, torque, q.nh[0], q.nh[1], levelDb[0], loadDb,
+                edgeDb, exhaustDb, intakeDb, revDb, gearDb, q.doppler);
+    }
+#endif
+    // Each band - the bank's eight, then the low band, `b` BANDS - as loud as
+    // its sources: the band's frequency, octaves from 1kHz, its tangent of pi
+    // x it over the rate and the air's loss there, dB a kilometre.
+    static const float LOW_LOG = log2f(PR_LOW_BAND_HZ * 0.001f), LOW_TAN = tanf(PI * PR_LOW_BAND_HZ / RATE),
+                       LOW_AIR = absorptionDbKm(PR_LOW_BAND_HZ);
+    for (int b = 0; b <= BANDS; b++) {
+        float bandLog = b < BANDS ? bandLog_[b] : LOW_LOG;
+        float lf = bandLog - logDoppler;  // octaves from 1kHz where it left the source
+        float xl = lf - loadPeak, xe = lf - edgePeak, xx = lf - LEXHAUST, xg = lf - LGG, xo = lf - lowPeak;
+        float pl = dbPower(loadDb + (xl < 0 ? 3 * xl : -6 * xl));
+        float pe = dbPower(edgeDb + (xe < 0 ? 12 * xe : -2 * xe)) + dbPower(lowDb + (xo < 0 ? 3 * xo : -9 * xo));
+        float p = pl * surge[OF_FAN] + pe * surgeEdge;
+        float turbulent = pl + pe;
+        if (b < BANDS) {
+            rushOf[b] = pl + pe;
+        }
+        if (exhaustDb > -150) {
+            p += dbPower(exhaustDb + (xx < 0 ? 4 * xx : -6 * xx)) * surge[OF_JET];
+        }
+        if (intakeDb > -150) {
+            p += dbPower(intakeDb + (xg < 0 ? 5 * xg : -6 * xg)) * surge[OF_CORE];
+        }
+        if (moving) {  // its airframe's rush and its tyres' roll, 50dB down and more under 20m/s: not reckoned
+            float xw = lf - L600, rushing = dbPower(cleanDb - std::min(25.0f, 4 * xw * xw));
+            if (gearDb > -150) {
+                rushing += dbPower(gearDb - 3 * std::max(0.0f, lf - L5000) - 6 * std::max(0.0f, L180 - lf));
+            }
+            if (flapDb > -150) {
+                float xp = lf - L1250;
+                rushing += dbPower(flapDb - std::min(25.0f, 5 * xp * xp));
+            }
+            if (rollDb > -150) {
+                float xt = lf - L700;
+                rushing += dbPower(rollDb - std::min(25.0f, 5 * xt * xt));
+            }
+            p += rushing * surge[OF_AIRFRAME];
+            turbulent += 0.6f * rushing;
+        }
+        if (revDb > -150) {
+            float xr = lf - LREVERSE, pr = dbPower(revDb + (xr < 0 ? 6 * xr : -11 * xr));
+            p += pr * surge[OF_REVERSER];
+            turbulent += pr;
+        }
+        float fl = flickerNp * smoothstep(cornerBand - 0.5f, cornerBand + 0.5f, bandLog);
+        float sh = PR_SHIMMER * (SHIMMER_NP + SHIMMER_TURBULENT_NP * clamp01(turbulent / std::max(1e-12f, p)) + shimmerFar);
+        float w = (b < BANDS ? bandTan_[b] : LOW_TAN) * airCot, w2 = w * w;
+        float lowPassDb = 4.34294482f * 0.693147181f * log2Fast((1 - w2) * (1 - w2) + w2 * (1 / (0.6f * 0.6f)));
+        float airDb = clampf(lowPassDb - (b < BANDS ? bandAirDbKm_[b] : LOW_AIR) * km, -30, 15);
+        float ln = 2 * sh * (shimmer_[b < BANDS ? b : 0] - sh) + 2 * fl * (flickerN - fl) + 0.230258509f * airDb;
+        p *= exp2Fast(1.44269504f * ln);
+        if (b < BANDS) {
+            bandBy_[b] = (sqrtf(p) - bandGain_[b]) * (1.0f / (SLOW * STEP));
+        } else {
+            q.lowBy = (sqrtf(p) - q.lowGain) * (1.0f / (SLOW * STEP));
+        }
+    }
+    // The comb, from the seventh harmonic up - both propellers' as one, at
+    // their mean speed, its lines as much wider in beta as their speeds are
+    // apart there - a line at every harmonic, each fading on its own: its
+    // delay one blade's passing as heard, its lines as wide as PR_COMB_WIDTH
+    // makes them - twice that standing - its noise shaped to rise to the
+    // seventh harmonic and fall 6dB an octave over it, pushed hard enough
+    // for the seventh's power to be the envelope's. It goes through the
+    // air's muffling with the broadband, as the airliner's buzz-saw does,
+    // which takes the air's share of it. Worked through only while its
+    // seventh line is within 10dB of the propellers' rush in the bank's band
+    // about it, a band hundreds of hertz wide - so a line still clear of the
+    // rush in the few hertz beside it: on the ground and at take-off power;
+    // in clean flight, where the harmonics from the seventh up are lost in
+    // the rush [M: turboprop-methods 1.3], not at all.
+    {
+        Comb &c = comb_[0];
+        float bpfM = 0.5f * bpf * (np[0] + np[1]), hz = bpfM * q.doppler;
+        int lifted = 4;
+        float db = harmonicDb(0, 7, hz, lifted) + 3.0103f;
+        float amp = dbAmp(db) * sqrtf(surge[OF_BUZZ]) * expFast(flickerNp * flickerN - flickerNp * flickerNp);
+        // the propellers' rush in the band about its seventh line
+        float at = clampf(1.5f * log2Fast(std::max(250.0f, 7 * hz) * 0.004f), 0, 6.999f);
+        int band = (int)at;
+        float rush = rushOf[band] + (rushOf[band + 1] - rushOf[band]) * (at - band);
+        if (amp * amp < 0.1f * rush || hz < RATE / (float)(COMB - 8) || 7 * hz > 0.45f * RATE) {
+            c.in = 0;
+            c.lateBy = 0;
+            if (combOn_[0] && c.y1 * c.y1 + c.y2 * c.y2 < 1e-14f) {
+                combOn_[0] = false;
+                memset(c.line, 0, sizeof(c.line));
+                c.y1 = c.y2 = c.lo = c.hi = 0;
+            }
+        } else {
+            bool was = combOn_[0];
+            combOn_[0] = true;
+            float late = RATE / hz - 1;
+            if (!was || fabsf(late - c.late) > 40) {
+                c.late = late;
+            }
+            c.lateBy = (late - c.late) * (1.0f / SLOW);
+            float width = PR_COMB_WIDTH * (1 + st) + widen + PR_WIDTH_REVERSE * rv + 7 * bpfM * spread;
+            c.g = expFast(-PI * width / hz);
+            // its noise: the band between two one-pole low-passes' corners, at
+            // 5.5 and 7 times the blades' passing, as the airliner's buzz-saw's
+            // is shaped; and what power of it reaches the seventh harmonic's
+            // band, a blade's passing wide - the band's gain there, the two
+            // one-poles' responses taken one from the other
+            float kl = 1 - expFast(-2 * PI * 5.5f * hz / RATE), kh = 1 - expFast(-2 * PI * 7 * hz / RATE);
+            c.kLo = kl;
+            c.kHi = kh;
+            float sn, cs;
+            sinCosTurns(7 * hz / RATE, sn, cs);
+            auto pole = [&](float k, float &re, float &im) {  // k / (1 - (1 - k) e^-iw)
+                float a = 1 - k, dr = 1 - a * cs, di = a * sn, m = k / (dr * dr + di * di);
+                re = m * dr, im = -m * di;
+            };
+            float hr, hi, lr, li;
+            pole(kh, hr, hi);
+            pole(kl, lr, li);
+            float gain = (hr - lr) * (hr - lr) + (hi - li) * (hi - li);
+            float power = gain * (1.0f / 3) * 2 * hz / RATE;
+            c.in = amp * sqrtf((1 - c.g * c.g) / std::max(1e-9f, power));
+        }
+    }
+    tonesOn_ = 0;
+    for (const Tone &t : propTones_) {
+        tonesOn_ += t.on;
+    }
+}
+
+// The step's samples before the air's muffling and the echo: the bank and the
+// low band under it; the comb; the nose wheel's thumps; the tyres' squeal.
+__attribute__((noinline)) void Synth::propRender(float *mix, const float *lateA, const float *lateB,
+                                                 const float *noiseA, const float *noiseB, Rng &rng, int n) {
+    Prop &q = prop_;
+    // The bank as the airliner's, four bands at a time - its four lower with
+    // the low band beside them, a fifth chain of sums the core works through
+    // side by side with theirs, on the bank's second noise.
+    const LowBand &lb = lowBand();
+    for (int b = 0; b < BANDS; b += 4) {
+        const float *B0 = bandB0_ + b, *A1 = bandA1_ + b, *A2 = bandA2_ + b;
+        float b0 = B0[0], b1 = B0[1], b2 = B0[2], b3 = B0[3];
+        float p0 = A1[0], p1 = A1[1], p2 = A1[2], p3 = A1[3];
+        float q0 = A2[0], q1 = A2[1], q2 = A2[2], q3 = A2[3];
+        float y0 = bandY1_[b], y1 = bandY1_[b + 1], y2 = bandY1_[b + 2], y3 = bandY1_[b + 3];
+        float z0 = bandY2_[b], z1 = bandY2_[b + 1], z2 = bandY2_[b + 2], z3 = bandY2_[b + 3];
+        float v0 = bandZ1_[b], v1 = bandZ1_[b + 1], v2 = bandZ1_[b + 2], v3 = bandZ1_[b + 3];
+        float w0 = bandZ2_[b], w1 = bandZ2_[b + 1], w2 = bandZ2_[b + 2], w3 = bandZ2_[b + 3];
+        float g0 = bandGain_[b], g1 = bandGain_[b + 1], g2 = bandGain_[b + 2], g3 = bandGain_[b + 3];
+        float d0 = bandBy_[b], d1 = bandBy_[b + 1], d2 = bandBy_[b + 2], d3 = bandBy_[b + 3];
+        if (b == 0) {
+            float lb0 = lb.b0, la1 = lb.a1, la2 = lb.a2;
+            float ly1 = q.lowY1, ly2 = q.lowY2, lz1 = q.lowZ1, lz2 = q.lowZ2, lg = q.lowGain, ld = q.lowBy;
+            for (int i = 0; i < n; i++) {
+                float x = lateA[i], u = lateB[i];
+                float u0 = (b0 * x - q0 * z0) - p0 * y0, u1 = (b1 * u - q1 * z1) - p1 * y1;
+                float u2 = (b2 * x - q2 * z2) - p2 * y2, u3 = (b3 * u - q3 * z3) - p3 * y3;
+                float ul = (lb0 * u - la2 * ly2) - la1 * ly1;
+                z0 = y0, z1 = y1, z2 = y2, z3 = y3, ly2 = ly1;
+                y0 = u0, y1 = u1, y2 = u2, y3 = u3, ly1 = ul;
+                float r0 = (u0 - q0 * w0) - p0 * v0, r1 = (u1 - q1 * w1) - p1 * v1;
+                float r2 = (u2 - q2 * w2) - p2 * v2, r3 = (u3 - q3 * w3) - p3 * v3;
+                float rl = (ul - la2 * lz2) - la1 * lz1;
+                w0 = v0, w1 = v1, w2 = v2, w3 = v3, lz2 = lz1;
+                v0 = r0, v1 = r1, v2 = r2, v3 = r3, lz1 = rl;
+                g0 += d0, g1 += d1, g2 += d2, g3 += d3, lg += ld;
+                mix[i] += ((g0 * r0 + g1 * r1) + (g2 * r2 + g3 * r3)) + lg * rl;
+            }
+            q.lowY1 = fabsf(ly1) < 1e-20f ? 0 : ly1, q.lowY2 = fabsf(ly2) < 1e-20f ? 0 : ly2;
+            q.lowZ1 = fabsf(lz1) < 1e-20f ? 0 : lz1, q.lowZ2 = fabsf(lz2) < 1e-20f ? 0 : lz2;
+            q.lowGain = std::max(0.0f, lg);
+        } else {
+            for (int i = 0; i < n; i++) {
+                float x = lateA[i], u = lateB[i];
+                float u0 = (b0 * x - q0 * z0) - p0 * y0, u1 = (b1 * u - q1 * z1) - p1 * y1;
+                float u2 = (b2 * x - q2 * z2) - p2 * y2, u3 = (b3 * u - q3 * z3) - p3 * y3;
+                z0 = y0, z1 = y1, z2 = y2, z3 = y3;
+                y0 = u0, y1 = u1, y2 = u2, y3 = u3;
+                float r0 = (u0 - q0 * w0) - p0 * v0, r1 = (u1 - q1 * w1) - p1 * v1;
+                float r2 = (u2 - q2 * w2) - p2 * v2, r3 = (u3 - q3 * w3) - p3 * v3;
+                w0 = v0, w1 = v1, w2 = v2, w3 = v3;
+                v0 = r0, v1 = r1, v2 = r2, v3 = r3;
+                g0 += d0, g1 += d1, g2 += d2, g3 += d3;
+                mix[i] += (g0 * r0 + g1 * r1) + (g2 * r2 + g3 * r3);
+            }
+        }
+        bandY1_[b] = y0, bandY1_[b + 1] = y1, bandY1_[b + 2] = y2, bandY1_[b + 3] = y3;
+        bandY2_[b] = z0, bandY2_[b + 1] = z1, bandY2_[b + 2] = z2, bandY2_[b + 3] = z3;
+        bandZ1_[b] = v0, bandZ1_[b + 1] = v1, bandZ1_[b + 2] = v2, bandZ1_[b + 3] = v3;
+        bandZ2_[b] = w0, bandZ2_[b + 1] = w1, bandZ2_[b + 2] = w2, bandZ2_[b + 3] = w3;
+        bandGain_[b] = std::max(0.0f, g0), bandGain_[b + 1] = std::max(0.0f, g1);
+        bandGain_[b + 2] = std::max(0.0f, g2), bandGain_[b + 3] = std::max(0.0f, g3);
+    }
+    // The comb: a delay of one blade's passing read between two samples, fed
+    // back through the airliner's gentle smoothing, so its higher lines are a
+    // little wider; its noise its own, drawn here, so its lines owe nothing
+    // to the resonances' or the bank's; shaped as a band.
+    if (combOn_[0]) {
+        Comb &c = comb_[0];
+        int cw = (int)c.late;
+        float f = c.late - cw;
+        float cg = c.g, cin = c.in, cy1 = c.y1, cy2 = c.y2, clo = c.lo, chi = c.hi, ckl = c.kLo, ckh = c.kHi;
+        float *cl = c.line;
+        int at = combAt_;
+        constexpr int M = COMB - 1;
+        for (int i = 0; i < n; i++) {
+            float a = rng.noise();
+            clo += ckl * (a - clo);
+            chi += ckh * (a - chi);
+            int pp = at - cw - 1;
+            float near = cl[pp & M], far = cl[(pp - 1) & M];
+            float cy = cin * (chi - clo) + cg * (near + (far - near) * f);
+            cl[at] = 0.025f * (cy + cy2) + 0.95f * cy1;
+            cy2 = cy1;
+            cy1 = cy;
+            at = (at + 1) & M;
+            mix[i] += cy;
+        }
+        c.y1 = fabsf(cy1) < 1e-20f ? 0 : cy1, c.y2 = fabsf(cy2) < 1e-20f ? 0 : cy2;
+        c.lo = clo, c.hi = chi;
+        combAt_ = at;
+    }
+    // The nose wheel over the centreline lights, as the airliner's, lighter.
+    float v = sound_.rollingMs, lights = v / 15;
+    bool kick = v > 0.5f && lightPhase_ + lights * n * (1.0f / RATE) >= 1;
+    if (!kick && fabsf(thumpBand_.ic1) + fabsf(thumpBand_.ic2) < 1e-6f) {
+        thumpBand_.ic1 = thumpBand_.ic2 = 0;
+        if (v > 0.5f) {
+            lightPhase_ += lights * n * (1.0f / RATE);
+        }
+    } else {
+        float phase = lightPhase_, ic1 = thumpBand_.ic1, ic2 = thumpBand_.ic2;
+        float ta1 = thumpBand_.a1, ta2 = thumpBand_.a2, ta3 = thumpBand_.a3, tk = thumpBand_.k,
+              thud = PR_THUMP * 0.5f * std::min(1.0f, v / 40);
+        for (int i = 0; i < n; i++) {
+            phase += lights * (1.0f / RATE);
+            float x = 0;
+            if (phase >= 1) {
+                phase -= 1;
+                x = thud * (0.8f + 0.4f * rng.uniform()) * 30;
+            }
+            float low, band;
+            svfRun(ic1, ic2, ta1, ta2, ta3, tk, x, low, band);
+            mix[i] += band * 0.012f;
+        }
+        lightPhase_ = phase;
+        thumpBand_.ic1 = fabsf(ic1) < 1e-20f ? 0 : ic1;
+        thumpBand_.ic2 = fabsf(ic2) < 1e-20f ? 0 : ic2;
+    }
+    // The tyres' squeal, through the air's muffling with the rest - PR_SQUEAL
+    // of the airliner's.
+    for (int k = 0; k < 2; k++) {
+        Tone &t = tones_[SQUEAL_1 + k];
+        if (!t.on) {
+            continue;
+        }
+        const float *push = t.stream ? noiseB : noiseA;
+        float pr = t.zr, pi = t.zi, pc = t.cr, ps = t.ci, pn = t.in * PR_SQUEAL;
+        for (int i = 0; i < n; i++) {
+            float a = (pn * push[i] - ps * pi) + pc * pr;
+            pi = ps * pr + pc * pi;
+            pr = a;
+            mix[i] += a;
+        }
+        t.zr = fabsf(pr) < 1e-20f ? 0 : pr, t.zi = fabsf(pi) < 1e-20f ? 0 : pi;
+    }
+}
+
+// The step's tones after the air's muffling and the echo - each has both
+// worked out for its own pitch: the propellers' harmonics, the fundamental's
+// steady line, the gearbox's, the whines and their haystack - four at a time,
+// as the airliner's are.
+__attribute__((noinline)) void Synth::propTones(float *mix, const float *noiseA, const float *noiseB, int n) {
+    Tone *list[PROP_TONES + 1];
+    int count = 0;
+    for (Tone &t : propTones_) {
+        if (t.on) {
+            list[count++] = &t;
+        }
+    }
+    Tone idle[1];
+    if (count % 2 != 0) {
+        list[count++] = &idle[0];
+    }
+    int fours = count & ~3;
+    for (int j = 0; j < fours; j += 4) {
+        Tone &p = *list[j], &q = *list[j + 1], &r = *list[j + 2], &u = *list[j + 3];
+        const float *np = p.stream ? noiseB : noiseA, *nq = q.stream ? noiseB : noiseA,
+                    *nr = r.stream ? noiseB : noiseA, *nu = u.stream ? noiseB : noiseA;
+        float pr = p.zr, pi = p.zi, pc = p.cr, ps = p.ci, pn = p.in;
+        float qr = q.zr, qi = q.zi, qc = q.cr, qs = q.ci, qn = q.in;
+        float rr = r.zr, ri = r.zi, rc = r.cr, rs = r.ci, rn = r.in;
+        float ur = u.zr, ui = u.zi, uc = u.cr, us = u.ci, un = u.in;
+        for (int i = 0; i < n; i++) {
+            float a = (pn * np[i] - ps * pi) + pc * pr, b = (qn * nq[i] - qs * qi) + qc * qr;
+            float c = (rn * nr[i] - rs * ri) + rc * rr, e = (un * nu[i] - us * ui) + uc * ur;
+            pi = ps * pr + pc * pi, qi = qs * qr + qc * qi, ri = rs * rr + rc * ri, ui = us * ur + uc * ui;
+            pr = a, qr = b, rr = c, ur = e;
+            mix[i] += (a + b) + (c + e);
+        }
+        p.zr = fabsf(pr) < 1e-20f ? 0 : pr, p.zi = fabsf(pi) < 1e-20f ? 0 : pi;
+        q.zr = fabsf(qr) < 1e-20f ? 0 : qr, q.zi = fabsf(qi) < 1e-20f ? 0 : qi;
+        r.zr = fabsf(rr) < 1e-20f ? 0 : rr, r.zi = fabsf(ri) < 1e-20f ? 0 : ri;
+        u.zr = fabsf(ur) < 1e-20f ? 0 : ur, u.zi = fabsf(ui) < 1e-20f ? 0 : ui;
+    }
+    // And the last two, if there are, side by side.
+    if (fours < count) {
+        Tone &p = *list[fours], &q = *list[fours + 1];
+        const float *np = p.stream ? noiseB : noiseA, *nq = q.stream ? noiseB : noiseA;
+        float pr = p.zr, pi = p.zi, pc = p.cr, ps = p.ci, pn = p.in;
+        float qr = q.zr, qi = q.zi, qc = q.cr, qs = q.ci, qn = q.in;
+        for (int i = 0; i < n; i++) {
+            float a = (pn * np[i] - ps * pi) + pc * pr, b = (qn * nq[i] - qs * qi) + qc * qr;
+            pi = ps * pr + pc * pi, qi = qs * qr + qc * qi;
+            pr = a, qr = b;
+            mix[i] += a + b;
+        }
+        p.zr = fabsf(pr) < 1e-20f ? 0 : pr, p.zi = fabsf(pi) < 1e-20f ? 0 : pi;
+        q.zr = fabsf(qr) < 1e-20f ? 0 : qr, q.zi = fabsf(qi) < 1e-20f ? 0 : qi;
+    }
+}
 
 bool Synth::render(int16_t *out, int count) {
     float mix[STEP], lateA[STEP], lateB[STEP], noiseA[STEP], noiseB[STEP];
@@ -2814,6 +4044,10 @@ bool Synth::render(int16_t *out, int count) {
             echoAt_ = echoAt;
             echoLow_ = fabsf(echoLow) < 1e-20f ? 0 : echoLow;
             echoLow2_ = fabsf(echoLow2) < 1e-20f ? 0 : echoLow2;
+        }
+        // The turboprop's narrow tones, after the echo as the airliner's are.
+        if (prop) {
+            propTones(mix, noiseA, noiseB, n);
         }
         // The resonances, four at a time - four chains of sums the core can
         // work through side by side - each its pointer turned and shrunk and

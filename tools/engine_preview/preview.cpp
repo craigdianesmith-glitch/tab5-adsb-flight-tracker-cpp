@@ -44,9 +44,8 @@
 // atr72-climbout-flyover, atr72-cruise-flyover, atr72-approach-side,
 // atr72-approach-behind, atr72-touchdown-reverse, atr42-takeoff and
 // atr72-cruise-cinema - each fed as the 3D view feeds a turboprop, its power
-// and its propellers' speed by engines3d::ask() itself. Its sound not made
-// yet, they are silent; tools/engine_preview/render_atr72.sh renders them
-// all, NOTES.md beside it.
+// and its propellers' speed by engines3d::ask() itself.
+// tools/engine_preview/render_atr72.sh renders them all; NOTES.md beside it.
 //
 // ENGINE=cfm56 (the default), v2500, leap or pw: the airframe's engines; for
 // a 777's scenes ge90 (the default there), ge90-94 or trent; for the ATR's,
@@ -61,7 +60,9 @@
 // device has it. POWER=x: eufi-low-pass's power, 0.65 unless given (the 3D
 // view's level flight); 0.85 is more like a real one's. TRACE=1: what the
 // synthesiser is given, each second, on stderr - for a turboprop its
-// propellers' speed asked too.
+// propellers' speed asked too. NOREVERSE=1: a turboprop's landing roll in
+// beta at ground idle all the way, never in reverse - the same landing
+// without it, to set beside it (the CAA's comparison, atr72-sources.md 6).
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -1051,7 +1052,7 @@ int main(int argc, char **argv) {
     }
     // The Typhoon's own airframe unless WHO= says.
     uint32_t whoFighter = getenv("WHO") ? who : 0x43c6f1u;
-    bool trace = getenv("TRACE") != nullptr;
+    bool trace = getenv("TRACE") != nullptr, noReverse = getenv("NOREVERSE") != nullptr;
     for (const Scene &scene : scenes()) {
         if (argc > 2 && strcmp(argv[2], scene.name) != 0) {
             continue;
@@ -1159,6 +1160,11 @@ int main(int argc, char **argv) {
                 doing.low = m.at.z < 3000 * 0.3048f;
                 s.reverse = false;
                 engines3d::ask(s, doing);
+                if (noReverse && s.reverse) {
+                    s.reverse = false;
+                    s.power = 0.05f + std::min(0.12f, doing.kt / 150.0f);
+                    s.np = engine_noise::propData(s.engine).npGround;
+                }
                 bool gear, flaps;
                 viewConfig(m.at.z, (float)doing.kt, onGround, doing.takingOff, gear, flaps);
                 engines3d::airframe(s, gear, flaps, m.spoilers);
