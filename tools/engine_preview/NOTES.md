@@ -537,4 +537,48 @@ Open questions for the user, by ear on the Tab5:
    -200; hotel mode as wired; the 100 to 82 % glide at 1,500 ft; reverse power and speed inferred; 100 % from 3,000 ft
    on the way down.
 
+## turboprop-v2: the ATR's first faults fixed (27 Oct, on ace261f)
+
+On the approved recipe voice (lift on, as approved); renders before and after in
+`~/.cache/terrain-lab/sound/renders/turboprop-v2-fix/` (`before/` from ace261f), the checks in each `checks/`;
+work, measures and judge output in `~/.cache/terrain-lab/sound/turboprop-v2-work/`.
+
+- **Take-off power's spool** (`PR_SPOOL_GROW` 0.30, `PR_SPOOL_FLOOR` 0.05, `propDoing()`): the power rises by at most
+  30 % of itself a second and 0.05 more, ground idle to take-off in about 5 s [P: 14 CFR 33.73, 5 s flight idle to
+  95 %]. The level's 10-90 % rise, Tab5 band [M]: ATR 72 take-off 2.25 -> 4.5 s (+24.5 dB, steepest 20 -> 9 dB/s in
+  0.25 s frames); ATR 42 1.75 -> 4.5 s; ATR 72-200 1.5 -> 5.25 s; ATR 42-300 2.25 -> 4.5 s; standing check 2.25 ->
+  3.75-4.25 s. The Q400 at Itami 16 dB over about 4 s, the A320 from the same place 17 dB over about 7 s [M].
+- **Propeller speed's rise** (`PR_NP_RISE_W` 1.2, was 2.0): 10-90 % 2.2 -> 3.0 s on the standing check (target
+  2.5-3.5 s). The speed itself never overshoots (it is clamped at the speed asked); the 0.8-1.3 % the judges read is
+  the 0.25 s tracker's noise on the governed line (its SD 0.48-0.53 % over 25-39 s, its maximum some 9 s after the
+  rise) [M]. Now 0.5 % by the same measure.
+- **Approach against take-off** (`PR_FLIGHT_POWER_DB` 3.5): the whole sound in the air 3.5 dB a decade of power
+  share, nought at take-off, fading out on the ground with the static share: approach -2.3 dB, climb -0.2, cruise
+  -0.2; the approach's spectrum moved as a whole. Take-off power over the approach at the same slant 8.6 -> 10.9 dB
+  (builder's measure, in band; ANP 9-12 [P]); the approach in the Tab5 band -34.9 -> -37.2 dBFS, the A320's from
+  the same place -31.3, so 3.6 -> 5.9 dB under it (ANP 4-6). Every approach harmonic row as before.
+- **Cruise hiss** (`PR_CUT_*`, `propTones()`): the hiss at FL170 was not the bands' air-loss floor (lowering it,
+  `PR_AIR_FLOOR_DB` -95 in the turboprop's own loop, changed nothing measurable; kept, physics) but the tones'
+  resonances: each feeds its noise straight to its output, a white skirt some 30 dB under the line, wider as lines
+  widen with distance. Beyond 3 km the tones alone go through two one-poles, corner 8 kHz at 3 km falling 1.8
+  octaves a km to 400 Hz, each tone's input raised by what they take at its pitch. Cruise, full range, loudest 2 s:
+  4-7 kHz under 0.5-1 kHz 9.5 -> 29.3 dB (Tab5 band 8.7 -> 34.9); 2 kHz octave 5.6 -> 19.9 dB, 4 kHz 8.0 -> 27.4 dB
+  under. Cruise against the 424 m approach, Tab5 band: 17.1 -> 18.8 dB under (base's law 15-19). Nearer than 3 km
+  (approach at its closest, climb-out, taxi, stand, cinema) the path is not run.
+- **Judge** (`judge.py`, before -> after): 25 -> 24 of 29. Changed rows: Np rise 2.2 s -> 3.0 s; take-off against
+  approach 8.6 -> 10.9 dB; reverse over the beta roll +4.1 -> +5.5 dB (London City +8). Out: the shutdown row on the
+  50 m standing check, -21 % in 1.05 s -> -33 % by 0.55 s: the shutdown's code is untouched, but the waveform after
+  the take-off at 15 s is a new noise realisation (uncorrelated with before from 14 s), and the row's 0.05 s
+  peak-follower is realisation-sensitive [I: not proven by a seed sweep - open]. The approach's four lift rows out as
+  approved.
+- **Checks**: render_same.sh against atr72-base 960 identical (every A320, Typhoon, 777 and splash render, 15 runs;
+  the 300 that differ are the ATR scenes, and every non-ATR loudness line is identical); a320_pccheck 106 identical;
+  a320_bitcheck the base's seven (5 of 7; c5a233e2 and 6991f2b0 the 777's); cost.sh's 17 non-ATR checksums
+  identical to ace261f's; ATR worst the taxi in beta 428,337 cycles (was 427,261; the A320's touchdown 428,965), the
+  far path (not in the cases) some 640 x 8 cycles a block more [I]; engines3d_check 349 checks, 0 failed; release
+  image 12,204,768 B; `sizeof(Synth)` 52,884 B (+12).
+- **Not done tonight, still open**: the stand (propellers thin, the left one appearing at idle speed); the
+  touchdown beside the runway (+18 dB in the last 0.9 s); the climb going away too dull; reverse's roar at 315 Hz and
+  the gearbox line and whine through it; the whine's lower line at 5,530 Hz.
+
 Copyright (c) 2026 Craig Smith. Part of Overhead's sound engine: PolyForm Noncommercial 1.0.0 ([LICENSE-POLYFORM.md](../../LICENSE-POLYFORM.md)), not the MIT licence of the rest of the repository.

@@ -2734,6 +2734,36 @@ constexpr float PR_K1 = 4.0f, PR_K2 = 0.8f;
 // them to a rpm or so [P: ATR at EWADE 2011; M: governed 0.13-0.83%, the
 // resonances' own wander most of it].
 constexpr float PR_WANDER = 0.010f, PR_WANDER_S = 0.8f, PR_HUNT = 0.0012f, PR_HUNT_S = 0.7f;
+// Its power's spool (propDoing()): rising by at most PR_SPOOL_GROW of itself
+// a second and PR_SPOOL_FLOOR more, ground idle to take-off in some 5s [P:
+// 14 CFR 33.73's 5s; M: the Q400 at Itami 16dB over 4s]. Its propellers' speed
+// up from beta critically damped at PR_NP_RISE_W a second, its 10-90% in
+// some 2.5-3s [M: aboard an ATR 72, 850 to 1,200rpm in 2.5-3.5s, targets
+// 4.1]. Each band's air loss let fall to PR_AIR_FLOOR_DB, where the airliner's
+// stops at 30dB: at FL170 5km of air takes over 100dB off 6kHz [P: ISO
+// 9613-1]. Not what made the cruise's hiss - lowering it changed nothing
+// measurable there [M] - that was the tones' skirts (PR_CUT_*); kept as the
+// physics.
+constexpr float PR_SPOOL_GROW = 0.30f, PR_SPOOL_FLOOR = 0.05f, PR_NP_RISE_W = 1.2f, PR_AIR_FLOOR_DB = -95.0f;
+// Its whole sound in the air by its power, PR_FLIGHT_POWER_DB a decade of its
+// share of take-off power, nought at take-off and fading out as it slows on
+// the ground (the static share): so the approach at 22% is 2.3dB down, the
+// climb at 89% 0.2dB, take-off power the same. The harmonics' and the
+// rush's own laws left the approach too near the climb at the same slant -
+// 7.1dB A-weighted over it, where ANP's ATR 72 gives 9-12dB [P: EASA ANP
+// v2.3, https://www.easa.europa.eu/en/downloads/138164/en] - and 3.1dB under
+// the A320's approach, where ANP gives 4-6dB; the approach's spectrum, matched
+// to the Schiphol recording, is moved as a whole, not reshaped.
+constexpr float PR_FLIGHT_POWER_DB = 3.5f;
+// The tones' low-pass beyond 3km (propTones()): each resonance's noise is fed
+// straight to its output, so a tone carries a white skirt some 30dB under it,
+// wider as its line widens with distance - at FL170 that skirt, which no air
+// takes, was the hiss 9-11dB under the 0.5-1kHz band [M: the cruise without
+// propTones() 38dB under]. Two one-poles, their corner from 8kHz at 3km falling
+// 1.8 octaves a kilometre to 400Hz (the broadband's muffling's least), each
+// tone's input raised by what they take at its pitch, so the lines are as
+// before and only their skirts go.
+constexpr float PR_CUT_FROM_KM = 3.0f, PR_CUT_OCTAVES_KM = 1.8f;
 // The harmonics' shared surge: all of them, and the steady line, a little
 // together - their 50ms wanders correlated -0.2 to +0.3 between harmonics,
 // so not much [M: turboprop-methods 6] - nepers, and its two parts' time
@@ -3024,7 +3054,18 @@ __attribute__((noinline)) void Synth::propDoing() {
     bool onGround = s.rollingMs > 0.5f || (s.sourceUpM < 12 && s.airspeedMs < 35);
     bool beta = onGround && (s.reverse || s.power < 0.2f);
     float power = clamp01(s.power);
-    q.torque = ease(q.torque, power, power > q.torque ? UP : DOWN);
+    // Its power rising no faster than its engines accelerate: by at most a
+    // share of itself each second (PR_SPOOL_GROW) and a little more
+    // (PR_SPOOL_FLOOR), so that it comes up from ground idle to take-off
+    // in some 5s, its loudness rising evenly in dB rather than in the half
+    // second the easing alone gave (+20dB in 1.3s, where a Dash 8 Q400
+    // rolling at Itami rises 16dB over some 4s and the A320 from the same
+    // place 17dB over 7s [M: review atr72-v1]); certification asks for
+    // flight idle to 95% of take-off power in no more than 5s [P: 14 CFR
+    // 33.73, https://www.ecfr.gov/current/title-14/chapter-I/subchapter-C/part-33/subpart-E/section-33.73].
+    static const float GROW = expf(SLOW_S * PR_SPOOL_GROW), FLOOR = PR_SPOOL_FLOOR * SLOW_S;
+    float eased = ease(q.torque, power, power > q.torque ? UP : DOWN);
+    q.torque = power > q.torque ? std::min(eased, q.torque * GROW + FLOOR) : eased;
     q.governed = ease(q.governed, beta ? 0.0f : 1.0f, beta ? UNGOVERN : GOVERN);
     q.reverse = ease(q.reverse, s.reverse ? 1.0f : 0.0f, REVERSE);
     q.stat = onGround ? 1 - smoothstep(15, 40, airspeed_) : 0.0f;  // the ground's disturbed air, on the ground only
@@ -3092,7 +3133,7 @@ __attribute__((noinline)) void Synth::propDoing() {
         } else {
             float want = ask * q.pitch[g] + 0.25f * (1 - q.pitch[g]);
             if (want > n) {
-                const float w = 2.0f;
+                const float w = PR_NP_RISE_W;
                 rate += (w * w * (want - n) - 2 * w * rate) * SLOW_S;
                 rate = clampf(rate, 0, 1.25f * p.npRise);
                 n = std::min(want, n + rate * SLOW_S);
@@ -3115,6 +3156,12 @@ __attribute__((noinline)) void Synth::propSlowStep() {
     const PropData &p = propData(s.engine);
     Prop &q = prop_;
     float d = expFast(logDistance_), km = d * 0.001f;
+    // Its loudness in the air by its power (PR_FLIGHT_POWER_DB), and its
+    // tones' low-pass far off (PR_CUT_*): off nearer than 3km.
+    gain_ *= dbAmp(PR_FLIGHT_POWER_DB * (1 - q.stat) * lg10(std::max(0.05f, q.torque)));
+    q.cutA = km > PR_CUT_FROM_KM
+                 ? 1 - expf(-2 * PI / RATE * std::max(400.0f, 8000 * exp2Fast(-PR_CUT_OCTAVES_KM * (km - PR_CUT_FROM_KM))))
+                 : 0.0f;
     float th = q.aspect;
     // The surges, each a quick part and a slow part, and each band's shimmer
     // and the air's flicker - the airliner's, run here as its bandsStep()
@@ -3271,6 +3318,11 @@ __attribute__((noinline)) void Synth::propSlowStep() {
             return;
         }
         float amp = heardAmp(heard, db, from);
+        if (q.cutA > 0) {  // what the far low-pass's two stages take at its pitch, given back
+            float sn, cs, k = 1 - q.cutA;
+            sinCosTurns(heard * (1.0f / RATE), sn, cs);
+            amp *= (1 + k * k - 2 * k * cs) / (q.cutA * q.cutA);
+        }
         float x = PI * width / RATE, r = 1 - x * (1 - x * (0.5f - x * (1.0f / 6)));
         tune(t, heard, r);
         t.in = amp * sqrtf(6 * (1 - r * r));
@@ -3539,7 +3591,7 @@ __attribute__((noinline)) void Synth::propSlowStep() {
         float sh = PR_SHIMMER * (SHIMMER_NP + SHIMMER_TURBULENT_NP * clamp01(turbulent / std::max(1e-12f, p)) + shimmerFar);
         float w = (b < BANDS ? bandTan_[b] : LOW_TAN) * airCot, w2 = w * w;
         float lowPassDb = 4.34294482f * 0.693147181f * log2Fast((1 - w2) * (1 - w2) + w2 * (1 / (0.6f * 0.6f)));
-        float airDb = clampf(lowPassDb - (b < BANDS ? bandAirDbKm_[b] : LOW_AIR) * km, -30, 15);
+        float airDb = clampf(lowPassDb - (b < BANDS ? bandAirDbKm_[b] : LOW_AIR) * km, PR_AIR_FLOOR_DB, 15);
         float ln = 2 * sh * (shimmer_[b < BANDS ? b : 0] - sh) + 2 * fl * (flickerN - fl) + 0.230258509f * airDb;
         p *= exp2Fast(1.44269504f * ln);
         if (b < BANDS) {
@@ -3761,6 +3813,31 @@ __attribute__((noinline)) void Synth::propRender(float *mix, const float *lateA,
 // steady line, the gearbox's, the whines and their haystack - four at a time,
 // as the airliner's are.
 __attribute__((noinline)) void Synth::propTones(float *mix, const float *noiseA, const float *noiseB, int n) {
+    // Far off, the mix as it was kept, so the tones alone can go through
+    // their low-pass (PR_CUT_*) after their sums.
+    float cut = prop_.cutA, kept[STEP];
+    if (cut > 0) {
+        for (int i = 0; i < n; i++) {
+            kept[i] = mix[i];
+        }
+    }
+    propToneSums(mix, noiseA, noiseB, n);
+    Prop &q = prop_;
+    if (cut > 0) {
+        float y1 = q.cutY1, y2 = q.cutY2;
+        for (int i = 0; i < n; i++) {
+            y1 += cut * ((mix[i] - kept[i]) - y1);
+            y2 += cut * (y1 - y2);
+            mix[i] = kept[i] + y2;
+        }
+        q.cutY1 = fabsf(y1) < 1e-20f ? 0 : y1, q.cutY2 = fabsf(y2) < 1e-20f ? 0 : y2;
+    } else {
+        q.cutY1 = q.cutY2 = 0;
+    }
+}
+
+// The tones' sums, four at a time, each a resonance pushed by its noise.
+__attribute__((noinline)) void Synth::propToneSums(float *mix, const float *noiseA, const float *noiseB, int n) {
     Tone *list[PROP_TONES + 1];
     int count = 0;
     for (Tone &t : propTones_) {

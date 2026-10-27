@@ -383,6 +383,7 @@ class Synth {
     void propRender(float *mix, const float *lateA, const float *lateB, const float *noiseA, const float *noiseB,
                     Rng &rng, int n);
     void propTones(float *mix, const float *noiseA, const float *noiseB, int n);
+    void propToneSums(float *mix, const float *noiseA, const float *noiseB, int n);
 
     // The noise as a step's samples have it: the seed in a register, copied
     // in and back once a step, not read from the synth - in the PSRAM - and
@@ -633,6 +634,9 @@ class Synth {
         // The low band under the bank's: its two stages' last two outputs,
         // its loudness now and its change each sample.
         float lowY1 = 0, lowY2 = 0, lowZ1 = 0, lowZ2 = 0, lowGain = 0, lowBy = 0;
+        // Its tones' low-pass far off (propTones()): its coefficient, nought
+        // nearer than 3km where it is not run, and its two stages' outputs.
+        float cutA = 0, cutY1 = 0, cutY2 = 0;
     };
     Prop prop_;
     // Its tones after the air's muffling and the echo: its blade harmonics
