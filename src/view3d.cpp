@@ -977,6 +977,18 @@ constexpr int ROTOR_DOWN_FT = 60, ROTOR_DOWN_KT = 3;
 // least: an estimate, or a pressure altitude, putting it lower - at the
 // ground's height, or under it - had its skids sliding along the grass.
 constexpr float ROTOR_LOWEST_M = 1.5f;
+// Taking off, handed back from the taxiway follower to the runway
+// simulation once it rolls faster than this; and a gap between where it is
+// shown and where the simulation has it - see prepareNext() - closed at no
+// more than this share of its speed along its way, moving at least this
+// fast, and of its climb, and this many feet a minute, in the air: a fifth,
+// 33 kt at the speed it leaves at, under the 40 kt that is seen as a lurch.
+constexpr int TAKEOFF_HANDBACK_KT = 30, TAKEOFF_EASE_FROM_KT = 5;
+constexpr float TAKEOFF_EASE_SHARE = 0.2f, TAKEOFF_EASE_FPM = 300;
+// Rolling for take-off, shown gathering speed no faster than this, knots a
+// second: a fighter's with its reheat lit (takeoff.h), two and a half times
+// an airliner's.
+constexpr float TAKEOFF_ROLL_KT_S = 13.0f;
 int groundFt() { return g_where == Where::AIRFIELD ? (int)lroundf(g_fieldFt) : 0; }
 bool rotorDown(bool rotorcraft, bool ground, int altFt, int gsKt) {
     return ground || (rotorcraft && altFt - groundFt() < ROTOR_DOWN_FT && gsKt < ROTOR_DOWN_KT);
@@ -1582,9 +1594,10 @@ s3::Camera cameraFor(const s3::Aircraft &followed, const Followed &f, float seco
 bool g_wasGround = false;
 float g_touchdownAt = -100;
 s3::Pose g_touchdownPose{};
-// Since when, on the view's clock, it has been held on the runway rotating -
-// a report having it off the ground first - or -1.
-float g_rotateHeldAt = -1;
+// Whether g_wasGround is the one followed's, rather than the last one
+// shown's or from before the view was opened: a new one shown is on the
+// ground or not as it is, not lifting off because the last one was down.
+bool g_wasGroundKnown = false;
 // How fast it was coming down as it touched, m/s - its tyres' screech the
 // louder the harder - and, till it does, as it last was in the air.
 float g_touchdownSinkMs = 1, g_sinkMs = 1;
@@ -1845,26 +1858,12 @@ void prepareNext(const Followed &f, const std::vector<Aircraft> &traffic, uint32
     g_lastSeconds = seconds;
     FollowEstimate e = estimateOf(f);
     bool rotor = isRotorcraft(f.type, f.category);
-    // Taking off, a report off the ground before it has been seen rotating -
-    // the runway simulation reckoning it slower than it was, the feed's
-    // reports far apart - held on its main wheels while its nose comes up,
-    // a couple of seconds at most, then away: no airliner leaves a runway
-    // level, as it was shown doing.
-    if (g_where == Where::AIRFIELD && f.movement == RunwaySim::Movement::TAKEOFF && !rotor) {
-        float lift = s3::liftOffPitch(lookOf(f.hex, f.type, f.callsign, f.military, f.category).family);
-        if (!e.ground && g_wasGround && g_rotateHeldAt < 0 && g_pilot.pitch < lift - 1 * DEG) {
-            g_rotateHeldAt = seconds;
-        }
-        if (g_rotateHeldAt >= 0 && (e.ground || g_pilot.pitch >= lift - 0.5f * DEG || seconds - g_rotateHeldAt > 4)) {
-            g_rotateHeldAt = -1;
-        }
-    } else {
-        g_rotateHeldAt = -1;
-    }
-    if (g_rotateHeldAt >= 0) {
-        e.ground = true;
-        e.vsFpm = 0;
-    }
+    // Taking off, the runway simulation rotates it before it leaves the
+    // runway (see RunwaySim and Pilot::fly()): it is shown as that has it,
+    // not held on its wheels here while its nose came up - a hold that let
+    // it go as much as 200ft below where it was meant to be, to catch up
+    // like a trampoline's (BAW594 at Heathrow).
+    bool takeoff = f.movement == RunwaySim::Movement::TAKEOFF && !rotor;
 
     // Where it is shown. Taxiing between reports, the estimate carries it on
     // along its track (RunwaySim::model()) - not carried again here, which
@@ -1887,13 +1886,32 @@ void prepareNext(const Followed &f, const std::vector<Aircraft> &traffic, uint32
     } else if (g_haveShown && g_shownWhere == g_where && hovering(e.ground, e.gsKt)) {
         targetHeading = g_shownHeading;
     }
+    // Taking off, rolling: shown gathering speed no faster than a hard
+    // take-off does - a new take-off found rolling on while it was shown
+    // lined up, the simulation begun where the real one is (see RunwaySim),
+    // seen to set off briskly and catch up, not to lurch off at 40 kt.
+    static float rollKt = -1;
+    if (!takeoff || !e.ground) {
+        rollKt = -1;
+    }
     if (!g_haveShown || g_shownWhere != g_where || length(target - g_shownAt) > 2000 || dt <= 0) {
         g_shownAt = target;
         g_shownHeading = targetHeading;
         g_haveShown = true;
         g_shownWhere = g_where;
+        rollKt = -1;
     } else {
         float speed = e.gsKt * 0.5144f;
+        if (takeoff && e.ground) {
+            // From the follower's speed, handed back - held, rolling, not
+            // slowed to the roll's should the follower have gone faster.
+            float from = g_taxiKt >= 0 ? (float)g_taxiKt : rollKt >= 0 ? rollKt : (float)e.gsKt;
+            rollKt = std::min((float)e.gsKt, from + TAKEOFF_ROLL_KT_S * dt);
+            if (from > rollKt && e.gsKt >= TAKEOFF_HANDBACK_KT) {
+                rollKt = from;
+            }
+            speed = rollKt * 0.5144f;
+        }
         Vec3 velocity = {sinf(e.track * DEG) * speed, cosf(e.track * DEG) * speed,
                          e.ground ? 0.0f : e.vsFpm * 0.00508f};
         // A helicopter a report puts back - its estimate, slowing to a
@@ -1915,6 +1933,27 @@ void prepareNext(const Followed &f, const std::vector<Aircraft> &traffic, uint32
                 step.y *= most / across;
             }
             step.z = std::max(-6 * dt, std::min(6 * dt, step.z));
+        }
+        if (takeoff && e.gsKt >= TAKEOFF_EASE_FROM_KT) {
+            // Taking off, a gap - the taxiway follower handing it back on its
+            // roll, a new take-off found rolling on - closed no faster than a
+            // fifth of its speed along its way, either way, so never back
+            // along it: seen to roll on a little faster or slower, not to
+            // lurch 140m down the runway in half a second (BAW830D at
+            // Heathrow). In the air its height never eased down, and up no
+            // faster than a fifth of its climb and 300ft a minute on top. The
+            // runway simulation's take-off is continuous: only such gaps are
+            // eased.
+            float hx = sinf(e.track * DEG), hy = cosf(e.track * DEG);
+            float along = step.x * hx + step.y * hy;
+            float most = TAKEOFF_EASE_SHARE * speed * dt;
+            float limited = std::max(-most, std::min(most, along));
+            step.x += (limited - along) * hx;
+            step.y += (limited - along) * hy;
+            if (!e.ground) {
+                float up = (TAKEOFF_EASE_SHARE * std::max(e.vsFpm, 0) + TAKEOFF_EASE_FPM) * 0.00508f * dt;
+                step.z = std::max(0.0f, std::min(step.z, up));
+            }
         }
         g_shownAt = g_shownAt + step;
         g_shownHeading += remainderf(targetHeading - g_shownHeading, 2 * (float)M_PI) * std::min(1.0f, dt / 1.0f);
@@ -1940,13 +1979,13 @@ void prepareNext(const Followed &f, const std::vector<Aircraft> &traffic, uint32
     // there, along no taxiway.
     bool taxiways = g_where == Where::AIRFIELD && e.ground && !g_network.empty() && !rotor;
     s3::Look look = lookOf(f.hex, f.type, f.callsign, f.military, f.category);
-    // Rolling for take-off it is handed back to the runway simulation once
-    // it is shown where that has it - or at 80 knots, whatever - so there is
-    // no lurch.
-    bool rolling = e.gsKt > 40 &&
-                   (!g_follower.active() ||
-                    (f.movement == RunwaySim::Movement::TAKEOFF &&
-                     (e.gsKt > 80 || hypotf(g_follower.at().x - target.x, g_follower.at().y - target.y) < 15)));
+    // Rolling for take-off it is handed back to the runway simulation as
+    // soon as its roll is under way, the carry-and-ease above closing the
+    // gap between them at no more than a fifth of its speed: kept by the
+    // follower, which paces a take-off at taxiing speed, until it was shown
+    // where the simulation had it or at 80 knots, it was let go 200m behind
+    // and lurched down the runway to catch up.
+    bool rolling = takeoff ? e.gsKt > TAKEOFF_HANDBACK_KT : e.gsKt > 40 && !g_follower.active();
     g_taxiKt = -1;
     if (taxiways && !rolling) {
         ground::Follower::Input in{};
@@ -1999,7 +2038,7 @@ void prepareNext(const Followed &f, const std::vector<Aircraft> &traffic, uint32
         g_follower.end();
         g_taxiSaid[0] = 0;
     }
-    int shownKt = g_taxiKt >= 0 ? g_taxiKt : e.gsKt;
+    int shownKt = g_taxiKt >= 0 ? g_taxiKt : rollKt >= 0 ? (int)lroundf(rollKt) : e.gsKt;
 
     // The one followed, flown: banked into its turns - the shown heading's
     // turning - and pitched by its climb, its controls moving with it.
@@ -2012,7 +2051,8 @@ void prepareNext(const Followed &f, const std::vector<Aircraft> &traffic, uint32
     float heightM = g_where == Where::AIRFIELD ? at.z : e.altFt * 0.3048f;
     // Over the airfield its height over the ground is known, for its flare.
     g_pilot.fly(dt, look.family, g_turn, shownKt, e.vsFpm, e.ground, g_where == Where::AIRFIELD ? at.z : NAN,
-                f.movement == RunwaySim::Movement::TAKEOFF);
+                f.movement == RunwaySim::Movement::TAKEOFF, e.liftoffInS,
+                s3::takeoffKindOf(look.family, f.type.c_str()));
     s3::Pose pose = {at, g_shownHeading, g_pilot.pitch, g_pilot.roll};
     s3::Config config = s3::configFor(heightM, shownKt, e.ground, f.movement == RunwaySim::Movement::TAKEOFF);
     config.aileron = g_pilot.aileron;
@@ -2592,7 +2632,7 @@ bool open() {
     g_movedOnGround = false;
     g_startedAt = -1000;
     g_runningWas = -1;
-    g_rotateHeldAt = -1;
+    g_wasGroundKnown = false;
     g_passSet = false;
     g_towerRaise = 0;
     g_labelledAt = -1;
@@ -2687,8 +2727,12 @@ void frame(const Followed &flight, const std::vector<Aircraft> &traffic, uint32_
         g_movedOnGround = false;
         g_startedAt = -1000;
         g_runningWas = -1;
-        g_rotateHeldAt = -1;
+        g_wasGroundKnown = false;
         g_labeller.reset();
+    }
+    if (!g_wasGroundKnown) {
+        g_wasGround = flight.now.ground;
+        g_wasGroundKnown = true;
     }
     // The governor: by how long the last frame took, all told.
     uint32_t now = millis();

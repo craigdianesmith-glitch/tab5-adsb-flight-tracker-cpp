@@ -131,10 +131,8 @@ FollowSample followSampleOf(const Aircraft &ac, uint32_t ms, DayPressureFn dayPr
     s.rotorcraft = isRotorcraft(ac.type, ac.category);
     // A Cessna's take-off, a turboprop's or a widebody's, not every one an
     // airliner's: rolled to 145 knots and climbing at 2000ft a minute.
-    scene3d::Takeoff k = scene3d::takeoffOf(scene3d::familyOf(ac.type.c_str(), ac.military, ac.category.c_str()));
-    s.liftoffKt = (uint8_t)lroundf(k.liftoffKt);
-    s.accelTenths = (uint8_t)lroundf(k.accelKtS * 10);
-    s.climbHundreds = (uint8_t)(k.climbFpm / 100);
+    s.takeoffKind = scene3d::takeoffKindOf(scene3d::familyOf(ac.type.c_str(), ac.military, ac.category.c_str()),
+                                           ac.type.c_str());
     int32_t pressure;
     if (s.rotorcraft && !s.ground && ac.hasPos) {
         if (ac.hasAltGeom) {

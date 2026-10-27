@@ -1,6 +1,7 @@
 #pragma once
 
 #include "ground_pack.h"
+#include "takeoff.h"
 #include <math.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -147,9 +148,12 @@ class Pilot {
     // `turnRate` in radians a second, positive to the left - as a heading
     // goes - over `dt` seconds since the last; `heightM` above the ground
     // under it, NAN when that isn't known; `departing` on its take-off roll
-    // and climb-out, rotated for.
+    // and climb-out, rotated for: `liftoffInS` the seconds till it leaves
+    // the runway (see FollowEstimate), its nose coming up over the last of
+    // them as its kind's (takeoff.h) does.
     void fly(float dt, Family family, float turnRate, float speedKt, float climbFpm, bool onGround,
-             float heightM = NAN, bool departing = false);
+             float heightM = NAN, bool departing = false, float liftoffInS = NAN,
+             TakeoffKind kind = TakeoffKind::NARROW);
     float roll = 0, pitch = 0;  // radians, as a Pose has them
     float aileron = 0, elevator = 0, rudder = 0;
 
@@ -158,22 +162,16 @@ class Pilot {
     float lastKt_ = 0, accel_ = 0;  // how fast it is speeding up, knots a second, smoothed
     bool wasGround_ = true;
     float touchPitch_ = 0, sinceTouch_ = -1;  // the nose as the wheels touched, and how long since
+    bool rotated_ = false;  // taking off, its nose come up on the runway: not let down on it again
+    bool flown_ = false;    // flown once since it was made: before that, set as it is flying
 };
 
-// The nose as it lifts off, taking off, rotated to: an airliner's 8
-// degrees, a fast jet's 11.
-float liftOffPitch(Family family);
-
-// Its take-off by its kind - one table for the pilot's rotation and the
-// runway simulation's roll and climb-out alike (see followSampleOf()), so its
-// nose comes up as it nears the speed it leaves the runway at: rotated at
-// `rotateKt`, off at `liftoffKt`, gathering speed down the runway at
-// `accelKtS` knots a second, climbing away at `climbFpm`.
-struct Takeoff {
-    float rotateKt, liftoffKt, accelKtS;
-    int climbFpm;
-};
-Takeoff takeoffOf(Family family);
+// How it takes off, as takeoff.h's table has its kind - one table for the
+// pilot's rotation and the runway simulation's roll and climb alike (see
+// followSampleOf()): by its family, and among the narrowbodies and
+// widebodies by its type, an A321 or a 777 leaving faster than an A320 or
+// an A330.
+TakeoffKind takeoffKindOf(Family family, const char *type);
 
 // The nose of one coming in to land, given `pitch` along its way down and a
 // few degrees above it: higher on the approach - slow, its flaps out, its

@@ -62,6 +62,10 @@ struct FollowEstimate {
     int vsFpm;
     const char *how;  // which of the above it was taken to be doing, for the log
     int16_t pressureFt = 0;  // what putting it right added to altFt: see feedAltFt()
+    // Taking off, the seconds till it leaves the runway - nought or less
+    // once it has, its pilot rotating it over the last of them (see
+    // Pilot::fly()); NAN, not taking off.
+    float liftoffInS = NAN;
 };
 // An estimate's height as the feed would have given it - its pressure
 // altitude, as every label shows a height.
@@ -138,12 +142,49 @@ public:
     Movement movement() const;
     const RunwayLine &runway() const { return rw_; }
 
+    // A take-off's roll down the runway, its rotation and lift-off, from a
+    // report rolling at `kt` from `along` at `ms` - or with `stand` from a
+    // standstill there, its thrust coming up first: see takeoff.h, and
+    // report() for how one is made to fit the reports.
+    struct Rolled {
+        uint32_t ms;
+        float along, kt;  // nm from the threshold, knots
+        float k;          // its acceleration as a share of its kind's
+        uint32_t rotMs;   // its nose coming up from here
+        float rotAlong, rotKt, rotAccel;
+        uint32_t offMs;  // and off the runway here
+        float offAlong, offKt;
+        bool air;    // off already by its report: rolled to offMs, not from ms
+        bool stand;  // from a standstill at ms
+    };
+    // A take-off at a moment: on the runway, rolling or rotating, or
+    // climbing away - its height over the field, its climb's seconds since
+    // its lift-off and how fast they are being played (see report()).
+    struct TakeoffAt {
+        bool ground, rotating;
+        float along, kt;     // nm from the threshold, knots
+        float ft, fpm;       // over the field
+        float climbS, rate;  // its climb's clock and its pace: 1 as it is flown
+        float offInS;        // seconds till it leaves the runway: nought or less, gone
+    };
+
 private:
     enum Phase : uint8_t { NONE, LINED_UP, TAKEOFF, LANDING };
     FollowEstimate model(uint32_t ms, float maxAgeS) const;
     bool advance(const FollowSample &prev, bool hadPrev);
     void start(const FollowSample &prev, bool hadPrev);
     uint32_t waitFor(const FollowSample &prev, bool hadPrev) const;
+    // A take-off: see report().
+    void takeoffReport(uint32_t heardMs, Phase before, const TakeoffAt *was, const FollowEstimate *shown);
+    void takeoffEstimate(float along);
+    void takeoffPlan(uint32_t t0, const TakeoffAt *from, bool replanning);
+    void takeoffClimb(uint32_t ta, float tau0, float rate0, float fpm, float along, float kt, uint32_t tR);
+    TakeoffAt realAt(uint32_t ms) const;    // as the reports have it
+    void flightAt(uint32_t ms, float &along, float &kt) const;
+    TakeoffAt shownAt(uint32_t ms) const;   // as it is shown
+    TakeoffAt linedUpAt(uint32_t ms) const;  // LINED_UP, its roll begun from a standstill unseen
+    FollowEstimate takeoffEstimateOf(const TakeoffAt &a) const;
+    void climbOutOf(uint32_t ms, float maxAgeS, FollowEstimate &e) const;
 
     SampleList history_;  // its low reports of the last few minutes, oldest first
     uint32_t airMs_ = 0;                 // its last report in the air, if seenAir_
@@ -171,4 +212,38 @@ private:
     // the radar takes at once - see plotAt().
     bool plotCut_ = false;
     float fromLat_ = 0, fromLon_ = 0, fromTrack_ = 0;  // the turn's start
+    // A take-off's height, handed back to the feed: an offset eased out
+    // with its rate kept, its climb never turned into a descent - see
+    // report() - from dAlt_ at altRate_ feet a second, over altLenS_.
+    bool climbSafe_ = false;
+    bool climbingOut_ = false;  // and climbing on out after it, still low: see report()
+    float altRate_ = 0, altLenS_ = 0;
+    float dKt_ = 0;  // a take-off ended on the runway: its speed's offset, eased out with its place
+    // A take-off under way: what its reports have said of it - the speed
+    // it lifts off at and its climb, as its kind's to begin with; its height
+    // read rolling, as an average of so many; and its last report rolling,
+    // where it was and how fast - its own speed, and the feed's.
+    float tkLiftoffKt_ = 0, tkClimbFpm_ = 0, tkLevelFt_ = 0;
+    uint8_t tkLevels_ = 0;
+    bool tkRolled_ = false;
+    int16_t tkRollGs_ = -1;
+    uint32_t tkRollMs_ = 0;
+    float tkRollAlong_ = 0, tkRollKt_ = 0;
+    // The real one as its reports have it: rebuilt at each report.
+    Rolled est_ = {};
+    // The one shown: planned at each report from where it was shown as that
+    // report came in - its own roll, sped up or slowed to leave the runway
+    // as the real one is reckoned to, then its climb's clock played a
+    // little faster or slower to meet the real one's, from climbMs_ on;
+    // and its place, the real one's with a residual eased out from restMs_.
+    Rolled plan_ = {};
+    bool planAir_ = false;  // planned in the air: off the runway for good
+    uint32_t climbMs_ = 0, restMs_ = 0;
+    float climbS0_ = 0, rate0_ = 1, climbGapS_ = 0, holdS_ = 0, warpS_ = 0, planFpm_ = 0;
+    float rest0Nm_ = 0, rest0NmS_ = 0, restS_ = 0;
 };
+// One for each contact tracked - a hundred and more, in PSRAM - and the one
+// followed's in the chip's own memory: 168 bytes before take-offs were
+// simulated as above, 356 since, on the Tab5's 32 bits. Kept from growing
+// unseen.
+static_assert(sizeof(void *) != 4 || sizeof(RunwaySim) <= 384, "RunwaySim kept small");

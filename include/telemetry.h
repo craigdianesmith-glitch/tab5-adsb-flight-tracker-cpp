@@ -3,6 +3,7 @@
 #include <Arduino.h>
 
 #include "adsb_client.h"
+#include "takeoff.h"
 
 // One report of a followed aircraft, kept over the minutes before it - live,
 // and read back from a recording that follows one: its height and speed for
@@ -36,12 +37,14 @@ struct FollowSample {
     bool hasTrack;
     float track;
     bool rotorcraft;  // a helicopter: see isRotorcraft()
-    // Its take-off by its kind, for the runway simulation's roll and climb
-    // (scene3d::takeoffOf()): the speed it lifts off at, in knots, how fast it
-    // gathers speed down the runway, in tenths of a knot a second, and its
-    // climb away, in hundreds of feet a minute. Nought, an airliner's.
-    uint8_t liftoffKt, accelTenths, climbHundreds;
+    // How its kind takes off, for the runway simulation's roll and climb -
+    // see takeoff.h. Nought, an A320's.
+    TakeoffKind takeoffKind;
 };
+// One for each low contact's dozen reports kept, a hundred contacts and
+// more, and the chart's: in the chip's own memory, which the WiFi and TLS
+// need.
+static_assert(sizeof(FollowSample) <= 48, "FollowSample kept small");
 
 // Its height above the sea, as near as the feed says: its pressure altitude
 // put right where that can be - see FollowSample::pressureFt.

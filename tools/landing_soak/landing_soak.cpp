@@ -150,7 +150,6 @@ s3::Look lookOf(const String &hex, const String &type, const String &callsign, b
     return s3::lookFor(type.c_str(), 0x1B2A55, military, category.c_str());
 }
 bool g_wasGround = false;
-float g_rotateHeldAt = -1;
 s3::Pilot g_pilot;
 Vec3 g_shownAt{};
 float g_shownHeading = 0;
@@ -186,7 +185,7 @@ void prepareNext(const Followed &f, const std::vector<Aircraft> &traffic, uint32
     g_lastE = e;
     g_lastTaxiways = taxiways && !rolling;
     // From after "int shownKt": the touchdown's log line, and g_wasGround -
-    // which the take-off's rotation reads - as the rest of prepareNext() has them.
+    // which it and the lift-off's read - as the rest of prepareNext() has them.
     if (g_where == Where::AIRFIELD && e.ground && !g_wasGround && f.movement == RunwaySim::Movement::LANDING) {
         Serial.printf("[3d] %s down on %s at %s\n", f.callsign.c_str(), f.runway.ident != nullptr ? f.runway.ident : "?",
                       g_airport);
@@ -348,7 +347,6 @@ static Result run(const Scenario &sc, const Options &o) {
     g_haveShown = false;
     g_follower.end();
     g_taxiSaid[0] = 0;
-    g_rotateHeldAt = -1;
     g_wasGround = false;
     g_lastSeconds = -1;
     g_pilot = s3::Pilot();
