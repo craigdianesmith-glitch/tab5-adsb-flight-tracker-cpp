@@ -228,4 +228,27 @@ What it did:
   - Stack: deepest chain 640 B (restart).
   - sizeof(Synth): 51,012 B.
 
+
+## The Boeing 777 (b777-sound, 27 Oct, first version for review)
+
+The A320's turbofan voice on the 777's engines, from `b777-sources.md` - no new sources, only figures:
+
+- **Engines**: GE90-94B, GE90-115B and Trent 800 rows in `ENGINES[]`. B77W and B77L get GE90-115Bs, B772 GE90-94Bs
+  60 times in a hundred or Trent 800s, B773 Trent 800s (`b777Engines()`, `engines3d::enginesOf`). No 777X (GE9X) yet.
+- **New per-engine figures** (all neutral for the A320s and the Typhoon): `jetScale` (the jet's roar an octave lower
+  per doubling; the fan's intake hiss and the airframe's rush surging that many times slower; the jet's surges 25 %
+  deeper per doubling), `h2Db` (the fan's second harmonic, the fan's voice on the Tab5 when its fundamental is below
+  the speaker), `buzzLo`/`buzzHi` (the buzz-saw's shaft orders: 7-13 on the GE90, a few clear lines, not the CFM56's
+  comb), `spool` (0.75: the big fan's slow glide) and `frameDb` (+8 dB: twelve main wheels, 3.5 times the wing).
+  The fan's broadband corner is 0.75 octave lower per doubling. The GE90's turbine tones are at shaft orders 100 and
+  104 [I: blade counts not published].
+- **Against the recordings** (`targets/work/b777`, the same measures as the references): 85 of 136 figures in the
+  references' range, against the old synthesiser's 46. Still short: the approach's 4 kHz octave by about 6 dB (its
+  slope -9 dB/oct against -7.3), the take-off pass's slow swell (0.25-1 Hz) at 0.16-0.2 against 0.43, and spool-up
+  (one reference clip only).
+- **Checks**: a320-takeoff (CFM56 and LEAP), a320-landing and eufi-takeoff byte-identical to v1.5.1-dev's. The release
+  image builds, 12,178,208 B. `sizeof(Synth)` +36 B (`surgeNp_`).
+- **To listen**: `~/.cache/terrain-lab/sound/review/b777-v1/` - each scene full-range and `-tab5`; `-as-a320` is the
+  same flight with an A320's engines; `-trent800` the take-off with Trent 800s.
+
 Copyright (c) 2026 Craig Smith. Part of Overhead's sound engine: PolyForm Noncommercial 1.0.0 ([LICENSE-POLYFORM.md](../../LICENSE-POLYFORM.md)), not the MIT licence of the rest of the repository.

@@ -36,7 +36,11 @@
 // And a320-splash: the boot splash's take-off, as include/splash_takeoff.h
 // gives it whole and the device makes it, a 40ms block at a time.
 //
-// ENGINE=cfm56 (the default), v2500, leap or pw: the airframe's engines.
+// And the Boeing 777's: b777-takeoff; for measuring against real ones,
+// x-b777-approach-side, x-b777-approach-overhead, x-b777-touchdown-side.
+//
+// ENGINE=cfm56 (the default), v2500, leap or pw: the airframe's engines; for
+// a 777's scenes ge90 (the default there), ge90-94 or trent.
 // FOPP=1: its fuel vents unmodified, whistling. SYNC=1: the touchdown's
 // squeal and the reversers' coming on heard as the picture shows them -
 // engine_noise::g_transientsOnPicture. SUFFIX=-x: added to the files' names.
@@ -614,6 +618,40 @@ std::vector<Scene> scenes() {
                        m.eye = {speed * (n * cycle + 7), (n % 2 ? -1 : 1) * off, height - 0.3f * off};
                        return m;
                    }});
+    // The Boeing 777's, its GE90-115Bs unless ENGINE= says: a take-off seen
+    // from beside the runway further down, as a 777 lifts later and faster;
+    // and heard from where the reference recordings were made
+    // [b777-sources 7]: an approach 300m up and 300m off, as Hoscalegeek's
+    // 777-200; one 40m over a microphone near the threshold, as Sydney's and
+    // the BA 777-236ER's; and a landing 700m down the runway and 350m off,
+    // as the FedEx 777F's at Sydney.
+    out.push_back({"b777-takeoff", 75, [](float t) { return takeoffSeen(t, 1500, 140, 85); }});
+    out.push_back({"x-b777-approach-side", 75, [](float t) {
+                       Moment m;
+                       float s = 72 * (t - 40);
+                       m.at = {s, 0, 300 - s * 0.0524f};
+                       m.heading = 0;
+                       m.pitch = 0;
+                       m.power = 0.45f;
+                       m.gear = true;
+                       m.flaps = true;
+                       m.eye = {0, 300, 1.5f};
+                       return m;
+                   }});
+    out.push_back({"x-b777-approach-overhead", 40, [](float t) {
+                       Moment m;
+                       float s = 72 * (t - 20);
+                       m.at = {s, 0, std::max(0.0f, 40 - s * 0.0524f)};
+                       m.heading = 0;
+                       m.pitch = 0;
+                       m.power = 0.45f;
+                       m.gear = true;
+                       m.flaps = true;
+                       m.eye = {0, 0, 1.5f};
+                       m.hardGround = true;
+                       return m;
+                   }});
+    out.push_back({"x-b777-touchdown-side", 90, [](float t) { return landing(t, {700, 350, 2}); }});
     eufiScenes(out);
     return out;
 }
@@ -704,7 +742,16 @@ Engine engineNamed(const char *name) {
     if (strcmp(name, "pw") == 0) {
         return Engine::PW1100G;
     }
-    fprintf(stderr, "ENGINE=%s: cfm56, v2500, leap or pw\n", name);
+    if (strcmp(name, "ge90") == 0) {
+        return Engine::GE90_115B;
+    }
+    if (strcmp(name, "ge90-94") == 0) {
+        return Engine::GE90_94B;
+    }
+    if (strcmp(name, "trent") == 0) {
+        return Engine::TRENT_800;
+    }
+    fprintf(stderr, "ENGINE=%s: cfm56, v2500, leap, pw, ge90, ge90-94 or trent\n", name);
     exit(1);
 }
 
@@ -743,7 +790,8 @@ int main(int argc, char **argv) {
             Moment m = scene.at(t);
             Sound s;
             s.kind = Kind::TURBOFAN;
-            s.engine = engine;
+            // A 777's scenes its GE90-115Bs unless ENGINE= says.
+            s.engine = strstr(scene.name, "b777-") && !getenv("ENGINE") ? Engine::GE90_115B : engine;
             s.fanHz = 3000;
             s.engines = 2;
             s.who = who;

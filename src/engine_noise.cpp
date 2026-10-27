@@ -196,24 +196,31 @@ constexpr Lobe TURBINE = {-30.0f, -28.0f, -25.0f, -20.0f, -12.0f, -5.0f, 0.0f, -
 // starts at, and how strong it is against a CFM56-5B's; its fan stream's
 // speed at take-off; its noise and its whine against a CFM56-5B's; its
 // turbine's last two stages' blades, if heard; how long its start motors
-// before it lights.
+// before it lights. And its size against a CFM56-5B's: its jet's width -
+// the roar as many times lower and its surges as many times slower, its
+// eddies as much bigger [b777-sources 9.1: D/V 6.7-8.9ms against 3.5ms];
+// its fan's second harmonic over the A320's; the shaft orders its buzz-saw
+// is heard at, from and to; how quickly its fan spools, as a share of a
+// CFM56-5B's; and the airframe it hangs on - its gear's and flaps' rush
+// against an A320's.
 struct EngineData {
     float blades, shaft100;
     float groundIdle, flightIdle, approach, cruise, climb, takeoff, reverse;
     float buzzOn, buzzDb, jetMs, levelDb, toneDb;
     float turbine[2];
     float motorS;
+    float jetScale, h2Db, buzzLo, buzzHi, spool, frameDb;
 };
-const EngineData ENGINES[6] = {
+const EngineData ENGINES[9] = {
     // GENERIC: its shaft from Sound::fanHz, 24 blades assumed.
-    {24, 125.0f, 0.22f, 0.27f, 0.51f, 0.82f, 0.85f, 0.90f, 0.70f, 0.67f, 0, 300, 0, 0, {0, 0}, 15},
+    {24, 125.0f, 0.22f, 0.27f, 0.51f, 0.82f, 0.85f, 0.90f, 0.70f, 0.67f, 0, 300, 0, 0, {0, 0}, 15, 1, 0, 4, 18, 1, 0},
     // CFM56-5B: idle 20-22%; final 49-55% (Zurich); take-off 85-94%; reverse 68%.
-    {36, 83.3333f, 0.22f, 0.27f, 0.51f, 0.82f, 0.84f, 0.90f, 0.70f, 0.67f, 0, 300, 0, 0, {0, 0}, 15},
+    {36, 83.3333f, 0.22f, 0.27f, 0.51f, 0.82f, 0.84f, 0.90f, 0.70f, 0.67f, 0, 300, 0, 0, {0, 0}, 15, 1, 0, 4, 18, 1, 0},
     // V2500-A5: idling at 30% on the ground, its fan's line at 622Hz [M: DLR,
     // D-ATRA], 29% in the air; the BPF of a 1,768-2,067Hz take-off measured;
     // its buzz-saw the strongest of the four in the recorded climb-outs [M:
     // 2.6-6.7dB clear]; LPT tones at engine orders 85 and 89, behind it.
-    {22, 94.1667f, 0.30f, 0.29f, 0.50f, 0.82f, 0.82f, 0.90f, 0.68f, 0.64f, 2.0f, 310, -1, 2, {85, 89}, 15},
+    {22, 94.1667f, 0.30f, 0.29f, 0.50f, 0.82f, 0.82f, 0.90f, 0.68f, 0.64f, 2.0f, 310, -1, 2, {85, 89}, 15, 1, 0, 4, 18, 1, 0},
     // LEAP-1A: TOGA ~83%, FLEX ~75%; level at height at its take-off's 91%,
     // as a CFM56-5B's 82 is of its 90 [I: no neo's is published] - at 80%,
     // all but its take-off's, the chase at cruise stood 1.6dB over the
@@ -221,10 +228,10 @@ const EngineData ENGINES[6] = {
     // buzz-saw from 73%, weak; its jet slower; 3.5dB quieter departing and
     // as loud arriving [M: Luton's monitors]; motoring longer before
     // light-off.
-    {18, 64.2667f, 0.21f, 0.24f, 0.47f, 0.74f, 0.77f, 0.81f, 0.62f, 0.73f, 0, 270, -3, -2, {0, 0}, 24},
+    {18, 64.2667f, 0.21f, 0.24f, 0.47f, 0.74f, 0.77f, 0.81f, 0.62f, 0.73f, 0, 270, -3, -2, {0, 0}, 24, 1, 0, 4, 18, 1, 0},
     // PW1100G: the fan's speed as a share of its 3,281rpm most; its turbine's
     // tones over 8kHz, the air's.
-    {20, 54.6833f, 0.19f, 0.25f, 0.55f, 0.82f, 0.83f, 0.88f, 0.65f, 0.84f, -12, 250, -3, -1, {0, 0}, 30},
+    {20, 54.6833f, 0.19f, 0.25f, 0.55f, 0.82f, 0.83f, 0.88f, 0.65f, 0.84f, -12, 250, -3, -1, {0, 0}, 30, 1, 0, 4, 18, 1, 0},
     // EJ200 - the fighter's, for what of update() it shares: the start's
     // motoring and the fan's speed from power (engines()); the airliner's
     // sums don't run for it (see THE FIGHTER). Estimates, none published
@@ -235,7 +242,32 @@ const EngineData ENGINES[6] = {
     // no buzz-saw heard (its S-shaped chin intake); its jet 770m/s dry; its
     // air starters motoring it 25s to a third of idle - some 23% of its HP
     // spool's speed - and lit there.
-    {24, 211.667f, 0.30f, 0.35f, 0.75f, 0.85f, 1.00f, 1.00f, 0.30f, 2.0f, -60, 770, 0, 0, {0, 0}, 25},
+    {24, 211.667f, 0.30f, 0.35f, 0.75f, 0.85f, 1.00f, 1.00f, 0.30f, 2.0f, -60, 770, 0, 0, {0, 0}, 25, 1, 0, 4, 18, 1, 0},
+    // The 777's [b777-sources 1, 2.2, 3.1-3.3, 8, 9.1]. GE90-94B: idling at
+    // 20-27%, its final 55-70%, its climb 84-95%, its take-off 90-104%; its
+    // tips supersonic, its buzz-saw on, from 78-80%; its jet slower, its
+    // bypass 8.7; 2-10dB louder than an A320 by phase, its jet an octave
+    // lower and churning half as fast, its eddies 2-2.5 times a CFM56's; its
+    // second harmonic strong and clean at every power, the fan's voice on a
+    // little speaker where an idle's 170-230Hz fundamental isn't; its
+    // buzz-saw a few clear orders, 7 to 12 (10 the strongest on the one
+    // measured), 1-5 cut off in its intake; its big fan spooling slowly,
+    // gliding low through a start; its six-stage turbine's tones behind it at
+    // shaft orders of about a hundred - 2-4kHz on the approach, where the
+    // recorded ones' treble is - its blades' count not published, so 100
+    // and 104 [I]; its airframe's rush 8dB up - twelve main
+    // wheels to four, three and a half times the wing - its approach the
+    // airframe's more than its engines', as the recorded ones' treble has it.
+    {22, 37.6917f, 0.23f, 0.28f, 0.62f, 0.86f, 0.89f, 0.97f, 0.72f, 0.79f, 0, 280, 4, 0, {100, 104}, 35, 2.0f, 5, 7, 13, 0.75f, 8},
+    // GE90-115B: the same at 2,355rpm, its buzz-saw from 72-74%, its bypass
+    // 7.2 - a faster, louder jet.
+    {22, 39.25f, 0.23f, 0.28f, 0.62f, 0.86f, 0.89f, 0.97f, 0.72f, 0.73f, 0, 300, 6, 0, {100, 104}, 35, 2.1f, 5, 7, 13, 0.75f, 8},
+    // Trent 800: three shafts, 26 blades at 3,300rpm, 1,430Hz at 100%; its
+    // tips supersonic already on the approach at 66-81% - its buzz-saw from
+    // 61%, the strongest of the three, more orders - its approach's fan tone
+    // weak; its take-off 88-100%, its reverse 70-80%; a smaller fan than a
+    // GE90's - its jet's eddies a shade smaller, its harmonic less marked.
+    {26, 55.0f, 0.23f, 0.28f, 0.73f, 0.86f, 0.90f, 0.95f, 0.75f, 0.61f, 2, 310, 6, -2, {0, 0}, 35, 1.9f, 2, 5, 16, 0.75f, 8},
 };
 
 // A hash's bits mixed, for an airframe's little differences from `who`.
@@ -410,14 +442,7 @@ Synth::Synth() {
         hpA1_ = -2 * c / a0;
         hpA2_ = (1 - alpha) / a0;
     }
-    for (int c = 0; c < SOURCES; c++) {
-        float kq = expf(-SLOW_S / SURGE_QUICK_S[c]), ks = expf(-SLOW_S / SURGE_SLOW_S[c]);
-        surgeKeep_[c][0] = kq;
-        surgeKeep_[c][1] = sqrtf(1 - kq * kq);
-        surgeKeep_[c][2] = ks;
-        surgeKeep_[c][3] = sqrtf(1 - ks * ks);
-        surgeKeep_[c][4] = sqrtf(1 - SURGE_QUICK_W[c] * SURGE_QUICK_W[c]);  // the slow part's weight
-    }
+    setSurges(1);
     shimmerKeep_[0] = expf(-SLOW_S / SHIMMER_S);
     shimmerKeep_[1] = sqrtf(1 - shimmerKeep_[0] * shimmerKeep_[0]);
     shimmerKeep_[2] = expf(-SLOW_S / SHIMMER_SLOW_S);
@@ -465,12 +490,33 @@ void Synth::set(const Sound &sound) {
 
 void Synth::duck(bool under) { under_ = under; }
 
+// The surges' pace and depth for an aircraft `scale` times an A320's size
+// - see EngineData::jetScale. A bigger fan's intake and a bigger airframe
+// take in and shed bigger, slower eddies: their hiss and their rush surge
+// as many times slower [b777-sources 9.1], so a 777's approach churns less
+// quickly. Its jet's surges keep their pace but go deeper: the recorded
+// 777s' take-off passes swell more than an A320's model made them, 0.43 of
+// their level at 0.25-1Hz against its 0.20 [M: the research's references].
+void Synth::setSurges(float scale) {
+    for (int c = 0; c < SOURCES; c++) {
+        float pace = (c == OF_FAN || c == OF_AIRFRAME) ? scale : 1.0f;
+        float kq = expf(-SLOW_S / (SURGE_QUICK_S[c] * pace)), ks = expf(-SLOW_S / (SURGE_SLOW_S[c] * pace));
+        surgeKeep_[c][0] = kq;
+        surgeKeep_[c][1] = sqrtf(1 - kq * kq);
+        surgeKeep_[c][2] = ks;
+        surgeKeep_[c][3] = sqrtf(1 - ks * ks);
+        surgeKeep_[c][4] = sqrtf(1 - SURGE_QUICK_W[c] * SURGE_QUICK_W[c]);  // the slow part's weight
+        surgeNp_[c] = SURGE_NP[c] * (c == OF_JET ? 1 + 0.25f * (scale - 1) : 1.0f);
+    }
+}
+
 // Another aircraft starting: heard as it is now, its engines already turning,
 // rather than spooling up from nothing; its own little differences from who
 // it is.
 void Synth::restart() {
     const Sound &s = heard_;
     traits_ = mix(s.who * 2654435761u + (uint32_t)s.engine * 97u + 12345u);
+    setSurges(ENGINES[(int)s.engine].jetScale);
     // Its surges, the air's flicker and its noise its own each time it is
     // heard - from who it is, and where it and the camera are and when it
     // starts - so no two hearings share a realisation: not this aircraft's
@@ -759,7 +805,7 @@ void Synth::engines() {
     slow_ = rng.s;
     for (int g = 0; g < 2; g++) {
         float to = want * (g == 0 ? 1 : 1 + split_ + drift_);
-        float n = n1_[g], w = to > n ? 1.0f + 0.8f * smoothstep(0.38f, 0.55f, n) : 1.4f;
+        float n = n1_[g], w = (to > n ? 1.0f + 0.8f * smoothstep(0.38f, 0.55f, n) : 1.4f) * ENGINES[(int)sound_.engine].spool;
         n1Rate_[g] += (w * w * (to - n) - 2 * w * n1Rate_[g]) * STEP_S;
         n1_[g] = clampf(n + n1Rate_[g] * STEP_S, 0, 1.1f);
     }
@@ -1019,7 +1065,7 @@ void Synth::bandsStep() {
         surgeQuick_[c] = surgeQuick_[c] * k[0] + k[1] * rng.gauss();
         surgeSlow_[c] = surgeSlow_[c] * k[2] + k[3] * rng.gauss();
         float n = surgeKeep_[c][4] * surgeSlow_[c] + SURGE_QUICK_W[c] * surgeQuick_[c];
-        surge[c] = exp2Fast(2.88539008f * SURGE_NP[c] * (n - SURGE_NP[c]));  // e^(2sn - 2s^2): its mean one
+        surge[c] = exp2Fast(2.88539008f * surgeNp_[c] * (n - surgeNp_[c]));  // e^(2sn - 2s^2): its mean one
     }
     for (int b = 0; b < BANDS; b++) {
         shimmerQuick_[b] = shimmerQuick_[b] * shimmerKeep_[0] + shimmerKeep_[1] * rng.gauss();
@@ -1076,7 +1122,8 @@ void Synth::bandsStep() {
     // Its peak low behind it, where its big eddies' roar beams, and falling
     // the quicker above it; higher ahead and to the side, where its fine
     // turbulence's hiss is heard - two octaves up abeam, one and a half ahead.
-    float jetPeak = log2Fast(0.17f * jetMs / 300) + 1.5f + 0.5f * smoothstep(0.25f, 0.5f, th) - 2 * smoothstep(0.5f, 0.83f, th);
+    float jetPeak = log2Fast(0.17f * jetMs / 300) - log2Fast(e.jetScale) + 1.5f + 0.5f * smoothstep(0.25f, 0.5f, th) -
+                    2 * smoothstep(0.5f, 0.83f, th);
     float coneCut = 3 * smoothstep(0.86f, 1.0f, th);  // the cone of silence, right behind: dB an octave over 500Hz
     float jetFall = 4 + smoothstep(0.6f, 0.85f, th);  // dB an octave over its peak: steeper behind, its big eddies' roar
     // The fan's broadband hiss: rising gently in third octaves from 300Hz to
@@ -1104,7 +1151,11 @@ void Synth::bandsStep() {
     // and the fan's other hiss are the more, and idling, its tips too slow for
     // much of it, the core's rumble the more.
     float humpDb = 6 - 20 * smoothstep(0.55f, 0.9f, n1) - 11 * (1 - smoothstep(0.25f, 0.45f, n1));
-    float fanCorner = 0.678072f + 0.6f * log2Fast(std::max(0.1f, n1r));  // octaves from 1kHz: 1.6kHz at take-off
+    // Octaves from 1kHz: 1.6kHz at a CFM56-5B's take-off, three quarters of
+    // an octave lower for each doubling of the fan's size - against the
+    // recorded 777s, a whole octave left its take-off going away too dull,
+    // half of one its pass too bright [M].
+    float fanCorner = 0.678072f + 0.6f * log2Fast(std::max(0.1f, n1r)) - 0.75f * log2Fast(e.jetScale);
     // The core's combustion rumble: most at 450Hz, near enough as loud
     // idling as on the approach, behind it a little; lit only.
     float coreDb = e.levelDb - 24 + 25 * lg10(std::max(0.05f, std::min(n1, 0.55f) / 0.5f)) + lobe(CORE, th) +
@@ -1121,7 +1172,7 @@ void Synth::bandsStep() {
     // clean wing at cruise, from the chase, a hiss under the engines, not a
     // gale.
     float thin = -0.00102f * std::max(0.0f, s.sourceUpM);  // e^(-h/8.5km), squared, in dB
-    float rush = 60 * lg10(std::min(vr, 1.6f)) + thin;
+    float rush = 60 * lg10(std::min(vr, 1.6f)) + thin + e.frameDb;
     float airframe = lobe(AIRFRAME, th);
     float gearDb = gear_ > 0.001f ? -29.5f + rush + 10 * lg10(gear_) + airframe + 1.5f * below_ -
                                         5 * std::max(0.0f, -below_)
@@ -1364,7 +1415,7 @@ void Synth::tonesStep() {
     // speaker plays nothing so low anyway [P: the research's k = 2-4].
     float bpf = 0.5f * (bpfs[0] + bpfs[1]), apart = fabsf(bpfs[1] - bpfs[0]), db = 0.5f * (dbs[0] + dbs[1]) + 3;
     float low = 1 - smoothstep(300, 450, bpf);
-    set(FAN_H2, 2 * bpf, db - 6 + 4 * low, width * 1.4f + 2 * apart, 0, 2);
+    set(FAN_H2, 2 * bpf, db - 6 + 4 * low + e.h2Db, width * 1.4f + 2 * apart, 0, 2);
     set(FAN_H2 + 1, 3 * bpf, db - 12 + 6 * low, width * 1.8f + 3 * apart, 1, 2);
     // A V2500's turbine tones, its last two stages', behind it, smeared broad
     // by the jet - a haystack - the most on the approach.
@@ -1496,7 +1547,7 @@ void Synth::combsStep() {
         // blade passing] - and what power of white noise each lets through
         // and the two share. (Flat to a CFM56's 36th, its upper lines made the
         // take-off's 2.5-5kHz 5-12dB too strong ahead of it.)
-        float loHz = 4 * hz, hiHz = std::min(std::min(18.0f, e.blades) * hz, 6000.0f);
+        float loHz = e.buzzLo * hz, hiHz = std::min(std::min(e.buzzHi, e.blades) * hz, 6000.0f);
         float kl = 1 - expFast(-2 * PI * loHz / RATE), kh = 1 - expFast(-2 * PI * hiHz / RATE);
         c.kLo = kl;
         c.kHi = kh;
@@ -2681,6 +2732,23 @@ bool a320Fopp(Engine engine, uint32_t who) {
         return false;
     }
     return unit(mix(who ^ 0xf0bb1e5u)) < 0.40f;
+}
+
+Engine b777Engines(const char *type, uint32_t who) {
+    if (type == nullptr) {
+        return Engine::GENERIC;
+    }
+    auto is = [&](const char *t) { return strcmp(type, t) == 0; };
+    if (is("B77W") || is("B77L")) {
+        return Engine::GE90_115B;
+    }
+    if (is("B772")) {
+        return unit(mix(who ^ 0x777e7777u)) < 0.60f ? Engine::GE90_94B : Engine::TRENT_800;
+    }
+    if (is("B773")) {
+        return Engine::TRENT_800;
+    }
+    return Engine::GENERIC;
 }
 
 }  // namespace engine_noise

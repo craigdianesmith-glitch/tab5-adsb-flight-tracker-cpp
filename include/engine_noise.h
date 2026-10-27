@@ -99,6 +99,11 @@ enum class Engine : uint8_t {
     // reheat - its jets supersonic at full power, dry or lit. No reversers.
     // Its fan's blades and speeds aren't published.
     EJ200,
+    // The Boeing 777's, Kind::TURBOFAN: the A320's voice on far bigger fans
+    // [b777-sources.md 1, 2.2, 9.1] - lower, bigger, its churn slower.
+    GE90_94B,   // 777-200ER: 22 blades on a 3.12m fan, 2,261.5rpm at 100% N1
+    GE90_115B,  // 777-300ER, -200LR, 777F: 22 blades on a 3.26m fan, 2,355rpm
+    TRENT_800,  // 777-200/-200ER/-300: 26 blades on a 2.8m fan, 3,300rpm
 };
 
 struct Sound {
@@ -198,6 +203,12 @@ Engine a320Engines(const char *type, uint32_t who);
 // Whether this airframe has its fuel vents unmodified: a ceo, 40 times in a
 // hundred, by `who`; never a neo, all built with the fix.
 bool a320Fopp(Engine engine, uint32_t who);
+// A Boeing 777's engines by its type [b777-sources.md 1]: a 777-300ER's
+// (B77W), a -200LR's or a 777F's (B77L) GE90-115Bs - the -110B1 as near as
+// heard; a 777-200's or -200ER's (B772) GE90-94Bs 60 times in a hundred by
+// `who`, Trent 800s the rest - the PW4000s grounded and retired; a 777-300's
+// (B773) Trent 800s. Engine::GENERIC for any other type.
+Engine b777Engines(const char *type, uint32_t who);
 
 // The touchdown's squeal and the reversers' coming on heard as the picture
 // shows them - a tenth of a second late at most - rather than as late as the
@@ -236,6 +247,7 @@ class Synth {
     void update();
     void placedWay();
     void restart();
+    void setSurges(float scale);
     void engines();
     float wantN1(const Sound &s, const Sound &rev) const;
     void slowStep();
@@ -367,9 +379,10 @@ class Synth {
     float surgeQuick_[SOURCES] = {}, surgeSlow_[SOURCES] = {}, shimmer_[BANDS] = {}, flicker_ = 0, flickerA_ = 0;
     float surge_[SOURCES] = {}, flickerN_ = 0;  // as they are now: each source's surge as a power, the flicker in its spreads
     float shimmerQuick_[BANDS] = {}, shimmerSlow_[BANDS] = {};
-    // How much of each is kept from one slow step to the next, and how much
-    // new noise comes in: worked out once.
-    float surgeKeep_[SOURCES][5] = {}, shimmerKeep_[4] = {};
+    // How much of each is kept from one slow step to the next, how much
+    // new noise comes in, and how far each surges: worked out for each
+    // aircraft as it starts - see setSurges().
+    float surgeKeep_[SOURCES][5] = {}, surgeNp_[SOURCES] = {}, shimmerKeep_[4] = {};
     // Each band's centre, as octaves from 1kHz.
     float bandLog_[BANDS] = {};
     // And its tangent of pi x its centre over the rate - for the muffling's

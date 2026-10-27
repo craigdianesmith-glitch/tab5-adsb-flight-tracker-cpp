@@ -27,9 +27,9 @@
 // (tools/engine_preview/engines3d_check.cpp).
 namespace engines3d {
 
-// An aircraft's engines, by its type: the A320 family's and the Eurofighter
-// Typhoon's - each kind of aircraft made and heard in its turn - and any
-// other silent. ADS-B doesn't say which of two engines an A320 has, so they
+// An aircraft's engines, by its type: the A320 family's, the Eurofighter
+// Typhoon's and the Boeing 777's - each kind of aircraft made and heard in
+// its turn - and any other silent. ADS-B doesn't say which of two engines an A320 has, so they
 // are picked by the airframe, `who`, in the fleets' shares - a ceo's CFM56s
 // or V2500s, a neo's LEAPs or geared fans - and with them whether an older
 // one's fuel vents whistle on its approach: the same airframe always the
@@ -46,6 +46,15 @@ inline engine_noise::Sound enginesOf(const char *type, uint32_t who) {
     if (strcmp(type, "EUFI") == 0) {
         s.kind = engine_noise::Kind::LOW_BYPASS;
         s.engine = engine_noise::Engine::EJ200;
+    }
+    // A Boeing 777: a 777-300ER's, a -200LR's or a 777F's GE90-115Bs; a
+    // -200's or -200ER's GE90-94Bs or Trent 800s by the airframe; a -300's
+    // Trent 800s. No fuel-vent whistle.
+    for (const char *t : {"B772", "B773", "B77L", "B77W"}) {
+        if (strcmp(type, t) == 0) {
+            s.kind = engine_noise::Kind::TURBOFAN;
+            s.engine = engine_noise::b777Engines(t, who);
+        }
     }
     return s;
 }
