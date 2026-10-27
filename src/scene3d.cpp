@@ -11499,8 +11499,11 @@ constexpr float ROTATE_LEAD_S = 0.3f, ROTATE_CATCH_UP = 2.0f;
 // And climbing away with its flaps out for take-off - below configFor()'s
 // height for them - at an angle of attack of about 5.5 degrees, which an
 // initial climb's 5 to 7 are: 15 degrees nose up at 2700ft a minute and
-// 145kt. In the cruise, 2.5.
-constexpr float TAKEOFF_ALPHA = 5.5f * DEG, CRUISE_ALPHA = 2.5f * DEG, TAKEOFF_FLAPS_M = 900;
+// 145kt; in the cruise, 2.5 - the one going over to the other over the
+// last of that height, from this. By its climbing away, not by the runway
+// simulation having its take-off: handed back to the feed at 1,500ft, its
+// nose went down 3 degrees in a few seconds.
+constexpr float TAKEOFF_ALPHA = 5.5f * DEG, CRUISE_ALPHA = 2.5f * DEG, TAKEOFF_FLAPS_M = 900, FLAPS_IN_FROM_M = 600;
 
 namespace {
 // Coming down to land, by its descent - or, in the last few metres, by its not
@@ -11637,9 +11640,15 @@ void Pilot::fly(float dt, Family family, float turnRate, float speedKt, float cl
     float load = 1 / std::max(0.5f, cosf(roll));
     float flare = std::max(-6.0f, std::min(10.0f, -accel_ * 3)) * DEG;
     bool takingOff = departing && !rotor;
+    if (onGround || rotor || !(heightM < TAKEOFF_FLAPS_M) || comingIn(climbFpm, heightM)) {
+        climbingOut_ = false;
+    } else if (takingOff) {
+        climbingOut_ = true;
+    }
+    float flapsOut = climbingOut_ ? clamp01((TAKEOFF_FLAPS_M - heightM) / (TAKEOFF_FLAPS_M - FLAPS_IN_FROM_M)) : 0;
     float alpha = onGround ? 0
                   : rotor  ? -std::min(9.0f, speedKt / 15) * DEG + flare
-                           : (takingOff && heightM < TAKEOFF_FLAPS_M ? TAKEOFF_ALPHA : CRUISE_ALPHA) * load;
+                           : (CRUISE_ALPHA + (TAKEOFF_ALPHA - CRUISE_ALPHA) * flapsOut) * load;
     pitchTarget_ = gamma + alpha;
     if (!onGround && !rotor && !takingOff) {
         pitchTarget_ = landingPitch(family, speedKt, climbFpm, heightM, pitchTarget_);

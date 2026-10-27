@@ -164,6 +164,9 @@ class Pilot {
     float touchPitch_ = 0, sinceTouch_ = -1;  // the nose as the wheels touched, and how long since
     bool rotated_ = false;  // taking off, its nose come up on the runway: not let down on it again
     bool flown_ = false;    // flown once since it was made: before that, set as it is flying
+    // Climbing away from its take-off, its flaps out still - the take-off
+    // handed back to the feed or not - for its wing's angle: see fly().
+    bool climbingOut_ = false;
 };
 
 // How it takes off, as takeoff.h's table has its kind - one table for the

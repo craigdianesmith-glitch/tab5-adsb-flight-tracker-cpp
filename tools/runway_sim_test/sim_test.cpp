@@ -4,12 +4,12 @@
 // crossing the runway - and prints what the plot would show each half second
 // against where the aircraft really was, with the worst jump. Then take-offs
 // reported as Heathrow's departures were (see Feed) - the hang, the
-// trampoline, the late pick-up's rocket and the take-off design's stress
-// cases - each sampled every 50 ms and judged as the design's test plan
-// judges them: one lift-off, never back on the runway, no hang or sinking,
-// no steeper than the real climb allows, its roll's speed never dropping,
-// off before the runway's end - PASS or FAIL. Build and run, from the repo's
-// root:
+// trampoline, the late pick-up's rocket, the take-off design's stress cases
+// and its review's - each sampled every 50 ms and judged as the design's
+// test plan judges them: one lift-off, never back on the runway, no hang or
+// sinking, no steeper than the real climb allows, its roll's speed never
+// dropping, off before the runway's end - or, rejected or taxiing along it,
+// never off at all - PASS or FAIL. Build and run, from the repo's root:
 //
 //   g++ -std=c++17 -O1 -Itools/runway_sim_test/stub -Iinclude tools/runway_sim_test/*.cpp src/follow.cpp src/runways.cpp -o /tmp/runway_sim_test
 //   /tmp/runway_sim_test
@@ -258,14 +258,17 @@ Truth crossing(float t) {
 // still rolling - its height then the field's and 17ft, its pressure put
 // right, dipping 25ft over the 3 s before it leaves - and its reported rate
 // is its climb's, building: 64ft a minute on the roll. Rejected, it brakes
-// at 5 kt a second from `rejectKt`. Each report can be made stranger by
-// `g_oddly`: an old position, a speed repeated, a rate of nonsense.
+// at 5 kt a second from `rejectKt`; taxiing, it never leaves - its roll's
+// speed held under its lift-off's by `accel` and `drag`. Each report can be
+// made stranger by `g_oddly`: an old position, a speed repeated, a rate of
+// nonsense.
 struct Feed {
     TakeoffKind kind = TakeoffKind::NARROW;
     float accel = 5.3f, drag = 0.012f;
     float liftoffKt = 140, airborneKt = 80, fpm = 2700, buildS = 7, gainKt = 6;
     float rollFrom = 0, rejectKt = 0;
     bool reverse = false;  // down 05: from 23's far end
+    bool taxi = false;
 };
 Feed g_feed;
 struct FeedAt { float along, alt, gs, vs; bool reportedGround, off; };
@@ -297,7 +300,7 @@ FeedAt feedAt(float t) {
         a.vs = 64;
         return a;
     }
-    if (rt < offT) {
+    if (f.taxi || rt < offT) {
         a.along = 0.02f + rollNm(rt);
         a.gs = rollV(rt);
         a.reportedGround = a.gs < f.airborneKt;
@@ -395,7 +398,7 @@ void takeoffRun(const char *name, std::function<bool(float)> reported, float t0,
         }
     }
     bool quad = f.kind == TakeoffKind::SUPERJUMBO || f.kind == TakeoffKind::JUMBO || f.kind == TakeoffKind::WIDE_4;
-    bool rejected = f.rejectKt > 0, found = lift == 0;
+    bool rejected = f.rejectKt > 0 || f.taxi, found = lift == 0;
     bool ok = rejected ? lifts == 0 && downs == 0 && drop >= -3
                        : (found ? lifts == 0 : lifts == 1) && downs == 0 && hang < (quad ? 3.5f : 2.0f) && sank <= 5 &&
                              steep <= 1.5f * f.fpm + 1000 && launch <= 1.25f * p.climbFpm && drop > -0.01f &&
@@ -576,4 +579,13 @@ int main() {
     // D14: off 05, the other way.
     g_feed = Feed(); g_feed.reverse = true;
     takeoffRun("D14: an A320 off 05", all, -20, 100, 10);
+    // The take-off review's: rejected at 120 kt, its reports "airborne" from
+    // 80 kt as it slows, as Heathrow's were rolling - shown lifting off and
+    // dropped back onto the runway, before; and a taxi along the runway from
+    // a stop lined up, at 15 kt, to turn at its end - lifted off after a
+    // minute and climbed to 2,000ft, every report on the ground at 15 kt.
+    g_feed = Feed(); g_feed.rejectKt = 120; g_feed.airborneKt = 80;
+    takeoffRun("R1: an A320 rejecting its take-off at 120 kt, 'airborne' from 80 kt", all, -20, 80, 5);
+    g_feed = Feed(); g_feed.taxi = true; g_feed.accel = 0.3f; g_feed.drag = 0.02f; g_feed.rollFrom = 10;
+    takeoffRun("R2: an A320 lined up, then taxiing on along the runway at 15 kt", all, -20, 150, 10);
 }

@@ -985,6 +985,21 @@ constexpr float ROTOR_LOWEST_M = 1.5f;
 // 33 kt at the speed it leaves at, under the 40 kt that is seen as a lurch.
 constexpr int TAKEOFF_HANDBACK_KT = 30, TAKEOFF_EASE_FROM_KT = 5;
 constexpr float TAKEOFF_EASE_SHARE = 0.2f, TAKEOFF_EASE_FPM = 300;
+// And across its way no faster than this share of its speed, or this many
+// metres a second, as it steers onto the runway's centreline - the follower
+// having it on the taxiway's entry still, it slid sideways onto the runway
+// at 300 kt - and so for this long after it has been handed back to the
+// feed in the air, what is left of the gap closed as gently. A gap no
+// take-off closes is cut: found off the ground this far from where it was
+// shown on it, or off its line by this much - left on a taxiway 190m off
+// the runway as its roll went unseen, it was put in the air there with its
+// nose level and flew a kilometre behind for a minute; shown off the
+// ground with the take-off put back on it, which only one lined up and
+// lost is, found still lined up after it was taken to have gone - dropped
+// onto the runway 2.5km away with its nose 16 degrees up; and off the
+// runway's line by this much, nowhere near it.
+constexpr float TAKEOFF_ACROSS_SHARE = 0.25f, TAKEOFF_ACROSS_MS = 3.0f, TAKEOFF_EASE_AFTER_S = 60.0f;
+constexpr float TAKEOFF_CUT_LIFT_M = 600.0f, TAKEOFF_CUT_LIFT_ACROSS_M = 60.0f, TAKEOFF_CUT_ACROSS_M = 300.0f;
 // Rolling for take-off, shown gathering speed no faster than this, knots a
 // second: a fighter's with its reheat lit (takeoff.h), two and a half times
 // an airliner's.
@@ -1894,12 +1909,37 @@ void prepareNext(const Followed &f, const std::vector<Aircraft> &traffic, uint32
     if (!takeoff || !e.ground) {
         rollKt = -1;
     }
-    if (!g_haveShown || g_shownWhere != g_where || length(target - g_shownAt) > 2000 || dt <= 0) {
+    // When it was last shown taking off in the air: see TAKEOFF_EASE_AFTER_S.
+    static float takeoffAirAt = -1000;
+    // Taking off, the runway simulation's - not the follower's, below
+    // TAKEOFF_HANDBACK_KT on the ground - a gap no take-off closes is cut:
+    // see TAKEOFF_CUT_ACROSS_M.
+    bool cut = false;
+    if (takeoff && g_haveShown && g_shownWhere == g_where && g_where == Where::AIRFIELD &&
+        (!e.ground || e.gsKt > TAKEOFF_HANDBACK_KT)) {
+        Vec3 gap = target - g_shownAt;
+        float across = gap.x * cosf(e.track * DEG) - gap.y * sinf(e.track * DEG);
+        bool farOff = length(gap) > TAKEOFF_CUT_LIFT_M || fabsf(across) > TAKEOFF_CUT_LIFT_ACROSS_M;
+        cut = (!e.ground && g_wasGround && farOff) || (e.ground && !g_wasGround) ||
+              fabsf(across) > TAKEOFF_CUT_ACROSS_M;
+    }
+    if (!g_haveShown || g_shownWhere != g_where || length(target - g_shownAt) > 2000 || dt <= 0 || cut) {
+        if (cut) {
+            // Shown where the take-off is - on the runway, or in the air
+            // there - its pilot set as it is doing so, not lifting off level
+            // from a taxiway, nor its nose held up on the runway from a
+            // take-off that never was.
+            Serial.printf("[3d] %s taking off %dm from where it was shown: shown there\n", f.callsign.c_str(),
+                          (int)lroundf(length(target - g_shownAt)));
+            g_pilot = s3::Pilot();
+            g_taxiKt = -1;
+        }
         g_shownAt = target;
         g_shownHeading = targetHeading;
         g_haveShown = true;
         g_shownWhere = g_where;
         rollKt = -1;
+        takeoffAirAt = -1000;
     } else {
         float speed = e.gsKt * 0.5144f;
         if (takeoff && e.ground) {
@@ -1934,25 +1974,43 @@ void prepareNext(const Followed &f, const std::vector<Aircraft> &traffic, uint32
             }
             step.z = std::max(-6 * dt, std::min(6 * dt, step.z));
         }
-        if (takeoff && e.gsKt >= TAKEOFF_EASE_FROM_KT) {
+        // Handed back to the feed in the air a little while ago: what is left
+        // of a gap closed as gently as taking off - see below - not in the
+        // second or so the rest are, a lurch of 110 kt.
+        bool afterTakeoff = !takeoff && !e.ground && g_where == Where::AIRFIELD &&
+                            seconds - takeoffAirAt < TAKEOFF_EASE_AFTER_S;
+        if (takeoff && !e.ground) {
+            takeoffAirAt = seconds;
+        }
+        if ((takeoff || afterTakeoff) && e.gsKt >= TAKEOFF_EASE_FROM_KT) {
             // Taking off, a gap - the taxiway follower handing it back on its
             // roll, a new take-off found rolling on - closed no faster than a
             // fifth of its speed along its way, either way, so never back
             // along it: seen to roll on a little faster or slower, not to
             // lurch 140m down the runway in half a second (BAW830D at
-            // Heathrow). In the air its height never eased down, and up no
-            // faster than a fifth of its climb and 300ft a minute on top. The
-            // runway simulation's take-off is continuous: only such gaps are
-            // eased.
+            // Heathrow); and across it no faster than TAKEOFF_ACROSS_SHARE of
+            // its speed, as it steers onto the centreline. In the air its
+            // height eased up no faster than a fifth of its climb and 300ft
+            // a minute on top - and taking off never down, after it no
+            // faster than so. The runway simulation's take-off is
+            // continuous: only such gaps are eased.
             float hx = sinf(e.track * DEG), hy = cosf(e.track * DEG);
             float along = step.x * hx + step.y * hy;
             float most = TAKEOFF_EASE_SHARE * speed * dt;
             float limited = std::max(-most, std::min(most, along));
             step.x += (limited - along) * hx;
             step.y += (limited - along) * hy;
+            if (takeoff) {
+                float across = step.x * hy - step.y * hx;
+                float mostAcross = std::max(TAKEOFF_ACROSS_MS, TAKEOFF_ACROSS_SHARE * speed) * dt;
+                float limitedAcross = std::max(-mostAcross, std::min(mostAcross, across));
+                step.x += (limitedAcross - across) * hy;
+                step.y -= (limitedAcross - across) * hx;
+            }
             if (!e.ground) {
-                float up = (TAKEOFF_EASE_SHARE * std::max(e.vsFpm, 0) + TAKEOFF_EASE_FPM) * 0.00508f * dt;
-                step.z = std::max(0.0f, std::min(step.z, up));
+                float rate = takeoff ? (float)std::max(e.vsFpm, 0) : fabsf((float)e.vsFpm);
+                float up = (TAKEOFF_EASE_SHARE * rate + TAKEOFF_EASE_FPM) * 0.00508f * dt;
+                step.z = std::max(takeoff ? 0.0f : -up, std::min(step.z, up));
             }
         }
         g_shownAt = g_shownAt + step;
@@ -2633,6 +2691,10 @@ bool open() {
     g_startedAt = -1000;
     g_runningWas = -1;
     g_wasGroundKnown = false;
+    // And the one followed shown afresh, as a new flight - see frame() - its
+    // pilot and where it is shown not as they were when the view was shut,
+    // minutes before maybe, but set as it is flying now (Pilot::fly()).
+    g_followedHex = "";
     g_passSet = false;
     g_towerRaise = 0;
     g_labelledAt = -1;

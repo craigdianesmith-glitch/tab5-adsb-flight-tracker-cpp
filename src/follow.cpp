@@ -123,6 +123,16 @@ constexpr float LEVEL_ABOVE_FT = 600.0f, LEVEL_WITHIN_NM = 3.0f;
 // only one way to go.
 constexpr float ROLLING_KT = 40.0f;
 constexpr float TAKEOFF_ROLLING_KT = 30.0f;
+// Slower than this on the ground, it is stopped - and its position, the same
+// report after report, is not the feed repeating itself.
+constexpr int STOPPED_KT = 5;
+// A take-off begun on the ground has this much runway ahead of it at least.
+constexpr float TAKEOFF_AHEAD_NM = 0.3f;
+// On the ground this recently, it is not out on final, whatever the feed
+// says of it now - see start() - nor, this high, low over the runway: off
+// it, climbing away or levelled off.
+constexpr uint32_t OFF_GROUND_WITHIN_MS = 60000;
+constexpr float JUST_OFF_FT = 100.0f;
 // The take-off: its kind's, as its report has it - see takeoff.h.
 const TakeoffProfile &profileOf(const FollowSample &s) { return takeoffProfile(s.takeoffKind); }
 // A departure stopped on the runway itself - lined up, waiting - and lost
@@ -792,6 +802,81 @@ void hermiteBounds(float p0, float m0, float p1, float lenS, float &least, float
     }
     accel = std::max(fabsf(6 * d - 4 * m0), fabsf(2 * m0 - 6 * d)) / lenS;
 }
+// Easing an offset out - a height's, or a place's along the way between two
+// - from `p0` going at `m0` a second to nought and still: its rate changed
+// by no more than `accel` a second; and no faster than `down` while it comes
+// down from above, nor `up` while it goes up from below. Moving away, first
+// its going stopped; then on in as few seconds as those allow - its rate
+// gathered, held, and let go to arrive still. Where it is `t` seconds on,
+// and how fast it is going; and, with `lenS`, how long it takes in all.
+// A Hermite's curve over the seconds its limits gave was the ease before:
+// from 250ft above the feed and climbing 2,700ft a minute faster - levelled
+// off at 3,000ft as it was handed back - it rose a further 1,000ft first.
+struct Eased {
+    float p, v;
+};
+Eased easeOut(float p0, float m0, float down, float up, float accel, float t, float *lenS = nullptr) {
+    down = std::max(down, 1e-4f);
+    up = std::max(up, 1e-4f);
+    accel = std::max(accel, 1e-4f);
+    // Its pieces, each at a steady change of its rate: no more than five.
+    struct Piece {
+        float s, a;
+    };
+    Piece pieces[5];
+    int n = 0;
+    float p = p0, v = m0;
+    // Its rate inside its limits first.
+    if (v > up || v < -down) {
+        float to = v > up ? up : -down, a = v > to ? -accel : accel, s = (to - v) / a;
+        pieces[n++] = {s, a};
+        p += v * s + a * s * s / 2;
+        v = to;
+    }
+    // Then which way: where it would come to rest, its rate stopped now.
+    float rest = p + v * fabsf(v) / (2 * accel);
+    if (fabsf(rest) < 1e-6f) {
+        if (fabsf(v) > 1e-9f) {
+            pieces[n++] = {fabsf(v) / accel, v > 0 ? -accel : accel};
+        }
+    } else {
+        // Down to nought from above - or, turned about, up from below -
+        // its rate gathered towards it to `peak`, at most its limit, held,
+        // and let go to arrive still.
+        float sign = rest > 0 ? 1.0f : -1.0f, q = p * sign, w = v * sign, most = rest > 0 ? down : up;
+        float peak = sqrtf(std::max(0.0f, (w * w + 2 * accel * q) / 2)), hold = 0;
+        if (peak > most) {
+            peak = most;
+            hold = (q - (peak * peak - w * w) / (2 * accel) - peak * peak / (2 * accel)) / peak;
+            hold = std::max(0.0f, hold);
+        }
+        pieces[n++] = {(w + peak) / accel, -accel * sign};
+        pieces[n++] = {hold, 0};
+        pieces[n++] = {peak / accel, accel * sign};
+    }
+    // Where it is at `t`, along its pieces.
+    p = p0;
+    v = m0;
+    float total = 0;
+    Eased at = {0, 0};
+    bool found = false;
+    for (int i = 0; i < n; i++) {
+        float s = std::max(0.0f, pieces[i].s), a = pieces[i].a;
+        if (!found && t < total + s) {
+            float x = std::max(0.0f, t - total);
+            at = {p + v * x + a * x * x / 2, v + a * x};
+            found = true;
+        }
+        p += v * s + a * s * s / 2;
+        v += a * s;
+        total += s;
+    }
+    if (lenS != nullptr) {
+        *lenS = total;
+    }
+    return found ? at : Eased{0, 0};
+}
+
 // The shortest ease from `p0` at `m0` to `p1`, `lenS` no less than `fromS`,
 // whose rate stays between `least` and `most` - or no worse than it starts -
 // and changes by no more than `accel` a second; `toS` at most.
@@ -943,13 +1028,29 @@ FollowEstimate estimateFollowed(const FollowSample &given, float ageS, const Sam
     if (lined && !last.ground && last.hasAlt && !couldLand(last, l.along, (float)(aboveSeaFt(last) - l.fieldFt))) {
         lined = false;
     }
+    // Off the ground a moment ago and up from it - a take-off handed back to
+    // the feed as it levelled off low over the runway - it is not landing,
+    // however it is lined up: a Typhoon running in at 300ft and 225 kt so
+    // was put on the runway at that speed.
+    if (lined && !last.ground && last.hasAlt && aboveSeaFt(last) - l.fieldFt >= JUST_OFF_FT) {
+        for (const FollowSample &h : history) {
+            int32_t before = (int32_t)(last.ms - h.ms);
+            if (h.ground && before > 0 && (uint32_t)before <= OFF_GROUND_WITHIN_MS) {
+                lined = false;
+                break;
+            }
+        }
+    }
     if (!lined && runways && rolling && last.ground && departing) {
         lined = runwayUnder(last, history, l);
     }
-    // Stopped on the runway, lined up: its roll is taken to begin once it has
-    // been lost for LINED_UP_WAIT_S, from a standstill.
-    if (!lined && runways && !rolling && last.ground && departing && last.hasTrack &&
-        runwayUnder(last, history, l, true)) {
+    // Stopped on the runway, lined up, with the runway for a take-off ahead:
+    // its roll is taken to begin once it has been lost for LINED_UP_WAIT_S,
+    // from a standstill. Moving slowly, not stopped - turning at the end of
+    // a backtrack, a quarter of a mile from the runway's end - one was taken
+    // off from there, and left the ground past the end.
+    if (!lined && runways && !rolling && gs < STOPPED_KT && last.ground && departing && last.hasTrack &&
+        runwayUnder(last, history, l, true) && l.len - l.along >= TAKEOFF_AHEAD_NM) {
         if (ageS <= LINED_UP_WAIT_S) {
             e.how = "held: lined up";
             return e;
@@ -1060,9 +1161,6 @@ constexpr size_t SIM_HISTORY_MAX = 12;  // there can be a hundred contacts, in t
 constexpr float FINAL_START_AGL_FT = 2500.0f;
 constexpr float FINAL_START_NM = 8.0f;
 constexpr int GO_AROUND_FPM = 500;
-// On the ground this recently, it is not out on final, whatever the feed
-// says of it now - see start().
-constexpr uint32_t OFF_GROUND_WITHIN_MS = 60000;
 // In the air by the feed over the runway, but slower than this share of the
 // speed it lifts off at: rolling still - see start(). Or faster, and further
 // down the runway than this, past where a landing touches down and slows.
@@ -1072,16 +1170,12 @@ constexpr float ROLLING_ON_NM = 0.4f;
 // before, and at least this fast - quicker than this a second, too: from 2
 // to 12 kt in 35 s, lining up at Heathrow's 27R, an A330 was taken to be
 // off down the runway the other way, 40m from its end. And a take-off
-// begun on the ground has this much runway ahead of it at least.
+// begun on the ground has TAKEOFF_AHEAD_NM of runway ahead of it at least.
 constexpr int THRUST_GAIN_KT = 8;
 constexpr int THRUST_MIN_KT = 12;
 constexpr float THRUST_KT_S = 0.5f;
-constexpr float TAKEOFF_AHEAD_NM = 0.3f;
 // Further down a runway than its report before by this, it is going down it.
 constexpr float DOWN_IT_NM = 0.005f;
-// Slower than this on the ground, it is stopped - and its position, the same
-// report after report, is not the feed repeating itself.
-constexpr int STOPPED_KT = 5;
 // A take-off is the feed's again once it is this high over the field, this
 // far past the runway's end, or off its line by this much either way; and
 // one slowing this much on the runway has been rejected.
@@ -1181,18 +1275,100 @@ constexpr float START_BEHIND_NM = 0.05f, START_SLOWER_KT = 10.0f;
 // Found in the air, a take-off: climbing away, below HANDOVER_AGL_FT, over
 // the runway or HANDOVER_PAST_END_NM past it, lined up with it, flying - at
 // this share of the speed it lifts off at - and never seen higher or coming
-// down before.
-constexpr float FOUND_FLYING_SHARE = 0.7f;
+// down before; and not so high so soon that, climbing as its kind does, it
+// would have left the ground more than this short of the runway's start: a
+// go-around first heard over the threshold at 250ft, climbing at 1,500ft a
+// minute, was taken for a take-off and shown 0.28nm ahead of it, climbing
+// at 2,750. Its climb, learnt from its height where its place says how long
+// it has been off (see takeoffEstimate()), within these shares of its
+// kind's.
+constexpr float FOUND_FLYING_SHARE = 0.7f, FOUND_BEFORE_NM = 0.1f;
+constexpr float FOUND_CLIMB_LEAST = 0.4f, FOUND_CLIMB_MOST = 1.4f;
+// Begun from a report "airborne" at a roll's speed down the runway, nothing
+// heard of it before and its rate no climb - a landing's rollout as likely
+// as a take-off - shown rolling on at its speed for this long, a zoom's
+// poll, before gathering speed to leave: the next report says which, and a
+// landing first heard so is not shown lifting off and dropped back down.
+// Heard on the ground before, a minute and more before - a poll lost - or
+// its rate rising, it is no landing: held so, a 787 left the ground 15 s
+// late, 300m short of the runway's end, and A320s first heard at 140 kt
+// rising at 128ft a minute 13 s late, 1km further on.
+constexpr float TENTATIVE_S = 10.0f;
 // Handed back to the feed in the air: a height above the feed's taken down
 // no faster than this share of its climb - so never a descent - or,
 // level, this; one below it made up no faster than this share of the
-// take-off's climb - over this long at least, this at most.
+// take-off's climb - over this long at least.
 constexpr float HANDBACK_DOWN_SHARE = 0.5f, HANDBACK_LEVEL_FPM = 300.0f, HANDBACK_UP_SHARE = 0.35f,
-                HANDBACK_MIN_S = 3.0f, HANDBACK_MAX_S = 120.0f;
-// And climbing on out - a report climbing, low - each report after it eased
-// in so too, and its climb from each faded over this long rather than
-// CLIMB_FADE_S: it is still climbing at the next.
-constexpr float CLIMB_OUT_FADE_S = 120.0f;
+                HANDBACK_MIN_S = 3.0f;
+// And climbing on out - a report climbing, below this - each report after
+// it eased in so too, and its climb from each faded over this long rather
+// than CLIMB_FADE_S: it is still climbing at the next. Faded over 120 s, a
+// steady climb fell 18ft short in each 10 s, made up after each report; and
+// ended at 4,000ft, the climb faded over 30 s after it, the feed's own,
+// fell 68ft short by the next report - jumped to, its ease over.
+constexpr float CLIMB_OUT_FADE_S = 300.0f;
+constexpr int CLIMB_OUT_MAX_FT = 10000;
+// Each kept going this long at least, or this share of the gap since the
+// report before: till the next report, which is eased in so too. And its
+// climb's difference from the feed's taken out over this long at most.
+constexpr float HANDBACK_KEEP_S = 30.0f, HANDBACK_KEEP_SHARE = 2.5f, HANDBACK_STOP_S = 8.0f;
+// Its place handed back so too: what is between it and the feed's eased out
+// along the feed's track and across it, from as fast as it was shown going
+// - the offset's rate changed by no more than this, knots a second - and
+// closed no faster than this share of its speed, a quarter, its speed shown
+// with it. Taken in at up to 0.6 of its speed, its speed the feed's at once,
+// it was shown going at 300 kt for a second as it was handed back (VIR45W
+// at Heathrow, 30 s polls: 330m behind at 158 kt, the feed's 195).
+constexpr float HANDBACK_PLACE_KT_S = 3.0f, HANDBACK_PLACE_SHARE = 0.25f;
+// A take-off ended on the runway - rejected, or a taxi along it - shown
+// slowing (see brakingAt()): brought back down to it, should it have been
+// shown off it, no faster than this, its climb stopped at no more than this
+// many feet a second each second, half a g - put down at once, it fell
+// 645ft in a frame - and slowing meanwhile at this, knots a second, to
+// no less than this share of its speed; then on the runway braking at this,
+// as hard as an airliner's rejected take-off - or harder, up to this, to
+// stop short of its end.
+constexpr float PUT_DOWN_FPM = 1500.0f, PUT_DOWN_ACCEL = 16.0f;
+constexpr float REJECT_AIR_KT_S = 1.5f, REJECT_AIR_LEAST = 0.75f;
+constexpr float REJECT_BRAKE_KT_S = 7.0f, REJECT_HARDEST_KT_S = 9.0f;
+// A take-off under way whose reports have it on the ground slower than
+// TAKEOFF_ROLLING_KT, faster by less than this than at its report rolling
+// before, and down the runway since at no more than this over the faster of
+// their speeds, this long after it at least, is taxiing: backtracking along
+// the runway to turn at its end, not off down it. Begun from a stop there
+// at 15 kt, one was lifted off after a minute at 138 kt and climbed to
+// 2,000ft with every report at 15 kt on the ground. A 787 creeping from 5 kt
+// to 7 as its engines spooled up was off down it, not taxiing (AAL137 at
+// Heathrow).
+constexpr int TAXI_GAIN_KT = 2;
+constexpr float TAXI_PACE_KT = 8.0f;
+constexpr uint32_t TAXI_OVER_MS = 4000;
+// Off the ground and this high over its height rolling, its rate saying
+// so - given and not nonsense - or its height not risen at CLIMBING_FPM
+// since a report in the air this long before it at least, no longer than
+// this, it has levelled off low, or is coming down: the feed's again. Taken
+// on climbing to 1,500ft, an A320 levelling at 1,000ft was 2,078ft as it
+// was handed back, one coming down from 900ft was shown climbing to
+// 1,878ft, and a Typhoon running in at 300ft was shown at 3,242ft. Climbing
+// away, a rate is no less than a thousand feet a minute by 300ft, however
+// it lags. Or this much lower than its climb would have it, its rate saying
+// it is coming down.
+constexpr float LEVELLED_FT = 250.0f, LEVELLED_SHORT_FT = 150.0f;
+constexpr uint32_t LEVELLED_OVER_MS = 5000, LEVELLED_WITHIN_MS = 40000;
+// A rate coming down is nonsense, too, where its heights since a report in
+// the air this long before at least have risen faster than it could have
+// slowed to that rate - its climb changed by PACE_CHANGE_FPM_S at most - by
+// this on top, for rates that lag, or by heights given to this much at
+// either end: Comm-B's -224ft a minute 425ft higher than ten seconds before
+// was taken for a level-off, and -1,024ft a minute 250ft higher than five
+// seconds before for a descent, each handed back to the feed's descent
+// (BAW26E at Heathrow). A rate of nought, levelled off, is taken as given.
+// And one has turned back down only where it has risen by less than this
+// share of what its climb would have had it since its report in the air
+// before: a 787 climbing slowly, 280ft short of its kind's climb, its rate
+// -1,344ft a minute, was handed back at 550ft and sank 407ft (BAW26E).
+constexpr uint32_t BELIED_OVER_MS = 2000;
+constexpr float BELIED_FPM = 500.0f, HEIGHT_STEP_FT = 25.0f, TURNED_SHARE = 0.5f;
 // A turn off the runway is taxied at about this, over between these.
 constexpr float TURN_TAXI_KT = 20.0f;
 constexpr float TURN_MIN_S = 3.0f, TURN_MAX_S = 10.0f;
@@ -1211,7 +1387,7 @@ bool lowReport(const FollowSample &s) { return s.ground || (s.hasAlt && s.altFt 
 // otherwise this long after one heard `gapMs` after the one before: see
 // RunwaySim::waitFor().
 uint32_t lineUpWait(uint32_t gapMs) {
-    return (uint32_t)std::min(std::max(gapMs, (uint32_t)10000) * 1.5f, 45000.0f) + 3000;
+    return (uint32_t)std::min(std::max(gapMs, (uint32_t)10000) * 2.0f, 60000.0f) + 5000;
 }
 
 // Taxiing, `track` the way: its report's, or, where it gave none, the way
@@ -1238,10 +1414,12 @@ const FollowSample *groundBefore(const SampleList &history, uint32_t ms, uint32_
     return nullptr;
 }
 
-// Whether any of its reports in `history` from before `ms` has it in the air.
-bool airBefore(const SampleList &history, uint32_t ms) {
+// Whether any of its reports in `history` is from before `ms`: whether
+// anything was heard of it in the few minutes before - on a clock that
+// wraps, as millis() does every 49.7 days.
+bool heardBefore(const SampleList &history, uint32_t ms) {
     for (const FollowSample &h : history) {
-        if (h.ms < ms && !h.ground) {
+        if ((int32_t)(h.ms - ms) < 0) {
             return true;
         }
     }
@@ -1252,8 +1430,81 @@ bool airBefore(const SampleList &history, uint32_t ms) {
 // high as `s` or higher, or coming down: not just off a runway.
 bool airAboveBefore(const SampleList &history, const FollowSample &s) {
     for (const FollowSample &h : history) {
-        if (h.ms < s.ms && !h.ground &&
+        if ((int32_t)(h.ms - s.ms) < 0 && !h.ground &&
             ((h.hasAlt && aboveSeaFt(h) >= aboveSeaFt(s)) || (h.hasVs && h.vsFpm <= -CLIMBING_FPM))) {
+            return true;
+        }
+    }
+    return false;
+}
+
+// Whether any of its reports in `history` before `s` had it higher by
+// OFF_FT or more, or coming down: an arrival's, not a roll's "airborne" at
+// the same height - which, taken for a landing's, had a 777 first heard so
+// at 90 kt with no track rolled out as one, braking from 164 kt to 123 as
+// it took off.
+bool cameDownBefore(const SampleList &history, const FollowSample &s) {
+    for (const FollowSample &h : history) {
+        if ((int32_t)(h.ms - s.ms) < 0 && !h.ground &&
+            ((h.hasAlt && s.hasAlt && aboveSeaFt(h) >= aboveSeaFt(s) + OFF_FT) ||
+             (h.hasVs && h.vsFpm <= -CLIMBING_FPM))) {
+            return true;
+        }
+    }
+    return false;
+}
+
+// Whether `s` is slowing: a report in `history` in the SLOWING_WITHIN_MS
+// before it rolling faster by SLOWING_KT - a take-off rejected, or a
+// landing's rollout - which begins no take-off: a rejected take-off's next
+// report "airborne", slowing still, would begin another, and lift off.
+bool slowingDown(const SampleList &history, const FollowSample &s) {
+    for (auto it = history.rbegin(); it != history.rend(); ++it) {
+        int32_t before = (int32_t)(s.ms - it->ms);
+        if (before <= 0) {
+            continue;
+        }
+        if ((uint32_t)before > SLOWING_WITHIN_MS) {
+            break;
+        }
+        if (it->hasGs && s.hasGs && it->gsKt >= TAKEOFF_ROLLING_KT && it->gsKt > s.gsKt + SLOWING_KT) {
+            return true;
+        }
+    }
+    return false;
+}
+
+// Whether `s`'s rate, in the air and coming down, is nonsense by its heights
+// since its report in `history` in the air BELIED_OVER_MS before it at least
+// - LEVELLED_WITHIN_MS at most - risen faster than it could have slowed to
+// it: see BELIED_FPM.
+bool rateBelied(const SampleList &history, const FollowSample &s) {
+    if (s.ground || !s.hasAlt || !s.hasVs || s.vsFpm >= 0) {
+        return false;
+    }
+    for (auto it = history.rbegin(); it != history.rend(); ++it) {
+        int32_t before = (int32_t)(s.ms - it->ms);
+        if (before < (int32_t)BELIED_OVER_MS || it->ground || !it->hasAlt) {
+            continue;
+        }
+        if ((uint32_t)before > LEVELLED_WITHIN_MS) {
+            break;
+        }
+        // As the feed has them, both: their corrections can differ.
+        float sinceS = before / 1000.0f, fpm = (s.altFt - it->altFt) / sinceS * 60.0f;
+        float spare = std::max(BELIED_FPM, 2 * HEIGHT_STEP_FT / sinceS * 60.0f);
+        return fpm > s.vsFpm + PACE_CHANGE_FPM_S * sinceS / 2 + spare;
+    }
+    return false;
+}
+
+// Whether a report of its in `history` before `s`, in the air, said it was
+// coming down at NONSENSE_FPM or faster, and `s` has it OFF_FT higher or
+// more since: its rates are Comm-B's nonsense, as many are on the roll.
+bool saidDownBefore(const SampleList &history, const FollowSample &s) {
+    for (const FollowSample &h : history) {
+        if ((int32_t)(h.ms - s.ms) < 0 && !h.ground && h.hasVs && h.vsFpm <= NONSENSE_FPM && h.hasAlt && s.hasAlt &&
+            s.altFt >= h.altFt + OFF_FT) {
             return true;
         }
     }
@@ -1304,11 +1555,13 @@ bool RunwaySim::simulating(uint32_t ms) const {
 }
 
 // How long one stopped lined up is left before its roll is taken to have
-// begun: until the next poll would have had it again, by the gap since the
-// report before - the zoom's ten seconds, or the radar's thirty - and half
-// as long again, as the polls come unevenly: one 35 s after the last, the
-// gap before it 25 s, found it stopped still where it was shown rolling at
-// 21 kt, and put it back. Both from when the reports were heard, not their
+// begun: until the poll after next would have had it again, by the gap
+// since the report before - the zoom's ten seconds, or the radar's thirty -
+// and a few seconds more, as polls come unevenly and one in seven or so is
+// lost: one 35 s after the last, the gap before it 25 s, found it stopped
+// still where it was shown rolling at 21 kt, and put it back; and given half
+// as long again, a poll lost had one shown rolling at 58 kt put back 200m to
+// where it waited still. Both from when the reports were heard, not their
 // positions' times: one heard with its position 12 s old was taken to be
 // rolling 12 s early.
 uint32_t RunwaySim::waitFor(const FollowSample &prev, bool hadPrev) const {
@@ -1369,6 +1622,8 @@ void RunwaySim::report(const FollowSample &s) {
     // A take-off as it was shown, exactly - how fast it rolled, its climb's
     // clock - for the one shown to be planned on from: see takeoffReport().
     Phase before = hadPrev ? phase_ : NONE;
+    // Slowing, or slowed, from where it was shown: see brakingAt().
+    bool brakingWas = hadPrev && braking_ && (int32_t)(heardMs - easeEndMs_) < 0;
     TakeoffAt was = {};
     if (before == TAKEOFF) {
         was = shownAt(heardMs);
@@ -1376,6 +1631,14 @@ void RunwaySim::report(const FollowSample &s) {
         was = linedUpAt(heardMs);
         float offset;
         relate(rw_, shown.lat, shown.lon, was.along, offset);
+        if (brakingWas) {
+            // Stopped where it was shown, or stopping: so.
+            was = {};
+            was.ground = true;
+            was.kt = (float)shown.gsKt;
+            was.rate = 1;
+            relate(rw_, shown.lat, shown.lon, was.along, offset);
+        }
     }
     // Its height being handed back to the feed after a take-off, or climbing
     // on out after one.
@@ -1398,11 +1661,14 @@ void RunwaySim::report(const FollowSample &s) {
         fresh_.hasGs = true;
         fresh_.gsKt = (int16_t)shown.gsKt;
     }
+    brakingNow_ = false;
+    const char *runwayWas = rw_.ident;
     bool turnOff = advance(prev, hadPrev);
     easeStartMs_ = easeEndMs_ = altEndMs_ = heardMs;
     turning_ = false;
     climbEase_ = false;
     climbSafe_ = false;
+    braking_ = false;
     climbingOut_ = false;
     dKt_ = 0;
     rollOverNm_ = 0;
@@ -1426,16 +1692,79 @@ void RunwaySim::report(const FollowSample &s) {
     if (!hadPrev || (!wasSim && !climbingOutWas && phase_ == NONE && !taxiingAlong(s, history_, alongTrack))) {
         return;  // the feed's, as it always was
     }
+    // Handed back to the feed in the air, or climbing on out after: a rate
+    // that its heights say is nonsense - Comm-B's, as on the roll: see
+    // rateBelied() - or coming down, it having gone on up since its report
+    // before at CLIMBING_FPM, by NONSENSE_FPM or more, or at all where its
+    // rates have said so before (see saidDownBefore()), and not a take-off
+    // ended as it turned back down: its climb as it was shown. Taken as
+    // given, one handed back at 1,850ft at -544ft a minute, 1,100ft higher
+    // than 25 s before, was brought down towards the feed's descent - which
+    // its next report, 800ft higher, said was none (BAW65 at Heathrow, 30 s
+    // polls); and one handed back past the runway's end at 700ft, 550ft
+    // higher than half a minute before, at -1,344ft a minute, sank 407ft
+    // (BAW26E). Shown not climbing, by then - eased towards such a rate
+    // before - its climb by its heights since its report before, no steeper
+    // than its kind's by FOUND_CLIMB_MOST. Coming down by less, gone on up
+    // so, too long before for its heights to say: taken as climbing on
+    // slowly, at CLIMBING_FPM - at -224ft a minute, half a minute after a
+    // report 1,250ft lower, one sank 191ft, and taken as level, 116ft, as
+    // it was shown above the feed (BAW26E).
+    float ft, upFpm = 0;
+    if (!takeoffFt(s, ft)) {
+        ft = aboveSeaFt(s) - rw_.fieldFt - HEIGHT_SPARE_PRESSURE_FT;  // as levelledOff() has it
+    }
+    if (prev.hasAlt && !prev.ground && (int32_t)(s.ms - prev.ms) > 0) {
+        upFpm = std::min((s.altFt - prev.altFt) / ((s.ms - prev.ms) / 60000.0f),
+                         FOUND_CLIMB_MOST * kindProfile().climbFpm);
+    }
+    if ((before == TAKEOFF || climbSafeWas || climbingOutWas) && phase_ == NONE && !s.ground && s.hasVs &&
+        s.hasAlt && s.vsFpm < 0) {
+        bool goneUp = upFpm >= CLIMBING_FPM && !(before == TAKEOFF && turnedDown(s, ft));
+        bool nonsense = goneUp && (s.vsFpm <= NONSENSE_FPM || saidDownBefore(history_, s));
+        int climbFpm = shown.vsFpm >= CLIMBING_FPM ? shown.vsFpm : (int)upFpm;
+        if ((nonsense || rateBelied(history_, s)) && climbFpm >= CLIMBING_FPM) {
+            fresh_.vsFpm = (int16_t)std::min(climbFpm, 32000);
+        } else if (goneUp) {
+            fresh_.vsFpm = CLIMBING_FPM;
+        }
+    }
     // From where it was shown, to where this report puts it.
     FollowEstimate now = model(heardMs, 1e9f);
     // A take-off handed back to the feed in the air, or climbing on out
     // after one - see below.
     bool handBack = (before == TAKEOFF || before == LINED_UP || climbSafeWas || climbingOutWas) && phase_ == NONE &&
                     !now.ground && !shown.ground;
-    climbingOut_ = handBack && lowReport(s) && s.hasVs && s.vsFpm >= CLIMBING_FPM && s.hasGs && s.gsKt > 0 &&
-                   s.hasTrack;
+    // And climbing on out still, below CLIMB_OUT_MAX_FT, by its rate put
+    // right as above.
+    climbingOut_ = handBack && s.hasAlt && s.altFt < CLIMB_OUT_MAX_FT && fresh_.hasVs &&
+                   fresh_.vsFpm >= CLIMBING_FPM && s.hasGs && s.gsKt > 0 && s.hasTrack;
     if (climbingOut_) {
         climbOutOf(heardMs, 1e9f, now);
+    }
+    // Rejected, or a taxi along the runway taken for a take-off: shown
+    // slowing from where it was shown and as fast - brought back down to the
+    // runway first, should it have been shown off it - to as fast as its
+    // reports have it, and on with them, left that little ahead of them
+    // rather than slid back: see brakingAt(). Eased back to the report by the
+    // clock, its speed eased down beside, it went slower than it was said to
+    // be going, and then backwards; shown lifting off, it was dropped onto
+    // the runway in a frame. Before the test for nothing to ease: shown
+    // where the report puts it but faster, it is not. And slowing still from
+    // the report before: on so, from where it is shown, on the same
+    // runway.
+    if (((brakingNow_ && before == TAKEOFF) ||
+         (brakingWas && !turnOff && (phase_ == NONE || (phase_ == LANDING && rw_.ident == runwayWas)))) &&
+        brakeOn(heardMs, shown, now)) {
+        return;
+    }
+    // Lined up, taken to have gone and found waiting still - a poll or two
+    // lost - shown rolling: slowed to a stop from where it was shown, and
+    // waiting there - not put back to the report, its roll stopped dead and
+    // slid back 200m - and kept so while it waits.
+    if (phase_ == LINED_UP && before == LINED_UP && (brakingWas || shown.gsKt > now.gsKt + 2)) {
+        brakeOn(heardMs, shown, now, true);
+        return;
     }
     float k = nmPerDegLonAt(s.lat);
     float d = hypotf((shown.lon - now.lon) * k, (shown.lat - now.lat) * 60.0f);
@@ -1479,35 +1808,80 @@ void RunwaySim::report(const FollowSample &s) {
             climbEase_ = true;
             if (handBack) {
                 // A take-off handed back to the feed in the air - up and
-                // away, or turning off its runway's line: its place as
-                // above, but its height eased out keeping its climb's rate
-                // as it was shown, a height above the feed's taken down no
-                // faster than half the feed's climb - so it never comes
-                // down - and one below made up no faster than a third of
-                // its own on top: the offset shrinking faster than it
-                // climbed, the catch-up sank 1,300ft a minute (QFA10). And
-                // so at each report while it climbs on out, low, its climb
-                // from each carried on to the next rather than faded as
-                // for one lost: faded, it was shown climbing at half its
-                // rate between reports and catching up at each at up to
-                // 50,000ft a minute.
-                climbLenS_ = d / mostKt * 3600.0f;
+                // away, or turning off its runway's line - and so at each
+                // report while it climbs on out, low, its climb from each
+                // carried on to the next rather than faded as for one lost:
+                // faded, it was shown climbing at half its rate between
+                // reports and catching up at each at up to 50,000ft a
+                // minute. Each eased out from as it was shown, never
+                // jumping (see easeOut()): its place from as fast as it was
+                // shown going, closed at no more than HANDBACK_PLACE_SHARE
+                // of its speed, its speed the speed it is shown going; and
+                // its height keeping its climb's rate as it was shown, a
+                // height above the feed's
+                // taken down no faster than half the feed's climb - so it
+                // never comes down while the feed climbs - and one below
+                // made up no faster than a third of its own on top: the
+                // offset shrinking faster than it climbed, the catch-up
+                // sank 1,300ft a minute (QFA10).
                 climbSafe_ = true;
+                // Its place along the feed's track and across it, each from
+                // the speed it was shown going that way: closed no faster
+                // than HANDBACK_PLACE_SHARE of its speed, its speed brought to
+                // that first. Along the way between them alone, with no gap
+                // between them there is no way, and its speed would have gone
+                // from 180 kt to 199 in a frame.
+                float tn = now.track * (float)M_PI / 180.0f, turned = (shown.track - now.track) * (float)M_PI / 180.0f;
+                fromTrack_ = now.track;
+                placeRate_ = (shown.gsKt * cosf(turned) - now.gsKt) / 3600.0f;
+                placeAcross_ = shown.gsKt * sinf(turned) / 3600.0f;
+                placeMost_ = HANDBACK_PLACE_SHARE * std::max((float)now.gsKt, EASE_MIN_KT) / 3600.0f;
+                float alongNm = dLon_ * k * sinf(tn) + dLat_ * 60.0f * cosf(tn);
+                float acrossNm = dLon_ * k * cosf(tn) - dLat_ * 60.0f * sinf(tn), acrossS;
+                easeOut(alongNm, placeRate_, placeMost_, placeMost_, HANDBACK_PLACE_KT_S / 3600.0f, 0, &climbLenS_);
+                easeOut(acrossNm, placeAcross_, placeMost_, placeMost_, HANDBACK_PLACE_KT_S / 3600.0f, 0, &acrossS);
+                climbLenS_ = std::max(climbLenS_, acrossS);
                 altRate_ = (shown.vsFpm - now.vsFpm) / 60.0f;
-                float up = HANDBACK_UP_SHARE * std::max(tkClimbFpm_, (float)CATCH_UP_MIN_FPM) / 60.0f;
-                altLenS_ = HANDBACK_MIN_S;
-                for (int pass = 0; pass < 4; pass++) {
-                    float fading = now.vsFpm * expf(-altLenS_ / (climbingOut_ ? CLIMB_OUT_FADE_S : CLIMB_FADE_S));
-                    float down = fading > 0 ? std::max(HANDBACK_DOWN_SHARE * fading, HANDBACK_LEVEL_FPM - fading)
-                                            : HANDBACK_LEVEL_FPM;
-                    altLenS_ = std::max(altLenS_, easeSecs(dAlt_, altRate_, 0, -down / 60.0f, up,
-                                                           PACE_CHANGE_FPM_S / 60.0f, HANDBACK_MIN_S, HANDBACK_MAX_S));
+                // Its climb changed no more gently than over HANDBACK_STOP_S:
+                // at a sixth of a g, a Typhoon levelling off from 5,900ft a
+                // minute went 900ft over its level.
+                altAccel_ = std::max(PACE_CHANGE_FPM_S / 60.0f, fabsf(altRate_) / HANDBACK_STOP_S);
+                // Above the feed, climbing, taken down no faster than half
+                // the feed's climb as it will be by its next report or so -
+                // the feed's climb fading - so it never comes down while the
+                // feed climbs, but waits for it.
+                float fading = now.vsFpm * expf(-HANDBACK_KEEP_S / (climbingOut_ ? CLIMB_OUT_FADE_S : CLIMB_FADE_S));
+                altDown_ = (fading > 0 ? HANDBACK_DOWN_SHARE * fading : HANDBACK_LEVEL_FPM) / 60.0f;
+                easeOut(dAlt_, altRate_, altDown_, handbackUp(), altAccel_, 0, &altLenS_);
+                altLenS_ = std::max(altLenS_, HANDBACK_MIN_S);
+                // Climbing on out still, what the last report left between
+                // it and the feed - a few feet, the feed's climb faded a
+                // little since - taken in over about as long as its reports
+                // come, its climb changed the more gently: caught up as
+                // briskly as a level-off, it would climb 600ft a minute
+                // faster for a few seconds after each, its nose bobbing.
+                float gapS = (int32_t)(heardMs - (prev.ms + prev.ageCs * 10u)) / 1000.0f;
+                if (climbingOutWas && gapS > altLenS_) {
+                    float lo = altAccel_ / 16, hi = altAccel_, len;
+                    for (int i = 0; i < 8; i++) {
+                        float mid = sqrtf(lo * hi);
+                        easeOut(dAlt_, altRate_, altDown_, handbackUp(), mid, 0, &len);
+                        (len > gapS ? lo : hi) = mid;
+                    }
+                    altAccel_ = hi;
+                    easeOut(dAlt_, altRate_, altDown_, handbackUp(), altAccel_, 0, &altLenS_);
                 }
-                float spanS = std::max(std::max(climbLenS_ - CATCH_UP_TAU_S, 0.0f) + 4 * CATCH_UP_TAU_S, altLenS_);
+                // And kept till its next report at least, low: what that
+                // puts right eased in so too, not jumped to, its ease over -
+                // 980ft, for one climbing on out at 30 s polls.
+                float spanS = std::max(climbLenS_, altLenS_);
+                if (s.hasAlt && s.altFt < CLIMB_OUT_MAX_FT) {
+                    spanS = std::max(spanS, std::max(HANDBACK_KEEP_S, HANDBACK_KEEP_SHARE * gapS));
+                }
                 altEndMs_ = easeEndMs_ = heardMs + (uint32_t)(spanS * 1000.0f);
                 return;
             }
-            float climbFpm = std::max(profileOf(s).climbFpm, fabsf((float)now.vsFpm));
+            float climbFpm = std::max(kindProfile().climbFpm, fabsf((float)now.vsFpm));
             float mostFpm = std::max(CATCH_UP_MIN_FPM, CATCH_UP_SHARE * climbFpm);
             climbLenS_ = std::max(d / mostKt * 3600.0f, fabsf(dAlt_) / mostFpm * 60.0f);
             // Rejected on its roll, its speed eased down with its place, not
@@ -1579,6 +1953,124 @@ void RunwaySim::report(const FollowSample &s) {
     easeEndMs_ = heardMs + (uint32_t)(easeS * 1000.0f);
 }
 
+// The take-off's kind's: as it began - see tkKind_.
+const TakeoffProfile &RunwaySim::kindProfile() const { return takeoffProfile(tkKind_); }
+
+// Handed back to the feed in the air, below it: its height made up no faster
+// than this, feet a second - see HANDBACK_UP_SHARE.
+float RunwaySim::handbackUp() const {
+    return HANDBACK_UP_SHARE * std::max(tkClimbFpm_, (float)CATCH_UP_MIN_FPM) / 60.0f;
+}
+
+// A take-off's height over the runway by report `s`, "airborne" by the feed:
+// over its own height read rolling, or - its height put right by its GNSS
+// height or the day's pressure - over the field's. False with neither, the
+// feed's pressure altitude having read 117ft high on the roll: no say in
+// whether it is off; and on the ground.
+bool RunwaySim::takeoffFt(const FollowSample &s, float &ft) const {
+    ft = 0;
+    if (s.ground || !s.hasAlt || !(tkLevels_ > 0 || s.pressureFt != 0)) {
+        return false;
+    }
+    ft = aboveSeaFt(s) - (tkLevels_ > 0 ? tkLevelFt_ : rw_.fieldFt + ROLLING_FT);
+    return true;
+}
+
+// Whether `s` has a take-off on the runway still, sure of it: on the
+// ground, or "airborne" by the feed but level at its height rolling.
+bool RunwaySim::rollingStill(const FollowSample &s) const {
+    if (s.ground) {
+        return true;
+    }
+    float ft;
+    bool hasFt = takeoffFt(s, ft);
+    bool hasVs = s.hasVs && s.vsFpm > NONSENSE_FPM;
+    return (!hasFt || ft < SURE_ROLLING_FT) && (!hasVs || s.vsFpm < CLIMBING_FPM);
+}
+
+// Whether `s`, `along` the runway, has a take-off under way taxiing along
+// it instead: see TAXI_PACE_KT.
+bool RunwaySim::taxiingOn(const FollowSample &s, float along) const {
+    if (!s.ground || !s.hasGs || s.gsKt >= TAKEOFF_ROLLING_KT || !tkRolled_ || tkRollGs_ < 0) {
+        return false;
+    }
+    int32_t since = (int32_t)(s.ms - tkRollMs_);
+    if (since < (int32_t)TAXI_OVER_MS) {
+        return false;
+    }
+    float sinceS = since / 1000.0f;
+    float paceKt = (along - tkRollAlong_) / sinceS * 3600.0f;
+    return s.gsKt - tkRollGs_ < TAXI_GAIN_KT && paceKt <= std::max(s.gsKt, tkRollGs_) + TAXI_PACE_KT;
+}
+
+// Whether `s`, in the air, has a take-off under way off the ground and
+// levelled off, low, or coming down: see LEVELLED_FT.
+bool RunwaySim::levelledOff(const FollowSample &s) const {
+    if (s.ground || !s.hasAlt) {
+        return false;
+    }
+    // Its height over its height rolling - or, its pressure altitude put
+    // right by nothing, over the field's less all the day's pressure could
+    // leave it out by.
+    float ft;
+    if (!takeoffFt(s, ft)) {
+        ft = aboveSeaFt(s) - rw_.fieldFt - HEIGHT_SPARE_PRESSURE_FT;
+    }
+    // A rate coming down - by a little, or belied by its heights, or as its
+    // rates have said before (see saidDownBefore()) - says nothing: Comm-B's
+    // -224ft a minute had a 787 taken to have levelled off at 1,400ft, and
+    // shown sinking 191ft as it climbed away (BAW26E).
+    bool rateSays = s.hasVs && s.vsFpm > NONSENSE_FPM && !rateBelied(history_, s) &&
+                    !(s.vsFpm < 0 && saidDownBefore(history_, s));
+    if (ft < LEVELLED_FT || (rateSays && s.vsFpm >= CLIMBING_FPM)) {
+        return false;
+    }
+    if (rateSays || turnedDown(s, ft)) {
+        return true;
+    }
+    // Its rate nonsense, or none: by its heights, should a report in the air
+    // be far enough before it.
+    for (auto it = history_.rbegin(); it != history_.rend(); ++it) {
+        int32_t before = (int32_t)(s.ms - it->ms);
+        if (before < (int32_t)LEVELLED_OVER_MS || it->ground || !it->hasAlt) {
+            continue;
+        }
+        if ((uint32_t)before > LEVELLED_WITHIN_MS) {
+            break;
+        }
+        // As the feed has them, both: their corrections can differ.
+        return (s.altFt - it->altFt) / (before / 60000.0f) < CLIMBING_FPM;
+    }
+    return false;
+}
+
+// Whether `s`, `ft` over its height rolling, has a take-off under way turned
+// back down: coming down by its rate - which on the roll or climbing away
+// can be nonsense - lower by LEVELLED_SHORT_FT than its climb would have it,
+// and risen since its report in the air before by less than TURNED_SHARE of
+// what that would have had it. Unless its heights belie its rate, or its
+// rates have said so before and it went on up: a 787 climbing at 1,400ft a
+// minute, its rate -1,344ft a minute and 400ft below its kind's climb, was
+// handed back at 700ft and sank 99ft, its rate -1,856ft a minute as it
+// rolled (BAW26E at Heathrow).
+bool RunwaySim::turnedDown(const FollowSample &s, float ft) const {
+    if (s.ground || !s.hasVs || s.vsFpm > -CLIMBING_FPM || ft >= realAt(s.ms).ft - LEVELLED_SHORT_FT ||
+        rateBelied(history_, s) || saidDownBefore(history_, s)) {
+        return false;
+    }
+    for (auto it = history_.rbegin(); it != history_.rend(); ++it) {
+        int32_t before = (int32_t)(s.ms - it->ms);
+        if (before < (int32_t)BELIED_OVER_MS || it->ground || !it->hasAlt) {
+            continue;
+        }
+        if ((uint32_t)before > LEVELLED_WITHIN_MS) {
+            break;
+        }
+        return s.altFt - it->altFt < TURNED_SHARE * (realAt(s.ms).ft - realAt(it->ms).ft);
+    }
+    return true;
+}
+
 // fresh_ just in, a take-off under way: begun by it, or `before` it. `was`
 // is the one shown as it came in - its roll, or its climb's clock - and
 // `shown` where it was shown then, before a take-off began.
@@ -1601,19 +2093,32 @@ void RunwaySim::report(const FollowSample &s) {
 // for a speed the feed had repeated (BAW143).
 void RunwaySim::takeoffReport(uint32_t heardMs, Phase before, const TakeoffAt *was, const FollowEstimate *shown) {
     const FollowSample &s = fresh_;
-    const TakeoffProfile &p = profileOf(s);
     float along, offset;
     relate(rw_, s.lat, s.lon, along, offset);
     if (before != TAKEOFF) {
         // A new take-off: its kind's, until its reports say otherwise.
+        const TakeoffProfile &p = kindProfile();
         tkLiftoffKt_ = p.liftoffKt;
         tkClimbFpm_ = p.climbFpm;
         tkLevels_ = 0;
         tkRolled_ = false;
+        tkTopGs_ = -1;
         planAir_ = false;
-    } else if (s.ageCs * 10u > OLD_ROLL_MS && s.hasGs && s.gsKt >= TAKEOFF_ROLLING_KT && !s.ground &&
-               (!s.hasAlt || aboveSeaFt(s) - rw_.fieldFt < OLD_ROLL_BELOW_FT)) {
-        return;  // an old position on the roll, its speed newer: see OLD_ROLL_MS
+    } else {
+        tkTentative_ = false;  // its next report has said which: see takeoffPlan()
+        if (s.ageCs * 10u > OLD_ROLL_MS && s.hasGs && s.gsKt >= TAKEOFF_ROLLING_KT && !s.ground &&
+            (!s.hasAlt || aboveSeaFt(s) - rw_.fieldFt < OLD_ROLL_BELOW_FT)) {
+            return;  // an old position on the roll, its speed newer: see OLD_ROLL_MS
+        }
+        // Its type first given now - the list it began in not having it -
+        // and rolling still: its own kind's take-off from here on, not an
+        // airliner's.
+        if (tkKind_ == TakeoffKind::NARROW && s.takeoffKind != TakeoffKind::NARROW && !est_.air && !planAir_) {
+            tkKind_ = s.takeoffKind;
+            const TakeoffProfile &p = kindProfile();
+            tkLiftoffKt_ = std::min(std::max(tkLiftoffKt_, p.liftoffKt), p.liftoffKt + LIFTS_MOST_OVER_KT);
+            tkClimbFpm_ = p.climbFpm;
+        }
     }
     takeoffEstimate(along);
     if (before == TAKEOFF) {
@@ -1645,19 +2150,29 @@ void RunwaySim::takeoffReport(uint32_t heardMs, Phase before, const TakeoffAt *w
         return;
     }
     takeoffPlan(heardMs, nullptr, false);
+    // Begun where the real one is: on the radar and the zoom, the blip
+    // eased there from where it was shown - at no more than half its speed
+    // again, as other reports are - not jumped 130m along the runway; the
+    // 3D view eases it its own way. See plotAt().
+    if (shown != nullptr) {
+        FollowEstimate e = takeoffEstimateOf(shownAt(heardMs));
+        float k = nmPerDegLonAt(e.lat), d = hypotf((shown->lon - e.lon) * k, (shown->lat - e.lat) * 60.0f);
+        if (d >= 0.001f) {
+            dLat_ = shown->lat - e.lat;
+            dLon_ = shown->lon - e.lon;
+            float halfKt = std::max((float)e.gsKt, EASE_MIN_KT) / 2.0f;
+            float easeS = std::min(std::max(d / halfKt * 3600.0f, EASE_MIN_S), EASE_MAX_S);
+            easeEndMs_ = heardMs + (uint32_t)(easeS * 1000.0f);
+        }
+    }
 }
 
 // The real take-off, as fresh_ - `along` the runway - has it.
 void RunwaySim::takeoffEstimate(float along) {
     const FollowSample &s = fresh_;
-    const TakeoffProfile &p = profileOf(s);
-    // Its height over the runway: over its own height read rolling, or - its
-    // height put right by its GNSS height or the day's pressure - over the
-    // field's. With neither, the feed's pressure altitude read 117ft high on
-    // the roll: no say in whether it is off.
-    bool level = tkLevels_ > 0 || s.pressureFt != 0;
-    bool hasFt = !s.ground && s.hasAlt && level;
-    float ft = hasFt ? aboveSeaFt(s) - (tkLevels_ > 0 ? tkLevelFt_ : rw_.fieldFt + ROLLING_FT) : 0.0f;
+    const TakeoffProfile &p = kindProfile();
+    float ft;
+    bool hasFt = takeoffFt(s, ft);
     bool hasVs = !s.ground && s.hasVs && s.vsFpm > NONSENSE_FPM;
     float vs = hasVs ? (float)s.vsFpm : 0.0f, gs = s.hasGs ? (float)s.gsKt : 0.0f;
     bool air = !s.ground && ((hasFt && ft >= OFF_FT) ||
@@ -1666,12 +2181,17 @@ void RunwaySim::takeoffEstimate(float along) {
                              along > rw_.len + PAST_END_NM);
     if (!air) {
         // Rolling: at its speed - never slower than at its report rolling
-        // before - its roll on to its lift-off as its kind's.
+        // before - its roll on to its lift-off as its kind's. Timed by its
+        // position, its speed as old: an "airborne" report heard with its
+        // position 3.8 s old at 114 kt was 114 kt then, not as it was heard
+        // (DLH9U at Heathrow) - taken as heard, its lift-off was 4.5 s late.
         float v = s.hasGs ? gs : tkRolled_ ? tkRollKt_ : 0.0f;
+        bool repeated = false;
         if (tkRolled_) {
             float since = (int32_t)(s.ms - tkRollMs_) / 1000.0f;
             if (s.hasGs && s.gsKt == tkRollGs_ && since >= STALE_GS_S && s.gsKt >= STALE_GS_KT && !est_.air) {
                 v = realAt(s.ms).kt;  // the feed's old speed again: as it was reckoned to be going
+                repeated = true;
             }
             v = std::max(v, tkRollKt_);
         }
@@ -1684,6 +2204,9 @@ void RunwaySim::takeoffEstimate(float along) {
             (s.pressureFt == 0 || fabsf(aboveSeaFt(s) - (rw_.fieldFt + ROLLING_FT)) < ROLLING_NEAR_FT)) {
             tkLevels_ = (uint8_t)std::min(tkLevels_ + 1, ROLLING_KEPT);
             tkLevelFt_ += (aboveSeaFt(s) - tkLevelFt_) / tkLevels_;
+        }
+        if (s.hasGs && !repeated) {
+            tkTopGs_ = std::max(tkTopGs_, s.gsKt);
         }
         tkRolled_ = true;
         tkRollMs_ = s.ms;
@@ -1713,11 +2236,35 @@ void RunwaySim::takeoffEstimate(float along) {
     if (tkRolled_) {
         offAlong = std::max(offAlong, tkRollAlong_);
     }
+    // Found in the air, and reckoned to have left the runway past its end -
+    // a slow climber, found well past it - or before its start: its place
+    // kept, its seconds since it left reckoned by how far it is from where
+    // on the runway it could have, and its climb learnt from its height by
+    // then. Its place moved instead, a 777 climbing at 1,500ft a minute
+    // found 1.6nm past the end was shown half a mile behind its reports.
+    float hi = rw_.len - STOP_SHORT_NM;
+    if (!tkRolled_ && (offAlong > hi || offAlong < 0)) {
+        offAlong = std::min(std::max(offAlong, 0.0f), hi);
+        float d = std::max(along - offAlong, 0.0f), a = 0, b = 600;
+        for (int i = 0; i < 20; i++) {
+            float mid = (a + b) / 2;
+            (climbOutNm(p, liftKt, mid) < d ? a : b) = mid;
+        }
+        tau = (a + b) / 2;
+        if (!std::isnan(atFt) && atFt >= HEIGHT_SAYS_FT && tau > p.buildS / 2) {
+            float lo2 = FOUND_CLIMB_LEAST * p.climbFpm, hi2 = FOUND_CLIMB_MOST * p.climbFpm;
+            for (int i = 0; i < 16; i++) {
+                float mid = (lo2 + hi2) / 2;
+                (climbFt(p, mid, tau) < atFt ? lo2 : hi2) = mid;
+            }
+            tkClimbFpm_ = (lo2 + hi2) / 2;
+        }
+    }
     est_ = {};
     est_.air = true;
     est_.k = 1;
     est_.ms = est_.rotMs = est_.offMs = s.ms - (uint32_t)lroundf(tau * 1000);
-    est_.along = est_.rotAlong = est_.offAlong = std::min(std::max(offAlong, 0.0f), rw_.len - STOP_SHORT_NM);
+    est_.along = est_.rotAlong = est_.offAlong = std::min(std::max(offAlong, 0.0f), hi);
     est_.kt = est_.rotKt = est_.offKt = liftKt;
     // Its climb, from its rate once that is steady - the build behind it.
     if (tau >= p.buildS + LEARN_AFTER_S && hasFt && ft < p.easeFt - LEARN_BELOW_FT && hasVs &&
@@ -1730,7 +2277,7 @@ void RunwaySim::takeoffEstimate(float along) {
 // The one shown, planned on from `from` - where it was shown at `t0` - or,
 // with none, from where the real one is; `replanning` a plan under way.
 void RunwaySim::takeoffPlan(uint32_t t0, const TakeoffAt *from, bool replanning) {
-    const TakeoffProfile &p = profileOf(fresh_);
+    const TakeoffProfile &p = kindProfile();
     TakeoffAt st;
     float wasFpm = replanning ? planFpm_ : p.climbFpm;
     if (from == nullptr) {
@@ -1783,7 +2330,10 @@ void RunwaySim::takeoffPlan(uint32_t t0, const TakeoffAt *from, bool replanning)
     // or all but, caught up with - and by the runway's end.
     float liftKt = tkLiftoffKt_, k = 1;
     float toOffS = (int32_t)(est_.offMs - t0) / 1000.0f;
-    if (est_.air || toOffS < p.rotateS + CATCH_UP_LEAD_S) {
+    bool tentative = tkTentative_ && !replanning;
+    if (tentative) {
+        // Its kind's roll, after rolling on at its speed: see below.
+    } else if (est_.air || toOffS < p.rotateS + CATCH_UP_LEAD_S) {
         k = ROLL_QUICKEST;
         float reach = st.kt + rotateAccelOf(p, st.kt, k) * p.rotateS;
         liftKt = std::max(CATCH_UP_LIFTS * tkLiftoffKt_, std::min(tkLiftoffKt_, reach));
@@ -1797,7 +2347,19 @@ void RunwaySim::takeoffPlan(uint32_t t0, const TakeoffAt *from, bool replanning)
             k = std::min(std::max(rollShare(p, st.kt, vrot, rollS), ROLL_SLOWEST), ROLL_QUICKEST);
         }
     }
-    plan_ = rolledFrom(p, t0, st.along, st.kt, liftKt, rw_.len, false, k, true);
+    // Begun from a report that could as well be a landing's rollout (see
+    // TENTATIVE_S): rolled on at its speed first - so long as that leaves it
+    // the runway for its roll on to its lift-off - and its gathering after.
+    uint32_t rollMs = t0;
+    float rollAlong = st.along;
+    if (tentative && st.kt > 1) {
+        float need = rolledFrom(p, 0, 0, st.kt, liftKt, 1e9f, false, k, true).offAlong;
+        float room = rw_.len - STOP_SHORT_NM - st.along - need;
+        float holdS = std::min(TENTATIVE_S, std::max(0.0f, room / st.kt * 3600.0f));
+        rollMs = t0 + (uint32_t)lroundf(holdS * 1000);
+        rollAlong = st.along + st.kt * holdS / 3600.0f;
+    }
+    plan_ = rolledFrom(p, rollMs, rollAlong, st.kt, liftKt, rw_.len, false, k, true);
     planAir_ = false;
     takeoffClimb(plan_.offMs, 0, 1, tkClimbFpm_, plan_.offAlong, plan_.offKt, plan_.offMs);
 }
@@ -1808,7 +2370,7 @@ void RunwaySim::takeoffPlan(uint32_t t0, const TakeoffAt *from, bool replanning)
 // slower than PACE_SLOWEST - climbing at `fpm` once built; its place,
 // `along` at `kt` at `tR`, the real one's, what is between eased out.
 void RunwaySim::takeoffClimb(uint32_t ta, float tau0, float rate0, float fpm, float along, float kt, uint32_t tR) {
-    const TakeoffProfile &p = profileOf(fresh_);
+    const TakeoffProfile &p = kindProfile();
     climbMs_ = ta;
     climbS0_ = tau0;
     rate0_ = rate0;
@@ -1836,8 +2398,69 @@ void RunwaySim::climbOutOf(uint32_t ms, float maxAgeS, FollowEstimate &e) const 
     e.vsFpm += (int)lroundf(vs * (expf(-t / CLIMB_OUT_FADE_S) - expf(-t / CLIMB_FADE_S)));
 }
 
+// A take-off ended on the runway at easeStartMs_ - rejected, or a taxi along
+// it taken for one - as shown at `ms`: from where it was shown then, brought
+// back down to the runway first should it have been shown off it, slowing
+// gently meanwhile; then braking as a rejected take-off does - harder,
+// should the runway's end need it - till it is as slow as its reports have
+// it, and on with them from there, that little ahead of them rather than
+// slid back. Its seconds' worth of each: see PUT_DOWN_FPM.
+FollowEstimate RunwaySim::brakingAt(uint32_t ms, float maxAgeS) const {
+    float x = std::max((int32_t)(ms - easeStartMs_), (int32_t)0) / 1000.0f;
+    float h = 0, vs = 0, downS = 0;
+    if (dAlt_ > 0.5f) {
+        Eased down =
+            easeOut(dAlt_, altRate_, PUT_DOWN_FPM / 60.0f, std::max(altRate_, 1.0f), PUT_DOWN_ACCEL, x, &downS);
+        if (x < downS) {
+            h = std::max(0.0f, down.p);
+            vs = down.v * 60.0f;
+        }
+    }
+    // Its own slowing, `y` seconds on: where, and how fast.
+    float least = REJECT_AIR_LEAST * rejKt_;
+    auto slowing = [&](float y, float &along, float &kt) {
+        // Coming down: slowing gently, to no less than `least`.
+        float ya = std::min(y, downS), yl = rejKt_ > least ? std::min(ya, (rejKt_ - least) / REJECT_AIR_KT_S) : 0.0f;
+        float v = rejKt_ - REJECT_AIR_KT_S * yl;
+        along = rejAlong_ + (rejKt_ * yl - REJECT_AIR_KT_S * yl * yl / 2 + v * (ya - yl)) / 3600.0f;
+        kt = v;
+        if (y <= downS) {
+            return;
+        }
+        // Down: braking, harder should the runway's end need it.
+        float room = std::max(rw_.len - STOP_SHORT_NM - along, 0.005f);
+        float brake = std::min(std::max(REJECT_BRAKE_KT_S, v * v / (2 * room * 3600.0f)), REJECT_HARDEST_KT_S);
+        float yb = std::min(y - downS, v / brake);
+        along += (v * yb - brake * yb * yb / 2) / 3600.0f;
+        kt = v - brake * yb;
+    };
+    float along, kt;
+    slowing(x, along, kt);
+    // As slow as its reports have it, on with them: from when it was first.
+    FollowEstimate m = model(ms, maxAgeS);
+    if (kt < m.gsKt) {
+        float lo = 0, hi = x;
+        for (int i = 0; i < 14; i++) {
+            float mid = (lo + hi) / 2, a, k;
+            slowing(mid, a, k);
+            (k > model(easeStartMs_ + (uint32_t)lroundf(mid * 1000), maxAgeS).gsKt ? lo : hi) = mid;
+        }
+        float a0, k0, from, to, off;
+        slowing(hi, a0, k0);
+        relate(rw_, m.lat, m.lon, to, off);
+        FollowEstimate then = model(easeStartMs_ + (uint32_t)lroundf(hi * 1000), maxAgeS);
+        relate(rw_, then.lat, then.lon, from, off);
+        along = a0 + std::max(to - from, 0.0f);
+        kt = (float)m.gsKt;
+    }
+    FollowEstimate e = onLine(rw_, along, rw_.fieldFt + (int32_t)lroundf(h), h <= 0.5f, kt, (int)lroundf(vs),
+                              h > 0.5f ? "back down to the runway" : kt >= 1 ? "slowing" : "slowed: stopped");
+    e.pressureFt = fresh_.pressureFt;
+    return e;
+}
+
 RunwaySim::TakeoffAt RunwaySim::realAt(uint32_t ms) const {
-    return rolledOn(profileOf(fresh_), est_, tkClimbFpm_, ms);
+    return rolledOn(kindProfile(), est_, tkClimbFpm_, ms);
 }
 
 // Where the real one is reckoned to be flying at `ms`, along the runway's
@@ -1848,13 +2471,13 @@ RunwaySim::TakeoffAt RunwaySim::realAt(uint32_t ms) const {
 // (35 kt, for one found taxiing on as it was shown climbing away).
 void RunwaySim::flightAt(uint32_t ms, float &along, float &kt) const {
     float tau = (int32_t)(ms - est_.offMs) / 1000.0f;
-    const TakeoffProfile &p = profileOf(fresh_);
+    const TakeoffProfile &p = kindProfile();
     along = est_.offAlong + climbOutNm(p, est_.offKt, tau);
     kt = climbOutKt(p, est_.offKt, tau);
 }
 
 RunwaySim::TakeoffAt RunwaySim::shownAt(uint32_t ms) const {
-    const TakeoffProfile &p = profileOf(fresh_);
+    const TakeoffProfile &p = kindProfile();
     TakeoffAt a = {};
     if (!planAir_ && (int32_t)(ms - plan_.offMs) < 0) {
         rolledAt(p, plan_, ms, a);
@@ -1887,7 +2510,7 @@ RunwaySim::TakeoffAt RunwaySim::shownAt(uint32_t ms) const {
 }
 
 RunwaySim::TakeoffAt RunwaySim::linedUpAt(uint32_t ms) const {
-    const TakeoffProfile &p = profileOf(fresh_);
+    const TakeoffProfile &p = kindProfile();
     float along, offset;
     relate(rw_, fresh_.lat, fresh_.lon, along, offset);
     return rolledOn(p, rolledFrom(p, rollMs_, along, 0, p.liftoffKt, rw_.len, true), p.climbFpm, ms);
@@ -1897,6 +2520,27 @@ FollowEstimate RunwaySim::takeoffEstimateOf(const TakeoffAt &a) const {
     FollowEstimate e = takeoffOn(rw_, a);
     e.pressureFt = fresh_.pressureFt;
     return e;
+}
+
+// A take-off ended on the runway still slowing (see brakingAt()) as `shown`
+// - at `heardMs`, this report's - goes on doing so from there: off the
+// runway still, or faster than its reports have it (`now`), or `anyway` -
+// not eased to them from the air by the clock, as a report on the ground
+// had it, which slid it 800m back and dropped it 217ft in three seconds.
+bool RunwaySim::brakeOn(uint32_t heardMs, const FollowEstimate &shown, const FollowEstimate &now, bool anyway) {
+    if (!anyway && shown.ground && shown.gsKt <= now.gsKt + 2) {
+        return false;
+    }
+    braking_ = true;
+    climbEase_ = false;
+    plotCut_ = false;
+    float off;
+    relate(rw_, shown.lat, shown.lon, rejAlong_, off);
+    rejKt_ = (float)shown.gsKt;
+    dAlt_ = shown.ground ? 0.0f : std::max(0.0f, (float)(shown.altFt - rw_.fieldFt));
+    altRate_ = shown.ground ? 0.0f : shown.vsFpm / 60.0f;
+    altEndMs_ = easeEndMs_ = heardMs + ROLL_EASE_MS;
+    return true;
 }
 
 // fresh_ just in: whether the take-off or landing under way goes on, ends,
@@ -1922,15 +2566,23 @@ bool RunwaySim::advance(const FollowSample &prev, bool hadPrev) {
         relate(rw_, prev.lat, prev.lon, prevAlong, prevOffset);
         downIt = along > prevAlong + DOWN_IT_NM;
     }
+    bool underWay = phase_ == TAKEOFF;
     switch (phase_) {
     case LINED_UP:
         if (s.ground && onPavement && (gs < STOPPED_KT || off <= LINED_UP_HEADING_DEG || downIt)) {
             if (gs < STOPPED_KT) {
                 rollMs_ = s.ms + s.ageCs * 10u + waitFor(prev, hadPrev);  // still waiting
-            } else {
-                phase_ = TAKEOFF;  // and off
+                return false;
             }
-            return false;
+            // And off - unless too near the runway's end for that: taxiing
+            // on to turn there, as a take-off begun on the ground has
+            // TAKEOFF_AHEAD_NM of it ahead at least. Stopped lined up a
+            // quarter of a mile from the end, then on at 8 kt to the turn
+            // pad, one was taken off down it.
+            if (rw_.len - along >= TAKEOFF_AHEAD_NM) {
+                phase_ = TAKEOFF;
+                return false;
+            }
         }
         if (s.ground) {
             phase_ = NONE;  // moved off it: taxiing on, perhaps to another
@@ -1939,9 +2591,35 @@ bool RunwaySim::advance(const FollowSample &prev, bool hadPrev) {
         phase_ = TAKEOFF;  // off already, unseen on its roll
         [[fallthrough]];
     case TAKEOFF:
+        if (underWay) {
+            // Rejected: on the runway still - on the ground, or "airborne"
+            // by the feed but level at its height rolling, as most are from
+            // 70-110 kt - and slower by REJECTED_DROP_KT than the fastest
+            // the feed had it rolling, a speed given. Only a report on the
+            // ground after one on the ground once said so: one rejected at
+            // 120 kt, its reports "airborne" as it slowed, was reckoned on at
+            // its fastest, shown lifting off and climbing to 645ft, and
+            // dropped onto the runway as it was found stopped. Nor a report
+            // with no speed, as a speed of nought: shown stopping dead.
+            if (!est_.air && rollingStill(s) && s.hasGs && tkTopGs_ >= 0 && s.gsKt < tkTopGs_ - REJECTED_DROP_KT) {
+                phase_ = NONE;
+                brakingNow_ = true;
+                return false;
+            }
+            // Taxiing along the runway rather than off down it, or levelled
+            // off low: see TAXI_PACE_KT and LEVELLED_FT.
+            if (taxiingOn(s, along)) {
+                phase_ = NONE;
+                brakingNow_ = true;
+                return false;
+            }
+            if (levelledOff(s)) {
+                phase_ = NONE;
+                return false;
+            }
+        }
         if (s.ground) {
-            bool rejected = prev.ground && prev.hasGs && gs < prev.gsKt - REJECTED_DROP_KT;
-            if (onPavement && (off <= OFF_LINE_DEG || downIt) && !rejected) {
+            if (onPavement && (off <= OFF_LINE_DEG || downIt)) {
                 return false;
             }
         } else if (aglFt <= HANDOVER_AGL_FT && along <= rw_.len + HANDOVER_PAST_END_NM && offset <= OFF_LINE_NM &&
@@ -1988,18 +2666,26 @@ void RunwaySim::start(const FollowSample &prev, bool hadPrev) {
     }
     float gs = s.hasGs ? (float)s.gsKt : 0.0f;
     Lineup l;
+    // Should one begin, its kind's - see tkKind_.
+    tkKind_ = s.takeoffKind;
+    tkTentative_ = false;
     if (!s.ground) {
         // Climbing away low from a runway it is lined up with - over it, or a
         // few miles past its far end - flying, and never seen as high before
         // nor coming down: a take-off, found in the air - the feed picking it
         // up only as it climbed into view, or the zoom late to it - shown
         // climbing on from where it is as one does, not held at its report's
-        // rate. Not one just handed back from its take-off, climbing on out.
+        // rate. Not one just handed back from its take-off, climbing on out;
+        // nor one too high so soon to have left this runway (see
+        // FOUND_BEFORE_NM).
         if (!climbingOut_ && !climbSafe_ && s.hasGs && s.hasAlt && !(s.hasVs && s.vsFpm <= -CLIMBING_FPM) &&
             !airAboveBefore(history_, s) && findDeparture(s, HANDOVER_PAST_END_NM, l)) {
+            const TakeoffProfile &p = profileOf(s);
             float aglFt = (float)(aboveSeaFt(s) - l.fieldFt);
+            float tau = climbSecsAt(p, p.climbFpm, std::max(aglFt - ROLLING_FT, 0.0f));
+            float leftAt = l.along - climbOutNm(p, gs - p.gainKt * (1 - expf(-tau / GAIN_S)), tau);
             if (((s.hasVs && s.vsFpm >= CLIMBING_FPM) || aglFt >= OFF_FT) && aglFt < HANDOVER_AGL_FT &&
-                gs >= FOUND_FLYING_SHARE * profileOf(s).liftoffKt) {
+                gs >= FOUND_FLYING_SHARE * p.liftoffKt && leftAt >= -FOUND_BEFORE_NM) {
                 phase_ = TAKEOFF;
                 rw_ = lineOf(s, l);
                 return;
@@ -2017,31 +2703,47 @@ void RunwaySim::start(const FollowSample &prev, bool hadPrev) {
         // the take-off roll - an E190 at Glasgow did at 48kt, and was cleared
         // to land - and some flick to it on a rollout. Departing, and down
         // the runway at a roll, it is its take-off.
+        // Not a take-off just handed back, though - levelled off low, a
+        // Typhoon at 300ft was begun again from there, and dropped 300ft -
+        // nor well up from its height rolling, however wrong the day's
+        // pressure: taken as level with the field, a height put right by
+        // one 100ft out kept a roll from being taken for one.
         if (const FollowSample *g = groundBefore(history_, s.ms, OFF_GROUND_WITHIN_MS)) {
-            if (followDeparting(history_, *g) && gs >= TAKEOFF_ROLLING_KT && findLineup(s, l) &&
-                l.along >= -ON_RUNWAY_OFFSET_NM) {
+            if (followDeparting(history_, *g) && gs >= TAKEOFF_ROLLING_KT && !slowingDown(history_, s) &&
+                findLineup(s, l) && l.along >= -ON_RUNWAY_OFFSET_NM && !climbSafe_ && !climbingOut_ &&
+                !(s.hasAlt && aboveSeaFt(s) - l.fieldFt >=
+                                  JUST_OFF_FT + (s.pressureFt != 0 ? HEIGHT_SPARE_FT : HEIGHT_SPARE_PRESSURE_FT))) {
                 phase_ = TAKEOFF;
                 rw_ = lineOf(s, l);
             }
             return;
         }
         // Over the runway itself, level, slower than it could fly and never
-        // seen in the air before: its take-off, picked up rolling - the feed
-        // having it in the air from part way down, as all thirteen departures
-        // from Heathrow's 27R on 27 Oct 2026 did, from 70 to 110 knots - not
-        // a landing, shown rolling out and slowing as it climbed away.
+        // seen coming down to it before - nor slowing: its take-off, picked
+        // up rolling - the feed having it in the air from part way down, as
+        // all thirteen departures from Heathrow's 27R on 27 Oct 2026 did,
+        // from 70 to 110 knots - not a landing, shown rolling out and slowing
+        // as it climbed away. Seen before only at its height rolling, it is
+        // rolling still: see cameDownBefore().
         // So too faster than that, up to the speed it might leave at, not
         // coming down and far enough down the runway that a landing would
         // have touched down and slowed by then: first heard at 130 kt half
-        // way down its roll, one was taken for a landing.
+        // way down its roll, one was taken for a landing. But a landing
+        // first heard on its rollout, "airborne" still, looks the same -
+        // UAL940 at Heathrow, at 117 kt 0.64nm in - so one first heard so is
+        // shown rolling on at its speed until its next report says which:
+        // see TENTATIVE_S.
         const TakeoffProfile &p = profileOf(s);
         bool rollingOn = gs >= ROLLING_SHARE * p.liftoffKt && gs <= p.liftoffKt + LIFTS_MOST_OVER_KT && s.hasVs &&
                          s.vsFpm >= 0 && s.vsFpm < CLIMBING_FPM;
         if (gs >= TAKEOFF_ROLLING_KT && (gs < ROLLING_SHARE * p.liftoffKt || rollingOn) &&
-            !(s.hasVs && s.vsFpm <= -CLIMBING_FPM) && !airBefore(history_, s.ms) && findLineup(s, l) &&
-            l.along >= (gs < ROLLING_SHARE * p.liftoffKt ? 0.0f : ROLLING_ON_NM) && l.along <= l.len) {
+            !(s.hasVs && s.vsFpm <= -CLIMBING_FPM) && !cameDownBefore(history_, s) && !slowingDown(history_, s) &&
+            findLineup(s, l) && l.along >= (gs < ROLLING_SHARE * p.liftoffKt ? 0.0f : ROLLING_ON_NM) &&
+            l.along <= l.len) {
             phase_ = TAKEOFF;
             rw_ = lineOf(s, l);
+            tkTentative_ =
+                gs >= ROLLING_SHARE * p.liftoffKt && !heardBefore(history_, s.ms) && !(s.hasVs && s.vsFpm > 0);
             return;
         }
         if (findLineup(s, l) && l.along >= -FINAL_START_NM &&
@@ -2136,14 +2838,21 @@ FollowEstimate RunwaySim::model(uint32_t ms, float maxAgeS) const {
 // backwards - and its turn to face a report behind are the radar's too.
 FollowEstimate RunwaySim::plotAt(uint32_t ms, float maxAgeS) const {
     int32_t span = (int32_t)(easeEndMs_ - easeStartMs_), since = (int32_t)(ms - easeStartMs_);
-    if (plotCut_ && phase_ != TAKEOFF && span > 0 && since < span) {
+    if (plotCut_ && phase_ != TAKEOFF && !braking_ && span > 0 && since < span) {
         FollowEstimate e = model(ms, maxAgeS);
         if (climbingOut_ && phase_ == NONE) {
             climbOutOf(ms, maxAgeS, e);
         }
         return e;
     }
-    return at(ms, maxAgeS);  // a take-off shown never goes back: see takeoffReport()
+    FollowEstimate e = at(ms, maxAgeS);  // a take-off shown never goes back: see takeoffReport()
+    if (phase_ == TAKEOFF && span > 0 && since < span) {
+        // Begun where the real one is, eased there from where it was shown.
+        float u = 1.0f - smoothstep(since <= 0 ? 0.0f : (float)since / span);
+        e.lat += dLat_ * u;
+        e.lon += dLon_ * u;
+    }
+    return e;
 }
 
 FollowEstimate RunwaySim::at(uint32_t ms, float maxAgeS) const {
@@ -2155,26 +2864,47 @@ FollowEstimate RunwaySim::at(uint32_t ms, float maxAgeS) const {
         }
         return takeoffEstimateOf(shownAt(ms));
     }
+    int32_t span = (int32_t)(easeEndMs_ - easeStartMs_), since = (int32_t)(ms - easeStartMs_);
+    if (braking_ && span > 0 && since < span) {
+        return brakingAt(ms, maxAgeS);  // a take-off ended on the runway: see report()
+    }
     FollowEstimate e = model(ms, maxAgeS);
     if (climbingOut_ && phase_ == NONE) {
         climbOutOf(ms, maxAgeS, e);
     }
-    int32_t span = (int32_t)(easeEndMs_ - easeStartMs_), since = (int32_t)(ms - easeStartMs_);
     if (span <= 0 || since >= span) {
         return e;
     }
     if (climbEase_) {
-        float t = since <= 0 ? 0.0f : since / 1000.0f, left = catchUpLeft(climbLenS_, t);
+        float t = since <= 0 ? 0.0f : since / 1000.0f;
+        if (climbSafe_) {
+            // A take-off handed back, its place and height eased out from
+            // as it was shown - see report() - its speed the speed it is
+            // shown going: the feed's, and the offset's along the feed's
+            // track and across it.
+            float k = nmPerDegLonAt(e.lat), tn = fromTrack_ * (float)M_PI / 180.0f;
+            float alongNm = dLon_ * k * sinf(tn) + dLat_ * 60.0f * cosf(tn);
+            float acrossNm = dLon_ * k * cosf(tn) - dLat_ * 60.0f * sinf(tn);
+            float accel = HANDBACK_PLACE_KT_S / 3600.0f;
+            Eased along = easeOut(alongNm, placeRate_, placeMost_, placeMost_, accel, t);
+            Eased across = easeOut(acrossNm, placeAcross_, placeMost_, placeMost_, accel, t);
+            // Its offset north and east, along and across that track.
+            float ox = along.p * sinf(tn) + across.p * cosf(tn), oy = along.p * cosf(tn) - across.p * sinf(tn);
+            e.lat += oy / 60.0f;
+            e.lon += ox / k;
+            float a = e.track * (float)M_PI / 180.0f;
+            float vx = sinf(a) * e.gsKt / 3600.0f + along.v * sinf(tn) + across.v * cosf(tn);
+            float vy = cosf(a) * e.gsKt / 3600.0f + along.v * cosf(tn) - across.v * sinf(tn);
+            e.gsKt = (int)lroundf(hypotf(vx, vy) * 3600.0f);
+            Eased height = easeOut(dAlt_, altRate_, altDown_, handbackUp(), altAccel_, t);
+            e.altFt += (int32_t)lroundf(height.p);
+            e.vsFpm += (int)lroundf(height.v * 60.0f);
+            return e;
+        }
+        float left = catchUpLeft(climbLenS_, t);
         e.lat += dLat_ * left;
         e.lon += dLon_ * left;
-        if (climbSafe_) {
-            // A take-off's height handed back: see report().
-            float u = t / altLenS_;
-            e.altFt += (int32_t)lroundf(hermite(u, dAlt_, altRate_, 0, altLenS_));
-            e.vsFpm += (int)lroundf(hermiteRate(u, dAlt_, altRate_, 0, altLenS_) * 60.0f);
-        } else {
-            e.altFt += (int32_t)(dAlt_ * left);
-        }
+        e.altFt += (int32_t)(dAlt_ * left);
         if (dKt_ != 0) {
             e.gsKt = std::max(0, e.gsKt + (int)lroundf(dKt_ * left));
         }
