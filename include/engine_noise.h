@@ -118,6 +118,33 @@ enum class Engine : uint8_t {
     PW127_247F,     // ATR 72-210 (AT73): four-bladed 247Fs
     PW127_568F_42,  // ATR 42-400/-500/-600 (AT44, AT45, AT46): the 72-500's propellers, a smaller airframe
     PW120_14SF,     // ATR 42-300/-320 (AT43): four-bladed 14SF-5s
+    // The other turboprops, Kind::TURBOPROP, each a row of PROPS on the ATR's
+    // voice - its engines, its propellers and its airframe - researched in
+    // ~/.cache/terrain-lab/sound/research/turboprops/ (regional, business and
+    // military .json and .md), the commonest first.
+    PW150_R408,       // Dash 8 Q400 (DH8D): six-bladed R408s, 4.115m, 1,020rpm
+    CT7_R354,         // Saab 340 (SF34): four-bladed R354s, 3.35m, 1,384rpm
+    PT6A27_HC3,       // DHC-6 Twin Otter (DHC6): three-bladed, 2.59m, 2,200rpm, not synchrophased
+    PT6A_60A_B350,    // King Air 350/300 (B350, BE30): four-bladed, 2.67m, 1,700rpm
+    PT6A_42_BE20,     // King Air 200/250 (BE20): four-bladed, 2.34m, 2,000rpm
+    PT6A_67P_PC12,    // Pilatus PC-12 (PC12): one five-bladed propeller on the nose, 1,700rpm
+    PT6A_114A_C208,   // Cessna 208 Caravan (C208): one three-bladed propeller, 2.69m, 1,900rpm
+    PT6A67D_HC4,      // Beech 1900D (B190): four-bladed, 2.79m, 1,700rpm
+    PT6A_64_TBM7,     // TBM 700/850 (TBM7, TBM8): one four-bladed propeller, 2,000rpm
+    PT6A_66D_TBM9,    // TBM 900-960 (TBM9): one five-bladed propeller, 2,000rpm
+    AE2100D3_R391,    // C-130J (C30J): four engines, six-bladed R391s, 4.115m, 1,020.7rpm
+    TP400_FH386,      // A400M (A400): four engines, eight-bladed FH385/386s, 5.334m, 860rpm, handed
+    PW120_14SF_DH8,   // Dash 8-100/-200 (DH8A, DH8B): four-bladed 14SF, 3.96m, 1,200rpm
+    PW123_14SF,       // Dash 8-300 (DH8C): four-bladed 14SF, 3.96m, 1,200rpm
+    PW127G_568F,      // C295 (C295): six-bladed 568F-5s, 3.937m, 1,200rpm
+    CT7_14RF,         // CN-235 (CN35): four-bladed 14RF-21s, 3.353m, 1,384rpm
+    PW125_R352,       // Fokker 50 (F50): six-bladed, 3.66m, 1,200rpm
+    PW119_HDE6,       // Dornier 328 (D328): six-bladed, 3.58m, 1,300rpm
+    PW118_14RF,       // EMB 120 Brasilia (E120): four-bladed 14RF-9s, 3.20m, 1,300rpm
+    AE2100_R381,      // Saab 2000 (SB20): six-bladed R381s, 3.81m, 1,100rpm
+    PT6A_135A_BE9L,   // King Air C90/F90 (BE9L, BE9T): four-bladed, 2.286m, 1,900rpm
+    PT6A_34_KODI,     // Kodiak 100 (KODI): one four-bladed propeller, 2.44m, 2,200rpm
+    PT6A_27_PC6T,     // Pilatus PC-6 Turbo Porter (PC6T, PC6): one three-bladed propeller, 2,200rpm
 };
 
 // A propeller aircraft's figures: one row for each installation - a type's
@@ -183,6 +210,18 @@ struct PropData {
     // which the 3D view asks for as Sound::apu. And ground spoilers rising
     // on its landing roll, or none.
     bool hotel, groundSpoilers;
+    // How loud it is against an ATR 72-600, dB, the whole of its sound - from
+    // its noise certificates, the mean of its lateral, flyover and approach
+    // differences in EPNdB where it has them, else its take-off's dB(A) at
+    // 300m against the ATR's 81 - nought for the ATR's own rows. How far
+    // ahead of its middle its propellers turn, m: a single's on its nose,
+    // nought for the twins, heard at their middle as the ATR's are. A
+    // four-engined one's outer pair's axes from the centre line, m - its
+    // inner pair's at halfSpan - nought for a twin or a single; and whether
+    // each wing's two turn opposite ways, as an A400M's do, down between
+    // the engines.
+    float levelDb, ahead, halfSpanOuter;
+    bool handed;
 };
 
 // A propeller installation's row - for any other engine a generic twin
@@ -631,6 +670,9 @@ class Synth {
         // a blade's passing - the airframe's own; and the harmonics' shared
         // surge, its quick and slow parts.
         float psi = 0, surgeQ = 0, surgeS = 0;
+        // A four-engined one's outer pair's phases, the left's and the
+        // right's, as shares of a blade's passing from the left inner one's.
+        float psiOuter[2] = {};
         // The low band under the bank's: its two stages' last two outputs,
         // its loudness now and its change each sample.
         float lowY1 = 0, lowY2 = 0, lowZ1 = 0, lowZ2 = 0, lowGain = 0, lowBy = 0;

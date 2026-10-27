@@ -50,8 +50,12 @@
 // ENGINE=cfm56 (the default), v2500, leap or pw: the airframe's engines; for
 // a 777's scenes ge90 (the default there), ge90-94 or trent; for the ATR's,
 // atr72-600 (the default there, atr42-500 in atr42-takeoff), atr72-200,
-// atr72-210, atr42-500 or atr42-300 - each kind's name leaving the other
-// kind's scenes as they are.
+// atr72-210, atr42-500 or atr42-300 - or another turboprop's row on the
+// ATR's voice, in the ATR's scenes: q400, saab340, twinotter, kingair350,
+// kingair200, pc12, caravan, beech1900, tbm700, tbm900, c130j, a400m,
+// dash8-100, dash8-300, c295, cn235, fokker50, do328, emb120, saab2000,
+// kingair90, kodiak or pc6 (render_turboprops.sh) - each kind's name leaving
+// the other kind's scenes as they are.
 // FOPP=1: its fuel vents unmodified, whistling. SYNC=1: the touchdown's
 // squeal and the reversers' coming on heard as the picture shows them -
 // engine_noise::g_transientsOnPicture. SUFFIX=-x: added to the files' names.
@@ -462,6 +466,40 @@ void eufiScenes(std::vector<Scene> &out) {
 // and ATR's fact sheets. Its length against an A320's as the 3D view's
 // sizeOf() has it: an ATR 72's 27.17m, an ATR 42's 22.67m, over 37.6m.
 float propSize(Engine e) {
+    // the other turboprops' lengths, m [P: their makers' figures]
+    static const struct {
+        Engine engine;
+        float m;
+    } LENGTHS[] = {
+        {Engine::PW150_R408, 32.83f},
+        {Engine::CT7_R354, 19.73f},
+        {Engine::PT6A27_HC3, 15.77f},
+        {Engine::PT6A_60A_B350, 14.22f},
+        {Engine::PT6A_42_BE20, 13.34f},
+        {Engine::PT6A_67P_PC12, 14.40f},
+        {Engine::PT6A_114A_C208, 12.67f},
+        {Engine::PT6A67D_HC4, 17.63f},
+        {Engine::PT6A_64_TBM7, 10.64f},
+        {Engine::PT6A_66D_TBM9, 10.74f},
+        {Engine::AE2100D3_R391, 29.79f},
+        {Engine::TP400_FH386, 45.10f},
+        {Engine::PW120_14SF_DH8, 22.25f},
+        {Engine::PW123_14SF, 25.68f},
+        {Engine::PW127G_568F, 24.50f},
+        {Engine::CT7_14RF, 21.40f},
+        {Engine::PW125_R352, 25.25f},
+        {Engine::PW119_HDE6, 21.11f},
+        {Engine::PW118_14RF, 20.07f},
+        {Engine::AE2100_R381, 27.28f},
+        {Engine::PT6A_135A_BE9L, 10.82f},
+        {Engine::PT6A_34_KODI, 10.41f},
+        {Engine::PT6A_27_PC6T, 10.90f},
+    };
+    for (const auto &l : LENGTHS) {
+        if (l.engine == e) {
+            return l.m / 37.6f;
+        }
+    }
     return e == Engine::PW127_568F_42 || e == Engine::PW120_14SF ? 22.67f / 37.6f : 27.17f / 37.6f;
 }
 // The 3D view's height under which the ground about it is hard - the
@@ -1024,8 +1062,80 @@ Engine engineNamed(const char *name) {
     if (strcmp(name, "atr42-300") == 0) {
         return Engine::PW120_14SF;
     }
+    // The other turboprops' rows, for the ATR's scenes (render_turboprops.sh).
+    if (strcmp(name, "q400") == 0) {
+        return Engine::PW150_R408;
+    }
+    if (strcmp(name, "saab340") == 0) {
+        return Engine::CT7_R354;
+    }
+    if (strcmp(name, "twinotter") == 0) {
+        return Engine::PT6A27_HC3;
+    }
+    if (strcmp(name, "kingair350") == 0) {
+        return Engine::PT6A_60A_B350;
+    }
+    if (strcmp(name, "kingair200") == 0) {
+        return Engine::PT6A_42_BE20;
+    }
+    if (strcmp(name, "pc12") == 0) {
+        return Engine::PT6A_67P_PC12;
+    }
+    if (strcmp(name, "caravan") == 0) {
+        return Engine::PT6A_114A_C208;
+    }
+    if (strcmp(name, "beech1900") == 0) {
+        return Engine::PT6A67D_HC4;
+    }
+    if (strcmp(name, "tbm700") == 0) {
+        return Engine::PT6A_64_TBM7;
+    }
+    if (strcmp(name, "tbm900") == 0) {
+        return Engine::PT6A_66D_TBM9;
+    }
+    if (strcmp(name, "c130j") == 0) {
+        return Engine::AE2100D3_R391;
+    }
+    if (strcmp(name, "a400m") == 0) {
+        return Engine::TP400_FH386;
+    }
+    if (strcmp(name, "dash8-100") == 0) {
+        return Engine::PW120_14SF_DH8;
+    }
+    if (strcmp(name, "dash8-300") == 0) {
+        return Engine::PW123_14SF;
+    }
+    if (strcmp(name, "c295") == 0) {
+        return Engine::PW127G_568F;
+    }
+    if (strcmp(name, "cn235") == 0) {
+        return Engine::CT7_14RF;
+    }
+    if (strcmp(name, "fokker50") == 0) {
+        return Engine::PW125_R352;
+    }
+    if (strcmp(name, "do328") == 0) {
+        return Engine::PW119_HDE6;
+    }
+    if (strcmp(name, "emb120") == 0) {
+        return Engine::PW118_14RF;
+    }
+    if (strcmp(name, "saab2000") == 0) {
+        return Engine::AE2100_R381;
+    }
+    if (strcmp(name, "kingair90") == 0) {
+        return Engine::PT6A_135A_BE9L;
+    }
+    if (strcmp(name, "kodiak") == 0) {
+        return Engine::PT6A_34_KODI;
+    }
+    if (strcmp(name, "pc6") == 0) {
+        return Engine::PT6A_27_PC6T;
+    }
     fprintf(stderr, "ENGINE=%s: cfm56, v2500, leap, pw, ge90, ge90-94, trent, atr72-600, atr72-200, atr72-210, "
-                    "atr42-500 or atr42-300\n", name);
+                    "atr42-500, atr42-300, q400, saab340, twinotter, kingair350, kingair200, pc12, caravan, "
+                    "beech1900, tbm700, tbm900, c130j, a400m, dash8-100, dash8-300, c295, cn235, fokker50, do328, "
+                    "emb120, saab2000, kingair90, kodiak or pc6\n", name);
     exit(1);
 }
 

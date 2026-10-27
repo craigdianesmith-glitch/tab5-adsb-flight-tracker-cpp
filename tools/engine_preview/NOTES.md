@@ -581,4 +581,73 @@ work, measures and judge output in `~/.cache/terrain-lab/sound/turboprop-v2-work
   touchdown beside the runway (+18 dB in the last 0.9 s); the climb going away too dull; reverse's roar at 315 Hz and
   the gearbox line and whine through it; the whine's lower line at 5,530 Hz.
 
+## turboprop-v2: the other turboprops as rows of the ATR's voice (27 Oct, on f1ab630)
+
+Twenty-three types on the approved ATR voice (lift on, the ATR's character untouched), each a value of `Engine`
+appended, a row of `PROPS` with its figures and their sources, a neutral `ENGINES` row and its ICAO type(s) in
+`engines3d::enginesOf()`; research in `~/.cache/terrain-lab/sound/research/turboprops/` (regional, business and
+military, `.json` and `.md`); renders in `~/.cache/terrain-lab/sound/renders/turboprop-v2-rows/<engine>/` by
+`render_turboprops.sh` (take-off beside the runway, approach from beside, taxi past; full band and `-tab5`; the ATR
+72-600's same three in `atr72-600/`); work and logs in `~/.cache/terrain-lab/sound/turboprop-v2-rows-work/`.
+
+- **Rows**, commonest first (ENGINE= name, ICAO): Dash 8 Q400 (q400, DH8D), Saab 340 (saab340, SF34), Twin Otter
+  (twinotter, DHC6), King Air 350 (kingair350, B350 BE30), King Air 200 (kingair200, BE20), PC-12 (pc12, PC12),
+  Caravan (caravan, C208), Beech 1900D (beech1900, B190), TBM 700/850 (tbm700, TBM7 TBM8), TBM 900 (tbm900, TBM9),
+  C-130J (c130j, C30J), A400M (a400m, A400), Dash 8-100/-200 (dash8-100, DH8A DH8B), Dash 8-300 (dash8-300, DH8C),
+  C295 (c295), CN-235 (cn235, CN35), Fokker 50 (fokker50, F50), Dornier 328 (do328, D328), EMB 120 (emb120, E120),
+  Saab 2000 (saab2000, SB20), King Air 90 (kingair90, BE9L BE9T), Kodiak (kodiak, KODI), PC-6 (pc6, PC6T PC6).
+- **Left silent**, as the research advises: the Jetstreams (JS31, JS32, JS41) and the Dornier 228 (D228) - their
+  TPE331's single-shaft shriek is what they sound like and is not measured (a row with whineHz 0 would play the
+  ATR's 5,682 Hz); the C-130H (C130, L100) and P-3 (P3) - single-shaft T56s, NH held at 100 % even idling, which
+  the voice can't yet do; the T-6 (TEX2) and PC-21 (PC21) - they can't reverse, and `askTurboprop()` reverses every
+  landing roll.
+- **PropData** gains `levelDb`, `ahead`, `halfSpanOuter` and `handed`, all nought on the ATR's rows:
+  - `levelDb`, the whole sound against the ATR 72-600 (`gain_`, after the flight-power law). From EPNdB
+    certificates: the mean of the lateral, flyover and approach differences, at 0.6 - the ATR's own level was set
+    to the A-weighted gap to the A320 (ANP 5-8 dB, mean 6.5) where their lateral gap is 11.1 EPNdB, 0.59 of it [I].
+    Taken whole they put the C-130J 11 dB over the A320's take-off and its taxi's limiter at 2.5 %. The business
+    types' are take-off dB(A) at 300 m against the ATR's 81, taken whole [P/I]; the rest estimates [I].
+  - `ahead`: a single's propeller on its nose, 0.4 of its length ahead of its middle [I] (`placedWay()`).
+  - `halfSpanOuter`, a four-engined one's outer pair (C-130J 9.7 m, A400M 11.9 m; inner 5.0 and 6.2) [I].
+  - `handed`: the A400M's two on each wing turning opposite ways, down between the engines [P*].
+- **The voice for what the ATR never needed** (`propSlowStep()`, each in its own branch, so the ATR's arithmetic
+  is untouched):
+  - a single (`engines` 1): one propeller - never apart in beta, no pair lobes (pair 1), no spread, one gas
+    generator's whine at both's power (+3 dB), the right one's off;
+  - a twin without a synchrophaser (`synchro` false, the Twin Otter): governed, its right propeller 0.4 % off
+    (`PR_UNSYNC` [I]), the two apart in the air as in beta, the steady lines' phase moving at their difference
+    - beating at some 0.4 Hz;
+  - four engines: governed, all four on one line, the steady parts' lobes the coherent sum of four sources
+    (`fourPair()`): the inner pair's path difference and phase as the twins', the outer's in proportion to its
+    span, each its own synchrophaser phase (drawn after the twins' draws, so the ATR's are as they were) - 1 +
+    0.7 of the coherent sum's departure from the powers', as the twins' 0.3-1.7 is, so 0.3-3.1; the A400M's outer
+    pair's phase against the inner's moving by 2kB times the bearing about the axes [I: a spinning mode's phase],
+    the left wing's one way and the right's the other. In beta each harmonic one resonance as wide as the four's
+    speeds' spread (twice the twins'): the twins' two resonances took the A400M's taxi to 429,875 cycles, over the
+    A320's worst; now 394,123.
+- **Measured on the renders** [M]: every row's take-off peak sits at its own blade passing times the roll's Doppler
+  (1.02-1.04), and its taxi's strongest line at a whole harmonic of its blade passing at its ground idle (e.g. Q400
+  197 Hz = 3 x 66, King Air 200 312 Hz = 4 x 77, PC-12 254 = 3 x 85, A400M 175 = 2 x 87, C-130J 148 = 2 x 73.5).
+  Loudest 2 s, full band (dBFS; take-off / approach / taxi): ATR 72-600 -19 / -35 / -26; Q400 -20 / -35 / -27;
+  Twin Otter -22 / -38 / -33; PC-12 -21 / -33 / -33; Caravan -21 / -37 / -31; C-130J -10 / -28 / -18; A400M
+  -15 / -28 / -18 (all in `levels.txt` beside the renders). The limiter rounds 0.33 % of the C-130J's take-off and
+  0.017 % of the A400M's, under 0.01 % of every other render.
+- **Identity**: `render_atr72.sh` from this tree gives all 26 ATR renders and the A320 reference byte-identical to
+  f1ab630's (`renders/turboprop-v2-fix/`); `cost.sh` gives all 24 of f1ab630's checksums, ATR cases too (an
+  earlier draft shared a product between the twins' pair and `fourPair()`, which changed the governed ATR cases'
+  checksums on the P4 by its fused multiply-adds; written apart, they are as they were).
+- **Checks**: render_same.sh against atr72-base 960 identical (the 300 that differ the ATR scenes; every non-ATR
+  loudness line identical in all 15 runs); a320_pccheck 106 identical; a320_bitcheck the base's seven (5 of 7, the
+  777's two as before); cost.sh's 17 non-ATR checksums unchanged, the A320's touchdown 429,085 cycles here (428,965
+  in f1ab630's run, its code untouched: the cache model's layout), the ATR's taxi 428,572, every new case under
+  both - C-130J taxi 394,126, A400M taxi 394,123, roll 388,911, approach 382,066, PC-12 taxi 392,900, Twin Otter
+  taxi 414,077 and climb 379,319, Q400 taxi 414,072; engines3d_check 442 checks, 0 failed (the A400M, a turboprop
+  now, out of the "as before" list for the C-130H; every new type's row, engines, axes and phases; the silent
+  ones still silent); `sizeof(Synth)` 52,892 B (+8).
+- **Open**: the C-130J's take-off limiter share - 0.33 % on the renders' airframe, 0.04-0.13 % on six others
+  (WHO=1-6), its four co-rotating fundamentals at 102 Hz coherent at their lobes as each airframe's synchrophaser
+  phases have them (the A400M 0.017 % on the renders', 0.05-0.10 % on three others); every PT6, CT7, AE 2100 and TP400 whine is the ATR's 5,682 Hz (none measured) and only the PW100 rows have
+  its gearbox line; the C-130J's ground idle (0.72, its low-speed ground idle, if it has one [I]); the singles'
+  `ahead` and every axis height and spacing are estimates; the TPE331, T56 and no-reverse types still to make.
+
 Copyright (c) 2026 Craig Smith. Part of Overhead's sound engine: PolyForm Noncommercial 1.0.0 ([LICENSE-POLYFORM.md](../../LICENSE-POLYFORM.md)), not the MIT licence of the rest of the repository.

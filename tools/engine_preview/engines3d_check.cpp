@@ -94,12 +94,13 @@ void oldAsk(Sound &s, const engines3d::Doing &d) {
 bool sameBits(float a, float b) { return memcmp(&a, &b, sizeof a) == 0; }
 
 // Every other type as it was: which engines, and what they are asked, over
-// every phase, speed, climb and height - the Typhoon and the ATR alone
-// changed (the ATR's types not among these).
+// every phase, speed, climb and height - the Typhoon, the ATR and the other
+// turboprops alone changed (none of their types among these; the A400M, a
+// turboprop now, given way to the C-130H, still silent).
 void unchanged() {
     printf("Every type but the Typhoon and the ATR as before:\n");
     const char *types[] = {"A318", "A319", "A320", "A321", "A19N", "A20N", "A21N", "B738", "F35",
-                           "HAWK", "TOR",  "C17",  "A400", "EC45", "H47",  "U2",   "B77W", "C172"};
+                           "HAWK", "TOR",  "C17",  "C130", "EC45", "H47",  "U2",   "B77W", "C172"};
     long differ = 0, tried = 0;
     for (const char *type : types) {
         for (uint32_t who = 0; who < 200000; who += 7) {
@@ -407,10 +408,78 @@ void turboprops() {
     }
 }
 
+// The other turboprops on the ATR's voice: each type its row - a turboprop,
+// its engines one, two or four as its row has them, its propellers' axes as
+// high as its row has them whatever its look's scale - and asked its row's
+// power and propellers' speed for take-off, the approach and beta on the
+// ground; and the types still to be made silent, as before.
+void otherTurboprops() {
+    using engine_noise::PropData;
+    struct Type {
+        const char *type;
+        Engine engine;
+        int engines, blades;
+    };
+    const Type types[] = {
+        {"DH8D", Engine::PW150_R408, 2, 6},      {"SF34", Engine::CT7_R354, 2, 4},
+        {"DHC6", Engine::PT6A27_HC3, 2, 3},      {"B350", Engine::PT6A_60A_B350, 2, 4},
+        {"BE30", Engine::PT6A_60A_B350, 2, 4},   {"BE20", Engine::PT6A_42_BE20, 2, 4},
+        {"PC12", Engine::PT6A_67P_PC12, 1, 5},   {"C208", Engine::PT6A_114A_C208, 1, 3},
+        {"B190", Engine::PT6A67D_HC4, 2, 4},     {"TBM7", Engine::PT6A_64_TBM7, 1, 4},
+        {"TBM8", Engine::PT6A_64_TBM7, 1, 4},    {"TBM9", Engine::PT6A_66D_TBM9, 1, 5},
+        {"C30J", Engine::AE2100D3_R391, 4, 6},   {"A400", Engine::TP400_FH386, 4, 8},
+        {"DH8A", Engine::PW120_14SF_DH8, 2, 4},  {"DH8B", Engine::PW120_14SF_DH8, 2, 4},
+        {"DH8C", Engine::PW123_14SF, 2, 4},      {"C295", Engine::PW127G_568F, 2, 6},
+        {"CN35", Engine::CT7_14RF, 2, 4},        {"F50", Engine::PW125_R352, 2, 6},
+        {"D328", Engine::PW119_HDE6, 2, 6},      {"E120", Engine::PW118_14RF, 2, 4},
+        {"SB20", Engine::AE2100_R381, 2, 6},     {"BE9L", Engine::PT6A_135A_BE9L, 2, 4},
+        {"BE9T", Engine::PT6A_135A_BE9L, 2, 4},  {"KODI", Engine::PT6A_34_KODI, 1, 4},
+        {"PC6T", Engine::PT6A_27_PC6T, 1, 3},    {"PC6", Engine::PT6A_27_PC6T, 1, 3},
+    };
+    printf("\nThe other turboprops (Kind::TURBOPROP), as the 3D view gives them:\n");
+    printf("  %-5s %-34s %4s %6s %6s %8s %7s %7s %10s\n", "type", "row", "eng", "blades", "rpm", "BPF 100%", "up m",
+           "dB", "TO/app/gnd");
+    for (const Type &t : types) {
+        Sound s = engines3d::enginesOf(t.type, 0x406a3c);
+        const PropData &p = engine_noise::propData(s.engine);
+        s3::Look look = s3::lookFor(t.type, 0xFFFFFF);
+        float up = engines3d::enginesUpPerScale(s, look.scale) * look.scale;
+        engines3d::Doing roll, final, taxi;
+        roll.ground = true, roll.takingOff = true, roll.simulating = true, roll.kt = 80, roll.rollKt = 80;
+        final.landing = true, final.simulating = true, final.kt = 110, final.rollKt = 110, final.vsFpm = -600;
+        final.altFt = 541, final.low = true;
+        taxi.ground = true, taxi.kt = 15, taxi.rollKt = 15;
+        Sound a = s, b = s, c = s;
+        engines3d::ask(a, roll);
+        engines3d::ask(b, final);
+        engines3d::ask(c, taxi);
+        printf("  %-5s %-34.34s %4d %6d %6.0f %8.1fHz %7.2f %+7.1f %3.0f/%3.0f/%3.0f%%\n", t.type, p.name, p.engines,
+               p.blades, p.rpm100, p.blades * p.rpm100 / 60, up, p.levelDb, 100 * a.np, 100 * b.np, 100 * c.np);
+        char what[160];
+        snprintf(what, sizeof what, "%s: a turboprop, its row, %d engines", t.type, t.engines);
+        check(s.kind == Kind::TURBOPROP && s.engine == t.engine && p.engine == t.engine && p.blades == t.blades &&
+                  p.engines == t.engines && s.engines == t.engines && engine_noise::isProp(s.engine) &&
+                  (t.engines == 1) == (p.halfSpan == 0 && p.ahead > 0) && (t.engines == 4) == (p.halfSpanOuter > 0),
+              what);
+        snprintf(what, sizeof what, "%s: its propellers %.2fm up, its row's", t.type, up);
+        check(fabsf(up - p.axisUp) < 1e-4f, what);
+        snprintf(what, sizeof what, "%s: asked its row's power and propellers' speed", t.type);
+        check(a.power == 1 && a.np == p.npTakeoff && b.power == p.approachPower && b.np == p.npApproach &&
+                  c.np == p.npGround && !c.reverse,
+              what);
+    }
+    for (const char *t : {"JS31", "JS32", "JS41", "D228", "C130", "L100", "P3", "TEX2", "PC21"}) {
+        char what[160];
+        snprintf(what, sizeof what, "%s: still silent", t);
+        check(engines3d::enginesOf(t, 1).kind == Kind::NONE, what);
+    }
+}
+
 int main() {
     unchanged();
     typhoon();
     turboprops();
+    otherTurboprops();
     printf("\n%d checks, %d failed\n", g_checked, g_failed);
     return g_failed == 0 ? 0 : 1;
 }

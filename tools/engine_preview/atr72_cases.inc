@@ -43,6 +43,27 @@
         // climbing at 82%, from the chase
         {"atr72-climb-chase", engine_noise::Engine::PW127_568F, 0.886f, 0.82f, 0, 75, 0, 75, 1000, false, false, false,
          false, 1, 0, 0},
+        // the other turboprops' dearest (render_turboprops.sh): the four-engined
+        // taxiing past in beta, each wing's two as one, and the A400M's roll
+        // and approach, its four lobes and its handed pairs; a single taxiing
+        // past, one propeller; the Twin Otter, not synchrophased, climbing -
+        // its two propellers apart in the air too - and taxiing; the Q400
+        {"c130j-taxi-past", engine_noise::Engine::AE2100D3_R391, 0.15f, 0.72f, 8, 8, -40, 8, 0, true, false, false,
+         false, 0, 35, 1.5f},
+        {"a400m-taxi-past", engine_noise::Engine::TP400_FH386, 0.15f, 0.762f, 8, 8, -40, 8, 0, true, false, false,
+         false, 0, 35, 1.5f},
+        {"a400m-takeoff-roll", engine_noise::Engine::TP400_FH386, 1.0f, 1.00f, 45, 45, -225, 45, 0, true, true, false,
+         false, 0, 120, 4},
+        {"a400m-approach-side", engine_noise::Engine::TP400_FH386, 0.25f, 0.979f, 0, 60, -300, 60, 300, true, true,
+         false, false, 0, 300, 1.5f},
+        {"pc12-taxi-past", engine_noise::Engine::PT6A_67P_PC12, 0.15f, 0.60f, 8, 8, -40, 8, 0, true, false, false,
+         false, 0, 35, 1.5f},
+        {"twinotter-climb-chase", engine_noise::Engine::PT6A27_HC3, 0.91f, 0.91f, 0, 50, 0, 50, 300, false, false,
+         false, false, 1, 0, 0},
+        {"twinotter-taxi-past", engine_noise::Engine::PT6A27_HC3, 0.15f, 0.55f, 8, 8, -40, 8, 0, true, false, false,
+         false, 0, 35, 1.5f},
+        {"q400-taxi-past", engine_noise::Engine::PW150_R408, 0.15f, 0.647f, 8, 8, -40, 8, 0, true, false, false,
+         false, 0, 35, 1.5f},
     };
     auto make = +[](int i, const void *a) -> Sound {
         const Turboprop &c = *(const Turboprop *)a;

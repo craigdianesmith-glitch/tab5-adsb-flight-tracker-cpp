@@ -286,8 +286,34 @@ const EngineData ENGINES[] = {
     {24, 572.667f, 0.66f, 0.72f, 0.85f, 0.95f, 0.97f, 1.00f, 0.92f, 2.0f, -60, 0, 0, 0, {0, 0}, 20, 1, 0, 4, 18, 0.8f, 0},
     {24, 572.667f, 0.66f, 0.72f, 0.85f, 0.95f, 0.97f, 1.00f, 0.92f, 2.0f, -60, 0, 0, 0, {0, 0}, 20, 1, 0, 4, 18, 0.8f, 0},
     {24, 572.5f, 0.66f, 0.72f, 0.85f, 0.95f, 0.97f, 1.00f, 0.92f, 2.0f, -60, 0, 0, 0, {0, 0}, 20, 1, 0, 4, 18, 0.8f, 0},
+    // The other turboprops' (Kind::TURBOPROP), neutral: the ATR's row, each
+    // with its own gas generator's speed at 100% as `shaft100` where its
+    // research found it - its sound is its own, from PROPS.
+    {24, 519.167f, 0.66f, 0.72f, 0.85f, 0.95f, 0.97f, 1.00f, 0.92f, 2.0f, -60, 0, 0, 0, {0, 0}, 20, 1, 0, 4, 18, 0.8f, 0},  // PW150_R408
+    {24, 745.000f, 0.66f, 0.72f, 0.85f, 0.95f, 0.97f, 1.00f, 0.92f, 2.0f, -60, 0, 0, 0, {0, 0}, 20, 1, 0, 4, 18, 0.8f, 0},  // CT7_R354
+    {24, 625.000f, 0.66f, 0.72f, 0.85f, 0.95f, 0.97f, 1.00f, 0.92f, 2.0f, -60, 0, 0, 0, {0, 0}, 20, 1, 0, 4, 18, 0.8f, 0},  // PT6A27_HC3
+    {24, 625.000f, 0.66f, 0.72f, 0.85f, 0.95f, 0.97f, 1.00f, 0.92f, 2.0f, -60, 0, 0, 0, {0, 0}, 20, 1, 0, 4, 18, 0.8f, 0},  // PT6A_60A_B350
+    {24, 625.000f, 0.66f, 0.72f, 0.85f, 0.95f, 0.97f, 1.00f, 0.92f, 2.0f, -60, 0, 0, 0, {0, 0}, 20, 1, 0, 4, 18, 0.8f, 0},  // PT6A_42_BE20
+    {24, 625.000f, 0.66f, 0.72f, 0.85f, 0.95f, 0.97f, 1.00f, 0.92f, 2.0f, -60, 0, 0, 0, {0, 0}, 20, 1, 0, 4, 18, 0.8f, 0},  // PT6A_67P_PC12
+    {24, 625.000f, 0.66f, 0.72f, 0.85f, 0.95f, 0.97f, 1.00f, 0.92f, 2.0f, -60, 0, 0, 0, {0, 0}, 20, 1, 0, 4, 18, 0.8f, 0},  // PT6A_114A_C208
+    {24, 625.000f, 0.66f, 0.72f, 0.85f, 0.95f, 0.97f, 1.00f, 0.92f, 2.0f, -60, 0, 0, 0, {0, 0}, 20, 1, 0, 4, 18, 0.8f, 0},  // PT6A67D_HC4
+    {24, 625.000f, 0.66f, 0.72f, 0.85f, 0.95f, 0.97f, 1.00f, 0.92f, 2.0f, -60, 0, 0, 0, {0, 0}, 20, 1, 0, 4, 18, 0.8f, 0},  // PT6A_64_TBM7
+    {24, 625.000f, 0.66f, 0.72f, 0.85f, 0.95f, 0.97f, 1.00f, 0.92f, 2.0f, -60, 0, 0, 0, {0, 0}, 20, 1, 0, 4, 18, 0.8f, 0},  // PT6A_66D_TBM9
+    {24, 572.667f, 0.66f, 0.72f, 0.85f, 0.95f, 0.97f, 1.00f, 0.92f, 2.0f, -60, 0, 0, 0, {0, 0}, 20, 1, 0, 4, 18, 0.8f, 0},  // AE2100D3_R391
+    {24, 572.667f, 0.66f, 0.72f, 0.85f, 0.95f, 0.97f, 1.00f, 0.92f, 2.0f, -60, 0, 0, 0, {0, 0}, 20, 1, 0, 4, 18, 0.8f, 0},  // TP400_FH386
+    {24, 572.500f, 0.66f, 0.72f, 0.85f, 0.95f, 0.97f, 1.00f, 0.92f, 2.0f, -60, 0, 0, 0, {0, 0}, 20, 1, 0, 4, 18, 0.8f, 0},  // PW120_14SF_DH8
+    {24, 570.000f, 0.66f, 0.72f, 0.85f, 0.95f, 0.97f, 1.00f, 0.92f, 2.0f, -60, 0, 0, 0, {0, 0}, 20, 1, 0, 4, 18, 0.8f, 0},  // PW123_14SF
+    {24, 572.667f, 0.66f, 0.72f, 0.85f, 0.95f, 0.97f, 1.00f, 0.92f, 2.0f, -60, 0, 0, 0, {0, 0}, 20, 1, 0, 4, 18, 0.8f, 0},  // PW127G_568F
+    {24, 745.000f, 0.66f, 0.72f, 0.85f, 0.95f, 0.97f, 1.00f, 0.92f, 2.0f, -60, 0, 0, 0, {0, 0}, 20, 1, 0, 4, 18, 0.8f, 0},  // CT7_14RF
+    {24, 570.000f, 0.66f, 0.72f, 0.85f, 0.95f, 0.97f, 1.00f, 0.92f, 2.0f, -60, 0, 0, 0, {0, 0}, 20, 1, 0, 4, 18, 0.8f, 0},  // PW125_R352
+    {24, 570.000f, 0.66f, 0.72f, 0.85f, 0.95f, 0.97f, 1.00f, 0.92f, 2.0f, -60, 0, 0, 0, {0, 0}, 20, 1, 0, 4, 18, 0.8f, 0},  // PW119_HDE6
+    {24, 555.000f, 0.66f, 0.72f, 0.85f, 0.95f, 0.97f, 1.00f, 0.92f, 2.0f, -60, 0, 0, 0, {0, 0}, 20, 1, 0, 4, 18, 0.8f, 0},  // PW118_14RF
+    {24, 572.667f, 0.66f, 0.72f, 0.85f, 0.95f, 0.97f, 1.00f, 0.92f, 2.0f, -60, 0, 0, 0, {0, 0}, 20, 1, 0, 4, 18, 0.8f, 0},  // AE2100_R381
+    {24, 625.000f, 0.66f, 0.72f, 0.85f, 0.95f, 0.97f, 1.00f, 0.92f, 2.0f, -60, 0, 0, 0, {0, 0}, 20, 1, 0, 4, 18, 0.8f, 0},  // PT6A_135A_BE9L
+    {24, 625.000f, 0.66f, 0.72f, 0.85f, 0.95f, 0.97f, 1.00f, 0.92f, 2.0f, -60, 0, 0, 0, {0, 0}, 20, 1, 0, 4, 18, 0.8f, 0},  // PT6A_34_KODI
+    {24, 625.000f, 0.66f, 0.72f, 0.85f, 0.95f, 0.97f, 1.00f, 0.92f, 2.0f, -60, 0, 0, 0, {0, 0}, 20, 1, 0, 4, 18, 0.8f, 0},  // PT6A_27_PC6T
 };
-static_assert(sizeof ENGINES / sizeof ENGINES[0] == (size_t)Engine::PW120_14SF + 1, "a row in ENGINES for each Engine");
+static_assert(sizeof ENGINES / sizeof ENGINES[0] == (size_t)Engine::PT6A_27_PC6T + 1, "a row in ENGINES for each Engine");
 
 // The propeller installations' figures - see PropData in engine_noise.h -
 // each with where it comes from: [P] published, [P*] in a secondary source,
@@ -361,7 +387,8 @@ const PropData PROPS[] = {
     {Engine::PW127_568F, "ATR 72-500/-600", 2, 6, 1200, 3.93f, 4.05f, 2.80f,
      0.71f, 0.82f, 1.00f, 1.00f, 1.00f, 0.12f, 0.022f, true, 0.005f,
      0.886f, 0.861f, 0.50f, 0.05f, 0.22f, 0.70f,
-     34360, 5682, 47.7f, 72.9f, true, false},
+     34360, 5682, 47.7f, 72.9f, true, false,
+     0, 0, 0, false},
     // The ATR 72-200 (AT72): PW124Bs, four-bladed 14SF-11s 3.96m across, the
     // tips 0.82m up; 2,160shp each for take-off, 2,088 its maximum climb and
     // cruise [P: the ATR 72-200's fact sheet, refs/atr72/tcds]. Certified
@@ -374,7 +401,8 @@ const PropData PROPS[] = {
     {Engine::PW124_14SF, "ATR 72-200", 2, 4, 1200, 3.96f, 4.05f, 2.80f,
      0.71f, 0.82f, 1.00f, 1.00f, 1.00f, 0.12f, 0.022f, true, 0.005f,
      0.967f, 0.967f, 0.58f, 0.05f, 0.25f, 0.70f,
-     34200, 5682, 47.7f, 72.9f, true, false},
+     34200, 5682, 47.7f, 72.9f, true, false,
+     0, 0, 0, false},
     // The ATR 72-210 (AT73): PW127s - 2,475shp for take-off [P: EASA TCDS
     // IM.E.041, 1,846kW] - turning four-bladed 247Fs [P: EASA TCDS A.084],
     // their diameter not found, 3.93m [I]. Certified 84.7 / 80.9 /
@@ -382,7 +410,8 @@ const PropData PROPS[] = {
     {Engine::PW127_247F, "ATR 72-210", 2, 4, 1200, 3.93f, 4.05f, 2.80f,
      0.71f, 0.82f, 1.00f, 1.00f, 1.00f, 0.12f, 0.022f, true, 0.005f,
      0.886f, 0.861f, 0.50f, 0.05f, 0.22f, 0.70f,
-     34360, 5682, 47.7f, 72.9f, true, false},
+     34360, 5682, 47.7f, 72.9f, true, false,
+     0, 0, 0, false},
     // The ATR 42-400/-500/-600 (AT44, AT45, AT46): the 72-500's six-bladed
     // 568Fs on PW121As or PW127E/Ms [P: TCDS A.084], its axes as far apart
     // and as high [P: the ATR 42-600's fact sheet]; 2,160shp each for
@@ -395,7 +424,8 @@ const PropData PROPS[] = {
     {Engine::PW127_568F_42, "ATR 42-500/-600", 2, 6, 1200, 3.93f, 4.05f, 2.80f,
      0.71f, 0.82f, 1.00f, 1.00f, 1.00f, 0.12f, 0.022f, true, 0.005f,
      1.00f, 0.987f, 0.48f, 0.05f, 0.20f, 0.70f,
-     34360, 5682, 47.7f, 72.9f, true, false},
+     34360, 5682, 47.7f, 72.9f, true, false,
+     0, 0, 0, false},
     // The ATR 42-300/-320 (AT43): PW120s or PW121s - 1,342 and 1,454kW
     // (1,800 and 1,950shp) for take-off, the PW120's maximum continuous
     // 1,268kW [P: TCDS IM.E.041] - turning four-bladed 14SF-5s [P: TCDS
@@ -408,7 +438,583 @@ const PropData PROPS[] = {
     {Engine::PW120_14SF, "ATR 42-300/-320", 2, 4, 1200, 3.96f, 4.05f, 2.80f,
      0.71f, 0.82f, 1.00f, 0.91f, 1.00f, 0.12f, 0.022f, true, 0.005f,
      0.95f, 0.90f, 0.55f, 0.05f, 0.24f, 0.70f,
-     34350, 5682, 47.7f, 72.9f, true, false},
+     34350, 5682, 47.7f, 72.9f, true, false,
+     0, 0, 0, false},
+    // The other turboprops, each a row on the ATR's voice, the commonest first,
+    // from the research of 27 Oct (~/.cache/terrain-lab/sound/research/turboprops/:
+    // regional, business and military, .json and .md) - each figure marked
+    // there and here [P] published with its source, [P*] in a secondary
+    // source, [M] measured, [I] inferred. What none of them has measured yet:
+    // its gas generator's whine (whineHz nought plays the ATR's 5,682Hz) and
+    // its gearbox's lines (nought: none). Its level against the ATR 72-600's
+    // from its noise certificates (levelDb). A single's propeller on its nose
+    // (ahead), one source, no second propeller to beat with; a four-engined
+    // one's inner and outer pairs (halfSpan, halfSpanOuter), its harmonics in
+    // beta each a band as wide as its four's speeds' spread, all four's lobes
+    // while governed; the A400M's two on each wing turning opposite ways
+    // (handed). A twin without a synchrophaser (synchro false), its two
+    // propellers apart in the air too, beating (PR_UNSYNC). Not here yet:
+    // the Jetstreams' and the Dornier 228's TPE331s, whose single-shaft
+    // shriek is not measured, the C-130H's and the P-3's T56s, single-shaft
+    // and held at 100% NH, and the T-6 and PC-21, which can't reverse - each
+    // silent until it is made.
+    // Dash 8 Q400 (DH8D): R408/6-123-F/17, 6 composite blades, 4.115 m, 1,020 rpm, reverse limited to
+    // 1,500 shp [P: R408 TCDS]. NP 1,020 take-off and normal approach (850 = 0.833 under AFM
+    // Supplement 39, approach 1.7 EPNdB quieter) [P: TCDSN IM.A.191]; 900 climb (0.882), 850 cruise
+    // (0.833) [P*: PW100 Wikipedia; stage-1 cabin clip 101.99/90.02 Hz]; in beta 'generally governed
+    // by the FADEC ... at 660 rpm (NP underspeed governing)' = 0.647 [P*]. NTOP 4,580 shp, MTOP 5,071,
+    // max cruise 3,947 = 0.862 of NTOP [P: Dash 8-400 spec]; climb 0.90 [I]; reverse 1,500/4,580 =
+    // 0.33 [P->I]. NH100 31,150 rpm [P: TCDS E.049]. halfSpan and axisUp [I]: fuselage 2.69 m wide,
+    // radius 2.06 m plus clearance. whineHz 0 = not known (the synthesiser then plays the ATR's 5,682
+    // Hz); a Dash 8 idling feathered at Innsbruck 2019 (fs478218, probably a Q400 [I]) whined at
+    // 3.9-4.2 kHz [M, atr72-sources 4]. Ground spoilers inboard [I: not checked]. APU, no propeller
+    // brake [I]. Synchrophased with active noise and vibration suppression [P*]. Certificated
+    // 84.1/77.8/94.9 EPNdB at 28,690 kg (84.0/78.6/94.8 at 29.6 t) [P]: +1.6/-2.7/+2.7 against the ATR
+    // 72-600. Unlike an ATR: lower drone, 102 Hz take-off and approach, 90 Hz climb, 85 Hz cruise, 66
+    // Hz in beta; tips 220 m/s against the 568F's 247 [I]. Its level +0.3dB against the ATR 72-600:
+    // its certificates' mean EPNdB difference, +0.5 [P], at 0.6 - the ATR's own level was set to the
+    // A-weighted gap to the A320 (EASA ANP, 5-8dB, mean 6.5) where their certificates' lateral gap is
+    // 11.1EPNdB, 0.59 of it [I].
+    //  Sources: EASA TCDS P.002 (Dowty R408), local refs/atr72/tcds/easa_tcds_p002_dowty_r408.txt;
+    // https://www.easa.europa.eu/en/document-library/type-certificates/noise/easaima191-bombardier-dhc-8;
+    // https://en.wikipedia.org/wiki/Pratt_%26_Whitney_Canada_PW100;
+    // https://pdfcoffee.com/q400-propeller-pdf-free.html; De Havilland Dash 8-400 specification, local
+    // research/atr72/dl/dhc_spec/doc.txt; EASA TCDS E.049 Issue 01 (PW150), local
+    // research/atr72/dl/easa_E049_PW150/doc.txt; research/atr72-sources.md sections 2.1, 7, 8.1, 12;
+    // ICAO Doc 8643 via https://en.wikipedia.org/wiki/List_of_aircraft_type_designators; CC BY 3.0
+    // recording:
+    // https://commons.wikimedia.org/wiki/File:All_Nippon_Airways_DHC-Q400_Eco_Bon_Itami_Airport_takeoff.ogv;
+    // Public Domain Mark: https://archive.org/details/aporee_46257_52552 (two Q400 take-offs,
+    // Toronto).
+    {Engine::PW150_R408, "Dash 8 Q400", 2, 6, 1020, 4.115f, 4.2f, 3,
+     0.647f, 0.882f, 1, 1, 1, 0.12f, 0.022f, true, 0.005f,
+     0.9f, 0.862f, 0.5f, 0.05f, 0.22f, 0.33f,
+     31150, 0, 0, 0, false, true,
+     0.3f, 0, 0, false},
+    // Saab 340 (SF34): 340A: CT7-5A2; 340B: CT7-9B, 1,750 shp take-off, 1,870 with APR, at 1,384
+    // propeller rpm = 100% [P: UK CAA propeller data sheets]. Dowty R354/4-123-F/13 or /20 (also R375,
+    // R389, R390; some Hamilton 14RF-19), 4 blades [P: EASA TCDSN A.068]. 132 in = 3.35 m for the
+    // R389/R390 [P]; the R354's as theirs [I]. Over 1,572 rpm not permitted; continuous ground running
+    // between 1,070 and 1,220 rpm (0.77-0.88) to be avoided [P: CAA] - so its ground idle sits below
+    // 1,070 rpm: 0.75 [I]. Climb and cruise 1,230 rpm = 0.89 [I: from memory, not found published].
+    // Power shares [I]. NG100 44,700 rpm, the T700/CT7 gas generator's [P*: not checked against the
+    // CT7 TCDS]. A propeller brake on the right engine for hotel mode [P*/I: optional on many 340s;
+    // check]. No spoilers [I]. Synchrophaser [P*]. Certificated 340B, 13,155 kg: 85.5/78.2/93.0 EPNdB
+    // [P: EASA TCDSN A.068 Issue 8]: +3.0/-2.3/+0.8 against the ATR 72-600. Unlike an ATR: four blades
+    // at 1,384 rpm, BPF 92 Hz (82 Hz at 1,230); tips 243 m/s, as the 568F's; a CT7 axial-centrifugal
+    // core with a whine of its own, not measured. Its level +0.3dB against the ATR 72-600: its
+    // certificates' mean EPNdB difference, +0.5 [P], at 0.6 - the ATR's own level was set to the
+    // A-weighted gap to the A320 (EASA ANP, 5-8dB, mean 6.5) where their certificates' lateral gap is
+    // 11.1EPNdB, 0.59 of it [I].
+    //  Sources:
+    // https://www.caa.co.uk/Documents/Download/3934/ca692457-336e-4190-840e-cd26cf498935/2720;
+    // https://www.caa.co.uk/Documents/Download/3940/77d2f18a-4292-443a-8980-607aade5d45a/3421;
+    // https://caa.co.uk/Documents/Download/3940/77d2f18a-4292-443a-8980-607aade5d45a/3422; ICAO Doc
+    // 8643 via https://en.wikipedia.org/wiki/List_of_aircraft_type_designators.
+    {Engine::CT7_R354, "Saab 340", 2, 4, 1384, 3.35f, 3.35f, 2.2f,
+     0.75f, 0.89f, 1, 1, 1, 0.12f, 0.022f, true, 0.005f,
+     0.95f, 0.85f, 0.5f, 0.05f, 0.22f, 0.7f,
+     44700, 0, 0, 0, true, false,
+     0.3f, 0, 0, false},
+    // DHC-6 Twin Otter (DHC6): Series 300: PT6A-27, 680 shp; Series 400: PT6A-34, 750 shp [P: EASA
+    // TCDSN IM.A.575; P*]. Hartzell HC-B3TN-3D(Y)/T10282N(B), 3 blades [P: TCDSN]; 102 in = 2.59 m
+    // [P*: not checked on the Hartzell TCDS]. 2,200 rpm, the PT6A-27's output shaft [P*]. Its noise
+    // certificate's condition: '400 ft AGL limited to 91% rpm at full power' [P: TCDSN] - npClimb
+    // 0.91. npGround 0.55, power shares, halfSpan, axisUp [I]. Ng100 37,500 rpm, the PT6A's [P*]. No
+    // synchrophaser on most [I]: the two propellers beat, a slow wah-wah, synchro false. No spoilers,
+    // no APU. Chapter 10 (light propeller aircraft): 85.6 dB(A) LAmax at 5,670 kg, limit 88.0 [P:
+    // TCDSN] - not comparable with EPNdB; level offset -4 dB [I: a quarter of the ATR's shaft power,
+    // -5.6 dB, put back by its fast tips]. Unlike an ATR: a buzzing three-blader, BPF 110 Hz (100 Hz
+    // at 91%), tips 298 m/s, helical tip Mach about 0.88 static - near transonic, rich in harmonics
+    // and harsh [I]; PT6 exhausts forward of the wing; STOL - steep, slow approaches, reverse used
+    // hard. Its level -4.0dB against the ATR 72-600 [P/I: its take-off dB(A) at 300m against the ATR's
+    // 81, research/turboprops].
+    //  Sources: EASA TCDSN EASA.IM.A.575 (DHC-6), https://www.easa.europa.eu/en/downloads/8023/en;
+    // ICAO Doc 8643 via https://en.wikipedia.org/wiki/List_of_aircraft_type_designators.
+    {Engine::PT6A27_HC3, "DHC-6 Twin Otter", 2, 3, 2200, 2.59f, 2.8f, 2.5f,
+     0.55f, 0.91f, 1, 1, 1, 0.12f, 0.022f, false, 0.01f,
+     0.91f, 0.8f, 0.5f, 0.05f, 0.22f, 0.6f,
+     37500, 0, 0, 0, false, false,
+     -4, 0, 0, false},
+    // Beechcraft King Air 350 / 300 (B350, BE30): Two PT6A-60As, 1,050shp each [P: NZDF], four-bladed
+    // Hartzell HC-B4MP-3C/M10476(N)K [P: EASA TCDSN IM.A.277]; 2.67m from the blade's 104in basic
+    // designation and the 105in quoted for its swept successor [I; P*]. 1,700rpm for take-off, 1,600
+    // climbing, 1,500 cruising [P*: King Air Magazine; Twin & Turbine], so npClimb 0.91 (1,550) - a
+    // 1.1-2.2 semitone step down after take-off. BPF 113.3Hz take-off [P/M: tools-old/kingair.txt
+    // fitted 113Hz on a pass], 103Hz climb/cruise. Tip Mach 0.70 static [I] (ATR 568F 0.73).
+    // Certificated take-off 76.5dB(A) at 6,804kg, 81.5-83.5 at 7,484-7,938kg (ER, winglets, maritime)
+    // [P: TCDSN]; overflight (Ch.6) 70.3dB(A) [P]. Ground idle Np, reverse Np, axis geometry and power
+    // shares not published: [I]. Gas generator 100% Ng 37,500rpm as the King Air 90's TCDS defines it
+    // for the PT6A [P: EASA TCDS IM.A.503]. BE30 (King Air 300) has the same engines and propellers
+    // [I]. Blackhawk XP67A conversions (PT6A-67A, HC-E4A-3M/E10478SK, 80.2-83.4dB(A) [P: TCDSN]) and
+    // the 2026 five-blade Hartzell STC exist: a minority. Its level -2.0dB against the ATR 72-600
+    // [P/I: its take-off dB(A) at 300m against the ATR's 81, research/turboprops].
+    //  Sources: https://www.easa.europa.eu/en/downloads/8135/en (EASA TCDSN EASA.IM.A.277 Issue 14,
+    // B200/B300); https://nzdf.mil.nz/nzdf/our-equipment/aircraft/king-air-350;
+    // https://kingairmagazine.com/article/propeller-speed-climb-cruise-descent/;
+    // https://twinandturbine.com/issue/May19/files/basic-html/page20.html;
+    // https://www.easa.europa.eu/en/downloads/7106/en (EASA TCDS EASA.IM.A.503 King Air 90, Ng
+    // 37,500rpm); ~/.cache/terrain-lab/sound/tools-old/kingair.txt (113Hz fit).
+    {Engine::PT6A_60A_B350, "Beechcraft King Air 350 / 300", 2, 4, 1700, 2.67f, 2.4f, 1.55f,
+     0.6f, 0.91f, 1, 1, 0.95f, 0.15f, 0.03f, true, 0.02f,
+     0.9f, 0.8f, 0.5f, 0.1f, 0.25f, 0.6f,
+     37500, 0, 0, 0, false, false,
+     -2, 0, 0, false},
+    // Beechcraft King Air 200 / B200 / B200GT / 250 / 260 (BE20): Two PT6A-42s (B200) or -52s (B200GT,
+    // 250, 260), 850shp each [P: TCDSN engine rows; P*: shp]. Propellers in the TCDSN: Hartzell
+    // four-bladed HC-E4N-3G/D9390SK-1R (81.2dB(A)), Hartzell three-bladed HC-B3TN-3G/T10178(N)B
+    // (98.5in, 2.50m [P*]), McCauley three-bladed 100LA-2 (98in, 80.3dB(A)) and four-bladed 94LA-0
+    // (94in, 83.1dB(A)) [P: TCDSN]. Four blades chosen as the commoner fit today - the B200GT/250/260
+    // and the Raisbeck retrofit [I]; three-bladed BPF 100Hz. Four-bladed 92in (D93..-1R: 93 less 1) =
+    // 2.34m [I from Hartzell's designation]. 2,000rpm take-off [P*], climb 1,900, cruise 1,700-1,900
+    // [P*: King Air Magazine says Beech checklists set a lower cruise-climb rpm; I: the figures]. BPF
+    // 133Hz take-off, 123Hz climb. Tip Mach 0.72 (four-bladed), 0.77 (three-bladed) [I]. Overflight
+    // (Ch.6) 74.2-79.2dB(A) [P]. Ground idle Np from the King Air 90's 'not less than 1,100rpm' at
+    // 58-60% N1 [P: TCDS IM.A.503, I: the same PT6 practice]. Its level +0.0dB against the ATR 72-600
+    // [P/I: its take-off dB(A) at 300m against the ATR's 81, research/turboprops].
+    //  Sources: https://www.easa.europa.eu/en/downloads/8135/en (EASA TCDSN EASA.IM.A.277 Issue 14);
+    // https://kingairmagazine.com/article/propeller-speed-climb-cruise-descent/;
+    // https://www.easa.europa.eu/en/downloads/7106/en (EASA TCDS IM.A.503, ground idle and Ng).
+    {Engine::PT6A_42_BE20, "Beechcraft King Air 200 / B200 / B200GT / 250 / 260", 2, 4, 2000, 2.34f, 2.35f, 1.5f,
+     0.58f, 0.925f, 1, 1, 0.95f, 0.15f, 0.03f, true, 0.02f,
+     0.92f, 0.8f, 0.5f, 0.1f, 0.25f, 0.6f,
+     37500, 0, 0, 0, false, false,
+     0, 0, 0, false},
+    // Pilatus PC-12 (NG, NGX; /45, /47) (PC12): One PT6A-67B (PC-12, /45, /47), -67P (/47E NG) or
+    // PT6E-67XP (/47E NGX, /47G) on the nose [P: UK CAA TCDSN UK.TC.A.00145]. Propellers: four-bladed
+    // Hartzell HC-E4A-3D/E10477(S)K, 105in, 2.67m [P*; P: model]; five-bladed HC-E5A-3A or
+    // -31A/NC10245B on the NG and NGX, 102in, 2.59m [I from the designation]. Five chosen: most PC-12s
+    // seen today are NGs and NGXs [I]. 1,700rpm [P*: research table, atr72-sources 12; I]; the NGX's
+    // Low Speed Mode button takes it from 1,700 to 1,550rpm in most phases, not in known icing or
+    // steep approaches [P*: AIN; Twin & Turbine] - npClimb 0.91 (129Hz) for an NGX in that mode, 1.0
+    // for the fleet. No propeller lever: governed at one speed in flight [I]. BPF 141.7Hz (five),
+    // 113.3Hz (four). Tip Mach 0.68 [I]. Certificated take-off 77.4 (PC-12), 77.8 (/45), 77.7 (/47),
+    // 76.9 (/47E four-bladed), 77.0dB(A) (/47E five-bladed, NGX, /47G) [P: TCDSN]. Single tractor
+    // propeller: halfSpan 0. Power shares, ground and reverse Np: [I]. Its level -4.0dB against the
+    // ATR 72-600 [P/I: its take-off dB(A) at 300m against the ATR's 81, research/turboprops]. One
+    // propeller, on its nose, 5.8m ahead of its middle [I: 0.4 of its 14.40m length].
+    //  Sources:
+    // https://www.caa.co.uk/Documents/Download/3934/ca692457-336e-4190-840e-cd26cf498935/3800 (UK CAA
+    // TCDSN UK.TC.A.00145, PC-12); ~/.cache/terrain-lab/sound/research/atr72-sources.md section 12;
+    // https://oldain.ainonline.com/aviation-news/business-aviation/2019-10-21/pilatus-unveils-ngx-its-third-generation-pc-12;
+    // https://oldwww.pilatus-aircraft.com/data/news/Twin-and-Turbine-Article-PC-12-NGX-Pilatus-Aircraft-Ltd.pdf.
+    {Engine::PT6A_67P_PC12, "Pilatus PC-12 (NG, NGX; /45, /47)", 1, 5, 1700, 2.59f, 0, 1.6f,
+     0.6f, 1, 1, 1, 0.95f, 0.15f, 0.03f, false, 0,
+     0.85f, 0.75f, 0.5f, 0.1f, 0.25f, 0.55f,
+     37500, 0, 0, 0, false, false,
+     -4, 5.8f, 0, false},
+    // Cessna 208 Caravan / 208B Grand Caravan (C208): One PT6A-114A, 675shp for take-off, maximum
+    // climb and maximum cruise alike, all at 1,900rpm; maximum reverse 1,825rpm (npReverse 0.96);
+    // ground idle Ng 52% minimum [P: EASA TCDS IM.A.226 Issue 15]. McCauley three-bladed
+    // 3GFR34C703/106GA-0, aluminium, 106in (2.69m) maximum, 104 minimum; or Hartzell three-bladed
+    // composite HC-B3MN-3/M10083, 100in [P: TCDS]. BPF 95Hz take-off. Tip Mach 0.79 static [I] -
+    // faster tips than the ATR's (0.73), so a harsher buzz. Certificated take-off: 208 80.8-83.5dB(A),
+    // 208B 84.1-84.8dB(A) with the McCauley, 81.7 with the Hartzell; Ch.6 overflight 73.0-75.8dB(A)
+    // [P: EASA TCDSN IM.A.226]. Grand Caravan EX: PT6A-140, 867shp [P: TCDS] - not separated by ICAO
+    // type. Cruise rpm 1,750-1,900 [I] - npClimb 0.95. A single nose propeller with an exhaust stub on
+    // the right side of the cowl [I]. Its level -2.0dB against the ATR 72-600 [P/I: its take-off dB(A)
+    // at 300m against the ATR's 81, research/turboprops]. One propeller, on its nose, 5.1m ahead of
+    // its middle [I: 0.4 of its 12.67m length].
+    //  Sources: https://www.easa.europa.eu/en/downloads/7230/en (EASA TCDS EASA.IM.A.226 Issue 15);
+    // https://www.easa.europa.eu/en/downloads/8149/en (EASA TCDSN EASA.IM.A.226 Issue 10).
+    {Engine::PT6A_114A_C208, "Cessna 208 Caravan / 208B Grand Caravan", 1, 3, 1900, 2.69f, 0, 1.7f,
+     0.55f, 0.95f, 1, 1, 0.96f, 0.15f, 0.03f, false, 0,
+     1, 0.85f, 0.55f, 0.1f, 0.25f, 0.55f,
+     37500, 0, 0, 0, false, false,
+     -2, 5.1f, 0, false},
+    // Beech 1900D (B190): 1900D: PT6A-67D, 1,279 shp; 1900C: PT6A-65B, 1,100 shp (both B190) [P*:
+    // Wikipedia]. Hartzell four-bladed composite, 110 in = 2.79 m [P: Hartzell's listing]. 1,700 rpm
+    // [I: as the PT6A-60A's of the King Air 350, measured 113 Hz = 4 x 1,700/60, atr72-sources 12
+    // [M]]. npGround 0.62, npClimb 0.93 (about 1,600 rpm climbing, 1,550 cruising), power shares,
+    // halfSpan, axisUp [I]. Ng100 37,500 [P*]. Synchrophaser [P*]. No spoilers, no APU, no propeller
+    // brake [I]. MTOW 7,688 kg: certificated by dB(A) (Chapter 10 / FAR 36 Appendix G), figure not
+    // found; level offset -2 dB [I]. Unlike an ATR: BPF 113 Hz, close to the 568F's 120, tips 248 m/s;
+    // smaller and higher-pitched, a hard buzz on take-off; PT6 exhausts forward. Its level -2.0dB
+    // against the ATR 72-600 [I: no certificate found, research/turboprops].
+    //  Sources: https://en.wikipedia.org/wiki/Beechcraft_1900; https://hartzellprop.com/?p=18733;
+    // research/atr72-sources.md sections 2.1, 7, 8.1, 12; ICAO Doc 8643 via
+    // https://en.wikipedia.org/wiki/List_of_aircraft_type_designators.
+    {Engine::PT6A67D_HC4, "Beech 1900D", 2, 4, 1700, 2.79f, 2.7f, 1.85f,
+     0.62f, 0.93f, 1, 1, 1, 0.12f, 0.022f, true, 0.005f,
+     0.94f, 0.85f, 0.5f, 0.05f, 0.22f, 0.6f,
+     37500, 0, 0, 0, false, false,
+     -2, 0, 0, false},
+    // Daher (Socata) TBM 700 / TBM 850 (TBM7, TBM8): TBM 700 A/B/C1/C2: PT6A-64, 700shp; TBM 850
+    // (TBM700 N): PT6A-66D, take-off held to 700shp, 850 available higher up [P: engines, TCDSN; P*:
+    // shp]. Four-bladed Hartzell HC-E4N-3/E9083S(K) [P: TCDSN], 90-91in, 2.31m [I from the
+    // designation; P*]. 2,000rpm in every phase of flight - the TBM 850's propeller lever only 'full'
+    // or 'feather' [P*: a forum; I], the TBM 900's 'constant 2,000 rpm' [P*: Twin & Turbine, June
+    // 2014] - so no pitch step after take-off, unlike the ATR. BPF 133Hz. Tip Mach 0.71 [I].
+    // Certificated take-off 80.4dB(A) (700 A/B/C1), 79.6 (C2), 79.2 (850) [P: EASA TCDSN EASA.A.010
+    // Issue 12]. A TBM 850's cruise power exceeds its take-off's (850 against 700): capped at 0.95
+    // here [I]. Roll spoilers with the ailerons, no ground spoilers [P*; I]. Its level -1.5dB against
+    // the ATR 72-600 [P/I: its take-off dB(A) at 300m against the ATR's 81, research/turboprops]. One
+    // propeller, on its nose, 4.3m ahead of its middle [I: 0.4 of its 10.64m length].
+    //  Sources: https://www.easa.europa.eu/en/downloads/8377/en (EASA TCDSN EASA.A.010 Issue 12,
+    // TBM700); https://twinandturbine.com/issue/June14/files/basic-html/page7.html.
+    {Engine::PT6A_64_TBM7, "Daher (Socata) TBM 700 / TBM 850", 1, 4, 2000, 2.31f, 0, 1.4f,
+     0.55f, 1, 1, 1, 0.95f, 0.15f, 0.03f, false, 0,
+     1, 0.95f, 0.5f, 0.1f, 0.25f, 0.5f,
+     37500, 0, 0, 0, false, false,
+     -1.5f, 4.3f, 0, false},
+    // Daher TBM 900 / 910 / 930 / 940 / 960 (TBM9): TBM 900/910/930/940: PT6A-66D, 850shp, five-bladed
+    // Hartzell HC-E5N-3C/NC8834K with a 'pitot' intake [P: TCDSN], 88in, 2.24m [I from the
+    // designation]; TBM 960: PT6E-66XT, Hartzell 5D31-NK366B1/86DB01B ('Raptor', 86in [I from the
+    // designation]) [P: TCDSN]. 2,000rpm in flight - 'the propeller just hums along at a constant
+    // 2,000 rpm', feathered through a gate on the single power lever [P*: Twin & Turbine, June 2014].
+    // BPF 167Hz - the highest of these rows but the Kodiak's five-bladed option. Tip Mach 0.69 [I].
+    // Certificated take-off 77.8dB(A) (four-bladed TBM 900), 76.4 (five-bladed), 77.1 (TBM 960) [P:
+    // EASA TCDSN EASA.A.010]. Blade count of the 960's propeller from the designation only [I]. Its
+    // level -4.5dB against the ATR 72-600 [P/I: its take-off dB(A) at 300m against the ATR's 81,
+    // research/turboprops]. One propeller, on its nose, 4.3m ahead of its middle [I: 0.4 of its 10.74m
+    // length].
+    //  Sources: https://www.easa.europa.eu/en/downloads/8377/en (EASA TCDSN EASA.A.010 Issue 12);
+    // https://twinandturbine.com/issue/June14/files/basic-html/page7.html.
+    {Engine::PT6A_66D_TBM9, "Daher TBM 900 / 910 / 930 / 940 / 960", 1, 5, 2000, 2.24f, 0, 1.4f,
+     0.55f, 1, 1, 1, 0.95f, 0.15f, 0.03f, false, 0,
+     1, 0.95f, 0.5f, 0.1f, 0.25f, 0.5f,
+     37500, 0, 0, 0, false, false,
+     -4.5f, 4.3f, 0, false},
+    // C-130J Super Hercules (C30J): FOUR ENGINES: the C-130H's wing, so halfSpan 5.0 m for the INNER
+    // pair, 9.7 m for the OUTER [I]; all four R391s right-hand tractor, clockwise seen from behind [P:
+    // EASA TCDS P.087]. Six blades at 1,020.7 rpm, 4.115 m [P: P.087]: 102.1 Hz - within a hertz of a
+    // Dash 8 Q400's 102 Hz take-off tone, and a third higher than the H's 68 Hz. P.087 gives one
+    // speed, 1,020.7 rpm, for take-off and maximum continuous alike, unlike the ATR's 82% climb [P];
+    // that it is flown at 100% climbing, cruising and on the ground is inferred from that and from the
+    // C-130's practice [I] - no published NP schedule found; if a low-speed ground idle exists,
+    // npGround about 0.72 [I]. AE 2100D3: 4,637 shp, flat-rated, two shafts (free power turbine),
+    // 14-stage axial compressor, gearbox about 14:1 [P*: Wikipedia] - so climb and cruise power near
+    // take-off's [I]; its gas generator speed not found (nh100 0, not used by the synthesiser). No
+    // certificated levels found (the LM-100J's FAA sheet not read): a USAF table gives a 500 ft
+    // flyover SEL of 97.0 dB for the C-130J against 95.0 for the C-130H/W [P: Melrose AFR EA], and
+    // Ramstein measured the J's landings about 3 dB under the C-130E's, its ground runs up to 15 dB
+    // quieter [P: USAF article] - so levelOffsetDb as the H's, +11.5, plus 2 dB at take-off power and
+    // minus 3 on landing if wanted [I]. What sets it apart from an ATR: four co-rotating six-bladed
+    // scimitar propellers, a steady governed tone that never steps; from the H: no growl of four-blade
+    // 68 Hz harmonics, a smoother, higher drone. APU, no hotel mode, no spoilers [I]. Its level +6.9dB
+    // against the ATR 72-600: its certificates' mean EPNdB difference, +11.5 [P], at 0.6 - the ATR's
+    // own level was set to the A-weighted gap to the A320 (EASA ANP, 5-8dB, mean 6.5) where their
+    // certificates' lateral gap is 11.1EPNdB, 0.59 of it [I]. Its ground idle in beta 0.72 - its
+    // low-speed ground idle, as the research has it if it has one [I] - not 1.0: at 100% its taxi past
+    // 35m off was 19dB over the ATR's and the limiter rounded 2.5% of it. Its outer pair 9.7m out, its
+    // inner 5.0m [I].
+    //  Sources: [P] EASA TCDS P.087 Issue 03, 11 Dec 2018, Dowty R391: six composite blades, diameter
+    // 411.5 cm, take-off and maximum continuous 1,020.7 rpm, overspeed 1,143 rpm transient (112%),
+    // right hand tractor; R391/6-132-F/3 for the C-130J and LM-100J.
+    // https://www.easa.europa.eu/en/downloads/7845/en; [P*] Wikipedia, Rolls-Royce AE 2100: AE 2100D3
+    // 4,637 shp, 14-stage axial compressor, two shafts, gearbox ratio about 14.
+    // https://en.wikipedia.org/wiki/Rolls-Royce_AE_2100; [P] Melrose AFR Environmental Assessment, Jan
+    // 2016, table citing USAF 2007: 500 ft flyover SEL 95.0 (C-130H/W) and 97.0 (C-130J).
+    // https://www.kirtland.af.mil/Portals/52/4-2016-01-26_EA%20for%20Utilization%20Enhancements%20at%20Melrose%20AFR_11421730_3_1.pdf;
+    // [P] USAF, Ramstein: 'New C-130J model to reduce KMC flying noise' - J landings about 3 dB below
+    // the E's average; ground engine runs up to 15 dB lower.
+    // https://www.ramstein.af.mil/News/Article-Display/Article/305259/new-c-130j-model-to-reduce-kmc-flying-noise/;
+    // [P] GE Aerospace press release, the 1,000th Dowty propeller system on a C-130J (six-bladed
+    // R391).
+    // https://www.geaerospace.com/news/press-releases/systems/ges-1000th-dowty-propeller-system-makes-first-flight-c-130j.
+    {Engine::AE2100D3_R391, "C-130J Super Hercules", 4, 6, 1020.7f, 4.115f, 5, 3.8f,
+     0.72f, 1, 1, 1, 1, 0.12f, 0.022f, true, 0.005f,
+     0.95f, 0.85f, 0.45f, 0.05f, 0.28f, 0.7f,
+     0, 0, 0, 0, false, false,
+     6.9f, 0, 9.7f, false},
+    // A400M Atlas (A400): FOUR ENGINES, HANDED PAIRS: halfSpan 6.2 m for the INNER pair, 11.9 m for
+    // the OUTER [I: from three-view proportions of the 42.4 m span; the discs 5.334 m across leave
+    // about 0.4 m between them]. The pair on each wing turns opposite ways, 'down between engines' [P:
+    // Wikipedia]: the blades come down in the gap between each wing's two engines and rise beside the
+    // fuselage and outboard of the outer engine. Seen from behind (aft looking forward): engines 1
+    // (left outer) and 3 (right inner) clockwise, FH386; engines 2 (left inner) and 4 (right outer)
+    // anticlockwise, FH385 [P: TCDS P.012 gives FH385 counter-clockwise and FH386 clockwise ALF; I:
+    // which engine has which, from the DBE geometry]. All four TP400s turn the same way; a gearbox on
+    // two of them reverses the propeller [P: Wikipedia]. Eight blades, 5.334 m, 860 rpm take-off, 842
+    // maximum continuous, 948 overspeed [P: P.012]: 114.7 Hz at take-off, 112.3 at 842. Its range
+    // 655-860 rpm [P*: World Defense News] - npGround 0.762 takes 655 as ground idle [I]. Climb,
+    // cruise and approach at 842 [I: its maximum continuous; no NP schedule published]. Power: 11,065
+    // shp take-off, 10,690 maximum continuous [P: P.012] - climbPower 0.966; the rest inferred. Tips
+    // 240 m/s, M0.71 [I: computed]. Certificated (ICAO Chapter 4) 95.6 lateral / 90.6 flyover / 102.5
+    // approach EPNdB at 137.5 t / 121.5 t [P: TCDSN EASA.A.169 Issue 4] - +13.1 / +10.1 / +10.3 over
+    // the ATR 72-600; its approach 0.1 dB under its limit: loud coming in. Spoilers as ground spoilers
+    // [P*: Wikipedia mentions its spoilers; I: deployed on the landing roll as on other Airbus
+    // fly-by-wire types]; APU, no hotel mode [I]. Counter-rotation, heard [I]: each harmonic of the
+    // inner and outer propeller on a wing interferes, synchrophased; with opposite rotation the
+    // relative phase of harmonic m changes as 2 x m x 8 x (the bearing round the axes), not 0, so each
+    // harmonic swells and fades twice as fast with bearing as on a co-rotating pair as it passes - a
+    // moving, churning texture rather than the ATR's slow swelling. Its level +6.7dB against the ATR
+    // 72-600: its certificates' mean EPNdB difference, +11.2 [P], at 0.6 - the ATR's own level was set
+    // to the A-weighted gap to the A320 (EASA ANP, 5-8dB, mean 6.5) where their certificates' lateral
+    // gap is 11.1EPNdB, 0.59 of it [I]. Its outer pair 11.9m out, its inner 6.2m [I]. Each wing's two
+    // turning opposite ways, down between the engines [P*; I].
+    //  Sources: [P] EASA TCDS P.012 Issue 04, 15 Dec 2015, Ratier-Figeac FH385/FH386: 8 blades, 5.334
+    // m, take-off 8,251 kW (11,065 shp) at 860 rpm, maximum continuous 7,971 kW (10,690 shp) at 842
+    // rpm, overspeed 948 rpm; FH385 counter-clockwise, FH386 clockwise, aft looking forward.
+    // https://www.easa.europa.eu/en/downloads/7885/en (local refs/atr72/tcds/easa_7885.txt); [P] EASA
+    // TCDSN EASA.A.169 Issue 4, 29 Jan 2015, A400M-180, TP400-D6, FH385/FH386, ICAO Annex 16 Chapter
+    // 4: lateral 95.6 (limit 99.1), flyover 90.6 (100.1), approach 102.5 (102.6) EPNdB at 137,500 /
+    // 121,500 kg. UK CAA copy:
+    // https://caa.co.uk/Documents/Download/3934/ca692457-336e-4190-840e-cd26cf498935/2660; [P*]
+    // Wikipedia, Airbus A400M Atlas: the pair on each wing turn in opposite directions, 'down between
+    // engines', a gearbox on two of the engines; 42.4 m span.
+    // https://en.wikipedia.org/wiki/Airbus_A400M_Atlas; [P*] World Defense News: the eight-blade
+    // propeller operates between 655 and 860 rpm.
+    // https://www.thedefensenews.com/TP400-D6-Engine-Surpasses-One-Million-Flight-Hours-Across-Global-A400M-Fleet/;
+    // lead, not read (paywalled): Flight International, 'A400M to have handed propellers'.
+    // https://www.flightglobal.com/a400m-to-have-handed-propellers/54467.article.
+    {Engine::TP400_FH386, "A400M Atlas", 4, 8, 860, 5.334f, 6.2f, 4.7f,
+     0.762f, 0.979f, 1, 0.979f, 1, 0.12f, 0.022f, true, 0.005f,
+     0.966f, 0.8f, 0.4f, 0.05f, 0.25f, 0.7f,
+     0, 0, 0, 0, false, true,
+     6.7f, 0, 11.9f, true},
+    // Dash 8-100/-200 (DH8A, DH8B): -100: PW120A (MTO 1,491 kW = 2,000 shp, MCP 1,342 kW) or PW121
+    // (1,603 / 1,454 kW); -200: PW123C/D [P: IM.E.041; TCDSN IM.A.191]. Hamilton Standard 14SF-7
+    // (-100), 14SF-23 (-200), 4 blades [P: TCDSN]; 3.96 m [P*]. 100% = 1,200 rpm: maximum output shaft
+    // speed 1,212 (101%) [P: IM.E.041]; AFM supplements for 1,150 or 1,100 rpm take-off and 1,050
+    // approach (0.875) [P: TCDSN]. npClimb 0.875 (about 1,050) [I]. npGround 0.70 [M/I]: the taxiing
+    // Dash 8 of fs637148 combed at 56 Hz - four blades at 840 rpm = 0.70, the PW100's ground idle (the
+    // ATR's 71%), where a Q400 in beta would give 66 Hz - so that clip is probably a classic Dash 8
+    // [I]; it whined at 5.1 kHz taxiing [M]. Climb share MCP/MTO 0.90 [P], cruise 0.85 [I]. NH100
+    // 34,350 (PW120A/121), 34,200 (PW123C/D) [P]. whineHz and gearA/B as the ATR's PW127 [I: same
+    // family and NH100, reduction ratios differ (15.4-17.16, P*)]. Ground spoilers inboard [I: not
+    // checked]. APU optional on the -200, no propeller brake [I]. Certificated DHC-8-102, 15,649 kg:
+    // 86.3/80.8/94.8; DHC-8-202, 16,465 kg: 85.6/80.5/97.2 EPNdB [P: TCDSN IM.A.191 Issue 9]:
+    // +3.8/+0.3/+2.6 for the -102. Unlike an -600: four blades, an 80 Hz drone with harmonics every 80
+    // Hz, coarser - as the ATR 72-200 row. Its level +1.2dB against the ATR 72-600: its certificates'
+    // mean EPNdB difference, +2.0 [P], at 0.6 - the ATR's own level was set to the A-weighted gap to
+    // the A320 (EASA ANP, 5-8dB, mean 6.5) where their certificates' lateral gap is 11.1EPNdB, 0.59 of
+    // it [I].
+    //  Sources:
+    // https://www.easa.europa.eu/en/document-library/type-certificates/noise/easaima191-bombardier-dhc-8;
+    // EASA TCDS IM.E.041 Issue 07 (PW100 series), local refs/atr72/tcds/easa_tcds_ime041_pw100.txt;
+    // https://en.wikipedia.org/wiki/Pratt_%26_Whitney_Canada_PW100; research/atr72-sources.md sections
+    // 2.1, 7, 8.1, 12; ICAO Doc 8643 via
+    // https://en.wikipedia.org/wiki/List_of_aircraft_type_designators; CC0 recording:
+    // https://freesound.org/people/kyles/sounds/637148/ (a Dash 8 taxiing and stopping).
+    {Engine::PW120_14SF_DH8, "Dash 8-100/-200", 2, 4, 1200, 3.96f, 3.9f, 2.9f,
+     0.7f, 0.875f, 1, 1, 1, 0.12f, 0.022f, true, 0.005f,
+     0.9f, 0.85f, 0.5f, 0.05f, 0.22f, 0.7f,
+     34350, 5682, 47.7f, 72.9f, false, true,
+     1.2f, 0, 0, false},
+    // Dash 8-300 (DH8C): PW123/123B/123E (PW123: MTO 1,775 kW = 2,380 shp, NTO 1,598 kW) [P: IM.E.041;
+    // TCDSN IM.A.191]; Hamilton Standard 14SF-15, 4 blades [P]; 3.96 m [P*]. 1,200 rpm (1,212 maximum)
+    // [P]; rpm supplements as the -100's [P]. Climb share 1,598/1,775 = 0.90 [P], the rest as the
+    // -100's [I]. NH100 34,200 [P: the PW123C/D/E rows; the plain PW123's taken as theirs].
+    // Certificated DHC-8-311, 19,504 kg: 86.9/80.0/94.9 EPNdB [P: TCDSN IM.A.191]: +4.4/-0.5/+2.7
+    // against the ATR 72-600. Sound as the -100's: an 80 Hz four-bladed drone; a longer airframe, more
+    // power. Its level +1.2dB against the ATR 72-600: its certificates' mean EPNdB difference, +2.0
+    // [P], at 0.6 - the ATR's own level was set to the A-weighted gap to the A320 (EASA ANP, 5-8dB,
+    // mean 6.5) where their certificates' lateral gap is 11.1EPNdB, 0.59 of it [I].
+    //  Sources:
+    // https://www.easa.europa.eu/en/document-library/type-certificates/noise/easaima191-bombardier-dhc-8;
+    // EASA TCDS IM.E.041 Issue 07 (PW100 series), local refs/atr72/tcds/easa_tcds_ime041_pw100.txt;
+    // research/atr72-sources.md sections 2.1, 7, 8.1, 12; ICAO Doc 8643 via
+    // https://en.wikipedia.org/wiki/List_of_aircraft_type_designators.
+    {Engine::PW123_14SF, "Dash 8-300", 2, 4, 1200, 3.96f, 3.9f, 2.9f,
+     0.7f, 0.875f, 1, 1, 1, 0.12f, 0.022f, true, 0.005f,
+     0.9f, 0.85f, 0.5f, 0.05f, 0.22f, 0.7f,
+     34200, 5682, 47.7f, 72.9f, false, true,
+     1.2f, 0, 0, false},
+    // C295 (C295): The ATR 72-600's voice, nearly: PW127G turning a six-bladed Hamilton Sundstrand
+    // 568F-5 at 1,200 rpm, 155 in = 3.937 m [P: AC 36-1H; EASA TCDSN A.186: HSD 568F-5/R815505-4] -
+    // blades at 120 Hz, the ATR's. 2,645 shp for take-off against the ATR 72-600's 2,475 [P: AC
+    // 36-1H]. Its NP schedule, whine, gearbox lines and synchrophasing as the ATR's PW127/568F rows
+    // [I: same engine family, propeller and 1,200 rpm; the PW127G's gearbox tooth counts not checked].
+    // Axes 3.9 m either side, 3.0 m up [I: 25.81 m span, a fuselage about 2.9 m wide, 0.4 m tip
+    // clearance; a high wing on a fuselage close to the ground]. Certificated 88.2 lateral / 87.1
+    // flyover / 93.8 approach EPNdB at 21,000 / 20,700 kg [P: TCDSN A.186] (AC 36-1H: 87.1 TO / 88.2
+    // SL / 93.9 AP) - +5.7 / +6.6 / +1.6 over the ATR 72-600: louder taking off, the same coming in.
+    // What is unlike an ATR: little but its level and how it is flown - steep tactical approaches, a
+    // rear ramp; no hotel mode found (hotel false) [I] and no ground spoilers [I: roll by ailerons].
+    // Climb and cruise power shares as the ATR's ratings' [I]. Its level +2.8dB against the ATR
+    // 72-600: its certificates' mean EPNdB difference, +4.6 [P], at 0.6 - the ATR's own level was set
+    // to the A-weighted gap to the A320 (EASA ANP, 5-8dB, mean 6.5) where their certificates' lateral
+    // gap is 11.1EPNdB, 0.59 of it [I].
+    //  Sources: [P] EASA TCDSN EASA.A.186 Issue 2, 14 Mar 2023, CN-235 / C-295: C-295, PW127G,
+    // Hamilton Sundstrand HSD 568F-5/R815505-4, 21,000 / 20,700 kg, lateral 88.2 (94.0), flyover 87.1
+    // (89.0), approach 93.8 (98.0) EPNdB, Chapter 3. https://www.easa.europa.eu/fi/downloads/8179/en;
+    // [P] FAA AC 36-1H, Appendix 6, CASA C-295 row: 46,300 lb, 2 x PW127-G 2,645 shp, 1,200 rpm,
+    // Hamilton Standard E568F 155 in, 6 blades; 87.1 TO / 88.2 SL / 93.9 AP EPNdB.
+    // https://www.faa.gov/documentLibrary/media/Advisory_Circular/AC_36-1H.pdf; [P] ATR rows of PROPS
+    // (src/engine_noise.cpp) for the PW127/568F schedule, whine 5,682 Hz and gearbox orders 47.7 and
+    // 72.9 [M].
+    {Engine::PW127G_568F, "C295", 2, 6, 1200, 3.937f, 3.9f, 3,
+     0.71f, 0.82f, 1, 1, 1, 0.12f, 0.022f, true, 0.005f,
+     0.9f, 0.86f, 0.5f, 0.05f, 0.25f, 0.7f,
+     34360, 5682, 47.7f, 72.9f, false, false,
+     2.8f, 0, 0, false},
+    // CN-235 (CN35): GE CT7-7A, -9C or -9C3 (1,700-1,750 shp) turning four-bladed Hamilton Standard
+    // 14RF-21s 132 in = 3.353 m at 1,384 rpm [P: AC 36-1H]; the -300's 14RF-37s are 144 in = 3.658 m
+    // [P: AC 36-1H]. Blades at 4 x 1,384 / 60 = 92.3 Hz at 100% - a smaller, faster four-blade
+    // propeller than an ATR 42-300's 80 Hz, tips 243 m/s (M0.71), the -300's 265 m/s (M0.78) [I:
+    // computed]. Its NP schedule not found: climb and cruise 0.90, ground idle 0.70 [I: a free-turbine
+    // CT7 governed like the PW100s]. nh100 44,700 rpm is the T700/CT7 family's 100% gas generator
+    // speed as commonly quoted [I: not checked tonight; not used by the synthesiser]; whine and
+    // gearbox lines not known. Axes 3.6 m either side, 2.8 m up [I]. Certificated (Chapter 3) [P:
+    // TCDSN A.186]: CN-235 (CT7-7A) 86.5 / 84.5 / 87.2; -100 87.8 / 85.3 / 87.2 (15,100 kg) and 86.7 /
+    // 84.8 / 87.2 (14,400 kg); -200 87.4 / 80.5 / 92.4 and 87.5 / 79.2 / 92.6; -300 87.8 / 85.0 / 93.3
+    // lateral / flyover / approach EPNdB. levelOffsetDb from the -300: +5.3 / +4.5 / +1.1 over the ATR
+    // 72-600, mean 3.6 (the -100's mean 2.1). Unlike an ATR: four blades at a higher rate (92 Hz,
+    // harmonics every 92), a coarser, buzzier comb than the six-bladed ATR 72's 120 Hz. Not a TPE331:
+    // no single-shaft shriek. No hotel mode found, no spoilers [I]. Its level +2.2dB against the ATR
+    // 72-600: its certificates' mean EPNdB difference, +3.6 [P], at 0.6 - the ATR's own level was set
+    // to the A-weighted gap to the A320 (EASA ANP, 5-8dB, mean 6.5) where their certificates' lateral
+    // gap is 11.1EPNdB, 0.59 of it [I].
+    //  Sources: [P] EASA TCDSN EASA.A.186 Issue 2, 14 Mar 2023, CN-235 / C-295: the CN-235, -100,
+    // -200, -300 rows with engines CT7-7A, CT7-9C, CT7-9C-3 and propellers 14RF-21 / 14RF-37.
+    // https://www.easa.europa.eu/fi/downloads/8179/en; [P] FAA AC 36-1H, Appendix 6, CASA CN-235 rows:
+    // 1,700-1,750 shp, 1,384 rpm, Hamilton Standard 14RF-21 132 in or 14RF-37 144 in, 4 blades.
+    // https://www.faa.gov/documentLibrary/media/Advisory_Circular/AC_36-1H.pdf.
+    {Engine::CT7_14RF, "CN-235", 2, 4, 1384, 3.353f, 3.6f, 2.8f,
+     0.7f, 0.9f, 1, 1, 1, 0.12f, 0.022f, true, 0.005f,
+     0.95f, 0.85f, 0.5f, 0.05f, 0.25f, 0.7f,
+     44700, 0, 0, 0, false, false,
+     2.2f, 0, 0, false},
+    // Fokker 50 (F50): F27 Mark 050: PW125B (MTO 1,864 kW = 2,500 shp, NTO 1,678 kW, MCP 1,603 kW) or
+    // PW127B [P: TCDSN A.036; IM.E.041]. Dowty Rotol R352/6-123-F/1 or /2, 6 blades [P: TCDSN]; 3.66 m
+    // [I: from memory]. 100% = 1,200 rpm: maximum output shaft speed 1,212 [P: IM.E.041]. npClimb 0.85
+    // [I]. Power shares as the ATR's [I]. NH100 34,200 (PW125B), 34,360 (PW127B) [P]. whineHz and
+    // gearA/B as the ATR's [I: PW100 with a 1,200 rpm gearbox]. No spoilers [I]. APU optional [I].
+    // Certificated 20,820 kg (PW125B): 85.0/81.0/96.6 EPNdB [P: TCDSN A.036, CAA copy]: +2.5/+0.5/+4.4
+    // against the ATR 72-600 - a loud approach. Like an ATR 72-600 more than any other here: six
+    // blades, BPF 120 Hz; tips 230 m/s; high wing, tall gear. Its level +1.5dB against the ATR 72-600:
+    // its certificates' mean EPNdB difference, +2.5 [P], at 0.6 - the ATR's own level was set to the
+    // A-weighted gap to the A320 (EASA ANP, 5-8dB, mean 6.5) where their certificates' lateral gap is
+    // 11.1EPNdB, 0.59 of it [I].
+    //  Sources: https://caa.co.uk/Documents/Download/3934/ca692457-336e-4190-840e-cd26cf498935/2430;
+    // EASA TCDS IM.E.041 Issue 07 (PW100 series), local refs/atr72/tcds/easa_tcds_ime041_pw100.txt;
+    // ICAO Doc 8643 via https://en.wikipedia.org/wiki/List_of_aircraft_type_designators.
+    {Engine::PW125_R352, "Fokker 50", 2, 6, 1200, 3.66f, 3.85f, 3,
+     0.7f, 0.85f, 1, 1, 1, 0.12f, 0.022f, true, 0.005f,
+     0.886f, 0.861f, 0.5f, 0.05f, 0.22f, 0.7f,
+     34200, 5682, 47.7f, 72.9f, false, false,
+     1.5f, 0, 0, false},
+    // Dornier 328 (D328): PW119B (MTO 1,625 kW = 2,180 shp, NTO and MCP 1,380 kW) or PW119C [P:
+    // IM.E.041; TCDSN A.096]. Hartzell HD-E6C-3A/E13482()K, later HD-E6C-3B/E13890()K, 6 composite
+    // blades [P: TCDSN A.096]; 1,300 rpm maximum [P*: the Hartzell entries via a search summary; the
+    // PW119B's maximum output shaft speed 1,339 = 103% of 1,300 [P: IM.E.041]]. 3.58 m [I: from
+    // memory]. npClimb 0.85, npGround 0.70, power shares [I]. NH100 34,200 [P]. whineHz 5,656 = the
+    // ATR's 5,682 scaled by NH100 [I]. gearA/B 0: its gearbox gives 1,300 rpm, not 1,200, so the ATR's
+    // orders do not carry over [I]. Spoilers for roll and on the ground [I: not checked]. Certificated
+    // 328-100, HD-E6C-3B, 13,990 kg: 83.8/82.1/94.8 EPNdB [P: TCDSN A.096 Issue 2, 2007]:
+    // +1.3/+1.6/+2.6 against the ATR 72-600. Unlike an ATR: six blades at 1,300 rpm, BPF 130 Hz, a
+    // little higher; a fast high-winged T-tail. Its level +1.2dB against the ATR 72-600: its
+    // certificates' mean EPNdB difference, +2.0 [P], at 0.6 - the ATR's own level was set to the
+    // A-weighted gap to the A320 (EASA ANP, 5-8dB, mean 6.5) where their certificates' lateral gap is
+    // 11.1EPNdB, 0.59 of it [I].
+    //  Sources: https://caa.co.uk/Documents/Download/3934/ca692457-336e-4190-840e-cd26cf498935/2689;
+    // https://www.easa.europa.eu/document-library/type-certificates/noise/easaa096-dornier-328-series;
+    // EASA TCDS IM.E.041 Issue 07 (PW100 series), local refs/atr72/tcds/easa_tcds_ime041_pw100.txt;
+    // ICAO Doc 8643 via https://en.wikipedia.org/wiki/List_of_aircraft_type_designators.
+    {Engine::PW119_HDE6, "Dornier 328", 2, 6, 1300, 3.58f, 3.5f, 2.6f,
+     0.7f, 0.85f, 1, 1, 1, 0.12f, 0.022f, true, 0.005f,
+     0.95f, 0.85f, 0.5f, 0.05f, 0.22f, 0.7f,
+     34200, 5656, 0, 0, false, true,
+     1.2f, 0, 0, false},
+    // Embraer EMB 120 Brasilia (E120): PW118 / 118A / 118B, 1,800 shp (1,342 kW NTO and MCP) [P:
+    // IM.E.041]. Hamilton Sundstrand 14RF-9, 4 blades, 3,200 mm, 1,300 rpm at 100.0% NP, blade angles
+    // 79.2 to -15 deg [P: EASA TCDS IM.A.188 Issue 02]. 'During all ground operations the condition
+    // levers must be at MIN RPM position' [P] - that speed not given; npGround 0.70 [I]. npClimb 0.85,
+    // power shares [I]. NH100 33,300 (PW118), 33,966 (PW118A) [P]. whineHz 5,507 = the ATR's scaled by
+    // NH100 [I]. gearA/B 0 (1,300 rpm gearbox) [I]. No spoilers, no APU on most [I]. Noise certificate
+    // not found tonight; offset +1 [I]. Unlike an ATR: four blades at 1,300 rpm, BPF 87 Hz; slow tips,
+    // 218 m/s; low wing, T-tail. Its level +1.0dB against the ATR 72-600 [I: no certificate found,
+    // research/turboprops].
+    //  Sources: https://www.easa.europa.eu/en/downloads/127185/en; EASA TCDS IM.E.041 Issue 07 (PW100
+    // series), local refs/atr72/tcds/easa_tcds_ime041_pw100.txt; ICAO Doc 8643 via
+    // https://en.wikipedia.org/wiki/List_of_aircraft_type_designators.
+    {Engine::PW118_14RF, "Embraer EMB 120 Brasilia", 2, 4, 1300, 3.2f, 3.25f, 2.1f,
+     0.7f, 0.85f, 1, 1, 1, 0.12f, 0.022f, true, 0.005f,
+     0.95f, 0.86f, 0.5f, 0.05f, 0.22f, 0.7f,
+     33300, 5507, 0, 0, false, false,
+     1, 0, 0, false},
+    // Saab 2000 (SB20): Allison (Rolls-Royce) AE2100A, 4,152 shp [P*: Wikipedia]; Dowty
+    // R381/6-123-F/5, 6 blades [P: EASA TCDSN A.069; EASA TCDS P.084]. 3.81 m, 1,100 rpm take-off and
+    // 950 cruising (0.864) [P*: Wikipedia only - check against P.084]. npApproach 1.00 [I]; its
+    // approach level is the quietest here, 4.3 EPNdB under the ATR 72-600's - slow tips at 1,100 rpm
+    // (219 m/s) and synchrophasing explain it without a cut in rpm [I]. nh100 0: the AE2100A's HP
+    // spool speed not found (the synthesiser does not read it). Synchrophaser with active cabin noise
+    // control [P*]. APU in the tail [P*]; no propeller brake; spoilers not known - false [I].
+    // Certificated 22,800 kg: 86.9/78.6/87.9 EPNdB [P: EASA TCDSN A.069 Issue 3]: +4.4/-1.9/-4.3
+    // against the ATR 72-600. Unlike an ATR: a smooth low hum, BPF 110 Hz take-off, 95 Hz cruising;
+    // fast (cruise 665 km/h [P*]), so a passing whoosh; a jet-like turboshaft-derived core. Its level
+    // -0.3dB against the ATR 72-600: its certificates' mean EPNdB difference, -0.5 [P], at 0.6 - the
+    // ATR's own level was set to the A-weighted gap to the A320 (EASA ANP, 5-8dB, mean 6.5) where
+    // their certificates' lateral gap is 11.1EPNdB, 0.59 of it [I].
+    //  Sources: https://caa.co.uk/Documents/Download/3934/ca692457-336e-4190-840e-cd26cf498935/2719;
+    // https://www.easa.europa.eu/en/document-library/type-certificates/propeller-cs-p/easap084-dowty-propellers-r381-series-propellers;
+    // https://en.wikipedia.org/wiki/Saab_2000; ICAO Doc 8643 via
+    // https://en.wikipedia.org/wiki/List_of_aircraft_type_designators.
+    {Engine::AE2100_R381, "Saab 2000", 2, 6, 1100, 3.81f, 3.7f, 2.5f,
+     0.75f, 0.864f, 1, 1, 1, 0.12f, 0.022f, true, 0.005f,
+     0.9f, 0.8f, 0.5f, 0.05f, 0.22f, 0.7f,
+     0, 0, 0, 0, false, false,
+     -0.3f, 0, 0, false},
+    // Beechcraft King Air C90 / C90GT / C90GTx / F90 (BE9L, BE9T): C90GT/GTi/GTx: two PT6A-135As, flat
+    // rated 550shp, four-bladed Hartzell HC-E4N-3N/D8990SK, 90.00in nominal; 100% propeller speed
+    // 1,900rpm, overspeed 110% (2,090); ground idle 'not less than 1,100rpm' at 58-60% N1 - npGround
+    // 0.58; Ng 100% 37,500rpm [P: EASA TCDS IM.A.503]. AOPA: the GT's four-bladed propellers limited
+    // to 1,900rpm for the cabin, earlier C90s to 2,200 [P*]. Older C90A: PT6A-21, 550shp at 2,200rpm,
+    // three-bladed HC-B3TN-3B/T10173B-8, 93.4in [P: TCDS] - BPF 110Hz; C90B four-bladed at 2,200 [P*:
+    // AOPA] - 147Hz. Chosen: the GT/GTx, BPF 127Hz take-off [I]. F90 (BE9T): PT6A-135, 750shp,
+    // four-bladed - taken as the GT's row [I: not checked]. Take-off level 76.0dB(A) at 4,581kg for
+    // one propeller row of an older EASA.IM.A.503 noise sheet [P*: search extract only, sheet not
+    // read]. Climb rpm, axis geometry, power shares: [I]. Its level -5.0dB against the ATR 72-600
+    // [P/I: its take-off dB(A) at 300m against the ATR's 81, research/turboprops].
+    //  Sources: https://www.easa.europa.eu/en/downloads/7106/en (EASA TCDS EASA.IM.A.503 Issue 9, King
+    // Air 90); https://www.aopa.org/news-and-media/all-news/2007/june/pilot/turbine-pilot-(2);
+    // https://www.easa.europa.eu/en/document-library/type-certificates/aircraft-cs-25-cs-22-cs-23-cs-vla-cs-lsa/easaima503-c90a-c90gt.
+    {Engine::PT6A_135A_BE9L, "Beechcraft King Air C90 / C90GT / C90GTx / F90", 2, 4, 1900, 2.286f, 2.2f, 1.45f,
+     0.58f, 0.95f, 1, 1, 0.95f, 0.15f, 0.03f, true, 0.02f,
+     0.92f, 0.8f, 0.55f, 0.1f, 0.25f, 0.6f,
+     37500, 0, 0, 0, false, false,
+     -5, 0, 0, false},
+    // Daher (Quest) Kodiak 100 (KODI): One PT6A-34 [P: EASA TCDSN IM.A.632], 750shp [P*]. Four-bladed
+    // Hartzell HC-E4N-3P(Y)/D9511FSB [P: TCDSN], 96in, 2.44m [P*; I from the designation]; Hartzell's
+    // five-bladed composite option, 'six dB(A) quieter' [P*: Daher], and MT five-bladed on floats.
+    // 2,200rpm for the four-bladed metal propeller, the five-bladed composite 2,000 at maximum torque,
+    // '200rpm slower', '6.6dB quieter' [P*: General Aviation News 31 Mar 2023]; the propeller lever's
+    // first detent 2,000rpm [P*: AOPA Pilot, March 2011] - npClimb 0.91; constant speed, feathering,
+    // reversible [P*: AOPA aircraft guide]. BPF 147Hz (four), 167Hz (five at 2,000). Tip Mach 0.83
+    // [I]. Certificated take-off 82.5dB(A) without the cargo pod, 83.3 with [P: TCDSN]; the Kodiak 200
+    // (PT6A-140A, five-bladed HC-E5W-3(Y)/NC9405(B)) 79.5 [P]. Daher's 2026 poster: 77dB(A) take-off,
+    // 'configuration dependent' [P*]. Recording (not yet heard): 'Single-Engine Turboprop KODIAK 100
+    // landing log logo airstrip kenia', Marschal, CC0, https://freesound.org/s/696394/; the same
+    // user's cabin clip 696393 for the blade rate only. Its level +2.0dB against the ATR 72-600 [P/I:
+    // its take-off dB(A) at 300m against the ATR's 81, research/turboprops]. One propeller, on its
+    // nose, 4.2m ahead of its middle [I: 0.4 of its 10.41m length].
+    //  Sources: https://www.easa.europa.eu/en/downloads/22493/en (EASA TCDSN EASA.IM.A.632 Issue 7);
+    // https://kodiak.aero/news/2023/03/daher-unveils-the-five-blade-hartzell-composite-propeller-option-on-new-kodiak-100-turboprop-powered-aircraft-and-for-retrofit/;
+    // https://prod-kodiak.daher.com/uploads/blob/04/2026-kodiak-100-miniposter-light.pdf;
+    // https://freesound.org/s/696394/ (CC0, Marschal);
+    // https://generalaviationnews.com/2023/03/31/new-prop-option-approved-for-kodiak-100s/;
+    // https://www.nxtbook.com/nxtbooks/aopa/pilot_201103/index.php?startid=59;
+    // https://www.aopa.org/go-fly/aircraft-and-ownership/aircraft-guide/aircraft/daher-kodiak-100.
+    {Engine::PT6A_34_KODI, "Daher (Quest) Kodiak 100", 1, 4, 2200, 2.44f, 0, 1.6f,
+     0.55f, 0.91f, 1, 1, 0.95f, 0.15f, 0.03f, false, 0,
+     1, 0.8f, 0.55f, 0.1f, 0.25f, 0.55f,
+     37500, 0, 0, 0, false, false,
+     2, 4.2f, 0, false},
+    // Pilatus PC-6 Turbo Porter (PC6T, PC6): PC-6/B2-H4: one PT6A-27 (or -20), flat rated 550shp [P*],
+    // three-bladed reversible Hartzell HC-B3TN-3D, 101.5in, 2.58m; Hartzell's STC four-bladed
+    // HC-D4N-3P, 96in, and MT's four-bladed MTV-16 replace it [P: Hartzell, MT-Propeller STC pages].
+    // 2,200rpm [P*: the PT6A-27's propeller limit; I]. BPF 110Hz (three), 147Hz (four). Tip Mach 0.87
+    // static [I] - the fastest tips here: a rasping buzz full of harmonics. MT says the B1-H2 and
+    // B2-H2 need reduced propeller rpm to meet the German 2010 noise rule [P*]. A tailwheel aircraft:
+    // on the ground it sits nose-high, its axis about 1.8m up, lower with its tail lifted [I].
+    // Skydiving work: a long full-power climb, then a steep idle descent [I]. No noise certificate
+    // figures found [gap]. NOTE: the app's scene3d.cpp files the Porter as 'PC6', not ICAO's PC6T.
+    // Recording (not yet heard): 'Skydive plane Pilatus PC6', Astounded, CC0,
+    // https://freesound.org/s/483072/. 'Porter Air-Engine Spool and Take Off' (freesound 869655) is
+    // probably a Porter Airlines Q400, not a PC-6 [I]. Its level +3.0dB against the ATR 72-600 [I: no
+    // certificate found, research/turboprops]. One propeller, on its nose, 4.4m ahead of its middle
+    // [I: 0.4 of its 10.90m length].
+    //  Sources:
+    // https://hartzellprop.com/products/top-prop/other/pc-6b1-h2-pc-6b2-h2-pc-6b2-h4-turbo-porter/;
+    // https://www.mt-propeller.com/en/entw/stcs/pilatus_1.htm;
+    // https://generalaviationnews.com/2013/09/04/newest-top-prop-stc-for-pilatus-pc-6/;
+    // https://freesound.org/s/483072/ (CC0, Astounded).
+    {Engine::PT6A_27_PC6T, "Pilatus PC-6 Turbo Porter", 1, 3, 2200, 2.58f, 0, 1.8f,
+     0.55f, 0.92f, 1, 1, 0.95f, 0.15f, 0.03f, false, 0,
+     0.95f, 0.8f, 0.6f, 0.15f, 0.3f, 0.6f,
+     37500, 0, 0, 0, false, false,
+     3, 4.4f, 0, false},
 };
 // A turboprop with no row of its own (Engine::GENERIC): a twin like an ATR
 // 72-600, its blades passing at Sound::bladeHz at 100% - 120Hz unless set,
@@ -416,7 +1022,8 @@ const PropData PROPS[] = {
 const PropData PROP_GENERIC = {Engine::GENERIC, "a turboprop", 2, 6, 1200, 3.93f, 4.05f, 2.80f,
                                0.71f, 0.82f, 1.00f, 1.00f, 1.00f, 0.12f, 0.022f, true, 0.005f,
                                0.886f, 0.861f, 0.50f, 0.05f, 0.22f, 0.70f,
-                               34360, 0, 0, 0, false, false};
+                               34360, 0, 0, 0, false, false,
+                               0, 0, 0, false};
 
 // A hash's bits mixed, for an airframe's little differences from `who`.
 uint32_t mix(uint32_t x) {
@@ -831,6 +1438,17 @@ void Synth::placedWay() {
     heard_.sourceUpM = old.sound.sourceUpM + (next.sound.sourceUpM - old.sound.sourceUpM) * u;
     heard_.earUpM = target_.earUpM;
     float to[3] = {ear[0] - at[0], ear[1] - at[1], ear[2] - at[2]};
+    // A single turboprop's propeller on its nose, as far ahead of its middle
+    // as its row has it (PropData::ahead); the twins' heard at their middle.
+    const PropData *row = target_.kind == Kind::TURBOPROP ? &propData(target_.engine) : nullptr;
+    if (row && row->ahead != 0) {
+        float nn = sqrtf(nose[0] * nose[0] + nose[1] * nose[1] + nose[2] * nose[2]);
+        if (nn > 1e-3f) {
+            for (int i = 0; i < 3; i++) {
+                to[i] -= nose[i] * (row->ahead / nn);
+            }
+        }
+    }
     float d = sqrtf(to[0] * to[0] + to[1] * to[1] + to[2] * to[2]), per = 1 / std::max(1.0f, d);
     heard_.distanceM = d;
     // Each engine's distance and height: 5.75m either side, along the wing
@@ -839,7 +1457,7 @@ void Synth::placedWay() {
     // on an ATR, nought for a single).
     {
         float wx = nose[1], wy = -nose[0], wn = sqrtf(wx * wx + wy * wy);
-        float half = target_.kind == Kind::TURBOPROP ? propData(target_.engine).halfSpan : 5.75f;
+        float half = row ? row->halfSpan : 5.75f;
         float k = wn > 1e-3f ? half / wn : 0;
         for (int g = 0; g < 2; g++) {
             float side = g == 0 ? k : -k;
@@ -2734,6 +3352,12 @@ constexpr float PR_K1 = 4.0f, PR_K2 = 0.8f;
 // them to a rpm or so [P: ATR at EWADE 2011; M: governed 0.13-0.83%, the
 // resonances' own wander most of it].
 constexpr float PR_WANDER = 0.010f, PR_WANDER_S = 0.8f, PR_HUNT = 0.0012f, PR_HUNT_S = 0.7f;
+// A twin without a synchrophaser (its row's synchro false - a Twin Otter's):
+// governed, its right propeller 0.4% off its left, each governor holding its
+// own - at 2,200rpm 9rpm apart, its fundamentals beating at 0.4Hz, the
+// slow wah-wah of an unsynchronised twin [I: no figure published; a
+// governor's ±1% band, research/turboprops/regional.md].
+constexpr float PR_UNSYNC = 0.004f;
 // Its power's spool (propDoing()): rising by at most PR_SPOOL_GROW of itself
 // a second and PR_SPOOL_FLOOR more, ground idle to take-off in some 5s [P:
 // 14 CFR 33.73's 5s; M: the Q400 at Itami 16dB over 4s]. Its propellers' speed
@@ -2972,6 +3596,14 @@ __attribute__((noinline)) void Synth::propRestart() {
     float apart = PR_WHINE_APART * (0.6f + 0.8f * next()) * (next() < 0.5f ? -1 : 1);
     q.whineBy[0] = -apart;
     q.whineBy[1] = apart;
+    // A single's one gas generator, at its own speed; a four-engined one's
+    // outer pair's phases, its synchrophaser's [I], drawn after the twins'.
+    if (p.engines == 1) {
+        q.whineBy[0] = q.whineBy[1] = 0;
+    } else if (p.engines == 4) {
+        q.psiOuter[0] = next();
+        q.psiOuter[1] = next();
+    }
     // Its propellers as they are now: their speed asked, or the synth's own
     // guess from its power; governed or in beta; its power; its engines.
     bool onGround = s.rollingMs > 0.5f || (s.sourceUpM < 12 && s.airspeedMs < 35);
@@ -3159,6 +3791,11 @@ __attribute__((noinline)) void Synth::propSlowStep() {
     // Its loudness in the air by its power (PR_FLIGHT_POWER_DB), and its
     // tones' low-pass far off (PR_CUT_*): off nearer than 3km.
     gain_ *= dbAmp(PR_FLIGHT_POWER_DB * (1 - q.stat) * lg10(std::max(0.05f, q.torque)));
+    // Another type's level against the ATR 72-600's, from its noise
+    // certificates (PropData::levelDb): the whole of its sound.
+    if (p.levelDb != 0) {
+        gain_ *= dbAmp(p.levelDb);
+    }
     q.cutA = km > PR_CUT_FROM_KM
                  ? 1 - expf(-2 * PI / RATE * std::max(400.0f, 8000 * exp2Fast(-PR_CUT_OCTAVES_KM * (km - PR_CUT_FROM_KM))))
                  : 0.0f;
@@ -3226,8 +3863,22 @@ __attribute__((noinline)) void Synth::propSlowStep() {
     float np[2], bite[2];
     for (int g = 0; g < 2; g++) {
         float drift = gv * PR_HUNT * q.hunt + (1 - gv) * (PR_WANDER * q.wander[g] + (g == 1 ? p.splitBeta : 0.0f));
+        if (!p.synchro && g == 1) {
+            drift += gv * PR_UNSYNC;  // governed, but each to its own speed
+        }
         np[g] = q.np[g] * (1 + drift);
         bite[g] = smoothstep(0, 0.25f, q.pitch[g]) * smoothstep(0.08f, 0.45f, q.np[g]);
+    }
+    // A single: one propeller, the left; its right's state, run as the left's,
+    // never heard. A twin not synchrophased: its two propellers' phase moving
+    // on at their speeds' difference - their steady lines beating.
+    bool single = p.engines == 1, four = p.engines == 4;
+    if (single) {
+        np[1] = np[0];
+        bite[1] = bite[0];
+    } else if (!p.synchro) {
+        q.psi += p.blades * p.rpm100 * (1.0f / 60) * (np[1] - np[0]) * SLOW_S;
+        q.psi -= floorf(q.psi);
     }
     // In reverse the harmonics no stronger for the reverse's power - its
     // blades stalled, their noise mostly a roar - but as an approach's [I:
@@ -3371,8 +4022,48 @@ __attribute__((noinline)) void Synth::propSlowStep() {
     float k1 = PR_K1 * gv, k2 = PR_K2 * gv;
     float pathTurns = (engineM_[0] - engineM_[1]) * (1 / SOUND_MS);
     float widthStatic = 1 + PR_WIDTH_STATIC * st;
-    bool apart = gv < 0.98f && rv < 0.5f;  // in reverse both near their top speed: as one, widened
+    bool apart = (gv < 0.98f || !p.synchro) && rv < 0.5f && !single && !four;  // in reverse both near their top speed: as one, widened
     float spread = (1 - gv) * (p.splitBeta + PR_WANDER);  // the two's speeds apart in beta, a share
+    if (single) {
+        spread = 0;  // one propeller, its wander its pitch's own
+    } else if (four) {
+        spread *= 2;  // four propellers' speeds, each wing's two apart as well as the wings
+    } else if (!p.synchro) {
+        spread += gv * PR_UNSYNC;
+    }
+    // A four-engined one's harmonics in beta each one resonance as wide as
+    // its four propellers' speeds' spread - four lines wandering among each
+    // other, a band of them, not the twins' two resonances, which would be two
+    // of its four and dearer than the A320's worst on the Tab5 - and while
+    // governed all four on one line, their lobes the four's (fourPair()).
+    // Its four steady parts' sum as heard, against their powers', as the
+    // twins' pair below is reckoned - 1 + 0.7 of the coherent sum's departure
+    // from the powers' - its inner pair's path difference and phase as the
+    // twins', its outer pair's path further out in proportion to its span [I:
+    // the path along the wing near enough linear], each with its own
+    // synchrophaser's phase [I]; and an A400M's, each wing's two turning
+    // opposite ways, the outer's phase against its inner's moving with the
+    // bearing about their axes - harmonic k of B blades a spinning mode of
+    // order kB, so 2kB times that angle between two turning opposite ways [I:
+    // Gutin's lobes' phase] - the left wing's one way, the right's the other.
+    float handedTurns = 0;
+    if (four && p.handed) {
+        float across = std::max(1.0f, d * sinTurn(0.5f * clamp01(th)));
+        handedTurns = p.blades * atan2f(s.sourceUpM - s.earUpM, across) * (1 / PI);
+    }
+    auto fourPair = [&](int k, float path) {
+        float r = p.halfSpanOuter / std::max(0.1f, p.halfSpan);
+        float ph[4] = {0.5f * (path + q.psi), -0.5f * (path + q.psi), 0.5f * r * path + q.psiOuter[0] + handedTurns,
+                       -0.5f * r * path + q.psiOuter[1] - handedTurns};
+        float cs = 0, sn = 0;
+        for (float x : ph) {
+            float s1, c1;
+            sinCosTurns(k * x, s1, c1);
+            cs += c1;
+            sn += s1;
+        }
+        return 1 + 0.7f * (0.25f * (cs * cs + sn * sn) - 1);  // 0.3 to 3.1, its mean 1
+    };
     int lifted[2] = {0, 0};
     for (int k = 1; k <= 6; k++) {
         float width = ((k == 1 ? PR_WIDTH_1 : k == 2 ? PR_WIDTH_2 : PR_WIDTH_3 + PR_WIDTH_BY * (k - 3)) * widthStatic +
@@ -3395,7 +4086,11 @@ __attribute__((noinline)) void Synth::propSlowStep() {
         float db = harmonicDb(0, k, bpfM * q.doppler, lifted[0]) + 3.0103f;  // both propellers' power, as one
         float kk = k == 1 ? k1 : k == 2 ? k2 : 0.0f;
         float pair = 1;  // the two propellers' steady parts' sum as heard, against their powers'
-        if (kk > 0.01f) {
+        if (kk > 0.01f && single) {
+            pair = 1;  // one propeller: no other to sum with
+        } else if (kk > 0.01f && four) {
+            pair = fourPair(k, pathTurns * bpfM * q.doppler);
+        } else if (kk > 0.01f) {
             float phase = k * (bpfM * q.doppler * pathTurns + q.psi);
             phase -= (float)(int)phase;
             float cs = sinTurn((phase > 0.5f ? phase - 1 : phase) * 0.5f + 0.25f);  // cos(pi x)
@@ -3465,7 +4160,11 @@ __attribute__((noinline)) void Synth::propSlowStep() {
                               : -200;
         hay += nh > 0.02f ? dbPower(40 * lg10(nh / 0.85f)) * (0.2f + 0.8f * q.lit[g]) : 0.0f;
         float hz = whineHz * (nh / 0.85f) * (1 + q.whineBy[g] + PR_WHINE_WANDER * q.whineX[g]);
-        set(propTones_[PR_WHINE + g], hz, db, 2.0f + widen, g, g);
+        if (single && g == 1) {
+            off(propTones_[PR_WHINE + 1]);  // one gas generator: its line the left's, both's power
+            continue;
+        }
+        set(propTones_[PR_WHINE + g], hz, single ? db + 3.0103f : db, 2.0f + widen, g, g);
     }
     // The haystack, as wide as 250Hz, with the narrow tones after the
     // muffling and the echo: its air's loss exact at its pitch; in the air

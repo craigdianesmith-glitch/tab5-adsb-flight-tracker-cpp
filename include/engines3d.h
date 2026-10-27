@@ -32,8 +32,9 @@
 namespace engines3d {
 
 // An aircraft's engines, by its type: the A320 family's, the Eurofighter
-// Typhoon's, the Boeing 777's and the ATR's - each kind of aircraft made and
-// heard in its turn - and any other silent. ADS-B doesn't say which of two engines an A320 has, so they
+// Typhoon's, the Boeing 777's, the ATR's and the other turboprops' on its
+// voice - each kind of aircraft made and heard in its turn - and any other
+// silent. ADS-B doesn't say which of two engines an A320 has, so they
 // are picked by the airframe, `who`, in the fleets' shares - a ceo's CFM56s
 // or V2500s, a neo's LEAPs or geared fans - and with them whether an older
 // one's fuel vents whistle on its approach: the same airframe always the
@@ -78,6 +79,34 @@ inline engine_noise::Sound enginesOf(const char *type, uint32_t who) {
             s.kind = engine_noise::Kind::TURBOPROP;
             s.engine = atr.engine;
             s.engines = engine_noise::propData(atr.engine).engines;
+        }
+    }
+    // The other turboprops by their ICAO types [P: ICAO Doc 8643], each a
+    // row on the ATR's voice (engine_noise.cpp's PROPS): its engines - one,
+    // two or four - its propellers and its level from its own. The Porter
+    // as ICAO's PC6T and as the app's PC6. Not yet: the Jetstreams (JS31,
+    // JS32, JS41) and the Dornier 228 (D228), their TPE331s' shriek not
+    // measured, the C-130H (C130, L100) and the P-3 (P3), single-shaft T56s,
+    // and the T-6 (TEX2) and PC-21 (PC21), which can't reverse - silent.
+    static const struct {
+        const char *type;
+        Engine engine;
+    } PROPELLERS[] = {
+                {"DH8D", Engine::PW150_R408}, {"SF34", Engine::CT7_R354}, {"DHC6", Engine::PT6A27_HC3},
+                {"B350", Engine::PT6A_60A_B350}, {"BE30", Engine::PT6A_60A_B350}, {"BE20", Engine::PT6A_42_BE20},
+                {"PC12", Engine::PT6A_67P_PC12}, {"C208", Engine::PT6A_114A_C208}, {"B190", Engine::PT6A67D_HC4},
+                {"TBM7", Engine::PT6A_64_TBM7}, {"TBM8", Engine::PT6A_64_TBM7}, {"TBM9", Engine::PT6A_66D_TBM9},
+                {"C30J", Engine::AE2100D3_R391}, {"A400", Engine::TP400_FH386}, {"DH8A", Engine::PW120_14SF_DH8},
+                {"DH8B", Engine::PW120_14SF_DH8}, {"DH8C", Engine::PW123_14SF}, {"C295", Engine::PW127G_568F},
+                {"CN35", Engine::CT7_14RF}, {"F50", Engine::PW125_R352}, {"D328", Engine::PW119_HDE6},
+                {"E120", Engine::PW118_14RF}, {"SB20", Engine::AE2100_R381}, {"BE9L", Engine::PT6A_135A_BE9L},
+                {"BE9T", Engine::PT6A_135A_BE9L}, {"KODI", Engine::PT6A_34_KODI}, {"PC6T", Engine::PT6A_27_PC6T},
+                {"PC6", Engine::PT6A_27_PC6T}};
+    for (const auto &prop : PROPELLERS) {
+        if (strcmp(type, prop.type) == 0) {
+            s.kind = engine_noise::Kind::TURBOPROP;
+            s.engine = prop.engine;
+            s.engines = engine_noise::propData(prop.engine).engines;
         }
     }
     return s;
