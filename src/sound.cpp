@@ -870,8 +870,17 @@ void engineTick() {
         }
     }
     if (millis() - saidMs >= 30000 && made > 0) {
-        Serial.printf("[sound] engine noise: %.2fms a 40ms block, %.1f%% of a core; %u gaps\n",
-                      madeUs / 1000.0f / made, madeUs / (made * 400.0f), (unsigned)gaps);
+        // Every half minute for a developer; in a released image only when
+        // there were gaps, which are heard.
+#if defined(BENCH3D) || !defined(RELEASE_BUILD)
+        bool say = true;
+#else
+        bool say = gaps > 0;
+#endif
+        if (say) {
+            Serial.printf("[sound] engine noise: %.2fms a 40ms block, %.1f%% of a core; %u gaps\n",
+                          madeUs / 1000.0f / made, madeUs / (made * 400.0f), (unsigned)gaps);
+        }
         saidMs = millis();
         madeUs = made = gaps = 0;
     }

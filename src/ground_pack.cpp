@@ -702,7 +702,9 @@ void task(void *) {
                     }
                 }
                 if (G.heights != nullptr) {
+#if defined(BENCH3D) || !defined(RELEASE_BUILD)
                     uint32_t t0 = millis();
+#endif
                     int mids = g_midsIn;
                     G.north = wr - GRID_DOWN / 2;
                     G.west = wc - GRID_ACROSS / 2;
@@ -716,6 +718,9 @@ void task(void *) {
                     g_gridRow = wr;
                     g_gridCol = wc;
                     g_gridNone = false;
+#if defined(BENCH3D) || !defined(RELEASE_BUILD)
+                    // What it took, for tuning - not in a released image, nor
+                    // the skyline's and the finer levels' below.
                     static uint32_t loggedAt = 0;
                     if (moved || millis() - loggedAt > 30000) {
                         loggedAt = millis();
@@ -723,6 +728,7 @@ void task(void *) {
                                       "highest %dm\n",
                                       wr, wc, mids, (unsigned long)(millis() - t0), G.highest);
                     }
+#endif
                 }
             }
         }
@@ -731,16 +737,20 @@ void task(void *) {
         double hLat, hLon;
         float hHeight;
         if (Horizon *h = horizonDue(hLat, hLon, hHeight)) {
+#if defined(BENCH3D) || !defined(RELEASE_BUILD)
             uint32_t h0 = millis();
+#endif
             workOutHorizon(*h, hLat, hLon, hHeight);
             __sync_synchronize();  // the horizon before the index to it
             g_horizonAt = (int)(h - g_horizons);
+#if defined(BENCH3D) || !defined(RELEASE_BUILD)
             static uint32_t loggedAt = 0;
             if (millis() - loggedAt > 30000) {
                 loggedAt = millis();
                 Serial.printf("[ground] the horizon round %.3f,%.3f at %.0fm, in %lums\n", hLat, hLon, hHeight,
                               (unsigned long)(millis() - h0));
             }
+#endif
         }
         // The nearest tile wanted with something not in, a ring at a time
         // outwards: its levels 1 to 3, then - a ring or less from the eye's -
@@ -818,9 +828,11 @@ void task(void *) {
             cells = finerLevel(g_detail[bestSlot], bestCols0, northEdge + bestRow, g_window.west + bestSlot % g_cols,
                                -1 - (kind - 2));
             g_finerUs += micros() - t0;
+#if defined(BENCH3D) || !defined(RELEASE_BUILD)
             Serial.printf("[ground] level %d of tile %d,%d worked out in %lums%s\n", -1 - (kind - 2),
                           northEdge + bestRow, g_window.west + bestSlot % g_cols, (unsigned long)((micros() - t0) / 1000),
                           cells == nullptr ? " - no room for it" : "");
+#endif
         } else {
             cells = kind == 1 ? loadBlock(f, e.detailAt, e.detailSize, detailBytes(bestCols0))
                               : loadBlock(f, e.midAt, e.midSize, midBytes(bestCols0));

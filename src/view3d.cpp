@@ -1746,6 +1746,9 @@ engine_noise::Sound engineSound(const Followed &f, const FollowEstimate &e, int 
     bool hotel = s.kind == Kind::TURBOPROP && engine_noise::propData(s.engine).hotel;
     s.apu = (s.kind == Kind::TURBOFAN || hotel) && e.ground && f.movement != RunwaySim::Movement::TAKEOFF &&
             (parked || startedLately || taxiingIn);
+#if defined(BENCH3D) || !defined(RELEASE_BUILD)
+    // Said as they change, for the soak (tools/soak3d.py) and for tuning -
+    // not in a released image.
     static bool wasRunning = true, wasApu = false;
     if (s.running != wasRunning || s.apu != wasApu) {
         Serial.printf("[3d] %s: engines %s, APU %s\n", f.callsign.c_str(), s.running ? "running" : "shut down",
@@ -1753,6 +1756,7 @@ engine_noise::Sound engineSound(const Followed &f, const FollowEstimate &e, int 
         wasRunning = s.running;
         wasApu = s.apu;
     }
+#endif
     return s;
 }
 
@@ -1935,8 +1939,10 @@ void prepareNext(const Followed &f, const std::vector<Aircraft> &traffic, uint32
             // there - its pilot set as it is doing so, not lifting off level
             // from a taxiway, nor its nose held up on the runway from a
             // take-off that never was.
+#if defined(BENCH3D) || !defined(RELEASE_BUILD)
             Serial.printf("[3d] %s taking off %dm from where it was shown: shown there\n", f.callsign.c_str(),
                           (int)lroundf(length(target - g_shownAt)));
+#endif
             g_pilot = s3::Pilot();
             g_taxiKt = -1;
         }
@@ -2094,10 +2100,12 @@ void prepareNext(const Followed &f, const std::vector<Aircraft> &traffic, uint32
         g_shownAt = {g_follower.at().x, g_follower.at().y, target.z};
         g_shownHeading = g_follower.heading();
         g_taxiKt = (int)lroundf(g_follower.speed() / 0.5144f);
+#if defined(BENCH3D) || !defined(RELEASE_BUILD)
         if (strcmp(g_taxiSaid, g_follower.doing()) != 0) {
             snprintf(g_taxiSaid, sizeof g_taxiSaid, "%s", g_follower.doing());
             Serial.printf("[3d] taxi: %s\n", g_taxiSaid);
         }
+#endif
     } else if (g_follower.active()) {
         g_follower.end();
         g_taxiSaid[0] = 0;
@@ -2131,11 +2139,16 @@ void prepareNext(const Followed &f, const std::vector<Aircraft> &traffic, uint32
         g_touchdownAt = seconds;
         g_touchdownPose = pose;
         g_touchdownSinkMs = g_sinkMs;
+#if defined(BENCH3D) || !defined(RELEASE_BUILD)
+        // Its nose's angle, for the soak (tools/soak3d.py) and for tuning the
+        // flare - not in a released image, nor the lift-off's below.
         String call = f.callsign;
         call.trim();
         Serial.printf("[3d] %s down on %s at %s, its nose %.1f degrees up\n", call.length() ? call.c_str() : f.hex.c_str(),
                       f.runway.ident != nullptr ? f.runway.ident : "?", g_airport, g_pilot.pitch / DEG);
+#endif
     }
+#if defined(BENCH3D) || !defined(RELEASE_BUILD)
     // And lifting off, rotated for - its nose up as it leaves the runway.
     if (g_where == Where::AIRFIELD && !e.ground && g_wasGround && f.movement == RunwaySim::Movement::TAKEOFF) {
         String call = f.callsign;
@@ -2144,6 +2157,7 @@ void prepareNext(const Followed &f, const std::vector<Aircraft> &traffic, uint32
                       call.length() ? call.c_str() : f.hex.c_str(), f.runway.ident != nullptr ? f.runway.ident : "?",
                       g_airport, shownKt, g_pilot.pitch / DEG);
     }
+#endif
     g_wasGround = e.ground;
     // Its spoilers springing up as it touches down, not there at once.
     s3::Config &setUp = g_scene.followed.config;
@@ -2876,7 +2890,10 @@ void frame(const Followed &flight, const std::vector<Aircraft> &traffic, uint32_
                           g_statFrames * 1000.0f / (now - g_statFromMs), g_statPrepUs / 1000.0f / n,
                           g_statDrawUs / 1000.0f / n, g_statWaitUs / 1000.0f / n, (int)g_traffic.size(), g_shot,
                           (unsigned)(heap_caps_get_free_size(MALLOC_CAP_INTERNAL) / 1024), (unsigned)g_idle0GapMs);
-            // The preparing's costliest steps, a frame on average.
+#if defined(BENCH3D) || !defined(RELEASE_BUILD)
+            // The rest a developer's, for tuning the view - a released image
+            // stops at its frame rate. The preparing's costliest steps, a
+            // frame on average.
             int top[4] = {-1, -1, -1, -1};
             for (int i = 0; i < s3::STEPS; i++) {
                 for (int k = 0; k < 4; k++) {
@@ -2932,6 +2949,7 @@ void frame(const Followed &flight, const std::vector<Aircraft> &traffic, uint32_
                               q[5] / (float)std::max<uint64_t>(1, t[5]), (q[4] + q[5]) / (float)std::max<uint64_t>(1, t[5]),
                               q[7] / (float)std::max<uint64_t>(1, t[5]));
             }
+#endif
         }
         g_idle0GapMs = 0;
         memset(g_statStepUs, 0, sizeof g_statStepUs);

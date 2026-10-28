@@ -474,3 +474,6 @@ WifiAction wifiScreenHandleTouch(int x, int y) {
     }
     return WifiAction::NONE;
 }
+
+// The field empty, it says "Password" alone, which a picture can show.
+bool wifiScreenShowsPassword() { return g_mode == Mode::PASSWORD && g_password.length() > 0; }

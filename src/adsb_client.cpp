@@ -1080,9 +1080,19 @@ static int requestInto(const String &url, const AdsbEndpoint &ep, bool military,
 #endif
     if (code != 200) {
         if (code > 0) {
-            // Only worth a copy of the body when the server actually answered.
+            // Only worth a copy of the body when the server actually answered:
+            // how long it is, and its first 100 bytes, anything not printable
+            // ASCII a dot - an error page can be any size, and anything at
+            // all, and it was going into the log whole.
             String payload = g_http.getString();
-            Serial.printf("[adsb] status=%d body=%s\n", code, payload.c_str());
+            char head[101];
+            size_t n = std::min<size_t>(payload.length(), sizeof head - 1);
+            for (size_t i = 0; i < n; i++) {
+                uint8_t c = (uint8_t)payload[i];
+                head[i] = c >= 0x20 && c < 0x7F ? (char)c : '.';
+            }
+            head[n] = 0;
+            Serial.printf("[adsb] status=%d, body %u bytes: %s\n", code, (unsigned)payload.length(), head);
         }
         g_retryAfterS = code == 429 ? (uint32_t)std::max(0L, g_http.header("Retry-After").toInt()) : 0;
         g_http.end();

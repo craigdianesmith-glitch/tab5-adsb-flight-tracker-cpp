@@ -475,11 +475,13 @@ void pushStats(uint32_t &busyUs, uint32_t &count) {
     g_pushCount = 0;
 }
 
+#if defined(BENCH3D) || !defined(RELEASE_BUILD)
 PpaPerf takePpaPerf() {
     PpaPerf was = g_perf;
     g_perf = PpaPerf();
     return was;
 }
+#endif
 
 // The band given up on, if it doesn't come in time: the PPA with it, and the
 // next frame's bands pushed by the CPU.
@@ -1028,6 +1030,64 @@ void setLiveRect(int x, int y, int w, int h) {
     g_liveX = x, g_liveY = y, g_liveW = w, g_liveH = h;
 }
 
+namespace {
+
+// A dump given up on once the host has taken none of it for this long - a
+// tool stopped or closed part way, the port left open - rather than the loop
+// held, and the screen and its touches with it, until the hang watchdog's
+// restart. A write that has its turn at the port waits twenty of the dump's
+// 100ms tries before it comes back short, so that is two seconds after the
+// host stopped; one kept from the port by another task's line comes back
+// with nothing after 100ms, and is tried again for up to this long.
+constexpr uint32_t DUMP_STALL_MS = 1000;
+
+// The bytes at `p` written for the dump - false if the host stopped taking
+// them. In chunks: a single 1.8MB write can outlast the CDC driver's transmit
+// timeout while the host catches up, and the remainder would be dropped.
+bool dumpWrite(const uint8_t *p, size_t bytes) {
+    uint32_t tookMs = millis();
+    while (bytes > 0) {
+        size_t want = std::min<size_t>(bytes, 4096);
+        size_t n = Serial.write(p, want);
+        p += n;
+        bytes -= n;
+        if (n == want) {
+            tookMs = millis();
+        } else if (millis() - tookMs >= DUMP_STALL_MS) {
+            return false;
+        } else if (n == 0) {
+            delay(1);
+        }
+    }
+    return true;
+}
+
+// The dump begun: the log's lines already waiting sent first, and every write
+// waited on as long as the tool is reading - one given up on would leave a
+// hole in the picture - then the header.
+void dumpStart() {
+    Serial.setTxTimeoutMs(SERIAL_TX_TIMEOUT_DUMP_MS);
+    Serial.flush();
+    Serial.printf("\nSCREENSHOT %d %d\n", CANVAS_W, CANVAS_H);
+}
+
+// And ended: the marker, the picture all sent; or, given up on, what is left
+// of it in the driver's buffer dropped - flush() then takes the host to have
+// gone until it reads again, so that the log's lines after it aren't each
+// held up by it. The log's own timeout back either way.
+void dumpEnd(bool sent) {
+    if (sent) {
+        Serial.flush();
+        Serial.print("\nSCREENSHOT END\n");
+    }
+    Serial.setTxTimeoutMs(SERIAL_TX_TIMEOUT_MS);
+    if (!sent) {
+        Serial.flush();
+    }
+}
+
+}  // namespace
+
 void dumpToSerial() {
     if (g_buffer == nullptr) {
         return;
@@ -1035,15 +1095,20 @@ void dumpToSerial() {
     if (g_liveW > 0 && g_fb != nullptr) {
         // A row at a time, the live part of it from the framebuffer: turned
         // back from the panel's portrait as blitRect() turns a pixel into it,
-        // and in the canvas's byte order again, the PPA having swapped it.
-        Serial.setTxTimeoutMs(SERIAL_TX_TIMEOUT_DUMP_MS);
-        Serial.flush();
-        Serial.printf("\nSCREENSHOT %d %d\n", CANVAS_W, CANVAS_H);
+        // and in the canvas's byte order again, the PPA having swapped it. In
+        // a row from the PSRAM for the dump alone, rather than 2.5KB of the
+        // chip's own memory kept for it from boot.
+        uint16_t *row = (uint16_t *)heap_caps_malloc(ROW_BYTES, MALLOC_CAP_SPIRAM);
+        if (row == nullptr) {
+            Serial.println("[screenshot] not sent: no room for a row of it");
+            return;
+        }
+        dumpStart();
         esp_cache_msync(g_fb, g_fbBytes, ESP_CACHE_MSYNC_FLAG_DIR_M2C);
-        static uint16_t row[CANVAS_W];
         const uint16_t *fb = (const uint16_t *)g_fb;
-        for (int y = 0; y < CANVAS_H; y++) {
-            memcpy(row, g_buffer + (size_t)y * CANVAS_W, sizeof row);
+        bool sent = true;
+        for (int y = 0; y < CANVAS_H && sent; y++) {
+            memcpy(row, g_buffer + (size_t)y * CANVAS_W, ROW_BYTES);
             if (y >= g_liveY && y < g_liveY + g_liveH) {
                 for (int x = g_liveX; x < g_liveX + g_liveW; x++) {
                     int fx = g_angle == PPA_SRM_ROTATION_ANGLE_90 ? y : CANVAS_H - 1 - y;
@@ -1051,42 +1116,14 @@ void dumpToSerial() {
                     row[x] = __builtin_bswap16(fb[(size_t)fy * g_panelW + fx]);
                 }
             }
-            const uint8_t *p = (const uint8_t *)row;
-            size_t left = sizeof row;
-            while (left > 0) {
-                size_t n = Serial.write(p, std::min<size_t>(left, 4096));
-                p += n;
-                left -= n;
-                if (n == 0) {
-                    delay(1);
-                }
-            }
+            sent = dumpWrite((const uint8_t *)row, ROW_BYTES);
         }
-        Serial.flush();
-        Serial.print("\nSCREENSHOT END\n");
-        Serial.setTxTimeoutMs(SERIAL_TX_TIMEOUT_MS);
+        heap_caps_free(row);
+        dumpEnd(sent);
         return;
     }
-    // Waited on as long as it takes: the tool is reading, and a write given up
-    // on would leave a hole in the picture.
-    Serial.setTxTimeoutMs(SERIAL_TX_TIMEOUT_DUMP_MS);
-    Serial.flush();
-    Serial.printf("\nSCREENSHOT %d %d\n", CANVAS_W, CANVAS_H);
-    // In chunks: a single 1.8MB write can outlast the CDC driver's transmit
-    // timeout while the host catches up, and the remainder would be dropped.
-    const uint8_t *p = (const uint8_t *)g_buffer;
-    size_t left = CANVAS_BYTES;
-    while (left > 0) {
-        size_t n = Serial.write(p, std::min<size_t>(left, 4096));
-        p += n;
-        left -= n;
-        if (n == 0) {
-            delay(1);
-        }
-    }
-    Serial.flush();
-    Serial.print("\nSCREENSHOT END\n");
-    Serial.setTxTimeoutMs(SERIAL_TX_TIMEOUT_MS);
+    dumpStart();
+    dumpEnd(dumpWrite((const uint8_t *)g_buffer, CANVAS_BYTES));
 }
 
 }  // namespace screen

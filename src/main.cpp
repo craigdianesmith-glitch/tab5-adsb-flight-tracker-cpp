@@ -37,6 +37,14 @@
 #else
 #include "secrets.h"
 #endif
+// Nor a developer's flags. PLATFORMIO_BUILD_FLAGS reaches every environment,
+// release among them, and a bench or profiling flag left set in the shell
+// would put its serial commands, its log lines and their costs in the image
+// to publish.
+#if defined(RELEASE_BUILD) && (defined(BENCH3D) || defined(NET_PROFILE) || defined(RENDER_PROFILE) || \
+                               defined(ENGINE_NOISE_DEBUG) || defined(GROUND_TRACE))
+#error "Unset PLATFORMIO_BUILD_FLAGS for a release build, a developer's flag is set: env -u PLATFORMIO_BUILD_FLAGS pio run -e release"
+#endif
 #include "coast.h"
 #include "filter.h"
 #include "filter_screen.h"
@@ -294,15 +302,26 @@ struct PerfStat {
     }
 };
 PerfStat g_perfRadar, g_perfZoom, g_perfTracks, g_perfLoop;
+// The rest are for the line's tail, a developer's - see reportPerf() - which
+// a released image leaves off: there they count nothing, their calls kept as
+// they are for the compiler to drop.
+#if defined(BENCH3D) || !defined(RELEASE_BUILD)
+using TailStat = PerfStat;
+#else
+struct TailStat {
+    void add(uint32_t) {}
+};
+#endif
 // And where else the 2D screens' time goes: a replay's frames, the table's
 // renders and its shading lapsing, the full draws - and whether the longest
 // pass of loop() held one.
-PerfStat g_perfReplay, g_perfTable, g_perfLapse, g_perfFull;
+TailStat g_perfReplay, g_perfTable, g_perfLapse, g_perfFull;
 bool g_passFull = false, g_longestPassFull = false;
 // drawRadar's and drawZoom's preparation before the plot, a step at a time:
 // the list copied under the lock, the lost filled in, everything moved on to
 // now, and the filter - the radar's alone - in us summed over the frames.
 struct PrepStat {
+#if defined(BENCH3D) || !defined(RELEASE_BUILD)
     uint32_t count = 0;
     uint64_t copyUs = 0, lostUs = 0, nowUs = 0, filterUs = 0;
     void add(uint32_t copy, uint32_t lost, uint32_t now, uint32_t filter) {
@@ -320,6 +339,9 @@ struct PrepStat {
                    ", now " + String((uint32_t)(nowUs / count));
         return filter ? s + ", filter " + String((uint32_t)(filterUs / count)) : s;
     }
+#else
+    void add(uint32_t, uint32_t, uint32_t, uint32_t) {}
+#endif
 };
 PrepStat g_perfPrepRadar, g_perfPrepZoom;
 
@@ -566,7 +588,9 @@ bool ensureWifi() {
         if (claimed) {
             return false;
         }
-        Serial.printf("[wifi] link down, reconnecting to %s\n", ssid.c_str());
+        // The network not named, here or when giving up on it: a log is the
+        // sort of thing pasted where anyone can read it.
+        Serial.println("[wifi] link down, reconnecting");
         WiFi.disconnect();
         WiFi.begin(ssid.c_str(), pass.c_str());
     }
@@ -4754,7 +4778,7 @@ void checkWifiGaveUp() {
         showRestarting();
         wifiwatch::restartNow();
     }
-    Serial.printf("[wifi] giving up on %s - opening the WiFi screen\n", ssid.c_str());
+    Serial.println("[wifi] giving up on the network - opening the WiFi screen");
     g_wifiReturnTo = Screen::MAIN;
     g_screen = Screen::WIFI;
     wifiScreenEnter("Could not reach " + ssid + " - choose a network");
@@ -4967,9 +4991,16 @@ void setup() {
     // several innocent explanations - a filter down to the military over quiet
     // airspace being the likeliest - and none of them were visible from the
     // log, which made "nothing is showing" impossible to tell from "nothing
-    // is working".
-    Serial.printf("[settings] %.4f,%.4f  %dnm  every %ds  source=%s  filter %s\n", g_lat, g_lon, g_radiusNm,
-                  g_pollIntervalS,
+    // is working". Home to four places, ten metres, for a developer; in a
+    // released image to one, some 10km - enough to tell which sky it polls -
+    // as a log is the sort of thing pasted where anyone can read it.
+#if defined(BENCH3D) || !defined(RELEASE_BUILD)
+    constexpr int HOME_PLACES = 4;
+#else
+    constexpr int HOME_PLACES = 1;
+#endif
+    Serial.printf("[settings] %.*f,%.*f  %dnm  every %ds  source=%s  filter %s\n", HOME_PLACES, g_lat, HOME_PLACES,
+                  g_lon, g_radiusNm, g_pollIntervalS,
                   adsbSourceIndex(g_source) < 0 ? "auto" : ADSB_PROVIDERS[adsbSourceIndex(g_source)].name,
                   trafficFilter().active() ? filterText(trafficFilter()).c_str() : "off");
 
@@ -5078,13 +5109,15 @@ void reportPerf() {
         return;
     }
     lastMs = millis();
+#if defined(BENCH3D) || !defined(RELEASE_BUILD)
     // Then, after what the line has always said - the same, for anything
     // reading it - where the rest of the 2D screens' time goes: their
     // preparation step by step, in us a frame; the PPA's blits and fills, how
     // many and the ms waited on them in the minute, and the cache written back
     // for them; a whole plot's layers; the follow telemetry, drawn and left
     // as it was; a replay's frames; the table's renders and its shading
-    // lapsing; the full draws, and whether the longest pass held one.
+    // lapsing; the full draws, and whether the longest pass held one. A
+    // developer's, for tuning them: a released image ends at the stacks.
     screen::PpaPerf ppa = screen::takePpaPerf();
     String more = "; prep us radar " + g_perfPrepRadar.text(true) + ", zoom " + g_perfPrepZoom.text(false) +
                   "; PPA blits " + String(ppa.blits) + "x " + String((uint32_t)(ppa.blitUs / 1000)) + "ms " +
@@ -5094,6 +5127,10 @@ void reportPerf() {
                   g_perfReplay.text() + "; table " + g_perfTable.text() + ", lapses " + g_perfLapse.text() +
                   "; full draws " + g_perfFull.text() + ", the longest pass " +
                   (g_perfLoop.count && g_longestPassFull ? "held one" : "held none");
+    const char *tail = more.c_str();
+#else
+    const char *tail = "";
+#endif
     // And the stacks' high-water marks - the least each has had spare - for
     // them to be sized by what they use.
     Serial.printf("[perf] radar %s, zoom %s (plots: %s), tracks %s (%u), loop max %ums; internal RAM %uKB free, "
@@ -5106,12 +5143,13 @@ void reportPerf() {
                   (unsigned)(heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL) / 1024),
                   (unsigned)(heap_caps_get_free_size(MALLOC_CAP_SPIRAM) / 1024),
                   (unsigned)uxTaskGetStackHighWaterMark(nullptr),
-                  g_pollTask ? (unsigned)uxTaskGetStackHighWaterMark(g_pollTask) : 0u, soundStackSpare(),
-                  more.c_str());
+                  g_pollTask ? (unsigned)uxTaskGetStackHighWaterMark(g_pollTask) : 0u, soundStackSpare(), tail);
     g_perfRadar = g_perfZoom = g_perfTracks = g_perfLoop = PerfStat();
+#if defined(BENCH3D) || !defined(RELEASE_BUILD)
     g_perfReplay = g_perfTable = g_perfLapse = g_perfFull = PerfStat();
     g_perfPrepRadar = g_perfPrepZoom = PrepStat();
     g_longestPassFull = false;
+#endif
 }
 
 // For the serial tests: the airport last said everything at.
@@ -5546,7 +5584,14 @@ void loop() {
         }
         switch (c) {
         case 'S':
-            screen::dumpToSerial();
+            // Not with a WiFi password on the screen, which shows it as it
+            // is typed: the picture would carry it off the device. Said in a
+            // line tools/screenshot.py shows, where it waits for the header.
+            if (g_screen == Screen::WIFI && wifiScreenShowsPassword()) {
+                Serial.println("[screenshot] refused: a WiFi password is on the screen");
+            } else {
+                screen::dumpToSerial();
+            }
             break;
 #ifdef BENCH3D
         case 'D':

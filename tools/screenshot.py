@@ -35,6 +35,10 @@ def grab():
         if time.time() > deadline:
             sys.exit("no screenshot header - is the firmware running and the port free?")
         line = port.readline().decode(errors="replace").strip()
+        # Refused - with a WiFi password on the screen - or not sent, said in
+        # a line of its own instead of the header.
+        if line.startswith("[screenshot] "):
+            sys.exit("screenshot " + line[len("[screenshot] "):])
         if line.startswith("SCREENSHOT ") and line != "SCREENSHOT END":
             _, w, h = line.split()
             w, h = int(w), int(h)

@@ -18,3 +18,7 @@ void wifiScreenDraw();
 WifiAction wifiScreenTick();
 
 WifiAction wifiScreenHandleTouch(int x, int y);
+
+// Whether a passphrase is on this screen, shown as it was typed - for the
+// screenshot dump, which is refused while one is.
+bool wifiScreenShowsPassword();

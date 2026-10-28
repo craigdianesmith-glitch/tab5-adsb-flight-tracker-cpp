@@ -60,7 +60,7 @@ pip install pyserial pillow
 python tools/screenshot.py radar.png
 ```
 
-It is pixel-exact and the right way up whatever the device's orientation, and takes about three seconds. The UI doesn't take touches while it is sent, so grabbing one every few seconds makes the device feel sluggish; and during a video export, which holds the main loop, the request isn't answered until the export ends. Close any serial monitor first. The script leaves DTR and RTS as the kernel sets them on open: clearing DTR while RTS is still raised is the ESP32's USB-serial reset signal, which is what pyserial's usual `dtr = False` sends. And it checks that the end marker follows the last pixel exactly, retrying if a log line from the poll task landed mid-transfer and shifted the image.
+It is pixel-exact and the right way up whatever the device's orientation, and takes about three seconds. The UI doesn't take touches while it is sent, so grabbing one every few seconds makes the device feel sluggish; and during a video export, which holds the main loop, the request isn't answered until the export ends. Nor is one taken while a WiFi password is on the screen, which shows it as it is typed: the firmware refuses, and the script says so. Close any serial monitor first. The script leaves DTR and RTS as the kernel sets them on open: clearing DTR while RTS is still raised is the ESP32's USB-serial reset signal, which is what pyserial's usual `dtr = False` sends. And it checks that the end marker follows the last pixel exactly, retrying if a log line from the poll task landed mid-transfer and shifted the image.
 
 ## Notable hardware quirks this project works around
 

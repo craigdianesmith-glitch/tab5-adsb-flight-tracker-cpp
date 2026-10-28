@@ -1,7 +1,7 @@
 #pragma once
 
 // The release this is, shown on the settings screen and logged at boot.
-#define FIRMWARE_VERSION "1.5.0"
+#define FIRMWARE_VERSION "1.5.1"
 
 constexpr double DEFAULT_LAT = 55.9297;
 constexpr double DEFAULT_LON = -4.4664;
@@ -252,9 +252,17 @@ constexpr AdsbSource DEFAULT_ADSB_SOURCE = AdsbSource::AUTO;
 constexpr int adsbSourceIndex(AdsbSource s) { return s == AdsbSource::AUTO ? -1 : (int)s - 1; }
 
 // How long a write over USB serial waits on a host that isn't reading. The
-// framework's 100ms is tried twenty times over before it gives up on the
-// host, and that was a 2-second freeze of the screen and its touches each time
-// a computer started reading the port - or was plugged into for power with
-// nothing reading it. The screenshot dump puts the 100ms back while it runs.
-constexpr uint32_t SERIAL_TX_TIMEOUT_MS = 10;
+// framework's write waits this long for room in its 256-byte buffer, twenty
+// times over, before it gives up on the host: its own 100ms was a 2-second
+// freeze of the screen and its touches each time a computer started reading
+// the port - or was plugged into for power with nothing reading it - and
+// 10ms still a fifth of a second a line once the buffer had filled. 2ms is
+// 40ms at most. No less, though: the wait is in the scheduler's ticks, a
+// millisecond each, and a wait of one tick ends at the next, which can come
+// at once - and a write waits just the once for its turn at the port, so at
+// 1, as at 0, a line logged while another task's was going in could be lost.
+// Two ticks are a millisecond at least, longer than a line takes to go in
+// with a host reading: the buffer empties in some 0.4ms at the 600KB/s the
+// screenshot dump runs at. The dump puts 100ms back while it runs.
+constexpr uint32_t SERIAL_TX_TIMEOUT_MS = 2;
 constexpr uint32_t SERIAL_TX_TIMEOUT_DUMP_MS = 100;

@@ -116,7 +116,11 @@ struct PpaPerf {
     uint32_t blits = 0, fills = 0;
     uint64_t blitUs = 0, fillUs = 0, blitPixels = 0, syncUs = 0;
 };
+#if defined(BENCH3D) || !defined(RELEASE_BUILD)
+// Not in a released image: the [perf] line's tail, which reads it, is a
+// developer's, as the bench is.
 PpaPerf takePpaPerf();
+#endif
 
 // A big rect of the canvas - the plot's column, the whole screen - pushed
 // through the chip's own memory rather than read by the PPA from the PSRAM:
@@ -174,7 +178,8 @@ void setLiveRect(int x, int y, int w, int h);
 // Writes the canvas to Serial as a screenshot, for tools/screenshot.py: a
 // header line, then the raw 1280x720 RGB565 pixels as the canvas holds them.
 // The canvas is landscape whatever the panel's rotation, so this is exactly
-// what is on screen, the right way up.
+// what is on screen, the right way up. Given up on a host that stops reading
+// part way, some two seconds after it does.
 void dumpToSerial();
 
 }  // namespace screen

@@ -329,10 +329,12 @@ constexpr int TELEMETRY_W = 274, TELEMETRY_H = 330;
 constexpr uint32_t TELEMETRY_WINDOW_MS = 10UL * 60 * 1000;
 void radarTelemetryDraw(int x, int y, const std::vector<FollowSample> &samples, uint32_t nowMs, int32_t fieldFt,
                         uint32_t lostS);
+#if defined(BENCH3D) || !defined(RELEASE_BUILD)
 // How many times since last asked it was drawn, and the time that took - the
 // PPA's fill of it apart too - and how many it was left as it was, for the
-// [perf] line; "-" for neither.
+// [perf] line's tail, a developer's; "-" for neither.
 String radarTakeTelemetry();
+#endif
 
 // The followed aircraft's samples, for the live radar and zoom to draw beside
 // the plot while following, and how long it has been lost, if it has.
@@ -348,8 +350,11 @@ const RadarPalette &radarPalette();
 // line - the parts that don't move, the contacts, the push - or "-" for no
 // plots drawn.
 String radarTakeTimings();
+#if defined(BENCH3D) || !defined(RELEASE_BUILD)
 // And of the parts that don't move, layer by layer - the fill, the map, the
 // scope, the centre, the airports, the navaids, the names, the zoom's runways
 // and tower - the CPU's cycles a frame, over the frames that drew each rather
-// than every frame, and how many those were; "-" for none.
+// than every frame, and how many those were; "-" for none. For the line's
+// tail, a developer's, as radarTakeTelemetry() is.
 String radarTakeLayers();
+#endif

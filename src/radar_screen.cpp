@@ -2467,6 +2467,7 @@ String radarTakeTimings() {
     return s;
 }
 
+#if defined(BENCH3D) || !defined(RELEASE_BUILD)
 String radarTakeLayers() {
     String s;
     for (int i = 0; i < LAYER_COUNT; i++) {
@@ -2480,6 +2481,7 @@ String radarTakeLayers() {
     }
     return s.length() ? "kcycles a frame: " + s : String("-");
 }
+#endif
 
 namespace {
 
@@ -4664,6 +4666,7 @@ void radarTelemetryDraw(int x, int y, const std::vector<FollowSample> &samples, 
     g_telemetryUs += micros() - t0;
 }
 
+#if defined(BENCH3D) || !defined(RELEASE_BUILD)
 String radarTakeTelemetry() {
     String s = "-";
     if (g_telemetryDrawn + g_telemetryLeft != 0) {
@@ -4678,6 +4681,7 @@ String radarTakeTelemetry() {
     g_telemetryUs = g_telemetryFillUs = 0;
     return s;
 }
+#endif
 
 
 
