@@ -72,11 +72,11 @@ const char *const HELP[] = {
     "- FLY PAST sets a camera down ahead of it, beside its way, for it to go by - then ahead again for the next "
     "pass, the other side. ZOOM IN and ZOOM OUT bring the camera nearer or further off.",
     "- GROUND: the land at its height, its hills and mountains, from the ground pack - press it to see them. Off, "
-    "as it starts, the ground is flat, its hills along the skyline, and the pictures come twice as quick. Greyed "
+    "as it starts, the ground is flat, its hills along the skyline, and the pictures come quicker. Greyed "
     "with no pack, or away from the land it covers.",
     "- SOUND: its engines, as they sound from the camera - loud close by, muffled far off, the pitch dropping as it "
-    "passes one standing still. For now an A320's, A318 to A321neo, and a Eurofighter Typhoon's; other aircraft are "
-    "silent. The speaker's mute silences them too.",
+    "passes one standing still. Heard for now: the A320 family, the Eurofighter Typhoon, the Boeing 777, the ATR 72 "
+    "and 42, and 23 more turboprops; other aircraft are silent. The speaker's mute silences them too.",
     "- Tap another aircraft for its details. Back goes to the radar.",
     "- An airport's taxiways, stands, buildings and tower come from the airfield pack, airfields.bin, in the SD "
     "card's overhead folder - as does the tower on the zoom. Without it, or at an airport it hasn't got, the view "

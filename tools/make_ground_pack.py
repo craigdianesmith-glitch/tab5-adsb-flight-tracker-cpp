@@ -101,15 +101,17 @@ is open - for the far country and its heights - so a pack can have at most
 6,000 tiles (MAX_TILES), those coarse levels can come to at most 4MB
 (MAX_COARSE_BYTES), and the rectangle of tiles round it all at most 40,000
 places (MAX_GRID): the firmware's own numbers, in include/ground_pack.h,
-which refuses a pack past them. That is a country the size of France,
-Germany, Spain or Sweden, or a circle some 1,200km across. It says before it
-starts, and won't make one too big - try a region, or --around your home
-with a --radius.
+which refuses a pack past them. That is room for a country the size of
+France, Germany, Spain or Sweden, or a circle some 1,200km across. It says
+before it starts, and won't make one too big - try a region, or --around
+your home with a --radius.
 
 Luxembourg and some 30km round it is 84 tiles and 3MB, made in a couple of
-minutes; Switzerland and the land round it, 337 tiles and 18MB; the United
-Kingdom and Ireland, some 1,400 tiles with land and 25MB, made in a quarter
-of an hour with a fast connection.
+minutes; Switzerland and the land round it, 337 tiles and 18MB, in seven
+minutes on a computer busy with other work. The release's pack of the United
+Kingdom and Ireland - 2,068 tiles and 27MB, made by tools/gen_ground.py,
+whose tiles this makes too - took twelve minutes on a quiet one with a fast
+connection.
 
 
 IF IT STOPS
