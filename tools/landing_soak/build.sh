@@ -1,4 +1,7 @@
 #!/bin/sh
+# SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+# Copyright (c) 2026 Craig Smith. Overhead's take-off, landing and taxi simulation: PolyForm Noncommercial 1.0.0
+# (LICENSE-POLYFORM.md), not the MIT licence of the rest of the repository.
 # Builds tools/landing_soak/landing_soak.cpp against the repo it is in - or
 # SRC=another checkout - into OUT (/tmp/landing_soak). The view's placement
 # is cut out of $SRC/src/view3d.cpp here, each build, not copied: prepareNext()

@@ -116,7 +116,8 @@ const char *const HELP[] = {
 const char *const ABOUT[] = {
     "Overhead v" FIRMWARE_VERSION " - a live flight tracker for the M5Stack Tab5, by Craig Smith. Its source is at "
     "github.com/craigdianesmith-glitch/tab5-adsb-flight-tracker-cpp: free software under the MIT licence, but for "
-    "its sound and terrain engines, free for noncommercial use under PolyForm Noncommercial 1.0.0.",
+    "its sound and terrain engines and its take-off, landing and taxi simulation, free for noncommercial use under "
+    "PolyForm Noncommercial 1.0.0.",
 
     "# Disclaimer",
     "For interest and entertainment only. Not for navigation, air traffic control, flight planning, or any "

@@ -1,3 +1,8 @@
+// SPDX-License-Identifier: MIT AND PolyForm-Noncommercial-1.0.0
+// MIT (LICENSE), but for the take-off, landing and taxi simulation's two
+// sections, marked below, which are PolyForm Noncommercial 1.0.0
+// (LICENSE-POLYFORM.md).
+
 #include "view3d.h"
 
 #include <M5Unified.h>
@@ -948,6 +953,12 @@ s3::Look lookOf(const String &hex, const String &type, const String &callsign, b
     return knownOf(hex, type, callsign, military, category).look;
 }
 
+// ===== THE TAKE-OFF, LANDING AND TAXI SIMULATION: PolyForm Noncommercial 1.0.0 ===
+// The first of its two sections here: the rules the one followed is placed by,
+// and its estimate. From here to the end marker after estimateOf(), this file is
+// licensed under the PolyForm Noncommercial License 1.0.0 (LICENSE-POLYFORM.md),
+// not the MIT licence that covers the rest of it. Copyright (c) 2026 Craig Smith.
+
 // Standing still on the ground - under 6 knots, a stopped transponder's
 // speed wandering up to 4 or 5 - a report's track means nothing, and its
 // position wanders by tens of metres from one to the next:
@@ -1019,6 +1030,8 @@ FollowEstimate estimateOf(const Followed &f) {
     }
     return e;
 }
+
+// ===== END OF THE SIMULATION: the MIT licence again from here ====================
 
 // The time now on the clock the flight's reports and the traffic's poll are
 // timed on - millis() live, the recording's in a replay - see frame(); and,
@@ -1875,6 +1888,14 @@ void setHorizon(const s3::Camera &camera, bool high) {
     g_scene.eyeHeightM = heightM;
 }
 
+// ===== THE TAKE-OFF, LANDING AND TAXI SIMULATION: PolyForm Noncommercial 1.0.0 ===
+// The second of its two sections here: the one followed placed as the
+// simulation has it, handed between the runway simulation and the taxiway
+// follower, and flown by its pilot - prepareNext() as far as its pilot's fly().
+// From here to the end marker after that, this file is licensed under the
+// PolyForm Noncommercial License 1.0.0 (LICENSE-POLYFORM.md), not the MIT
+// licence that covers the rest of it. Copyright (c) 2026 Craig Smith.
+
 void prepareNext(const Followed &f, const std::vector<Aircraft> &traffic, uint32_t polledMs) {
     choose(f);
     float seconds = g_seconds;
@@ -2125,6 +2146,9 @@ void prepareNext(const Followed &f, const std::vector<Aircraft> &traffic, uint32
     g_pilot.fly(dt, look.family, g_turn, shownKt, e.vsFpm, e.ground, g_where == Where::AIRFIELD ? at.z : NAN,
                 f.movement == RunwaySim::Movement::TAKEOFF, e.liftoffInS,
                 s3::takeoffKindOf(look.family, f.type.c_str()));
+
+    // ===== END OF THE SIMULATION: the MIT licence again from here ================
+
     s3::Pose pose = {at, g_shownHeading, g_pilot.pitch, g_pilot.roll};
     s3::Config config = s3::configFor(heightM, shownKt, e.ground, f.movement == RunwaySim::Movement::TAKEOFF);
     config.aileron = g_pilot.aileron;

@@ -1,10 +1,12 @@
 Required Notice: Copyright (c) 2026 Craig Smith (https://github.com/craigdianesmith-glitch/tab5-adsb-flight-tracker-cpp)
 
-This licence covers Overhead's sound engine and terrain engine: the files whose first lines
-say `SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0`, and the marked terrain section
-of `src/scene3d.cpp`. Everything else in the repository is under the MIT licence in
-[LICENSE](LICENSE). Versions of these files published before 1.5.1 stay under the MIT
-licence they were published with.
+This licence covers Overhead's sound engine, its terrain engine and its take-off, landing
+and taxi simulation: the files whose first lines say
+`SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0`, the marked terrain section of
+`src/scene3d.cpp`, and the two marked simulation sections of `src/view3d.cpp`. Everything
+else in the repository is under the MIT licence in [LICENSE](LICENSE). Versions of these
+files published before 1.5.1 - 1.5.0's simulation among them - stay under the MIT licence
+they were published with.
 
 ---
 

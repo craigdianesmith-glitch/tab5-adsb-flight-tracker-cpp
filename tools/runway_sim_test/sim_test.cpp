@@ -1,3 +1,7 @@
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+// Copyright (c) 2026 Craig Smith. Overhead's take-off, landing and taxi simulation: PolyForm Noncommercial 1.0.0
+// (LICENSE-POLYFORM.md), not the MIT licence of the rest of the repository.
+
 // Drives RunwaySim (src/follow.cpp) through take-offs and landings at
 // Glasgow's runway 23 on the PC - the feed losing them at the touchdown or on
 // the roll, finding them again taxiing or climbing away, a go-around, one

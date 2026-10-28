@@ -1,3 +1,7 @@
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+// Copyright (c) 2026 Craig Smith. Overhead's take-off, landing and taxi simulation: PolyForm Noncommercial 1.0.0
+// (LICENSE-POLYFORM.md), not the MIT licence of the rest of the repository.
+
 // Just enough of Arduino for the firmware's follow, telemetry, airports,
 // runways and ground code to build on the PC: String, Serial, millis() - on
 // the harness's own clock, set each frame - and constrain().
