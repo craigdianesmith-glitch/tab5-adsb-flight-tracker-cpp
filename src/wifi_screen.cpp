@@ -48,6 +48,13 @@ String g_notice;
 String g_ssid;
 bool g_ssidWep = false;
 String g_password;
+// Whether the canvas may still hold the passphrase as typed: drawn in the
+// field, and neither the field drawn empty since nor the canvas cleared -
+// by this screen's list or by the next screen's first draw. Put up for want
+// of a network, the screen is left for the table as soon as a connection
+// comes up, and the table is drawn later in the loop, or later still.
+bool g_passwordDrawn = false;
+uint32_t g_passwordClears = 0;  // screen::clears() as it was drawn
 uint32_t g_connectStartedAt = 0;
 bool g_connecting = false;
 // Credentials tried but not yet seen to work. They are saved only once they
@@ -195,6 +202,8 @@ void drawPasswordField() {
         canvas.setTextColor(colorDim);
         canvas.drawString("Password", PW_X + 12, PW_Y + PW_H / 2);
     }
+    g_passwordDrawn = g_password.length() > 0;
+    g_passwordClears = screen::clears();
     screen::markDirty(PW_X, PW_Y, PW_W, PW_H);
 }
 
@@ -475,5 +484,7 @@ WifiAction wifiScreenHandleTouch(int x, int y) {
     return WifiAction::NONE;
 }
 
-// The field empty, it says "Password" alone, which a picture can show.
-bool wifiScreenShowsPassword() { return g_mode == Mode::PASSWORD && g_password.length() > 0; }
+// The field empty, it says "Password" alone, which a picture can show. The
+// picture is taken from the canvas, so a passphrase counts there until it is
+// cleared, whichever screen is up by then.
+bool wifiScreenShowsPassword() { return g_passwordDrawn && g_passwordClears == screen::clears(); }

@@ -30,6 +30,11 @@ void setRotation(int lgfxRotation);
 // Hardware fill of the whole canvas (~5ms, vs ~42ms for canvas().fillScreen()).
 void clear(uint16_t color);
 
+// How many times clear() has filled the whole canvas: what was drawn before
+// the count last changed is no longer in it. For the WiFi screen, to tell
+// whether the passphrase it drew can still be there once it has been left.
+uint32_t clears();
+
 // Hardware fill of part of it, marked dirty. Worth it for a large area: the
 // radar's plot square fills in a fraction of the 15ms canvas().fillRect()
 // takes, the CPU being slow to write that much into PSRAM.

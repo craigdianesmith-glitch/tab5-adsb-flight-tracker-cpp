@@ -125,14 +125,18 @@ deleted once you have the pack you want; it only saves time.
 
 THE DATA
 
-  - What covers the land: ESA WorldCover 2021 v200, 10m - (c) ESA WorldCover
+  - What covers the land: ESA WorldCover 2021 v200, 10m - © ESA WorldCover
     project 2021 / Contains modified Copernicus Sentinel data (2021)
     processed by ESA WorldCover consortium, CC BY 4.0.
-  - The hills: the Copernicus DEM GLO-30 and GLO-90 - (c) DLR e.V. 2010-2014
-    and (c) Airbus Defence and Space GmbH 2014-2018 provided under
-    COPERNICUS by the European Union and ESA; all rights reserved. Where the
-    GLO-30 isn't public - Armenia and Azerbaijan - the hills' light and shade
-    come from the GLO-90 instead, coarser, and the summary says so.
+  - The hills: the Copernicus DEM GLO-30 and GLO-90 - the pack is produced
+    using Copernicus WorldDEM-30 © DLR e.V. 2010-2014 and © Airbus Defence
+    and Space GmbH 2014-2018 provided under COPERNICUS by the European Union
+    and ESA; all rights reserved, and produced using Copernicus WorldDEM™-90
+    © DLR e.V. 2010-2014 and © Airbus Defence and Space GmbH 2014-2018
+    provided under COPERNICUS by the European Union and ESA; all rights
+    reserved. Where the GLO-30 isn't public - Armenia and Azerbaijan - the
+    hills' light and shade come from the GLO-90 instead, coarser, and the
+    summary says so.
   - The countries and regions, to choose by: Natural Earth
     (naturalearthdata.com), public domain.
   - A town's place, for --around by name: Open-Meteo's geocoding API
@@ -1406,6 +1410,10 @@ def write_notice(plan, made, out):
     chosen = ("\n" + fill("The area was chosen with Natural Earth's countries and regions "
                            "(https://www.naturalearthdata.com), which are in the public domain.") + "\n"
               if any(c.kind in ("country", "region") for c in plan.choices) else "")
+    # Word for word as the licences give them: the Copernicus DEM's notices
+    # for data that has been changed - the WorldDEM-90's with its trade mark -
+    # and the sentence on liability its licences have whoever passes it on
+    # add; and WorldCover's citation as ESA gives it.
     text = f"""{out.name} - a ground pack for Overhead's 3D view
 
 {fill(f"{out.name} holds what covers the land of {areas} - woods, fields, towns, water, bare rock and snow - and "
@@ -1415,20 +1423,40 @@ def write_notice(plan, made, out):
 It contains modified data from:
 
 ESA WorldCover 2021 v200, 10m land cover (https://esa-worldcover.org):
-(c) ESA WorldCover project 2021 / Contains modified Copernicus Sentinel data
+© ESA WorldCover project 2021 / Contains modified Copernicus Sentinel data
 (2021) processed by ESA WorldCover consortium. Licensed under Creative
 Commons Attribution 4.0 International (CC BY 4.0):
 https://creativecommons.org/licenses/by/4.0/
+Citation: Zanaga, D., Van De Kerchove, R., Daems, D., De Keersmaecker, W.,
+Brockmann, C., Kirches, G., Wevers, J., Cartus, O., Santoro, M., Fritz, S.,
+Lesiv, M., Herold, M., Tsendbazar, N.E., Xu, P., Ramoino, F., Arino, O.,
+2022. ESA WorldCover 10 m 2021 v200. https://doi.org/10.5281/zenodo.7254221
 
 The Copernicus DEM GLO-30 and GLO-90
 (https://spacedata.copernicus.eu/collections/copernicus-digital-elevation-model):
-(c) DLR e.V. 2010-2014 and (c) Airbus Defence and Space GmbH 2014-2018
-provided under COPERNICUS by the European Union and ESA; all rights reserved.
+produced using Copernicus WorldDEM-30 © DLR e.V. 2010-2014 and © Airbus
+Defence and Space GmbH 2014-2018 provided under COPERNICUS by the European
+Union and ESA; all rights reserved;
+and produced using Copernicus WorldDEM™-90 © DLR e.V. 2010-2014 and © Airbus
+Defence and Space GmbH 2014-2018 provided under COPERNICUS by the European
+Union and ESA; all rights reserved.
+
+The organisations in charge of the Copernicus programme by law or by
+delegation do not incur any liability for any use of the Copernicus
+WorldDEM-30. The organisations in charge of the Copernicus programme by law
+or by delegation do not incur any liability for any use of the Copernicus
+WorldDEM™-90.
 
 {fill(f"What was changed: the land cover was sampled into cells of 2.5 seconds of latitude, some 75m, at five "
       f"levels of detail, with {mixes}. The heights were made into a hillshade, lit from the north-west at 45 "
       f"degrees, and sampled every 15 seconds for the land's heights.{glo90}")}
 {chosen}
+{fill("Passing it on: whoever passes this pack on, changed or not, must pass this notice on with it, and is "
+      "bound as its maker is - to give the credits and the sentences on liability above, not to suggest that "
+      "Airbus Defence and Space, the European Union, ESA or anyone else in charge of the Copernicus programme "
+      "endorses what they do, and to bind whoever they pass it on to in the same way. None of them endorses this "
+      "pack or Overhead.")}
+
 It was made by tools/make_ground_pack.py, in
 {PROJECT}
 on {datetime.date.today().isoformat()}.

@@ -145,9 +145,10 @@ const char *const ABOUT[] = {
     "the file made from them by tools/gen_airfields.py.",
     "- The land in the 3D view - what covers it, and its hills - from the card's ground.bin: ESA WorldCover 2021, "
     "(c) ESA WorldCover project 2021 / Contains modified Copernicus Sentinel data (2021) processed by ESA "
-    "WorldCover consortium, CC BY 4.0; and the Copernicus DEM GLO-30 and GLO-90, (c) DLR e.V. 2010-2014 and (c) Airbus "
-    "Defence and Space GmbH 2014-2018 provided under COPERNICUS by the European Union and ESA; all rights "
-    "reserved.",
+    "WorldCover consortium, CC BY 4.0. Its hills: produced using Copernicus WorldDEM-30 (c) DLR e.V. 2010-2014 and "
+    "(c) Airbus Defence and Space GmbH 2014-2018 provided under COPERNICUS by the European Union and ESA; all "
+    "rights reserved - and produced using Copernicus WorldDEM(TM)-90 (c) DLR e.V. 2010-2014 and (c) Airbus Defence "
+    "and Space GmbH 2014-2018 provided under COPERNICUS by the European Union and ESA; all rights reserved.",
     "- Voices: Piper text-to-speech. Scottish, en_GB-alba-medium, from the Alba data of the CSTR, University of "
     "Edinburgh, CC BY 4.0; English, en_GB-cori-medium, from LibriVox recordings, public domain; American, "
     "en_US-amy-medium, from Mycroft AI's Mimic 3 voices, CC BY-SA 4.0.",

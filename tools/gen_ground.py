@@ -15,12 +15,20 @@ Needs numpy and rasterio (pip install numpy rasterio), and reads straight
 from the datasets' open archives on AWS, a window at a time - nothing to
 download first:
 
-  ESA WorldCover 2021 v200, 10m land cover - (c) ESA WorldCover project 2021 /
+  ESA WorldCover 2021 v200, 10m land cover - © ESA WorldCover project 2021 /
   Contains modified Copernicus Sentinel data (2021) processed by ESA
   WorldCover consortium, CC BY 4.0;
-  Copernicus DEM GLO-30 and GLO-90 - (c) DLR e.V. 2010-2014 and (c) Airbus
-  Defence and Space GmbH 2014-2018 provided under COPERNICUS by the European
-  Union and ESA; all rights reserved.
+  Copernicus DEM GLO-30 and GLO-90 - the pack is produced using Copernicus
+  WorldDEM-30 © DLR e.V. 2010-2014 and © Airbus Defence and Space GmbH
+  2014-2018 provided under COPERNICUS by the European Union and ESA; all
+  rights reserved, and produced using Copernicus WorldDEM™-90 © DLR e.V.
+  2010-2014 and © Airbus Defence and Space GmbH 2014-2018 provided under
+  COPERNICUS by the European Union and ESA; all rights reserved.
+
+A pack made here and passed on needs a notice beside it with these,
+WorldCover's citation and the Copernicus licences' sentence on liability, as
+the release's ground-NOTICE.txt has them and tools/make_ground_pack.py writes
+them for a pack of its own.
 
 The pack - all numbers little-endian:
 

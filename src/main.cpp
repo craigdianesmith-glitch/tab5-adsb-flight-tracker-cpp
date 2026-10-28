@@ -38,12 +38,13 @@
 #include "secrets.h"
 #endif
 // Nor a developer's flags. PLATFORMIO_BUILD_FLAGS reaches every environment,
-// release among them, and a bench or profiling flag left set in the shell
-// would put its serial commands, its log lines and their costs in the image
-// to publish.
+// release among them, as do [env:tab5]'s build_flags, which release's take
+// in; and a bench or profiling flag left set in the shell, or uncommented
+// there, would put its serial commands, its log lines and their costs in the
+// image to publish.
 #if defined(RELEASE_BUILD) && (defined(BENCH3D) || defined(NET_PROFILE) || defined(RENDER_PROFILE) || \
                                defined(ENGINE_NOISE_DEBUG) || defined(GROUND_TRACE))
-#error "Unset PLATFORMIO_BUILD_FLAGS for a release build, a developer's flag is set: env -u PLATFORMIO_BUILD_FLAGS pio run -e release"
+#error "A developer's flag is set, in PLATFORMIO_BUILD_FLAGS or [env:tab5] build_flags - unset it for a release build: env -u PLATFORMIO_BUILD_FLAGS pio run -e release"
 #endif
 #include "coast.h"
 #include "filter.h"
@@ -5585,9 +5586,12 @@ void loop() {
         switch (c) {
         case 'S':
             // Not with a WiFi password on the screen, which shows it as it
-            // is typed: the picture would carry it off the device. Said in a
-            // line tools/screenshot.py shows, where it waits for the header.
-            if (g_screen == Screen::WIFI && wifiScreenShowsPassword()) {
+            // is typed: the picture would carry it off the device. Nor while
+            // it may still be in the canvas the picture is taken from - the
+            // screen left for the table as a connection came up, and the
+            // table not drawn yet. Said in a line tools/screenshot.py shows,
+            // where it waits for the header.
+            if (wifiScreenShowsPassword()) {
                 Serial.println("[screenshot] refused: a WiFi password is on the screen");
             } else {
                 screen::dumpToSerial();

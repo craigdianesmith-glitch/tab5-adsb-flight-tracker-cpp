@@ -74,6 +74,9 @@ bool g_apart = false;
 OverlayFn g_overlay = nullptr;
 Rect g_overlayRect = {0, 0, 0, 0};
 
+// clear()'s count, for clears().
+uint32_t g_clears = 0;
+
 bool intersects(const Rect &a, const Rect &b) {
     return a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h;
 }
@@ -746,7 +749,10 @@ void fillRect(int x, int y, int w, int h, uint16_t color) {
 void clear(uint16_t color) {
     fillRect(0, 0, CANVAS_W, CANVAS_H, color);
     markAllDirty();  // one rect for the lot, rather than one on top of the list
+    g_clears++;
 }
+
+uint32_t clears() { return g_clears; }
 
 void markAllDirty() {
     g_rectCount = 1;
