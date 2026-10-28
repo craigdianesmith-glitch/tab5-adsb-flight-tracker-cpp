@@ -1304,6 +1304,26 @@ constexpr float TENTATIVE_S = 10.0f;
 // take-off's climb - over this long at least.
 constexpr float HANDBACK_DOWN_SHARE = 0.5f, HANDBACK_LEVEL_FPM = 300.0f, HANDBACK_UP_SHARE = 0.35f,
                 HANDBACK_MIN_S = 3.0f;
+// Levelled off by its reports, though - their rates under CLIMBING_FPM and
+// their heights within HEIGHT_STEP_FT of the first's for this long at
+// least, which a climb of 150ft a minute in the feed's 25ft steps never is -
+// taken down at this, as a crew that went a little over its level comes
+// back to it. By its rate's sign alone, levelled off at 6,000ft at the
+// radar's 30 s polls it was still shown 435ft above a minute later, coming
+// down at 300ft a minute; and its level reports at +64ft a minute, as some
+// transponders' are, at 12ft a minute: above for good, 1,000ft and more
+// after 25 minutes. The heights over the gap since the report before, or
+// two, are not enough: an A380 climbing at 300ft a minute as it gathered
+// speed, 25ft higher every five seconds, its rate 192 and 256, was taken
+// for level and sank 8ft (BAW5L at Heathrow), and a 787 25ft higher than
+// five seconds before, its rate 224, sank 172ft (VIR19Z). And with its rate
+// over this - a transponder's own when level, nought or a step or two of
+// 64ft a minute either way - for twice as long: a light aircraft climbing
+// at 250ft a minute, its heights in 100ft steps, was steady for 24 s at a
+// time.
+constexpr float HANDBACK_LEVELLED_FPM = 1000.0f;
+constexpr uint32_t STEADY_MS = 20000;
+constexpr int LEVEL_RATE_FPM = 128;
 // And climbing on out - a report climbing, below this - each report after
 // it eased in so too, and its climb from each faded over this long rather
 // than CLIMB_FADE_S: it is still climbing at the next. Faded over 120 s, a
@@ -1656,6 +1676,21 @@ void RunwaySim::report(const FollowSample &s) {
     if (!hadPrev) {
         phase_ = NONE;
     }
+    // Its heights' steady run: on while each report is in the air, level by
+    // its rate - given, and under CLIMBING_FPM - and its height, as the feed
+    // has it (their corrections can differ), within HEIGHT_STEP_FT of the one
+    // the run began at; begun again at any other report level so, and after
+    // one that is not, at the next: a height left over from the report
+    // before, after one climbing, is no run.
+    bool levelRate = !s.ground && s.hasAlt && s.hasVs && s.vsFpm < CLIMBING_FPM;
+    int32_t sinceMs = (int32_t)(s.ms - prev.ms), offFt = s.altFt - steadyFt_;
+    if (levelRate && hadPrev && sinceMs >= 0 && offFt >= -HEIGHT_STEP_FT && offFt <= HEIGHT_STEP_FT) {
+        steadyDs_ = (uint16_t)std::min<int32_t>(steadyDs_ + sinceMs / 100, UINT16_MAX);
+    } else {
+        steadyFt_ = levelRate ? (int16_t)std::min<int32_t>(std::max<int32_t>(s.altFt, INT16_MIN + 1), INT16_MAX)
+                              : (int16_t)INT16_MIN;
+        steadyDs_ = 0;
+    }
     // Landing, and this report on final with no speed - one in a while, from
     // some feeds - kept landing at the speed it was shown: ended there, it
     // was carried on at a speed worked out from positions of different ages,
@@ -1853,9 +1888,13 @@ void RunwaySim::report(const FollowSample &s) {
                 // Above the feed, climbing, taken down no faster than half
                 // the feed's climb as it will be by its next report or so -
                 // the feed's climb fading - so it never comes down while the
-                // feed climbs, but waits for it.
+                // feed climbs, but waits for it. Levelled off by its reports,
+                // at HANDBACK_LEVELLED_FPM.
                 float fading = now.vsFpm * expf(-HANDBACK_KEEP_S / (climbingOut_ ? CLIMB_OUT_FADE_S : CLIMB_FADE_S));
-                altDown_ = (fading > 0 ? HANDBACK_DOWN_SHARE * fading : HANDBACK_LEVEL_FPM) / 60.0f;
+                float downFpm = fading > 0 ? HANDBACK_DOWN_SHARE * fading : HANDBACK_LEVEL_FPM;
+                bool levelled = fresh_.hasVs && fresh_.vsFpm < CLIMBING_FPM &&
+                                steadyDs_ >= (fresh_.vsFpm <= LEVEL_RATE_FPM ? 1 : 2) * STEADY_MS / 100;
+                altDown_ = (levelled ? HANDBACK_LEVELLED_FPM : downFpm) / 60.0f;
                 easeOut(dAlt_, altRate_, altDown_, handbackUp(), altAccel_, 0, &altLenS_);
                 altLenS_ = std::max(altLenS_, HANDBACK_MIN_S);
                 // Climbing on out still, what the last report left between
@@ -1865,7 +1904,7 @@ void RunwaySim::report(const FollowSample &s) {
                 // briskly as a level-off, it would climb 600ft a minute
                 // faster for a few seconds after each, its nose bobbing.
                 float gapS = (int32_t)(heardMs - (prev.ms + prev.ageCs * 10u)) / 1000.0f;
-                if (climbingOutWas && gapS > altLenS_) {
+                if (climbingOutWas && !levelled && gapS > altLenS_) {
                     float lo = altAccel_ / 16, hi = altAccel_, len;
                     for (int i = 0; i < 8; i++) {
                         float mid = sqrtf(lo * hi);

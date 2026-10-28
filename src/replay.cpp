@@ -798,7 +798,13 @@ void sceneAt(uint32_t t, std::vector<Aircraft> &aircraft, std::vector<TrailPoint
         }
         const RunwaySim &sim = simFor(keyOf(a.hex), abs);
         if (sim.simulating(abs)) {
+            // Its height as recorded once the take-off or landing is over,
+            // as live: see showAt() in main.cpp.
+            String recorded = a.altStr;
             showEstimate(a, sim.plotAt(abs));
+            if (sim.movement() == RunwaySim::Movement::NONE) {
+                a.altStr = recorded;
+            }
         }
     }
 

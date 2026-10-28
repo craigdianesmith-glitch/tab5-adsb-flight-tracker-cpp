@@ -1018,6 +1018,10 @@ constexpr float TAKEOFF_CUT_LIFT_M = 600.0f, TAKEOFF_CUT_LIFT_ACROSS_M = 60.0f, 
 // second: a fighter's with its reheat lit (takeoff.h), two and a half times
 // an airliner's.
 constexpr float TAKEOFF_ROLL_KT_S = 13.0f;
+// And a gap it closes on its roll let go of no faster than this, knots a
+// second - about half an airliner's roll as it nears the speed it leaves
+// at, 2.7 to 3.6 - so the aircraft drawn never slows: see prepareNext().
+constexpr float TAKEOFF_LETGO_KT_S = 1.5f;
 int groundFt() { return g_where == Where::AIRFIELD ? (int)lroundf(g_fieldFt) : 0; }
 bool rotorDown(bool rotorcraft, bool ground, int altFt, int gsKt) {
     return ground || (rotorcraft && altFt - groundFt() < ROTOR_DOWN_FT && gsKt < ROTOR_DOWN_KT);
@@ -1902,7 +1906,7 @@ void setHorizon(const s3::Camera &camera, bool high) {
 void prepareNext(const Followed &f, const std::vector<Aircraft> &traffic, uint32_t polledMs) {
     choose(f);
     float seconds = g_seconds;
-    float dt = g_lastSeconds < 0 ? 0 : std::min(0.5f, seconds - g_lastSeconds);
+    float frameS = g_lastSeconds < 0 ? 0 : seconds - g_lastSeconds, dt = std::min(0.5f, frameS);
     g_frameDt = dt;
     g_lastSeconds = seconds;
     FollowEstimate e = estimateOf(f);
@@ -2033,6 +2037,17 @@ void prepareNext(const Followed &f, const std::vector<Aircraft> &traffic, uint32
             float hx = sinf(e.track * DEG), hy = cosf(e.track * DEG);
             float along = step.x * hx + step.y * hy;
             float most = TAKEOFF_EASE_SHARE * speed * dt;
+            if (takeoff && e.ground && along > 0) {
+                // Catching up on its roll, no faster than it can let go of
+                // what is left as the roll gathers speed - and what a frame
+                // longer than its half-second step held back - so it never
+                // slows: the catch-up a fifth more than its speed till the
+                // last metres, it slowed by 12 kt in the seconds before it
+                // rotated, in three take-offs in five followed in the zoom.
+                float gap = (target.x - g_shownAt.x) * hx + (target.y - g_shownAt.y) * hy;
+                float letGo = sqrtf(2 * TAKEOFF_LETGO_KT_S * 0.5144f * std::max(gap, 0.0f)) * dt;
+                most = std::min(most, letGo + speed * std::max(0.0f, frameS - dt));
+            }
             float limited = std::max(-most, std::min(most, along));
             step.x += (limited - along) * hx;
             step.y += (limited - along) * hy;

@@ -203,9 +203,17 @@ private:
     SampleList history_;  // its low reports of the last few minutes, oldest first
     uint32_t airMs_ = 0;                 // its last report in the air, if seenAir_
     bool seenAir_ = false;
+    // Its heights' steady run: how long, in tenths of a second, its reports
+    // have been level by their rates and their heights within HEIGHT_STEP_FT
+    // of steadyFt_, the feed's height as the run began - levelled off, or
+    // not: see report(). INT16_MIN with no run begun; held to 32,767ft, never
+    // steady above it, where nothing is handed back. Each in a gap the
+    // members' alignment leaves, so they take no room.
+    uint16_t steadyDs_ = 0;
     FollowSample fresh_ = {};
     bool haveFresh_ = false;
     Phase phase_ = NONE;
+    int16_t steadyFt_ = INT16_MIN;
     RunwayLine rw_ = {};
     uint32_t rollMs_ = 0;  // LINED_UP: when it is taken to have begun its roll, not seen since
     // The ease from where it was shown as fresh_ came in to where fresh_ puts
@@ -282,5 +290,6 @@ private:
 // One for each contact tracked - a hundred and more, in PSRAM - and the one
 // followed's in the chip's own memory: 168 bytes before take-offs were
 // simulated as above, 356 since, 380 with a rejected take-off's braking and
-// the hand-back's eases, on the Tab5's 32 bits. Kept from growing unseen.
+// the hand-back's eases - and its heights' steady run - on the Tab5's 32
+// bits. Kept from growing unseen.
 static_assert(sizeof(void *) != 4 || sizeof(RunwaySim) <= 384, "RunwaySim kept small");

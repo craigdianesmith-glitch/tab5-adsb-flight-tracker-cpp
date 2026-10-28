@@ -1853,7 +1853,13 @@ void showAt(Aircraft &a, const RunwaySim &sim, const FollowEstimate &e) {
     if (sim.simulating(millis())) {
         a.hasTrack = true;
         a.track = e.track;
-        a.altStr = e.ground ? String("GND") : String(feedAltFt(e));
+        // Its height as the take-off or landing has it; that over, as
+        // reported, as 1.5.0 showed it: the hand-back's ease, which runs on
+        // from report to report while it climbs below 10,000ft, labelled a
+        // departure that had levelled off hundreds of feet above its level.
+        if (sim.movement() != RunwaySim::Movement::NONE) {
+            a.altStr = e.ground ? String("GND") : String(feedAltFt(e));
+        }
         a.speedStr = String(e.gsKt);
         a.status = estimateStatus(e);
     }
