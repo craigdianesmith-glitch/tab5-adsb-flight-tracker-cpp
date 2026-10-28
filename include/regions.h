@@ -2,8 +2,11 @@
 
 #include <stdint.h>
 
-// The places with a voice of their own - see sound.h - and everywhere else.
-// From Natural Earth's map units, by tools/gen_regions.py.
+// The places the clock and the words treat apart - the UK's zone for home in
+// Scotland and England, and the mainland United States' (clock_zone.h); a
+// height read aloud as a flight level from 18,000ft over the United States,
+// rather than 6,000ft (sound.cpp) - and everywhere else. From Natural Earth's
+// map units, by tools/gen_regions.py.
 enum class Region : uint8_t { ELSEWHERE, SCOTLAND, ENGLAND, USA };
 
 // Which of them the airport with IATA code `code` is in.

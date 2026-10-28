@@ -449,10 +449,8 @@ bool g_dimmed = false;
 bool g_wakeTouch = false;
 uint32_t g_lastTouchMs = 0;
 void wakeScreen();
-// Read aloud, and the voice for everywhere without one of its own - see
-// sound.h. Only touched by loop().
+// Read aloud - see sound.h. Only touched by loop().
 bool g_readAloud = false;
-Accent g_elsewhereAccent = DEFAULT_ELSEWHERE_ACCENT;
 
 // Set by pollTask, consumed by loop(): the most important of the alerts the
 // last poll raised, and how many more came with it.
@@ -1661,7 +1659,7 @@ void announceMovement(const Aircraft &a, Track &t, uint32_t now) {
                       takeoff ? "airborne" : "down");
         return;
     }
-    soundAnnounce(a.callsign, rw.ident, takeoff, rw.airport);
+    soundAnnounce(a.callsign, rw.ident, takeoff);
 }
 
 // And each take-off and landing under way said as soon as its airport is on
@@ -2579,10 +2577,8 @@ void tickAlerts() {
         // the clearances and the engines of the one being watched, with news
         // of something else. An emergency is said whatever.
         bool spoken = !g_follow.active || (g_bannerAc.alert & ALERT_EMERGENCY);
-        // In the voice of where it is - or, with no position, of home, which it is near.
         soundAlert(g_bannerAc.alert, g_bannerAc.callsign,
                    g_bannerAc.type.length() ? lookupAircraftType(g_bannerAc.type, g_bannerAc.military) : String(),
-                   g_bannerAc.hasPos ? g_bannerAc.lat : (float)g_lat, g_bannerAc.hasPos ? g_bannerAc.lon : (float)g_lon,
                    spoken);
         if (g_autoFollow) {
             autoFollow(g_bannerAc);
@@ -4219,12 +4215,10 @@ void handleAlertsTouch(int x, int y) {
         g_followIn3d = alertsScreenFollowIn3d();
         g_watchlist = alertsScreenWatchlist();
         saveAlerts(g_alertMask, g_watchlist, g_autoRecord, g_autoFollow, g_followIn3d);
-        if (alertsScreenReadAloud() != g_readAloud || alertsScreenElsewhereAccent() != g_elsewhereAccent) {
+        if (alertsScreenReadAloud() != g_readAloud) {
             g_readAloud = alertsScreenReadAloud();
-            g_elsewhereAccent = alertsScreenElsewhereAccent();
-            saveVoice(g_readAloud, g_elsewhereAccent);
+            saveReadAloud(g_readAloud);
             soundSetReadAloud(g_readAloud);
-            soundSetElsewhereAccent(g_elsewhereAccent);
         }
         if (xSemaphoreTake(g_dataMutex, portMAX_DELAY) == pdTRUE) {
             g_alertRules.enabled = g_alertMask;
@@ -4574,7 +4568,7 @@ void handleSettingsTouch(int x, int y, bool pressed, bool clicked) {
         break;
     case SettingsAction::OPEN_ALERTS:
         alertsScreenSet(g_alertMask, g_autoRecord, g_autoFollow, g_followIn3d, g_watchlist);
-        alertsScreenSetVoice(g_readAloud, g_elsewhereAccent);
+        alertsScreenSetReadAloud(g_readAloud);
         alertsScreenSetCard(recorder::mount());  // one look for a card put in since
         g_screen = Screen::ALERTS;
         alertsScreenDraw();
@@ -4925,7 +4919,6 @@ void setup() {
     g_autoFollow = s.autoFollow;
     g_followIn3d = s.followIn3d;
     g_readAloud = s.readAloud;
-    g_elsewhereAccent = s.elsewhereAccent;
     g_alertRules.enabled = g_alertMask;
     g_alertRules.watch = parseWatchlist(g_watchlist);
     soundSetMuted(g_muted);
@@ -4933,7 +4926,6 @@ void setup() {
     view3d::setEngineSound(s.engineSound);
     view3d::setTerrain(s.terrain);
     soundSetReadAloud(g_readAloud);
-    soundSetElsewhereAccent(g_elsewhereAccent);
     displaySetSort(s.tableSortCol, s.tableSortDesc);
     if (s.brightnessPct) {
         g_brightnessPct = s.brightnessPct;
@@ -5157,7 +5149,7 @@ void reportPerf() {
 const char *g_testCode = "GLA";
 
 // At airport `code`, an alert, a landing on `runway` by `callsign`, and its
-// details - in that place's voice, one after another.
+// details, one after another.
 void sayEverything(const char *code, const char *callsign, const char *runway) {
     double lat, lon;
     float rangeNm;
@@ -5165,8 +5157,8 @@ void sayEverything(const char *code, const char *callsign, const char *runway) {
         return;
     }
     g_testCode = code;
-    soundAlert(ALERT_RARE, callsign, "Boeing 747-400", lat, lon);
-    soundAnnounce(callsign, runway, false, code);
+    soundAlert(ALERT_RARE, callsign, "Boeing 747-400");
+    soundAnnounce(callsign, runway, false);
     Aircraft ac;
     ac.callsign = callsign;
     ac.type = "B744";
@@ -5559,12 +5551,11 @@ void loop() {
 
     // "##S" over serial sends the screen back, for tools/screenshot.py;
     // "##E", "##W", "##R" and "##M" sound an alert of each kind, for a
-    // made-up callsign at home, to hear what it says; "##T" and "##L" the
-    // zoom's take-off and landing announcements at home's airport. "##C",
-    // "##G" and "##U" say an alert, a landing and an aircraft's details at
-    // Glasgow, Heathrow and JFK - in the Scottish, English and American
-    // voices - and "##N" and "##A" read the card of the navaid nearest the
-    // last of those, and of its airport. "##e" has the 3D view's touchdown
+    // made-up callsign, to hear what it says; "##T" and "##L" the zoom's
+    // take-off and landing announcements. "##C", "##G" and "##U" say an
+    // alert, a landing and an aircraft's details at Glasgow, Heathrow and
+    // JFK, and "##N" and "##A" read the card of the navaid nearest the last
+    // of those, and of its airport. "##e" has the 3D view's touchdown
     // squeal and reversers heard on the picture, or as late as their sound
     // takes to come, each time the other. Behind "##" rather than a bare
     // letter: a computer opening the port echoes back the log lines it
@@ -5627,22 +5618,22 @@ void loop() {
         }
 #endif
         case 'E':
-            soundAlert(ALERT_EMERGENCY, "EZY12AB", "Airbus A320neo", g_lat, g_lon);
+            soundAlert(ALERT_EMERGENCY, "EZY12AB", "Airbus A320neo");
             break;
         case 'W':
-            soundAlert(ALERT_WATCHLIST, "GSGTS", "Boeing 787-9 Dreamliner", g_lat, g_lon);
+            soundAlert(ALERT_WATCHLIST, "GSGTS", "Boeing 787-9 Dreamliner");
             break;
         case 'R':
-            soundAlert(ALERT_RARE, "N747NA", "Airbus A380-800", g_lat, g_lon);
+            soundAlert(ALERT_RARE, "N747NA", "Airbus A380-800");
             break;
         case 'M':
-            soundAlert(ALERT_MILITARY, "RCH21", "Lockheed Martin F-35 Lightning II", g_lat, g_lon);
+            soundAlert(ALERT_MILITARY, "RCH21", "Lockheed Martin F-35 Lightning II");
             break;
         case 'T':
-            soundAnnounce("EZY53TH", "23", true, g_airportCode.c_str());
+            soundAnnounce("EZY53TH", "23", true);
             break;
         case 'L':
-            soundAnnounce("BAW27K", "27L", false, g_airportCode.c_str());
+            soundAnnounce("BAW27K", "27L", false);
             break;
         case 'C':
             sayEverything("GLA", "EZY53TH", "23");
@@ -6070,7 +6061,7 @@ void loop() {
             // nothing on it saved.
             if (g_screen == Screen::RADAR || g_screen == Screen::ZOOM) {
                 alertsScreenSet(g_alertMask, g_autoRecord, g_autoFollow, g_followIn3d, g_watchlist);
-                alertsScreenSetVoice(g_readAloud, g_elsewhereAccent);
+                alertsScreenSetReadAloud(g_readAloud);
                 alertsScreenSetCard(recorder::mount());
                 g_screen = Screen::ALERTS;
                 alertsScreenDraw();

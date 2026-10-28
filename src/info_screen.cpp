@@ -92,9 +92,8 @@ const char *const HELP[] = {
     "types, and your watchlist. An alert puts a banner across the top - tap it for the aircraft, or X to close it - "
     "chimes, and says what it is and its callsign. While you are following an aircraft it only chimes, unless it "
     "is an emergency. Auto-record records while one is about; auto-follow follows the aircraft it is for.",
-    "Words are said in the voice of where they are about: Scottish for Scotland, English for England, American for "
-    "the United States, and the one picked under Voice for everywhere else. Read aloud says an aircraft's details "
-    "as they open, a navaid's card, and one of each of an airport's frequencies.",
+    "Words are said in an English voice. Read aloud, under Voice, says an aircraft's details as they open, a "
+    "navaid's card, and one of each of an airport's frequencies.",
     "The watchlist takes callsigns (EZY12AB), airline prefixes (EZY), registrations (G-ABCD), type codes (A388) "
     "and ICAO hex codes, separated by spaces.",
 
@@ -149,9 +148,7 @@ const char *const ABOUT[] = {
     "(c) Airbus Defence and Space GmbH 2014-2018 provided under COPERNICUS by the European Union and ESA; all "
     "rights reserved - and produced using Copernicus WorldDEM(TM)-90 (c) DLR e.V. 2010-2014 and (c) Airbus Defence "
     "and Space GmbH 2014-2018 provided under COPERNICUS by the European Union and ESA; all rights reserved.",
-    "- Voices: Piper text-to-speech. Scottish, en_GB-alba-medium, from the Alba data of the CSTR, University of "
-    "Edinburgh, CC BY 4.0; English, en_GB-cori-medium, from LibriVox recordings, public domain; American, "
-    "en_US-amy-medium, from Mycroft AI's Mimic 3 voices, CC BY-SA 4.0.",
+    "- Voice: Piper text-to-speech, en_GB-cori-medium, from LibriVox recordings, public domain.",
     "- Built on M5Unified, M5GFX and ArduinoJson (MIT), the ESP32 Arduino core (LGPL 2.1) and ESP-IDF "
     "(Apache 2.0).",
     "- Airline names identify the operator, and imply no endorsement by it.",

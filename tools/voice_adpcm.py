@@ -7,7 +7,7 @@ tools/adpcm_search.c, compiled here with cc, which looks a couple of samples
 ahead for each code it picks - 26dB of signal to the noise it adds, where
 the standard encoder in tools/ima_adpcm.py had 20.
 
-    python3 tools/voice_adpcm.py src/voice_scottish.inc [...]
+    python3 tools/voice_adpcm.py src/voice_english.inc [...]
 
 Rewrites each file in place, and says how far each voice's words came out
 from what they were.

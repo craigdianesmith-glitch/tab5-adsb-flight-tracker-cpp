@@ -94,7 +94,7 @@ ap.add_argument("--sun", choices=["real", "day", "dusk", "night"], default="real
                 help="the 3D view's sun: as it is, or held at a time of day, for runs to compare like with like")
 ap.add_argument("--speech", action="store_true",
                 help="speech all the while: an alert, a runway announcement or a card read out every 25 seconds or "
-                     "so, and every fourth time a whole airport's worth in one of the three voices - for the words "
+                     "so, and every fourth time a whole airport's worth at Glasgow, Heathrow or JFK - for the words "
                      "to be seen not to stall the 3D view, nor it them")
 ap.add_argument("--traffic", action="store_true",
                 help="made-up traffic about each airfield - parked on its stands, taxiing its taxiways - as the "
@@ -149,7 +149,7 @@ def send(command):
 
 # Speech, with --speech: the alerts, the runway announcements and the cards,
 # short ones every 25 seconds or so and every fourth a long one - an alert, a
-# landing and an aircraft's details at Glasgow, Heathrow or JFK in its voice.
+# landing and an aircraft's details at Glasgow, Heathrow or JFK.
 SHORT_SPEECH = ["E", "W", "R", "M", "T", "L", "N", "A"]
 LONG_SPEECH = ["C", "G", "U"]
 

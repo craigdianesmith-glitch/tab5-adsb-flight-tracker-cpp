@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
 """Generates src/regions_table.inc from the Natural Earth dataset.
 
-The places with a voice of their own - see src/sound.cpp: Scotland, England
-and the United States, whose words are said in a Scottish, an English and an
-American voice, wherever the device is. From Natural Earth's 1:10m map units,
-which have Scotland and England apart where its countries have the United
-Kingdom:
+The places the firmware treats apart: Scotland and England, where home keeps
+the UK's time (src/clock_zone.cpp); and the United States, where it keeps one
+of the mainland's four zones, and a height read aloud is a flight level from
+18,000ft rather than 6,000ft (src/sound.cpp). Scotland and England are apart
+from when each had a voice of its own, until 1.5.1. From Natural Earth's
+1:10m map units, which have Scotland and England apart where its countries
+have the United Kingdom:
 
 - Which of them each airport in src/airports.cpp is in, worked out here from
   the outlines as Natural Earth has them: an airport at the water's edge can

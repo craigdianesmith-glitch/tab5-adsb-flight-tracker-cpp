@@ -20,9 +20,8 @@ void alertsScreenSetCard(bool present);
 // The watchlist as it came back from the watchlist screen.
 void alertsScreenSetWatchlist(const String &watchlist);
 
-// Read aloud, and the voice for everywhere without one of its own - see
-// sound.h. Picking one says a few words in it.
-void alertsScreenSetVoice(bool readAloud, Accent elsewhere);
+// Read aloud - see sound.h.
+void alertsScreenSetReadAloud(bool readAloud);
 
 void alertsScreenDraw();
 AlertsAction alertsScreenHandleTouch(int x, int y);
@@ -34,4 +33,3 @@ bool alertsScreenAutoFollow();
 bool alertsScreenFollowIn3d();
 String alertsScreenWatchlist();
 bool alertsScreenReadAloud();
-Accent alertsScreenElsewhereAccent();

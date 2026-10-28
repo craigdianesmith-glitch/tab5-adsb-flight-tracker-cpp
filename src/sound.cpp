@@ -94,11 +94,11 @@ const Note *g_notes = nullptr;
 int g_noteCount = 0;
 int g_nextNote = 0;
 
-// The words, made by tools/gen_voice.py in each of three voices: a second or
-// so of sound each, at the voice's own rate, as 4-bit IMA ADPCM - half what
-// 8-bit samples took, 3.7MB of flash between the three voices - turned back
-// into samples as each is said (see playClip()), and played by the speaker's
-// own task, so saying one costs the UI no more than a note does.
+// The words, made by tools/gen_voice.py in one voice, English: a second or so
+// of sound each, at the voice's own rate, as 4-bit IMA ADPCM - half what 8-bit
+// samples took, 1.24MB of flash - turned back into samples as each is said
+// (see playClip()), and played by the speaker's own task, so saying one costs
+// the UI no more than a note does.
 struct Clip {
     const uint8_t *adpcm;  // two samples a byte, the first in the low nibble
     size_t count;          // samples
@@ -107,7 +107,7 @@ struct NamedClip {
     const char *name;
     Clip clip;
 };
-// Every word in one voice, in the order tools/gen_voice.py writes them.
+// Every word in the voice, in the order tools/gen_voice.py writes them.
 struct Voice {
     uint32_t rate;
     Clip emergency, military, rare, watchlist;
@@ -123,31 +123,18 @@ struct Voice {
     Clip navaidTypes[6];          // in NavaidType's order
     Clip atcUses[ATC_USE_COUNT];  // in AtcUse's order
 };
-#include "voice_scottish.inc"
 #include "voice_english.inc"
-#include "voice_american.inc"
 #include "click_table.inc"
 
-// In Accent's order.
-const Voice *const VOICES[] = {&voice_scottish::VOICE, &voice_english::VOICE, &voice_american::VOICE};
-Accent g_elsewhere = DEFAULT_ELSEWHERE_ACCENT;
+// Everything is said in it, wherever it is about: Piper's en_GB-cori-medium,
+// from public-domain recordings - see tools/gen_voice.py for why it is the
+// only one.
+using voice_english::VOICE;
 bool g_readAloud = false;
-
-// What is said about somewhere is said in its voice: Scotland's Scottish,
-// England's English, the United States' American, and everywhere else's the
-// one chosen for it.
-const Voice *voiceOf(Region region) {
-    switch (region) {
-    case Region::SCOTLAND: return VOICES[(int)Accent::SCOTTISH];
-    case Region::ENGLAND: return VOICES[(int)Accent::ENGLISH];
-    case Region::USA: return VOICES[(int)Accent::AMERICAN];
-    default: return VOICES[(int)g_elsewhere];
-    }
-}
 
 // What is said once the notes are done, a clip at a time - for an alert, the
 // reason, then the callsign spelt out - each with the pause to leave after
-// it, in the voice g_voice.
+// it.
 struct Spoken {
     Clip clip;
     uint16_t pauseMs;
@@ -159,17 +146,16 @@ constexpr uint16_t AFTER_REASON_MS = 250, BETWEEN_LETTERS_MS = 60, AFTER_CALLSIG
 Spoken g_spoken[MAX_SPOKEN];
 int g_spokenCount = 0, g_nextSpoken = 0;
 uint32_t g_speakAtMs = 0;  // not before then: the pause after the clip before
-const Voice *g_voice = VOICES[0];
 // Whether what is being said is a reading - see soundReadAircraft() - which
 // the next one cuts short, where it waits for an alert or an announcement.
 bool g_readingNow = false;
 
 // The reason the banner names, in the same order - see alertReasonText().
 bool wordFor(uint8_t reasons, Clip &out) {
-    if (reasons & ALERT_EMERGENCY) out = g_voice->emergency;
-    else if (reasons & ALERT_WATCHLIST) out = g_voice->watchlist;
-    else if (reasons & ALERT_RARE) out = g_voice->rare;
-    else if (reasons & ALERT_MILITARY) out = g_voice->military;
+    if (reasons & ALERT_EMERGENCY) out = VOICE.emergency;
+    else if (reasons & ALERT_WATCHLIST) out = VOICE.watchlist;
+    else if (reasons & ALERT_RARE) out = VOICE.rare;
+    else if (reasons & ALERT_MILITARY) out = VOICE.military;
     else return false;
     return true;
 }
@@ -195,9 +181,9 @@ void spell(const String &text) {
     for (size_t i = 0; i < text.length(); i++) {
         char c = toupper((unsigned char)text[i]);
         if (c >= 'A' && c <= 'Z') {
-            say(g_voice->letters[c - 'A']);
+            say(VOICE.letters[c - 'A']);
         } else if (c >= '0' && c <= '9') {
-            say(g_voice->digits[c - '0']);
+            say(VOICE.digits[c - '0']);
         }
     }
 }
@@ -209,9 +195,9 @@ void sayCallsign(const String &callsign) {
     AirlineInfo airline;
     const NamedClip *voice = nullptr;
     if (lookupAirline(callsign, airline)) {
-        for (size_t i = 0; i < g_voice->airlineCount; i++) {
-            if (airline.name == g_voice->airlines[i].name) {
-                voice = &g_voice->airlines[i];
+        for (size_t i = 0; i < VOICE.airlineCount; i++) {
+            if (airline.name == VOICE.airlines[i].name) {
+                voice = &VOICE.airlines[i];
             }
         }
     }
@@ -232,8 +218,8 @@ void sayCallsign(const String &callsign) {
 // maker the table knows, as an unknown type's bare code is.
 bool sayType(const String &name) {
     const NamedClip *maker = nullptr;
-    for (size_t i = 0; i < g_voice->makerCount; i++) {
-        const NamedClip &m = g_voice->makers[i];
+    for (size_t i = 0; i < VOICE.makerCount; i++) {
+        const NamedClip &m = VOICE.makers[i];
         size_t n = strlen(m.name);
         if (name.startsWith(m.name) && (name.length() == n || name[n] == ' ') &&
             (maker == nullptr || n > strlen(maker->name))) {
@@ -279,9 +265,9 @@ bool sayType(const String &name) {
         haveModel = true;
     }
     spell(model);
-    if (neo) say(g_voice->neo);
-    if (max) say(g_voice->max);
-    if (dreamliner) say(g_voice->dreamliner);
+    if (neo) say(VOICE.neo);
+    if (max) say(VOICE.max);
+    if (dreamliner) say(VOICE.dreamliner);
     return true;
 }
 
@@ -290,7 +276,7 @@ bool sayType(const String &name) {
 // of an 8.33kHz channel's, "one three two decimal eight zero five".
 void sayFrequency(uint32_t khz) {
     spell(String(khz / 1000));
-    say(g_voice->decimal);
+    say(VOICE.decimal);
     char fraction[4];
     snprintf(fraction, sizeof(fraction), "%03u", (unsigned)(khz % 1000));
     int n = 3;
@@ -306,23 +292,23 @@ void sayFrequency(uint32_t khz) {
 // above it, as a flight level, "flight level three five zero".
 void sayAltitude(long ft, long transitionFt) {
     if (ft >= transitionFt) {
-        say(g_voice->flightLevel);
+        say(VOICE.flightLevel);
         spell(String((ft + 50) / 100));
         return;
     }
     long hundreds = (ft + 50) / 100;
     if (hundreds >= 10) {
         spell(String(hundreds / 10));  // "one two thousand", as the digits
-        say(g_voice->thousand);
+        say(VOICE.thousand);
     }
     if (hundreds % 10) {
         spell(String(hundreds % 10));
-        say(g_voice->hundred);
+        say(VOICE.hundred);
     }
     if (hundreds == 0) {
         spell("0");
     }
-    say(g_voice->feet);
+    say(VOICE.feet);
 }
 
 // The airport zoom's announcements waiting their turn, behind an alert or
@@ -332,7 +318,6 @@ struct Announcement {
     String runway;
     bool takeoff;
     uint32_t queuedMs;
-    const Voice *voice;
 };
 // Waiting behind an alert's words longer than this, it is over by the time it
 // would be said - an aircraft cleared for take-off is in the air - and dropped.
@@ -368,24 +353,23 @@ void speakQueued(bool reading) {
 // number a digit at a time and its side.
 void startAnnouncement(const Announcement &a) {
     g_spokenCount = g_nextSpoken = 0;
-    g_voice = a.voice;
     sayCallsign(a.callsign);
     pauseAfter(AFTER_CALLSIGN_MS);
-    say(g_voice->runway);
+    say(VOICE.runway);
     for (size_t i = 0; i < a.runway.length(); i++) {
         char c = a.runway[i];
         if (c >= '0' && c <= '9') {
-            say(g_voice->digits[c - '0']);
+            say(VOICE.digits[c - '0']);
         } else if (c == 'L') {
-            say(g_voice->left);
+            say(VOICE.left);
         } else if (c == 'R') {
-            say(g_voice->right);
+            say(VOICE.right);
         } else if (c == 'C') {
-            say(g_voice->centre);
+            say(VOICE.centre);
         }
     }
     pauseAfter(AFTER_CALLSIGN_MS);
-    say(a.takeoff ? g_voice->clearedTakeoff : g_voice->clearedLand, 0);
+    say(a.takeoff ? VOICE.clearedTakeoff : VOICE.clearedLand, 0);
     Serial.printf("[sound] announcing %s, runway %s, cleared %s: %d spoken\n", a.callsign.c_str(), a.runway.c_str(),
                   a.takeoff ? "for take-off" : "to land", g_spokenCount);
     speakQueued(false);
@@ -393,14 +377,13 @@ void startAnnouncement(const Announcement &a) {
 
 // Read aloud - see soundReadAircraft(): the latest asked for, waiting until
 // what is being said has been, unless that is a reading too.
-enum class ReadKind : uint8_t { NONE, AIRCRAFT, NAVAID, AIRPORT, SAMPLE };
+enum class ReadKind : uint8_t { NONE, AIRCRAFT, NAVAID, AIRPORT };
 struct Reading {
     ReadKind kind = ReadKind::NONE;
     Aircraft aircraft;
     const Navaid *navaid = nullptr;
     const AirportInfo *airport = nullptr;
-    Region region = Region::ELSEWHERE;
-    const Voice *voice = nullptr;
+    Region region = Region::ELSEWHERE;  // the aircraft's, for its height: see readAircraft()
 };
 Reading g_reading;
 
@@ -435,15 +418,15 @@ void readAircraft(const Aircraft &a, Region region) {
         pauseAfter(AFTER_CALLSIGN_MS);
     }
     if (a.altStr == "GND" || a.status == "GROUND" || a.status == "TAXI") {
-        say(g_voice->onGround, 0);
+        say(VOICE.onGround, 0);
         return;
     }
     if (a.status == "CLIMB") {
-        say(g_voice->climbing, AFTER_MAKER_MS);
+        say(VOICE.climbing, AFTER_MAKER_MS);
     } else if (a.status == "DESCEND") {
-        say(g_voice->descending, AFTER_MAKER_MS);
+        say(VOICE.descending, AFTER_MAKER_MS);
     } else if (a.status == "LEVEL") {
-        say(g_voice->level, AFTER_MAKER_MS);
+        say(VOICE.level, AFTER_MAKER_MS);
     }
     long ft = a.altStr.toInt();
     if (a.altStr != "?" && ft > 0) {
@@ -454,13 +437,13 @@ void readAircraft(const Aircraft &a, Region region) {
     }
     if (a.speedStr != "?") {
         spell(String(a.speedStr.toInt()));
-        say(g_voice->knots, AFTER_CALLSIGN_MS);
+        say(VOICE.knots, AFTER_CALLSIGN_MS);
     }
     if (a.hasTrack) {
         int heading = ((int)lroundf(a.track) % 360 + 360) % 360;
         char digits[8];
         snprintf(digits, sizeof(digits), "%03d", heading == 0 ? 360 : heading);
-        say(g_voice->heading);
+        say(VOICE.heading);
         spell(digits);
     }
     pauseAfter(0);
@@ -471,9 +454,9 @@ void readAircraft(const Aircraft &a, Region region) {
 void readNavaid(const Navaid &n) {
     spell(n.ident);
     pauseAfter(AFTER_CALLSIGN_MS);
-    say(g_voice->navaidTypes[(int)n.type], AFTER_CALLSIGN_MS);
+    say(VOICE.navaidTypes[(int)n.type], AFTER_CALLSIGN_MS);
     if (n.type == NavaidType::TACAN && n.channel[0]) {
-        say(g_voice->channel);
+        say(VOICE.channel);
         spell(n.channel);
     } else if (n.freqKhz && n.type == NavaidType::NDB_DME) {
         spell(String(n.freqKhz));  // an NDB's, in kHz
@@ -495,7 +478,7 @@ void readAirport(const AirportInfo &airport) {
             continue;
         }
         lastUse = f[i].use;
-        say(g_voice->atcUses[f[i].use], AFTER_MAKER_MS);
+        say(VOICE.atcUses[f[i].use], AFTER_MAKER_MS);
         sayFrequency(f[i].khz);
         pauseAfter(AFTER_CALLSIGN_MS);
     }
@@ -504,7 +487,6 @@ void readAirport(const AirportInfo &airport) {
 
 void startReading(const Reading &r) {
     g_spokenCount = g_nextSpoken = 0;
-    g_voice = r.voice;
     switch (r.kind) {
     case ReadKind::AIRCRAFT:
         readAircraft(r.aircraft, r.region);
@@ -515,17 +497,10 @@ void startReading(const Reading &r) {
     case ReadKind::AIRPORT:
         readAirport(*r.airport);
         break;
-    case ReadKind::SAMPLE:
-        // "Runway two three, cleared for take-off."
-        say(g_voice->runway);
-        spell("23");
-        pauseAfter(AFTER_CALLSIGN_MS);
-        say(g_voice->clearedTakeoff, 0);
-        break;
     case ReadKind::NONE:
         return;
     }
-    static const char *const KINDS[] = {"", "aircraft", "navaid", "airport", "sample"};
+    static const char *const KINDS[] = {"", "aircraft", "navaid", "airport"};
     Serial.printf("[sound] reading %s: %d spoken\n", KINDS[(int)r.kind], g_spokenCount);
     if (g_spokenCount > 0) {
         speakQueued(true);
@@ -573,13 +548,6 @@ bool soundMuted() { return g_muted; }
 
 unsigned soundStackSpare() { return g_soundTask ? (unsigned)uxTaskGetStackHighWaterMark(g_soundTask) : 0u; }
 
-void soundSetElsewhereAccent(Accent accent) {
-    Held held;
-    if ((int)accent < (int)(sizeof(VOICES) / sizeof(VOICES[0]))) {
-        g_elsewhere = accent;
-    }
-}
-
 void soundSetReadAloud(bool on) { g_readAloud = on; }
 
 void soundTakeoff() {
@@ -610,8 +578,7 @@ void soundNewFlight() {
     M5.Speaker.tone(1568, 70, CHANNEL, false);
 }
 
-void soundAlert(uint8_t reasons, const String &callsign, const String &typeName, float lat, float lon,
-                bool spoken) {
+void soundAlert(uint8_t reasons, const String &callsign, const String &typeName, bool spoken) {
     Held held;
     if (!g_ready || g_muted) {
         Serial.printf("[sound] alert for %s not sounded: %s\n", callsign.c_str(), g_muted ? "muted" : "no speaker");
@@ -627,7 +594,6 @@ void soundAlert(uint8_t reasons, const String &callsign, const String &typeName,
     }
     g_chimeWaiting = false;  // this one's notes are its
     g_spokenCount = g_nextSpoken = 0;
-    g_voice = voiceOf(regionNear(lat, lon));
     g_readingNow = false;
     Clip word;
     if (wordFor(reasons, word)) {
@@ -646,7 +612,7 @@ void soundAlert(uint8_t reasons, const String &callsign, const String &typeName,
                   g_spokenCount);
 }
 
-void soundAnnounce(const String &callsign, const String &runway, bool takeoff, const char *airport) {
+void soundAnnounce(const String &callsign, const String &runway, bool takeoff) {
     Held held;
     String cs = callsign;
     cs.trim();
@@ -657,8 +623,7 @@ void soundAnnounce(const String &callsign, const String &runway, bool takeoff, c
         Serial.printf("[sound] announcement for %s dropped: %d waiting\n", cs.c_str(), g_announcementCount);
         return;
     }
-    const Voice *voice = voiceOf(airport ? airportRegion(airport) : Region::ELSEWHERE);
-    g_announcements[g_announcementCount++] = {cs, runway, takeoff, millis(), voice};
+    g_announcements[g_announcementCount++] = {cs, runway, takeoff, millis()};
 }
 
 void soundReadAircraft(const Aircraft &ac, bool always) {
@@ -670,7 +635,6 @@ void soundReadAircraft(const Aircraft &ac, bool always) {
     r.kind = ReadKind::AIRCRAFT;
     r.aircraft = ac;
     r.region = ac.hasPos ? regionNear(ac.lat, ac.lon) : Region::ELSEWHERE;
-    r.voice = voiceOf(r.region);
     queueReading(r);
 }
 
@@ -682,7 +646,6 @@ void soundReadNavaid(const Navaid &navaid, bool always) {
     Reading r;
     r.kind = ReadKind::NAVAID;
     r.navaid = &navaid;
-    r.voice = voiceOf(regionNear(navaid.lat, navaid.lon));
     queueReading(r);
 }
 
@@ -694,7 +657,6 @@ void soundReadAirport(const AirportInfo &airport, bool always) {
     Reading r;
     r.kind = ReadKind::AIRPORT;
     r.airport = &airport;
-    r.voice = voiceOf(airportRegion(airport.code));
     queueReading(r);
 }
 
@@ -707,17 +669,6 @@ void soundStopReading() {
         g_spokenCount = g_nextSpoken = 0;
         g_readingNow = false;
     }
-}
-
-void soundSampleAccent(Accent accent) {
-    Held held;
-    if ((int)accent >= (int)(sizeof(VOICES) / sizeof(VOICES[0]))) {
-        return;
-    }
-    Reading r;
-    r.kind = ReadKind::SAMPLE;
-    r.voice = VOICES[(int)accent];
-    queueReading(r);
 }
 
 namespace {
@@ -943,8 +894,8 @@ void soundTick() {
                               (unsigned long)late);
             }
             const Spoken &s = g_spoken[g_nextSpoken++];
-            playClip(s.clip, g_voice->rate);
-            g_speakAtMs = millis() + s.clip.count * 1000 / g_voice->rate + s.pauseMs;
+            playClip(s.clip, VOICE.rate);
+            g_speakAtMs = millis() + s.clip.count * 1000 / VOICE.rate + s.pauseMs;
             return;
         }
         g_spokenCount = g_nextSpoken = 0;
@@ -957,42 +908,37 @@ void soundTick() {
 }
 
 #ifdef BENCH3D
-// "##=s" (bench2d.h): the voices' words turned back into samples as they are
-// said - every letter, digit, maker and airline of each - and ten seconds of
-// an A320's sound in each of a few states, and of a Typhoon's in two, made
-// as the sound's task makes it.
+// "##=s" (bench2d.h): the voice's words turned back into samples as they are
+// said - every letter, digit, maker and airline - and ten seconds of an
+// A320's sound in each of a few states, and of a Typhoon's in two, made as
+// the sound's task makes it.
 void soundBench() {
-    static const char *const NAMES[] = {"Scottish", "English", "American"};
     size_t most = 0;
-    for (const Voice *v : VOICES) {
-        for (const Clip &c : v->letters) most = std::max(most, c.count);
-        for (const Clip &c : v->digits) most = std::max(most, c.count);
-        for (size_t i = 0; i < v->makerCount; i++) most = std::max(most, v->makers[i].clip.count);
-        for (size_t i = 0; i < v->airlineCount; i++) most = std::max(most, v->airlines[i].clip.count);
-    }
+    for (const Clip &c : VOICE.letters) most = std::max(most, c.count);
+    for (const Clip &c : VOICE.digits) most = std::max(most, c.count);
+    for (size_t i = 0; i < VOICE.makerCount; i++) most = std::max(most, VOICE.makers[i].clip.count);
+    for (size_t i = 0; i < VOICE.airlineCount; i++) most = std::max(most, VOICE.airlines[i].clip.count);
     int16_t *out = (int16_t *)heap_caps_malloc(most * sizeof(int16_t), MALLOC_CAP_SPIRAM);
     if (out == nullptr) {
         Serial.println("[bench] no room to decode into");
         return;
     }
-    for (size_t k = 0; k < sizeof(VOICES) / sizeof(VOICES[0]); k++) {
-        const Voice *v = VOICES[k];
-        uint64_t samples = 0;
-        uint32_t clips = 0, t0 = micros();
-        auto decode = [&](const Clip &c) {
-            decodeClip(c, out);
-            samples += c.count;
-            clips++;
-        };
-        for (const Clip &c : v->letters) decode(c);
-        for (const Clip &c : v->digits) decode(c);
-        for (size_t i = 0; i < v->makerCount; i++) decode(v->makers[i].clip);
-        for (size_t i = 0; i < v->airlineCount; i++) decode(v->airlines[i].clip);
-        uint32_t us = micros() - t0;
-        float seconds = (float)samples / v->rate;
-        Serial.printf("[bench] voice %s: %u words, %.1fs of sound decoded in %.2fms - %.2fms a second, %.0fns a sample\n",
-                      NAMES[k], (unsigned)clips, seconds, us / 1000.0f, us / 1000.0f / seconds, us * 1000.0f / samples);
-    }
+    uint64_t samples = 0;
+    uint32_t clips = 0, t0 = micros();
+    auto decode = [&](const Clip &c) {
+        decodeClip(c, out);
+        samples += c.count;
+        clips++;
+    };
+    for (const Clip &c : VOICE.letters) decode(c);
+    for (const Clip &c : VOICE.digits) decode(c);
+    for (size_t i = 0; i < VOICE.makerCount; i++) decode(VOICE.makers[i].clip);
+    for (size_t i = 0; i < VOICE.airlineCount; i++) decode(VOICE.airlines[i].clip);
+    uint32_t us = micros() - t0;
+    float seconds = (float)samples / VOICE.rate;
+    Serial.printf("[bench] voice English: %u words, %.1fs of sound decoded in %.2fms - %.2fms a second, "
+                  "%.0fns a sample\n",
+                  (unsigned)clips, seconds, us / 1000.0f, us / 1000.0f / seconds, us * 1000.0f / samples);
     heap_caps_free(out);
 
     void *room = heap_caps_malloc(sizeof(engine_noise::Synth), MALLOC_CAP_SPIRAM);

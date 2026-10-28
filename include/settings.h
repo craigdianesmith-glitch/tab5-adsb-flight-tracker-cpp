@@ -39,7 +39,6 @@ struct AppSettings {
     bool autoFollow;    // follow an alerted aircraft on the radar as its alert fires
     bool followIn3d;    // ... in the 3D view, rather than on the radar
     bool readAloud;          // say an aircraft's details, and a navaid's or an airport's card, as they open
-    Accent elsewhereAccent;  // the voice for everywhere without one of its own - see sound.h
     uint8_t brightnessPct;   // the screen's, 10 to 100 - see display_page.h
     uint8_t dimMinutes;      // dimmed after this long untouched; 0 for never
     // The clock on the radar and the zoom: off, or the zone it keeps - or
@@ -71,7 +70,7 @@ void saveRadarRange(int rangeNm);
 void saveRadarZoom(const String &code, float viewNm);
 void saveWifi(const String &ssid, const String &pass);
 void saveAlerts(uint8_t alertMask, const String &watchlist, bool autoRecord, bool autoFollow, bool followIn3d);
-void saveVoice(bool readAloud, Accent elsewhere);
+void saveReadAloud(bool readAloud);
 void saveTableSort(int col, bool descending);
 void saveDisplay(uint8_t brightnessPct, uint8_t dimMinutes, uint8_t clockZone, bool replayTracks);
 void saveAutoZoom(bool autoZoom);

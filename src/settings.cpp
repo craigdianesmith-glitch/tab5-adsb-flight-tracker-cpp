@@ -62,8 +62,10 @@ AppSettings loadSettings() {
     s.autoFollow = prefs.getBool("autofollow", false);
     s.followIn3d = prefs.getBool("follow3d", false);
     s.readAloud = prefs.getBool("readaloud", false);
-    uint8_t accent = prefs.getUChar("accent", (uint8_t)DEFAULT_ELSEWHERE_ACCENT);
-    s.elsewhereAccent = accent <= (uint8_t)Accent::AMERICAN ? (Accent)accent : DEFAULT_ELSEWHERE_ACCENT;
+    // "accent", the voice for countries without their own - Scottish,
+    // English or American - until 1.5.1 took out all but the English: left
+    // unread, everything said in English whatever it holds, and never to be
+    // the key of anything else.
     s.brightnessPct = prefs.getUChar("bright", 0);  // 0: never set - left as it comes up
     s.dimMinutes = prefs.getUChar("dimmin", 0);
     // From before there were zones, a clock turned off stays off.
@@ -243,11 +245,10 @@ void saveTableSort(int col, bool descending) {
     prefs.end();
 }
 
-void saveVoice(bool readAloud, Accent elsewhere) {
+void saveReadAloud(bool readAloud) {
     Preferences prefs;
     prefs.begin(NAMESPACE, false);
     prefs.putBool("readaloud", readAloud);
-    prefs.putUChar("accent", (uint8_t)elsewhere);
     prefs.end();
 }
 

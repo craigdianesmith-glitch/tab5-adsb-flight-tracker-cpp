@@ -133,15 +133,6 @@ constexpr uint8_t SOUND_VOLUME = 96;  // 0-255
 enum class RadarCentre : uint8_t { HOME = 0, AIRPORT = 1 };
 constexpr RadarCentre DEFAULT_RADAR_CENTRE = RadarCentre::AIRPORT;
 
-// --- voices -------------------------------------------------------------------
-
-// The voices the words are said in - see sound.h: Scotland, England and the
-// United States each have their own, and everywhere else has the one chosen
-// on the alerts screen. Stored in NVS by value, so the numbers are not free
-// to change.
-enum class Accent : uint8_t { SCOTTISH = 0, ENGLISH = 1, AMERICAN = 2 };
-constexpr Accent DEFAULT_ELSEWHERE_ACCENT = Accent::SCOTTISH;
-
 // --- alerts and recording ---------------------------------------------------
 
 // How long the alert banner stays up once it has been on screen, if nobody

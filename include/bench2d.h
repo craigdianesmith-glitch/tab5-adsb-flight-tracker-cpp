@@ -16,7 +16,7 @@
 //   p  a reply from the feed, from the card's overhead folder, parsed as a
 //      poll parses one (main.cpp's "##u" puts one there)
 //   k  the tracks taking in a poll's list, a step at a time (main.cpp)
-//   s  the voices' words turned back into sound, and the engines' noise made
+//   s  the voice's words turned back into sound, and the engines' noise made
 //   c  the instruction caches' misses, L1 and L2, round one frame of the
 //      radar's plot - whole, a refresh and following - and the frame's time
 //   X  the plot's column and the whole screen pushed through internal RAM by

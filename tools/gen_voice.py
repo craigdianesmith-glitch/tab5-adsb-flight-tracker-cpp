@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Generate the spoken words in one voice into src/voice_<name>.inc.
+"""Generate the spoken words into src/voice_english.inc.
 
-    python tools/gen_voice.py --piper PATH/TO/piper --model PATH/TO/voice.onnx --name scottish
+    python tools/gen_voice.py --piper PATH/TO/piper --model PATH/TO/en_GB-cori-medium.onnx
 
 Speaks each word with Piper (https://github.com/rhasspy/piper), a free offline
 neural text-to-speech engine - `pip install piper-tts` in a virtualenv, and a
@@ -11,15 +11,18 @@ from the voice's own 22.05kHz, a quarter less flash for speech the Tab5's
 small speaker plays no differently - as 4-bit IMA ADPCM, a quarter of what
 16-bit samples would take, encoded by the search in tools/adpcm_search.c (see
 tools/ima_adpcm.py), for the firmware to turn back into samples as each word
-is said. The firmware has three voices, each of the words said in each - see
+is said. The firmware has one voice, every word said in it - see
 src/sound.cpp:
 
-    --name scottish  en_GB-alba-medium  Scottish: the Alba data of the CSTR, University of Edinburgh, CC BY 4.0
-    --name english   en_GB-cori-medium  English: LibriVox recordings, public domain
-    --name american  en_US-amy-medium   American: Mycroft AI's Mimic 3 voices, CC BY-SA 4.0
+    en_GB-cori-medium  English: LibriVox recordings, public domain
 
-as the voices' model cards on Hugging Face say - each credited on the About
-screen, src/info_screen.cpp.
+as its model card on Hugging Face says - credited on the About screen,
+src/info_screen.cpp. Until 1.5.1 it had two more, a Scottish voice
+(en_GB-alba-medium) and an American one (en_US-amy-medium): both were taken
+out, having been fine-tuned from Piper's lessac voice, whose Blizzard 2013
+data is licensed for research purposes only. A voice is only as free as what
+it was made from, so before another goes in, read on its model card what it
+was trained - or fine-tuned - from, and that data's licence.
 """
 import argparse
 import array
@@ -106,10 +109,9 @@ ATC_USES = [("ATC_TOWER", "Tower,"), ("ATC_GROUND", "Ground,"), ("ATC_DELIVERY",
             ("ATC_APPROACH", "Approach,"), ("ATC_DEPARTURE", "Departure,"), ("ATC_RADAR", "Radar,"),
             ("ATC_CONTROL", "Control,"), ("ATC_ATIS", "Atis,"), ("ATC_INFO", "Information,")]
 # Words a voice says wrongly as written, and how to write them for it to say
-# them right - found by ear, a few spellings tried for each.
-RESPELT = {
-    "american": {"Romeo,": "Roh mee oh,"},  # it said "Romeo" as "Rome-yo"
-}
+# them right - found by ear, a few spellings tried for each, by the voice's
+# --name. The English voice says every one right as it is written.
+RESPELT = {}
 PEAK = 0.89  # of full scale: about -1dB, loud on the Tab5's small speaker without clipping
 # Speech peaks only now and then, a dozen dB over most of a word, where the
 # alert's chime is a square wave at full level throughout - so at the same
@@ -123,7 +125,7 @@ MARGIN_MS = 30  # kept either side of the speech, so its first and last sounds a
 ap = argparse.ArgumentParser()
 ap.add_argument("--piper", required=True, help="the piper executable")
 ap.add_argument("--model", required=True, help="the voice's .onnx file, with its .onnx.json beside it")
-ap.add_argument("--name", required=True, help="which voice it is: scottish, english or american")
+ap.add_argument("--name", default="english", help="the voice's name, for its file and namespace: english, the one")
 ap.add_argument("--out", help="default src/voice_<name>.inc")
 ap.add_argument("--drive", type=float, default=DRIVE, help="how hard the words are squeezed: louder, up to harsh")
 ap.add_argument("--rate", type=int, default=16000, help="the sample rate the words are stored at")

@@ -2,12 +2,9 @@
 
 #include <M5Unified.h>
 
-#include <algorithm>
-
 #include "alerts.h"
 #include "recorder.h"
 #include "screen.h"
-#include "sound.h"
 
 namespace {
 
@@ -25,14 +22,10 @@ constexpr int TOGGLE_H = 76, TOGGLE_STEP = 88;
 constexpr int ALERT_LABEL_Y = 84;
 constexpr int ALERT_TOGGLE_Y = 112;
 constexpr int ALERT_COUNT = 4;
-// Under them, the voice: read aloud, and the voice for everywhere without
-// its own.
+// Under them, the voice: read aloud. It speaks English alone, so there is no
+// voice to pick - see sound.h.
 constexpr int VOICE_LABEL_Y = ALERT_TOGGLE_Y + ALERT_COUNT * TOGGLE_STEP + 8;
 constexpr int READ_Y = VOICE_LABEL_Y + 28;
-constexpr int ACCENT_LABEL_Y = READ_Y + TOGGLE_H + 12;
-constexpr int ACCENT_Y = ACCENT_LABEL_Y + 28, ACCENT_H = 64;
-const char *const ACCENTS[] = {"Scottish", "English", "American"};  // in Accent's order
-constexpr int ACCENT_COUNT = 3;
 
 // --- right column ---
 constexpr int WATCH_LABEL_Y = 84;
@@ -63,7 +56,6 @@ bool g_autoRecord = false;
 bool g_autoFollow = false;
 bool g_followIn3d = false;
 bool g_readAloud = false;
-Accent g_accent = DEFAULT_ELSEWHERE_ACCENT;
 bool g_cardPresent = true;
 String g_watchlist;
 
@@ -159,23 +151,6 @@ void drawAutoFollow() {
 
 void drawReadAloud() {
     drawToggle(COL1_X, READ_Y, "Read aloud", "Details and frequency cards", g_readAloud);
-}
-
-// As the settings screen's choices are: one control, one of its three lit.
-void drawAccents() {
-    auto &canvas = screen::canvas();
-    int seg = COL_W / ACCENT_COUNT;
-    canvas.fillRoundRect(COL1_X, ACCENT_Y, COL_W, ACCENT_H, 8, colorOff);
-    canvas.fillRoundRect(COL1_X + (int)g_accent * seg, ACCENT_Y, seg, ACCENT_H, 8, colorOn);
-    canvas.drawRoundRect(COL1_X, ACCENT_Y, COL_W, ACCENT_H, 8, colorBorder);
-    canvas.setFont(&fonts::Font0);
-    canvas.setTextSize(3);
-    canvas.setTextDatum(MC_DATUM);
-    for (int i = 0; i < ACCENT_COUNT; i++) {
-        canvas.setTextColor(i == (int)g_accent ? colorWhite : colorDim);
-        canvas.drawString(ACCENTS[i], COL1_X + i * seg + seg / 2, ACCENT_Y + ACCENT_H / 2);
-    }
-    screen::markDirty(COL1_X, ACCENT_Y, COL_W, ACCENT_H);
 }
 
 // Radar or 3D: where an auto-follow opens - greyed while auto-follow is off.
@@ -293,10 +268,7 @@ void alertsScreenSet(uint8_t alertMask, bool autoRecord, bool autoFollow, bool f
 
 void alertsScreenSetWatchlist(const String &watchlist) { g_watchlist = watchlist; }
 
-void alertsScreenSetVoice(bool readAloud, Accent elsewhere) {
-    g_readAloud = readAloud;
-    g_accent = elsewhere;
-}
+void alertsScreenSetReadAloud(bool readAloud) { g_readAloud = readAloud; }
 
 void alertsScreenDraw() {
     ensureColors();
@@ -320,8 +292,6 @@ void alertsScreenDraw() {
     }
     sectionLabel("VOICE", COL1_X, VOICE_LABEL_Y);
     drawReadAloud();
-    sectionLabel("FOR COUNTRIES WITHOUT THEIR OWN", COL1_X, ACCENT_LABEL_Y);
-    drawAccents();
 
     sectionLabel("WATCHLIST", COL2_X, WATCH_LABEL_Y);
     drawWatchButton();
@@ -372,14 +342,6 @@ AlertsAction alertsScreenHandleTouch(int x, int y) {
         screen::flush();
         return AlertsAction::NONE;
     }
-    if (inside(x, y, COL1_X, ACCENT_Y, COL_W, ACCENT_H)) {
-        // Said in it as it is picked, to hear what it is.
-        g_accent = (Accent)std::min((x - COL1_X) * ACCENT_COUNT / COL_W, ACCENT_COUNT - 1);
-        drawAccents();
-        screen::flush();
-        soundSampleAccent(g_accent);
-        return AlertsAction::NONE;
-    }
     return AlertsAction::NONE;
 }
 
@@ -389,4 +351,3 @@ bool alertsScreenAutoFollow() { return g_autoFollow; }
 bool alertsScreenFollowIn3d() { return g_followIn3d; }
 String alertsScreenWatchlist() { return g_watchlist; }
 bool alertsScreenReadAloud() { return g_readAloud; }
-Accent alertsScreenElsewhereAccent() { return g_accent; }
