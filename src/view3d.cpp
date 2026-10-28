@@ -953,8 +953,19 @@ s3::Look lookOf(const String &hex, const String &type, const String &callsign, b
     return knownOf(hex, type, callsign, military, category).look;
 }
 
+// On a runway: on it, or this many metres past an end - a quarter of it
+// either side.
+constexpr float RUNWAY_SLACK = 60;
+// On a runway this fast, knots, an aircraft is landing or taking off; slower,
+// taxiing across or along it.
+constexpr int RUNWAY_ROLL_KT = 30;
+// Reported this near a stand's stop, it is at that stand.
+constexpr float AT_STAND_M = 35;
+
 // ===== THE TAKE-OFF, LANDING AND TAXI SIMULATION: PolyForm Noncommercial 1.0.0 ===
-// The first of its two sections here: the rules the one followed is placed by,
+// The first of its two sections here: the rules for standing still, hovering
+// and a rotorcraft set down, which place the traffic as well as the one
+// followed; the take-off's figures, for its roll, hand-back, easing and cut;
 // and its estimate. From here to the end marker after estimateOf(), this file is
 // licensed under the PolyForm Noncommercial License 1.0.0 (LICENSE-POLYFORM.md),
 // not the MIT licence that covers the rest of it. Copyright (c) 2026 Craig Smith.
@@ -965,14 +976,6 @@ s3::Look lookOf(const String &hex, const String &type, const String &callsign, b
 // so it keeps the heading it had, and the place it had too unless a report
 // puts it more than 30m away, which is a move.
 constexpr float STILL_KT = 6, STILL_M = 30;
-// On a runway: on it, or this many metres past an end - a quarter of it
-// either side.
-constexpr float RUNWAY_SLACK = 60;
-// On a runway this fast, knots, an aircraft is landing or taking off; slower,
-// taxiing across or along it.
-constexpr int RUNWAY_ROLL_KT = 30;
-// Reported this near a stand's stop, it is at that stand.
-constexpr float AT_STAND_M = 35;
 bool standingStill(bool ground, float gsKt) { return ground && gsKt < STILL_KT; }
 // Hovering - a helicopter in the air under 12 knots - its track is the drift's,
 // all round the compass: it keeps the heading it had, though not its place,
