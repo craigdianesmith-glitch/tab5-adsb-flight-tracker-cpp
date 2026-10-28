@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT AND PolyForm-Noncommercial-1.0.0
-// MIT (LICENSE), but for the terrain engine's section, marked below, which is
-// PolyForm Noncommercial 1.0.0 (LICENSE-POLYFORM.md).
+// MIT (LICENSE), but for the terrain engine's section and the take-off,
+// landing and taxi simulation's section, marked below, which are PolyForm
+// Noncommercial 1.0.0 (LICENSE-POLYFORM.md).
 
 #include "scene3d.h"
 
@@ -11534,6 +11535,13 @@ float landingPitch(Family family, float speedKt, float climbFpm, float heightM, 
     return pitch + (std::max(pitch, touch) - pitch) * u * u * (3 - 2 * u);
 }
 
+// ===== THE TAKE-OFF, LANDING AND TAXI SIMULATION: PolyForm Noncommercial 1.0.0 ===
+// The kind of take-off a type makes, and the pilot who flies the one followed:
+// its nose and wings through the roll, the rotation, the climb, the approach
+// and the flare. From here to the end marker after Pilot::fly(), this file is
+// licensed under the PolyForm Noncommercial License 1.0.0 (LICENSE-POLYFORM.md),
+// not the MIT licence that covers the rest of it. Copyright (c) 2026 Craig Smith.
+
 TakeoffKind takeoffKindOf(Family family, const char *type) {
     auto is = [type](const char *t) { return type != nullptr && strcmp(type, t) == 0; };
     auto from = [type](const char *t) { return type != nullptr && strncmp(type, t, strlen(t)) == 0; };
@@ -11712,6 +11720,8 @@ void Pilot::fly(float dt, Family family, float turnRate, float speedKt, float cl
     float pitchRate = (pitch - was) / dt;
     elevator = std::max(-1.0f, std::min(1.0f, pitchRate / (4 * DEG) + (load - 1) * 1.5f));
 }
+
+// ===== END OF THE SIMULATION: the MIT licence again from here ====================
 
 namespace {
 // A made-up mix of traffic for the busy airport: narrowbodies, regional jets

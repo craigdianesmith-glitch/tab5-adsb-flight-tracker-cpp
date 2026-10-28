@@ -1,3 +1,7 @@
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+// Copyright (c) 2026 Craig Smith. Overhead's take-off, landing and taxi simulation: PolyForm Noncommercial 1.0.0
+// (LICENSE-POLYFORM.md), not the MIT licence of the rest of the repository.
+
 // Soak-tests the 3D view's ground movement on the PC - the one followed,
 // landed and taxiing in to its stand, or pushed back from it and taxiing out
 // to take off: src/ground_follow.cpp, ground_taxi.cpp and ground_route.cpp -
