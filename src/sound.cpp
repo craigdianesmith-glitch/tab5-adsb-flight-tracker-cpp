@@ -96,7 +96,7 @@ int g_nextNote = 0;
 
 // The words, made by tools/gen_voice.py in one voice, English: a second or so
 // of sound each, at the voice's own rate, as 4-bit IMA ADPCM - half what 8-bit
-// samples took, 1.24MB of flash - turned back into samples as each is said
+// samples took, 1.46MB of flash - turned back into samples as each is said
 // (see playClip()), and played by the speaker's own task, so saying one costs
 // the UI no more than a note does.
 struct Clip {
@@ -115,6 +115,8 @@ struct Voice {
     Clip digits[10];
     const NamedClip *makers;  // by the name a type name begins with
     size_t makerCount;
+    const NamedClip *types;  // by the whole type name: a few said as one, not a word at a time
+    size_t typeCount;
     Clip neo, max, dreamliner;
     const NamedClip *airlines;  // by the airline's name in the airline table
     size_t airlineCount;
@@ -217,6 +219,15 @@ void sayCallsign(const String &callsign) {
 // A neo, a MAX or a Dreamliner is said after it. False for a name with no
 // maker the table knows, as an unknown type's bare code is.
 bool sayType(const String &name) {
+    // A name the voice has whole is said as that one clip, in one breath -
+    // the Embraers', "Embraer, Echo One Niner Five", were hard to make out
+    // put together a word at a time.
+    for (size_t i = 0; i < VOICE.typeCount; i++) {
+        if (name == VOICE.types[i].name) {
+            say(VOICE.types[i].clip, AFTER_MAKER_MS);
+            return true;
+        }
+    }
     const NamedClip *maker = nullptr;
     for (size_t i = 0; i < VOICE.makerCount; i++) {
         const NamedClip &m = VOICE.makers[i];
